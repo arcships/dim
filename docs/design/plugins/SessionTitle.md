@@ -26,7 +26,10 @@ SessionTitle and cover generic host behavior. Verification uses the native flow
 [`native_flow.rs`](../../../crates/dim-session-title/tests/native_flow.rs) without
 language runtimes. It exercises fixed-cut property queries, settings validation, RPC, HTTP auxiliary
 execution, Unicode bounds, concurrent adoption, title notices, manual-over-auto conflicts,
-restore, fork and closing settlement. The Node-backed
+restore, fork and closing settlement.
+[`appended_context_flow.rs`](../../../crates/dim-session-title/tests/appended_context_flow.rs)
+covers context appended after the operator's text (Hooks A.6.2, Skills §9) staying out of the
+title. The Node-backed
 [`scheduler_flow.rs`](../../../crates/dim-session-title/tests/scheduler_flow.rs) exercises
 scheduled report provenance without letting reports supply title text. Diagnostics contain
 only outcome and duration.
@@ -54,7 +57,7 @@ read the store directly.
 
 1. Select the first `input/applied` whose `data.input_id` names an `input/message` that has `data.user`, or is Goal's applied `goal:state` record stating an objective (A10). Return only `data.input_id`. The adoption's position defines “first”; creation order does not.
 2. Check that the triggering input id names such an `input/message` at T. Return only its id. Other raw-block inputs, including Goal's triggers and continuations, do not trigger generation.
-3. Read the selected first input's `data.user` by id, or its `data.blocks` when it is Goal's record; take the text blocks or the `<objective>` element. This is the only message body read.
+3. Read the selected first input's `data.user` by id, or its `data.blocks` when it is Goal's record; take the text blocks or the `<objective>` element. This is the only message body read. A text block after the first that starts with a runtime marker is context a capability appended, not the operator's words (Hooks A.6.2, Skills §9), so the title leaves it out; the first block is the operator's whatever it opens with.
 4. Select the last `context/configured` at T and read its adopted provider/model identifiers. With no adopted configuration, use the existing excerpt fallback.
 
 Each query returns at most one row. No full-history page or input map is retained. The user content or
@@ -263,7 +266,7 @@ No model-visible effect: SessionTitle writes no input, tool, prompt source or ev
 | Part | Content |
 | --- | --- |
 | System | `Write a short title for this conversation: at most 8 words, in the language of the user's message, no quotes, no trailing punctuation. Reply with the title only.` (A2) |
-| User message | Text blocks of the first adopted operator `input/message` on `main` (one with `input/applied`), joined by newlines, or the `<objective>` element of Goal's first adopted `goal:state` record, cut to 2000 characters (A2, A10) |
+| User message | The text blocks of the first adopted operator `input/message` on `main` (one with `input/applied`) that carry the operator's words, joined by newlines, or the `<objective>` element of Goal's first adopted `goal:state` record, cut to 2000 characters (A2, A10) |
 
 Never sent: images, raw input blocks, deleted inputs, later inputs, assistant output, system prompt, tool calls and results, child-branch events. Diagnostics record outcome and duration only.
 

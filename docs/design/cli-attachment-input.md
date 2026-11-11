@@ -26,10 +26,13 @@ The existing run/approval loop takes keyboard ownership after a successful submi
 Account, OAuth and approval prompts retain their existing plain or hidden input behavior.
 
 Interactive file paths use the CLI's selected local `--cwd` as their base, including after
-resume. The composer displays that base. It does not obtain local files relative to a daemon's
-storage path. Headless `--image` arguments use the invoking process's current directory, like
-ordinary command-line file arguments. Paths returned by `attachment.put` are already paths on
-the Session's resource node; the CLI uses them directly without local path resolution.
+resume. The line client shows that base on its `local files` line. It does not obtain local files
+relative to a daemon's storage path. The terminal UI's border names the attached Session's
+workspace ([timeline UI](timeline-ui.md) §4.5), so when that differs from `--cwd` the `@` picker
+names the base in its title; while the two agree the title is plain, and the border already says
+it. Headless `--image` arguments use the invoking process's current directory, like ordinary
+command-line file arguments. Paths returned by `attachment.put` are already paths on the
+Session's resource node; the CLI uses them directly without local path resolution.
 
 ## Scrollback layout
 
@@ -206,13 +209,15 @@ from the line client's above. Image markers are the rule stated under scrollback
   that does not answer within 5 seconds leaves images sent as images.
   Audio and video files are sent as links: user input has no audio or video content block.
 
-The `@` index must not slow the interface, whatever directory the CLI runs in. A project
-directory is walked once on a thread of its own, breadth first, honouring `.gitignore` files and
-skipping dependency and build directories (`node_modules`, `target`, `.git`, `Library` and the
-like), within 8 levels, 50,000 entries and 2 seconds. The picker ranks what has been found so far
-and redraws as more arrives; a finished index is reused for 10 seconds. The home directory and
-the filesystem root are never walked: there the picker lists only the directory being typed, one
-directory read of at most 2,000 entries, as it does for an outside prefix.
+The `@` index must not slow the interface, whatever directory the CLI runs in. It walks the
+CLI's selected local `--cwd`, the same base as pasted and dropped paths, whichever Session is
+attached. A project directory is walked once on a thread of its own, breadth first, honouring
+`.gitignore` files and skipping dependency and build directories (`node_modules`, `target`,
+`.git`, `Library` and the like), within 8 levels, 50,000 entries and 2 seconds. The picker
+ranks what has been found so far and redraws as more arrives; a finished index is reused for 10
+seconds. The home directory and the filesystem root are never walked: there the picker lists
+only the directory being typed, one directory read of at most 2,000 entries, as it does for an
+outside prefix.
 
 ## Terminal and shell paste entry points
 

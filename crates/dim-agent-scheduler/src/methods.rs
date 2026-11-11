@@ -2,7 +2,7 @@
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
-    runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
+    runs::{self, Delivery, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::{
@@ -13,9 +13,8 @@ use dim_agent_capabilities::{
     settings::{SettingsChanged, SettingsScope, settings_changes},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
-use dim_agent_types::{InputMode, PermissionPolicy};
+use dim_agent_types::InputMode;
 use dim_app_server::{
-    SessionPermissions,
     methods::ManagementMethods,
     plugin_files::PluginFileTransactions,
     settings::{BusinessDocument, SettingsError, SettingsService},
@@ -37,7 +36,6 @@ pub struct SchedulerPlugin {
     settings: Key<SettingsService>,
     files: Key<PluginFileTransactions>,
     methods: Key<ManagementMethods>,
-    permissions: Key<SessionPermissions>,
     sessions: Key<dyn HostDispatch>,
     parts: Key<PartRegistry>,
     texts: Arc<crate::SchedulerTexts>,
@@ -51,7 +49,6 @@ impl SchedulerPlugin {
             settings: names.key()?,
             files: names.key()?,
             methods: names.key()?,
-            permissions: names.key()?,
             sessions: host_key("sessions"),
             parts: names.key()?,
             texts,
@@ -84,7 +81,6 @@ impl DynPlugin for SchedulerPlugin {
             self.settings.erase(),
             self.files.erase(),
             self.methods.erase(),
-            self.permissions.erase(),
             self.sessions.erase(),
             self.parts.erase(),
         ]
@@ -94,7 +90,6 @@ impl DynPlugin for SchedulerPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
-            let permissions = ctx.require_at(&self.permissions)?;
             let sessions = ctx.require_at(&self.sessions)?;
             settings.register::<crate::document::ScheduleDocument>(ctx)?;
             let shared = Arc::new(Shared {
@@ -102,15 +97,12 @@ impl DynPlugin for SchedulerPlugin {
                 sessions,
                 settings,
                 files,
-                permissions,
                 pruning: tokio::sync::Mutex::new(()),
                 settling: tokio::sync::Mutex::new(()),
                 wakeups: tokio::sync::Mutex::new(()),
-                texts: self.texts.clone(),
                 stop: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
                 retention: Default::default(),
-                reporting: Default::default(),
                 watch: crate::watch::Watchers::default(),
                 #[cfg(feature = "testing")]
                 holds: self.holds.clone(),
@@ -175,18 +167,17 @@ impl DynPlugin for SchedulerPlugin {
                     format!("scheduler wakeups: {error}").into(),
                 ))
             })?;
+            // A delivery still in flight when the previous process stopped
+            // keeps its record; only a launch record this design wrote has a
+            // stop timer to resume (§3.2). A record written by an earlier
+            // build in `launching`, `submitted` or `running` is left as
+            // written (A.7).
             crate::engine::recover(
                 &shared,
                 active
-                    .into_iter()
-                    .filter(|run| {
-                        matches!(
-                            run.state,
-                            DeliveryState::Launching
-                                | DeliveryState::Submitted
-                                | DeliveryState::Running
-                        )
-                    })
+                    .iter()
+                    .filter(|run| run.has_stop_timer())
+                    .cloned()
                     .collect(),
             );
             // Every `delivering` record is settled by lookup at the next
@@ -241,8 +232,6 @@ pub(crate) struct Shared {
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) files: Arc<PluginFileTransactions>,
-    pub(crate) permissions: Arc<SessionPermissions>,
-    pub(crate) texts: Arc<crate::SchedulerTexts>,
     /// Serializes retention passes, so a pass never deletes what another reads.
     pub(crate) pruning: tokio::sync::Mutex<()>,
     /// Serializes lookup passes over `delivering` records (A.6).
@@ -259,9 +248,6 @@ pub(crate) struct Shared {
     /// Whether the last retention pass left expired records or could not
     /// read; the timer retries it once a minute (A.7).
     pub(crate) retention: std::sync::atomic::AtomicBool,
-    /// Deliveries whose report call or diagnostic write is still in flight;
-    /// their records are not eligible for retention (A.7).
-    pub(crate) reporting: std::sync::Mutex<HashSet<String>>,
     /// The open `schedule.watch` calls of this generation (design §11.2).
     pub(crate) watch: crate::watch::Watchers,
     /// The flow tests' holds (feature `testing`).
@@ -349,17 +335,6 @@ pub(crate) async fn read_document(
         .read::<crate::document::ScheduleDocument>(SettingsScope::User, cancel)
         .await
         .map_err(read_failure)
-}
-
-/// The host's configured maximum, the authority a management launch target
-/// captures until the launch target is reduced (§3.3). Read before the
-/// settings write.
-pub(crate) async fn host_bound(shared: &Shared) -> Result<PermissionPolicy, SchedulerError> {
-    shared
-        .permissions
-        .permission_defaults(Default::default())
-        .await
-        .map_err(|error| SchedulerError::new("service_unavailable", error.to_string()))
 }
 
 async fn dispatch(
@@ -536,59 +511,21 @@ async fn list(shared: &Shared, cancel: &CancellationToken) -> Result<Value, Sche
     Ok(json!({ "jobs": jobs }))
 }
 
-/// How a save captures authority: a management save stores the live host
-/// bound as the launch cap until the launch target is reduced; a tool save
-/// captures none.
-enum CapCapture {
-    Management(PermissionPolicy),
-    Tool,
-}
-
-/// Builds the job a save stores. The server sets the target, the origin, the
-/// enable anchor and the authority cap; a save preserves the legacy fields
-/// of the job it replaces and clears its disabled reason.
+/// Builds the job a save stores. The server sets the target, the origin and
+/// the enable anchor; a save preserves the legacy fields of the job it
+/// replaces and clears its disabled reason. No save captures authority.
 fn build_job(
     input: JobInput,
     previous: Option<&Job>,
     origin: Origin,
-    cap: CapCapture,
     now: DateTime<Utc>,
 ) -> Result<Job, SchedulerError> {
-    // The legacy fields keep their bytes: the only one a save writes is
-    // `policy_cap`, and only on a `launch` target, where the retained launch
-    // route keeps its save-time cap (A.1, Appendix F).
-    let launch_preset = match &input.target {
-        Some(Target::Launch { policy, .. }) => *policy,
-        _ => None,
-    };
     let target = input
         .target
         .or_else(|| previous.and_then(|before| before.target.clone()));
-    let policy_cap = match (&target, cap) {
-        (Some(Target::Launch { .. }), CapCapture::Management(cap)) => {
-            if let Some(preset) = launch_preset
-                && preset.rank() > cap.preset.rank()
-            {
-                return Err(SchedulerError::new(
-                    "schedule_invalid",
-                    "Job policy exceeds the saving authority",
-                ));
-            }
-            Some(cap)
-        }
-        // A save that moves a job from a `launch` target to a `session`
-        // target drops the launch route's save-time cap. Every other save
-        // keeps the stored cap, including one that sends a legacy job's
-        // mapped `session` target explicitly (§2.3, A.1).
-        _ => match (&target, previous) {
-            (Some(Target::Session { .. }), Some(before))
-                if matches!(before.effective_target(), Some(Target::Launch { .. })) =>
-            {
-                None
-            }
-            _ => previous.and_then(|before| before.policy_cap.clone()),
-        },
-    };
+    // `policy_cap` is a legacy field no save writes: the launch route applies
+    // the live host bound, so nothing is captured at save (§3.3, A.1).
+    let policy_cap = previous.and_then(|before| before.policy_cap.clone());
     let enabled = input
         .enabled
         .unwrap_or_else(|| previous.is_none_or(|before| before.enabled));
@@ -674,7 +611,6 @@ async fn save_job(
     id: Option<&str>,
     expected: Option<u64>,
     origin: Origin,
-    cap: CapCapture,
     admit: impl FnOnce(&[Job]) -> Result<(), SchedulerError>,
     make: impl FnOnce(Option<&Job>) -> Result<JobInput, SchedulerError>,
 ) -> Result<(Job, Option<Job>), SchedulerError> {
@@ -700,7 +636,7 @@ async fn save_job(
     }
     let previous = position.map(|index| document.jobs[index].clone());
     let input = make(previous.as_ref())?;
-    let job = build_job(input, previous.as_ref(), origin, cap, Utc::now())?;
+    let job = build_job(input, previous.as_ref(), origin, Utc::now())?;
     match position {
         Some(index) => document.jobs[index] = job.clone(),
         None => document.jobs.push(job.clone()),
@@ -718,7 +654,6 @@ async fn save(
     input: SaveParams,
     cancel: &CancellationToken,
 ) -> Result<Value, SchedulerError> {
-    let host = host_bound(shared).await?;
     let id = input.job.id.clone();
     let (job, previous) = save_job(
         shared,
@@ -726,7 +661,6 @@ async fn save(
         id.as_deref(),
         input.revision,
         Origin::User,
-        CapCapture::Management(host),
         |_| Ok(()),
         move |previous| merge(previous, input.job),
     )
@@ -1056,7 +990,6 @@ impl ScheduleJobs {
                     id.as_deref(),
                     None,
                     origin,
-                    CapCapture::Tool,
                     move |jobs| {
                         if !create {
                             return Ok(());

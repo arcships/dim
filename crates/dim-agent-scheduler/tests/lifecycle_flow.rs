@@ -1,7 +1,7 @@
-//! Run lifecycle details through a real App Server: a tool-saved run that is
-//! skipped sends no report, a run reads past one history page, a consumed
-//! input is `running`, a past `at` job records `missed`, and an unload leaves
-//! an active run for the next generation without settling it.
+//! Run lifecycle details through a real App Server: a launch window is
+//! `delivered` once its input is written and is not tracked afterwards, a
+//! past `at` job records `missed`, DST gaps skip and repeated times fire
+//! once, and a launch Session runs until its stop time.
 mod support;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -180,7 +180,7 @@ async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_docum
         .await
         .unwrap();
     let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
-    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["state"], "delivered", "{run}");
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     assert_eq!(listed["jobs"][0]["target"]["kind"], "launch", "{listed}");
     assert!(listed["jobs"][0]["session_id"].is_null(), "{listed}");
@@ -199,7 +199,7 @@ async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_docum
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn active_runs_skip_overlap_and_capacity_and_release_their_slots_on_completion() {
+async fn launch_windows_are_not_capped_by_the_legacy_concurrency_field() {
     for legacy_limit in [2, 32] {
         let home = home();
         std::fs::write(
@@ -208,19 +208,18 @@ async fn active_runs_skip_overlap_and_capacity_and_release_their_slots_on_comple
         )
         .unwrap();
         let model = Arc::new(Script::default());
-        model.hold("Hold the capacity slot.");
+        model.hold("Hold the turn.");
         let server = start(home.path(), model.clone()).await;
         let mut client = connect(&server).await;
         let mut jobs = Vec::new();
-        let mut active = Vec::new();
 
         for index in 0..9 {
             let saved: Value = client
                 .typed(
                     "schedule.save",
-                    json!({"job": {"name": format!("capacity-{index}"),
+                    json!({"job": {"name": format!("launch-{index}"),
                     "schedule": {"at": "2030-01-01T00:00:00Z"},
-                    "prompt": "Hold the capacity slot.",
+                    "prompt": "Hold the turn.",
                     "target": {"kind": "launch", "cwd": home.path()}}}),
                 )
                 .await
@@ -228,64 +227,33 @@ async fn active_runs_skip_overlap_and_capacity_and_release_their_slots_on_comple
             jobs.push(saved["job"]["id"].as_str().unwrap().to_owned());
         }
 
-        for job in jobs.iter().take(8) {
-            let accepted: Value = client
-                .typed("schedule.run_now", json!({"job_id": job}))
-                .await
-                .unwrap();
-            assert_eq!(
-                accepted["state"], "launching",
-                "eight slots regardless of legacy limit {legacy_limit}: {accepted}"
-            );
-            let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-            run_where(&mut client, job, &run_id, |run| run["state"] == "running").await;
-            active.push(run_id);
-        }
-
-        for (job, reason) in [(&jobs[0], "overlap"), (&jobs[8], "capacity")] {
+        for job in &jobs {
             let accepted: Value = client
                 .typed("schedule.run_now", json!({"job_id": job}))
                 .await
                 .unwrap();
             let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
-            assert_eq!(run["state"], "skipped", "{run}");
-            assert_eq!(run["detail"], reason, "{run}");
-            assert!(
-                run["session_id"].is_null(),
-                "no extra Session is launched: {run}"
+            assert_eq!(
+                run["state"], "delivered",
+                "every window launches, whatever max_concurrent_runs is: {run}"
             );
-            assert!(
-                run["input_event_id"].is_null(),
-                "no extra input is submitted: {run}"
-            );
+            assert!(run["session_id"].is_string(), "{run}");
+            assert!(run["input_event_id"].is_string(), "{run}");
         }
 
         model.release();
-        for (job, run_id) in jobs.iter().zip(&active) {
-            let run = settled(&mut client, job, run_id).await;
-            assert_eq!(run["state"], "completed", "{run}");
-        }
-
-        for job in [&jobs[0], &jobs[8]] {
-            let accepted: Value = client
-                .typed("schedule.run_now", json!({"job_id": job}))
-                .await
-                .unwrap();
-            let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
-            assert_eq!(
-                run["state"], "completed",
-                "the released slot accepts work: {run}"
-            );
-        }
-
         drop(client);
         server.shutdown();
         server.join().await.unwrap();
     }
 }
 
+/// A launch delivery is `delivered` once its input is written, even while the
+/// launched Session still holds the turn: the record states what the window
+/// did, not how the Session went on (§2.2, §3.2). A restart leaves it as
+/// written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
+async fn a_delivered_launch_is_not_tracked_and_an_unload_leaves_it_as_written() {
     let home = home();
     let model = Arc::new(Script::default());
     model.hold("Hold this run.");
@@ -307,11 +275,9 @@ async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
         .await
         .unwrap();
     let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    let running = run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
-    })
-    .await;
-    assert!(running["input_event_id"].is_string(), "{running}");
+    let delivered = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(delivered["state"], "delivered", "{delivered}");
+    assert!(delivered["input_event_id"].is_string(), "{delivered}");
 
     drop(client);
     server.shutdown();
@@ -322,19 +288,76 @@ async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
         .find(|run| run["run_id"] == run_id.as_str())
         .unwrap();
     assert_eq!(
-        run["state"], "running",
-        "unload stops the tracker without settling the run: {run}"
+        run, &delivered,
+        "nothing settles a delivered launch after the fact"
     );
 
     model.release();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
     let resumed = settled(&mut client, &job_id, &run_id).await;
-    assert_ne!(resumed["state"], "lost", "{resumed}");
-    assert_eq!(
-        resumed["input_event_id"], running["input_event_id"],
-        "{resumed}"
-    );
+    assert_eq!(resumed, delivered, "{resumed}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A launch whose input reply is lost still settles from the identity the
+/// launch persisted: the lookup reaches the launched Session, its `accepted`
+/// answer settles the record `delivered`, the input is not sent again, and
+/// nothing launches a second time (A.5, A.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_with_a_lost_input_reply_settles_from_its_persisted_session() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "lost-reply", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    // The write reaches the target and is accepted; only its reply is lost.
+    holds(home.path()).lose_next_input_reply();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let run = settled(&mut client, &job_id, &run_id).await;
+
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["attempts"], 1, "one lookup settled it: {run}");
+    let session_id = run["session_id"].as_str().unwrap().to_owned();
+    let submission = run["submission_id"].clone();
+    let mut inputs = Vec::new();
+    let mut after = 0;
+    let mut through = None;
+    loop {
+        let mut params = json!({"sessionId": session_id, "branchId": "main", "after": after});
+        if let Some(through) = through {
+            params["through"] = json!(through);
+        }
+        let page: dim_client::wire::History =
+            client.typed("session.history", params).await.unwrap();
+        through = Some(page.through);
+        let next = page.next(after, through).unwrap();
+        inputs.extend(
+            page.events
+                .into_iter()
+                .filter(|event| event["data"]["submission_id"] == submission),
+        );
+        match next {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    assert_eq!(inputs.len(), 1, "the input is not sent again: {inputs:?}");
 
     drop(client);
     server.shutdown();
@@ -440,6 +463,20 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
         .unwrap();
     let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
     let launched = run["session_id"].as_str().unwrap().to_owned();
+    // A launch record's stop time bounds when its Session may be deleted
+    // (A.7): move it into the past, as time would.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["session_id"] == json!(launched))
+            .unwrap();
+        run["deadline_at"] = json!("2020-01-01T00:00:00.000Z");
+    });
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     assert!(listed.to_string().contains(&launched), "{listed}");
 
@@ -468,29 +505,11 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
     server.join().await.unwrap();
 }
 
-/// Restarts the server with the run's deadline moved into the past, as the
-/// clock would have moved it: recovery tracks the run against that deadline.
-async fn restart_expired(
-    home: &std::path::Path,
-    server: dim_app_server::RunningServer,
-    client: dim_client::Client,
-    model: Arc<Script>,
-    run_id: &str,
-) -> (dim_app_server::RunningServer, dim_client::Client) {
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-    edit_runs(home, |runs| {
-        let run = runs.iter_mut().find(|run| run["run_id"] == run_id).unwrap();
-        run["deadline_at"] = json!("2020-01-01T00:00:00.000Z");
-    });
-    let server = start(home, model).await;
-    let client = connect(&server).await;
-    (server, client)
-}
-
+/// The stop timer ends the launched Session at its stop time and leaves the
+/// delivery `delivered` (§3.2): a stop bounds the launched work, it is not a
+/// run outcome. A restart resumes the timer from the record's `deadline_at`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_run_whose_turn_ended_before_its_deadline_keeps_that_outcome() {
+async fn a_launch_session_is_stopped_at_its_stop_time() {
     let home = home();
     let model = Arc::new(Script::default());
     model.hold("Hold this run.");
@@ -501,7 +520,7 @@ async fn a_run_whose_turn_ended_before_its_deadline_keeps_that_outcome() {
             "schedule.save",
             json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
                 "prompt": "Hold this run.",
-                "target": {"kind": "launch", "cwd": home.path()}}}),
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
         )
         .await
         .unwrap();
@@ -511,62 +530,57 @@ async fn a_run_whose_turn_ended_before_its_deadline_keeps_that_outcome() {
         .await
         .unwrap();
     let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
-    })
-    .await;
-
-    let (server, mut client) =
-        restart_expired(home.path(), server, client, model.clone(), &run_id).await;
-    let ended = settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(
-        ended["state"], "cancelled",
-        "the turn the shutdown ended is in the published prefix, so the past deadline does not replace it: {ended}"
+    let delivered = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(delivered["state"], "delivered", "{delivered}");
+    let session_id = delivered["session_id"].as_str().unwrap().to_owned();
+    assert!(
+        !delivered["deadline_at"].is_null(),
+        "a launch records its stop time: {delivered}"
     );
-    model.release();
 
+    // Move the stop time forward to now, as time would, so the resumed timer
+    // fires at once instead of after the job's five minutes.
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_user_stop_of_the_run_turn_settles_cancelled() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    model.hold("Hold this run.");
-    let server = start(home.path(), model.clone()).await;
+    let soon = (chrono::Utc::now() + chrono::Duration::seconds(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["run_id"] == run_id.as_str())
+            .unwrap();
+        run["deadline_at"] = json!(soon);
+    });
+    let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
 
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Hold this run.",
-                "target": {"kind": "launch", "cwd": home.path()}}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let accepted: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    let running = run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
+    // The held turn ends at the stop time; the held model reply is what the
+    // launched Session was waiting on.
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let idle = client
+                .rpc(
+                    "session.idle",
+                    json!({"sessionId": session_id, "branchId": "main"}),
+                )
+                .await;
+            match idle {
+                Ok(_) => return Ok(()),
+                Err(error) if format!("{error}").contains("reloading") => {}
+                Err(error) => return Err(error),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     })
-    .await;
-    client
-        .rpc(
-            "session.stop",
-            json!({"sessionId": running["session_id"], "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let stopped = settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(stopped["state"], "cancelled", "{stopped}");
-    model.release();
+    .await
+    .expect("the stop timer runs");
+    assert!(stopped.is_ok(), "{stopped:?}");
+    let after = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(
+        after["state"], "delivered",
+        "the stop is not a run outcome: {after}"
+    );
 
     drop(client);
     server.shutdown();
@@ -669,7 +683,7 @@ async fn management_saves_take_a_launch_target_with_an_agent_and_a_policy() {
         .await
         .unwrap();
     let run = settled(&mut client, &job_id, run["run_id"].as_str().unwrap()).await;
-    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["state"], "delivered", "{run}");
     assert_eq!(run["policy"]["preset"], "read-only", "{run}");
     assert!(run["deadline_at"].is_string(), "{run}");
 
@@ -724,17 +738,4 @@ async fn cron_windows_skip_a_dst_gap_and_fire_a_repeated_time_once() {
         next_cron_window("30 1 * * *", "2030-11-03T05:30:00.000Z").await,
         "2030-11-04T06:30:00.000Z"
     );
-}
-
-#[test]
-fn a_multi_line_report_guidance_is_refused() {
-    let mut builder = dim_agent_runtime::AgentBuilder::new(Default::default());
-    let refused = dim_agent_scheduler::install_with(
-        &mut builder,
-        dim_agent_scheduler::SchedulerTexts {
-            report_guidance: "first\nsecond".into(),
-            ..Default::default()
-        },
-    );
-    assert!(refused.is_err(), "{refused:?}");
 }

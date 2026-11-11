@@ -9,7 +9,9 @@ use dim_agent_runtime::{
     QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionConfig,
     SessionIdentity, SessionLifecycle, TimelineQuery, TimelineQueryScope,
 };
-use dim_agent_types::{ContentBlock, EventKind, InputBlock, Message, ModelId, Role, UserInput};
+use dim_agent_types::{
+    ContentBlock, EventKind, InputBlock, Message, ModelId, Role, UserInput, markup::runtime_context,
+};
 use dim_app_server::{
     settings::{SettingsScope, SettingsService, SourceDeclaration},
     storage::{MetadataError, SessionStore, Title, TitleSource},
@@ -341,8 +343,9 @@ impl Owner {
             let source = match (user, blocks) {
                 (QueryValue::Value { value: user }, _) => {
                     let input: UserInput = serde_json::from_value(user.clone()).map_err(|_| ())?;
-                    input.content.iter().filter_map(|block| match block {
-                        ContentBlock::Text { text, .. } => Some(text.as_str()), _ => None,
+                    input.content.iter().enumerate().filter_map(|(index, block)| match block {
+                        ContentBlock::Text { text } if !runtime_context(index, text) => Some(text.as_str()),
+                        _ => None,
                     }).collect::<Vec<_>>().join("\n")
                 }
                 (_, QueryValue::Value { value: blocks }) => goal_objective(blocks).ok_or(())?,

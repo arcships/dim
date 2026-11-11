@@ -4,7 +4,7 @@
 //! diff (2.3). The terminal layer (2.2) guarantees the exit contract.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::management::{self, editor};
@@ -17,7 +17,8 @@ use crate::model::session::{
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    CompactionState, LineState, LineView, RowKind, SideLine, TaskTarget, ViewRow, ViewSnapshot,
+    CompactionState, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome, TaskTarget,
+    ViewRow, ViewSnapshot,
 };
 use crate::ui::Env;
 use crate::ui::Initial;
@@ -52,7 +53,9 @@ use crate::ui::tasks_panel::TasksPanel;
 use crate::ui::terminal::{
     InputEvent, KeyCode, KeyEvent, Modifiers, Terminal, TerminalError, Wait,
 };
-use crate::ui::text::{RUNNING_MARK, STATUS_MARK, display_width, truncate_cells};
+use crate::ui::text::{
+    RUNNING_MARK, STATUS_MARK, display_width, truncate_cells, truncate_cells_start,
+};
 use crate::ui::theme::ansi::{Paint, fg, paint};
 use crate::ui::theme::{Palette, Theme, detect};
 use crate::ui::theme_panel::ThemePanel;
@@ -218,6 +221,20 @@ pub fn print_web_panel(opened: &WebOpened) {
     }
 }
 
+/// Writes each notification the run queued since the last frame (`ui::notify`)
+/// through `write`, in the order they came, and empties the queue. `write` is
+/// the terminal's write; an error ends the interface as that one does.
+fn write_notifications(
+    notifications: &mut Vec<crate::ui::notify::Event>,
+    terminal: &crate::ui::notify::Terminal,
+    mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    for event in std::mem::take(notifications) {
+        write(&crate::ui::notify::sequence(terminal, &event))?;
+    }
+    Ok(())
+}
+
 fn run_terminal(
     host: Box<dyn SessionPort>,
     surroundings: Env,
@@ -251,9 +268,12 @@ fn run_terminal(
     let background = terminal
         .background_report()
         .and_then(detect::parse_background_report);
+    // A terminal that answered the program status query keeps the record of
+    // the run, so the title and the bar leave the job to it.
+    let program_status = terminal.program_status();
     let env = detect::env_from_process();
-    let mut progress = ProgressBar::from_env(&env);
-    let mut title = WindowTitle::new(crate::ui::title::apple_terminal(), Instant::now());
+    let mut progress = ProgressBar::from_env(&env, program_status);
+    let mut title = WindowTitle::from_env(program_status, Instant::now());
     let (default_id, detected) = Theme::detect(&env, true, background.as_deref());
     let saved = crate::ui::theme_panel::saved_theme_id(&surroundings.home);
     let theme = match &saved {
@@ -326,15 +346,14 @@ fn run_terminal(
                 return code;
             }
         }
-        for event in std::mem::take(&mut app.notifications) {
-            if terminal
-                .write(&crate::ui::notify::sequence(&notify_terminal, &event))
-                .is_err()
-            {
-                let code = terminal.lost();
-                app.host.shutdown();
-                return code;
-            }
+        if write_notifications(&mut app.notifications, &notify_terminal, |bytes| {
+            terminal.write(bytes)
+        })
+        .is_err()
+        {
+            let code = terminal.lost();
+            app.host.shutdown();
+            return code;
         }
         let program_status = app.program_status();
         if let Some(report) = status.report(program_status.clone())
@@ -945,6 +964,12 @@ struct App {
     host: Box<dyn SessionPort>,
     composer: Composer,
     cwd_key: String,
+    /// The workspace shown in the composer's label, with the home written
+    /// `~`: the workspace the attached Session reports, or [`Self::cwd_key`]
+    /// at Home. Never read from the process's directory, which a frame would
+    /// otherwise see change under it. Display form only: a caller that needs
+    /// a path uses [`Self::git_head`] or the Session's cwd.
+    workspace: String,
     home: PathBuf,
     /// How tool groups are drawn by default (`/tools`, which redraws every
     /// committed group too).
@@ -1013,6 +1038,12 @@ struct App {
     message_blocks: Vec<usize>,
     /// The second their running time was last drawn for.
     card_second: u64,
+    /// The second the task line was last laid out for: its elapsed times
+    /// follow this, and it repaints the row so an ended task leaves on time.
+    task_second: u64,
+    /// Whether the task line was drawn in the frame the pulse last asked for:
+    /// the frame that erases it is the one where it stopped being drawn.
+    task_row: bool,
     session_id: String,
     /// The invocation's first message, submitted once the first frame is
     /// drawn.
@@ -1078,6 +1109,9 @@ struct App {
     /// The permission or question request last notified: a prompt that
     /// stays open notifies once.
     notified_request: Option<String>,
+    /// Background tasks already reported as ended, by task id: a task the
+    /// live stream ended is reported once.
+    notified_tasks: HashSet<String>,
     /// The session's runs as the terminal's program status follows them.
     runs: Runs,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
@@ -1356,13 +1390,15 @@ impl App {
         let mouse = crate::ui::config::read(&home, MOUSE_KEY).is_none_or(|v| v != "off");
         let notify = crate::ui::config::read(&home, crate::ui::notify::NOTIFY_KEY)
             .is_none_or(|v| v != false);
+        // The `@` index, pasted paths and dropped files all resolve against
+        // the local `--cwd` (cli-attachment-input), which an attach does not
+        // change; the border's workspace label is the Session's and does.
         let mut composer = Composer::new(past);
         composer.set_root(PathBuf::from(&cwd_key));
-        let git_head = git_head(&cwd_key);
-        let branch = git_head.as_deref().and_then(git_branch);
-        Self {
+        let mut app = Self {
             host,
             composer,
+            workspace: String::new(),
             cwd_key,
             tool_detail: saved_tool_detail(&home),
             thinking_detail: saved_detail(&home, THINKING_DETAILS_KEY),
@@ -1400,6 +1436,8 @@ impl App {
             card_blocks: Vec::new(),
             message_blocks: Vec::new(),
             card_second: 0,
+            task_second: 0,
+            task_row: false,
             session_id: String::new(),
             initial: None,
             unsent: None,
@@ -1431,11 +1469,12 @@ impl App {
             notifications: Vec::new(),
             revealed: std::collections::HashMap::new(),
             notified_request: None,
+            notified_tasks: HashSet::new(),
             runs: Runs::default(),
             palette_stash: None,
             command_entry: false,
-            branch,
-            git_head,
+            branch: None,
+            git_head: None,
             git_checked: Instant::now(),
             shell: None,
             clipboard: None,
@@ -1459,7 +1498,9 @@ impl App {
             prompt_draft: None,
             pending_prompt: None,
             next_prompt_request: 0,
-        }
+        };
+        app.show_workspace(None);
+        app
     }
 
     /// The wheel over an overlay: moves the picker's or the palette's
@@ -1887,6 +1928,19 @@ impl App {
             self.refresh_cards();
             changed = true;
         }
+        // The task row names a running task's elapsed time and drops an ended
+        // one after TASK_FADE, so it needs a frame on every new second while
+        // it is drawn, and one more once it is not: the pulse of a running
+        // turn is not enough, and a task that ends while the turn is idle
+        // would otherwise stay on screen.
+        if second != self.task_second {
+            let shown = self.task_line_shown();
+            if shown || self.task_row {
+                self.task_second = second;
+                self.task_row = shown;
+                changed = true;
+            }
+        }
         if self.composer.mention_tick() {
             changed = true;
         }
@@ -2027,6 +2081,7 @@ impl App {
                 }
                 self.sync_prompt();
                 self.queue_notification(was_running && !switched);
+                self.queue_background_notifications();
             }
             Update::QuestionReply {
                 session_id,
@@ -2083,10 +2138,15 @@ impl App {
                     &[("count", &count.to_string())],
                 ));
             }
-            Update::Switched { session_id, kind } => {
+            Update::Switched {
+                session_id,
+                kind,
+                cwd,
+            } => {
                 if !session_id.is_empty() {
                     self.unsent = None;
                 }
+                self.show_workspace(cwd.as_deref());
                 self.switch_session(session_id, kind)
             }
             Update::Skills(entries) => {
@@ -2135,20 +2195,22 @@ impl App {
                         tone: Tone::Warning,
                     });
                 }
-                self.report_error = Some(error);
+                if self.session_id.is_empty()
+                    && matches!(error.operation, crate::report::Operation::SessionRead)
+                {
+                    self.report_error = Some(error);
+                }
             }
             Update::ReportReply { panel, reply } => {
                 if let Some(Prompt::Report(report)) = &mut self.prompt
                     && report.id == panel
                 {
                     if let Some(action) = report.reply(reply) {
-                        self.host.send(Command::ErrorReport(crate::report::Request {
-                            panel,
-                            action,
-                        }));
+                        self.host
+                            .send(Command::Report(crate::report::Request { panel, action }));
                     }
                 } else if let crate::report::Reply::Prepared(session, prepared) = reply {
-                    self.host.send(Command::ErrorReport(crate::report::Request {
+                    self.host.send(Command::Report(crate::report::Request {
                         panel,
                         action: crate::report::Action::Cancel {
                             draft: crate::report::Draft {
@@ -2778,10 +2840,8 @@ impl App {
                 }
             };
             if let Some(action) = action {
-                self.host.send(Command::ErrorReport(crate::report::Request {
-                    panel,
-                    action,
-                }));
+                self.host
+                    .send(Command::Report(crate::report::Request { panel, action }));
             }
             return Outcome::Continue;
         }
@@ -2967,6 +3027,12 @@ impl App {
                 if key.mods.0 == 0 && self.composer.is_empty() && !self.queued().is_empty() =>
             {
                 self.steer();
+                return Outcome::Continue;
+            }
+            KeyCode::Enter
+                if key.mods.0 == 0 && self.composer.is_empty() && self.task_line_shown() =>
+            {
+                self.run_command("tasks", "");
                 return Outcome::Continue;
             }
             KeyCode::Left
@@ -3317,7 +3383,14 @@ impl App {
         self.set_notice(t("Stopping"));
     }
 
-    fn place_label(&self) -> String {
+    /// The composer's bottom-right label in at most `cells`: the workspace
+    /// and its branch, or the shown line's place. A shown line outranks the
+    /// workspace, which then keeps its whole form beside it: the whole
+    /// place, then `⑂` alone, and only then the whole place again for
+    /// [`border_line`] to drop. That last form is deliberately wider than
+    /// `cells`, so a shown line is never displaced by a shortened path;
+    /// [`workspace_label`] never returns one, so the form only appears here.
+    fn place_label(&self, cells: usize) -> String {
         if let Some(draft) = &self.line_draft {
             let lines = self.snapshot.as_ref().map_or(&[][..], |s| &s.lines[..]);
             return tf(
@@ -3325,16 +3398,26 @@ impl App {
                 &[("id", &line_name(lines, &draft.parent))],
             );
         }
-        let workspace = workspace_label(self.branch.as_deref());
-        match &self.snapshot {
-            Some(snapshot) if !snapshot.focus.is_empty() && snapshot.focus != "main" => {
-                format!(
-                    "{workspace} · ⑂ {}",
-                    line_path(&snapshot.lines, &snapshot.focus)
-                )
-            }
-            _ => workspace,
+        let branch = self.branch.as_deref();
+        let Some(snapshot) = self
+            .snapshot
+            .as_ref()
+            .filter(|s| !s.focus.is_empty() && s.focus != "main")
+        else {
+            return workspace_label(&self.workspace, branch, cells);
+        };
+        // A shown line outranks the workspace, which keeps its whole form
+        // beside it: the whole place, then `⑂` alone, then the whole place
+        // for the border to drop.
+        let line = format!("⑂ {}", line_path(&snapshot.lines, &snapshot.focus));
+        let whole = format!("{} · {line}", whole_workspace(&self.workspace, branch));
+        if width_of(&whole) <= cells {
+            return whole;
         }
+        if width_of(&line) <= cells {
+            return line;
+        }
+        whole
     }
 
     /// Opens the drafted line with `text` as its opening input.
@@ -3927,6 +4010,39 @@ impl App {
         let event = raised.or(finished.then_some(Event::Complete));
         if let (true, Some(event)) = (self.notify, event) {
             self.notifications.push(event);
+        }
+    }
+
+    /// Reports each background task the live stream ended, once per task: a
+    /// redraw or a return to the Session does not report it again, and a
+    /// finish a read replayed is history, not news.
+    fn queue_background_notifications(&mut self) {
+        use crate::ui::notify::Event;
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let ended: Vec<(String, String, TaskOutcome)> = snapshot
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let finish = task.finished.as_ref()?;
+                (!finish.replayed).then(|| {
+                    (
+                        task.id.clone(),
+                        crate::sanitize::safe(&task.label),
+                        finish.outcome,
+                    )
+                })
+            })
+            .collect();
+        for (id, label, outcome) in ended {
+            if !self.notified_tasks.insert(id) {
+                continue;
+            }
+            if self.notify {
+                self.notifications
+                    .push(Event::BackgroundFinished { label, outcome });
+            }
         }
     }
 
@@ -4581,19 +4697,26 @@ impl App {
             "report" => {
                 if !args.trim().is_empty() {
                     self.set_notice(t("Usage: /report"));
-                } else if let Some(error) = self.report_error.clone() {
-                    self.report_sequence += 1;
-                    let panel = self.report_sequence;
-                    self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
-                        panel, &error,
-                    ))));
-                    self.host.send(Command::ErrorReport(crate::report::Request {
-                        panel,
-                        action: crate::report::Action::Prepare(error),
-                    }));
-                } else {
-                    self.set_notice(t("No reportable error in this interface."));
+                    return Outcome::Continue;
                 }
+                let target = if !self.session_id.is_empty() {
+                    crate::report::Target::Session(self.session_id.clone())
+                } else if let Some(error) = self.report_error.clone() {
+                    crate::report::Target::Error(error)
+                } else {
+                    self.set_notice(t("No session to report."));
+                    return Outcome::Continue;
+                };
+                self.report_sequence += 1;
+                let panel = self.report_sequence;
+                self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
+                    panel,
+                    target.clone(),
+                ))));
+                self.host.send(Command::Report(crate::report::Request {
+                    panel,
+                    action: crate::report::Action::Prepare(target),
+                }));
                 Outcome::Continue
             }
             "exit" => Outcome::Exit(0),
@@ -5079,6 +5202,23 @@ impl App {
             let margin = " ".repeat(MARGIN);
             live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
         }
+        // The tasks running apart from the turn sit on one row above the
+        // composer, in both interfaces; a task that just ended keeps its place
+        // for TASK_FADE seconds so it does not vanish from under the eye. No
+        // task draws no row, so an idle Session keeps the space. It goes above
+        // the anchor, so the row and the executor it names give their space
+        // back rather than moving the composer up.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if self.prompt.is_none()
+            && let Some(snapshot) = &self.snapshot
+            && let Some(line) =
+                task_line(shown_tasks(&snapshot.tasks, now), now, width, &self.palette)
+        {
+            live.push(format!("{}{line}", " ".repeat(MARGIN)));
+        }
         frame.anchor = live.len();
         let live_budget = crate::ui::render::live_row_budget(
             size.1 as usize,
@@ -5260,7 +5400,13 @@ impl App {
             );
             composer_box[last] = format!(
                 "{margin}{}",
-                border_line(("╰", "╯"), docked.as_deref(), Some(&place), outer, &edge)
+                border_line(
+                    ("╰", "╯"),
+                    docked.as_deref(),
+                    place.as_deref(),
+                    outer,
+                    &edge
+                )
             );
         } else {
             let outer = cols.saturating_sub(2 + MARGIN).max(4);
@@ -5269,7 +5415,7 @@ impl App {
             let last = composer_box.len() - 1;
             composer_box[last] = format!(
                 "{margin}{}",
-                border_line(("╰", "╯"), None, Some(&place), outer, &edge)
+                border_line(("╰", "╯"), None, place.as_deref(), outer, &edge)
             );
         }
         let replaced = !command_entry
@@ -5780,7 +5926,30 @@ impl App {
         }
     }
 
+    /// Points the composer's label and its Git source at the workspace the
+    /// daemon reported for the Session being shown, or back at the launch
+    /// workspace for `None` (Home, or a daemon older than the attach record).
+    /// The branch is read once here, without waiting for the next poll.
+    ///
+    /// The `@` mention root does not move: interactive local file paths keep
+    /// the CLI's selected `--cwd` as their base, whichever Session is
+    /// attached (cli-attachment-input), and the reported workspace may be a
+    /// directory this client cannot see. When the border names a directory
+    /// other than that base, the file picker's title names the base, so the
+    /// screen still says which files a mention reads.
+    fn show_workspace(&mut self, cwd: Option<&str>) {
+        let cwd = cwd.unwrap_or(&self.cwd_key);
+        self.workspace = crate::ui::tilde(cwd);
+        // Paths compare by component, so `A/` is `A`; not canonicalized: I/O
+        // per switch, and a resolved symlink is a display question.
+        self.composer
+            .name_root(Path::new(cwd) != Path::new(&self.cwd_key));
+        self.git_head = git_head(cwd);
+        self.branch = self.git_head.as_deref().and_then(git_branch);
+    }
+
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
+        self.report_error = None;
         let first = self.session_id.is_empty();
         // Home's first message started this Session: nothing shown to clear.
         if first
@@ -5810,6 +5979,9 @@ impl App {
         }
         self.snapshot = None;
         self.runs = Runs::default();
+        // Another Session's tasks are its own: this interface has reported
+        // none of them.
+        self.notified_tasks.clear();
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
@@ -6236,20 +6408,41 @@ impl App {
                 Some(s) if !s.questions.is_empty() => Some(t("answer required").to_owned()),
                 Some(s) if !s.approvals.is_empty() => Some(t("permission required").to_owned()),
                 Some(s) if s.running => Some(t("esc interrupt").to_owned()),
-                Some(s) if s.tasks.iter().any(|task| task.finished.is_none()) => Some(tf(
-                    "{count} in background · /tasks",
-                    &[(
-                        "count",
-                        &s.tasks
-                            .iter()
-                            .filter(|task| task.finished.is_none())
-                            .count()
-                            .to_string(),
-                    )],
-                )),
                 _ => None,
             },
         }
+    }
+
+    /// How many tasks the Session runs apart from the turn, as its own
+    /// status segment: none while every task has ended, so an idle Session
+    /// with nothing in the background draws no segment at all.
+    fn background_label(&self) -> Option<String> {
+        let count = self
+            .snapshot
+            .as_ref()?
+            .tasks
+            .iter()
+            .filter(|task| task.finished.is_none())
+            .count();
+        (count > 0).then(|| {
+            tf(
+                "{count} in background · /tasks",
+                &[("count", &count.to_string())],
+            )
+        })
+    }
+
+    /// Whether the task line draws now: a task runs, or one ended within
+    /// [`TASK_FADE`] seconds.
+    fn task_line_shown(&self) -> bool {
+        let Some(snapshot) = &self.snapshot else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        !shown_tasks(&snapshot.tasks, now).is_empty()
     }
 
     /// `1.8K / 256K`: the main branch's context use against its window, with
@@ -6306,6 +6499,9 @@ impl App {
             };
             parts.push(fg(&slot, color));
         }
+        if let Some(background) = self.background_label() {
+            parts.push(fg(&background, &p.muted));
+        }
         if let Some(goal) = self.goal_label() {
             parts.push(fg(goal, &p.muted));
         }
@@ -6323,33 +6519,37 @@ impl App {
         (!parts.is_empty()).then(|| parts.join("  "))
     }
 
-    fn composer_place(&self, status: Option<&str>, outer: usize) -> String {
-        let place = fg(
-            &fit_place(self.place_label(), status, outer),
-            &self.palette.muted,
-        );
+    /// The composer's bottom-right label, built to fit the cells the border
+    /// will allow it beside `status`; `None` when nothing fits. The place and
+    /// the unread badge share that one budget, so neither can drift from what
+    /// [`border_line`] draws.
+    fn composer_place(&self, status: Option<&str>, outer: usize) -> Option<String> {
+        let cells = outer.saturating_sub(6 + status.map_or(0, |label| width_of(label) + 3));
+        if cells == 0 {
+            return None;
+        }
+        let place = fg(&self.place_label(cells), &self.palette.muted);
         let count = self
             .snapshot
             .as_ref()
             .map_or(0, |view| view.unread_lines.len());
         if count == 0 {
-            return place;
+            return Some(place);
         }
-        let room = outer.saturating_sub(6 + status.map_or(0, |label| width_of(label) + 3));
         let full = format!("{} ({count}) · /lines", t("Unread"));
         let compact = format!("/lines ({count})");
         let Some(label) = [full.as_str(), compact.as_str(), "/lines", "*"]
             .into_iter()
-            .find(|label| width_of(label) <= room)
+            .find(|label| width_of(label) <= cells)
         else {
-            return place;
+            return Some(place);
         };
         let width = width_of(label);
         let label = fg(label, &self.palette.highlight);
-        if width + 2 + width_of(&place) <= room && width_of(&place) != 0 {
-            format!("{label}  {place}")
+        if width + 2 + width_of(&place) <= cells && width_of(&place) != 0 {
+            Some(format!("{label}  {place}"))
         } else {
-            label
+            Some(label)
         }
     }
 
@@ -6368,6 +6568,10 @@ impl App {
         if let Some(slot) = slot {
             left.push_str("  ");
             left.push_str(&slot);
+        }
+        if let Some(background) = self.background_label() {
+            left.push_str("  ");
+            left.push_str(&background);
         }
         let total = cols.saturating_sub(2);
         let label = self
@@ -6559,6 +6763,105 @@ fn queue_strip(
         .into_iter()
         .map(|row| format!("{margin}{row}"))
         .collect()
+}
+
+/// A background task's end stays on the persistent line this long (seconds)
+/// after it ended, so it does not vanish from under the eye that just saw it.
+const TASK_FADE: u64 = 5;
+
+/// `elapsed` as the task line writes it: `0s`, `12s`, `1m12s`, `2h05m`.
+fn task_elapsed(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    if seconds < 3600 {
+        return format!("{}m{:02}s", seconds / 60, seconds % 60);
+    }
+    format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+}
+
+/// The tasks the line shows at `now` (Unix seconds): every unfinished task,
+/// then each finished one for [`TASK_FADE`] seconds after it ended. The
+/// second value is the task's end, absent while it runs.
+fn shown_tasks(
+    tasks: &[crate::model::view::TaskView],
+    now: u64,
+) -> Vec<(&crate::model::view::TaskView, Option<u64>)> {
+    tasks
+        .iter()
+        .filter_map(|task| match &task.finished {
+            None => Some((task, None)),
+            Some(finish) => {
+                let ended = finish.at / 1000;
+                (ended + TASK_FADE > now).then_some((task, Some(ended)))
+            }
+        })
+        .collect()
+}
+
+/// The line of tasks running apart from the turn: `◐ 2 · cargo build 1m12s ·
+/// cargo test 34s` while both run, with `✓`, `✗` or `⊘` in place of the
+/// elapsed time's lead once one ends. Without a running task the count has
+/// nothing to say, so the row starts at the first entry's mark:
+/// `✓ cargo build 1m12s`. A single row, cut to `width` cells; `None` when
+/// there is nothing to show.
+fn task_line(
+    tasks: Vec<(&crate::model::view::TaskView, Option<u64>)>,
+    now: u64,
+    width: usize,
+    p: &Palette,
+) -> Option<String> {
+    use crate::ui::text::truncate_cells;
+    if tasks.is_empty() {
+        return None;
+    }
+    let running = tasks.iter().filter(|(_, end)| end.is_none()).count();
+    let head = (running > 0).then(|| format!("\u{25d0} {running}"));
+    let mut row = head.clone().unwrap_or_default();
+    let mut room = width.saturating_sub(display_width(&row));
+    for (shown, (task, end)) in tasks.iter().enumerate() {
+        let started = task.started_at / 1000;
+        let at = end.unwrap_or(now).max(started);
+        let elapsed = task_elapsed(at - started);
+        let label = crate::sanitize::safe(&task.label);
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mark = task
+            .finished
+            .as_ref()
+            .map_or("", |finish| finish.outcome.mark());
+        let lead = if shown == 0 && head.is_none() {
+            ""
+        } else {
+            " · "
+        };
+        let entry = format!("{lead}{mark}{label} {elapsed}");
+        let fits = display_width(&entry) <= room;
+        if !fits {
+            if shown == 0 {
+                // The first entry still names what runs, shortened to fit.
+                let tail = format!(" {elapsed}");
+                let fixed = display_width(lead) + display_width(mark) + tail.len();
+                let label = truncate_cells(&label, room.saturating_sub(fixed).max(1));
+                row.push_str(&format!("{lead}{mark}{label}{tail}"));
+            } else {
+                row.push_str(&truncate_cells(" · …", room.max(1)));
+            }
+            break;
+        }
+        row.push_str(&entry);
+        room -= display_width(&entry);
+    }
+    let failed = tasks
+        .iter()
+        .any(|(task, end)| end.is_some() && task.finished.as_ref().is_some_and(TaskFinish::failed));
+    let color = if running > 0 {
+        &p.activity
+    } else if failed {
+        &p.danger
+    } else {
+        &p.success
+    };
+    Some(fg(&truncate_cells(&row, width.max(1)), color))
 }
 
 /// The side panel's line drawn as its transcript, without the opening
@@ -6790,17 +7093,41 @@ fn labeled_rows(pairs: &[(&str, &str)], body_width: usize) -> Vec<String> {
     rows
 }
 
-fn fit_place(place: String, status: Option<&str>, outer: usize) -> String {
-    let room = outer.saturating_sub(2);
-    let fits =
-        |label: &str| status.map_or(0, |status| width_of(status) + 3) + width_of(label) + 3 < room;
-    if fits(&place) {
-        return place;
+/// The workspace and its branch, whole: `~/src/app (main)`.
+fn whole_workspace(workspace: &str, branch: Option<&str>) -> String {
+    match branch {
+        Some(branch) => format!("{workspace} ({branch})"),
+        None => workspace.to_owned(),
     }
-    match place.split_once(" · ⑂ ") {
-        Some((_, line)) if fits(&format!("⑂ {line}")) => format!("⑂ {line}"),
-        _ => place,
+}
+
+/// The narrowest path tail worth putting a branch beside: below it
+/// `…o (rex-team/T-4440f2)` names neither the checkout nor the line, so the
+/// path alone says more.
+const MIN_TAIL: usize = 8;
+
+/// The workspace label in at most `cells` columns, degrading in place
+/// rather than being dropped whole by the border: the whole label, the whole
+/// label with the path's front cut once its tail is at least [`MIN_TAIL`],
+/// the path alone when the branch gives way, then the path alone with its
+/// front cut. No form exceeds `cells`, so the caller sizes the border by
+/// measuring the result.
+fn workspace_label(workspace: &str, branch: Option<&str>, cells: usize) -> String {
+    let whole = whole_workspace(workspace, branch);
+    if width_of(&whole) <= cells {
+        return whole;
     }
+    if let Some(branch) = branch {
+        let suffix = format!(" ({branch})");
+        let tail = truncate_cells_start(workspace, cells.saturating_sub(width_of(&suffix)));
+        if width_of(&tail) >= MIN_TAIL {
+            return format!("{tail}{suffix}");
+        }
+    }
+    if width_of(workspace) <= cells {
+        return workspace.to_owned();
+    }
+    truncate_cells_start(workspace, cells)
 }
 
 /// `main ▸ parser race ▸ the guard · after message 4`: the lines from `main` down to
@@ -6837,19 +7164,6 @@ fn line_name(lines: &[LineView], line: &str) -> String {
             truncate_cells(&crate::sanitize::safe(first), NAME_COLUMNS)
         }
         _ => short_id(line).to_owned(),
-    }
-}
-
-/// The working directory, `~` for the home, and the git branch: what the
-/// prompt box writes in its bottom border.
-fn workspace_label(branch: Option<&str>) -> String {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let cwd = crate::ui::tilde(&cwd);
-    match branch {
-        Some(branch) => format!("{cwd} ({branch})"),
-        None => cwd,
     }
 }
 
@@ -6961,7 +7275,8 @@ fn boxed(
 /// One border row `outer` columns wide between `corners`: a styled label
 /// after `─ ` on the left, another before ` ─` on the right, as the prompt
 /// box carries them. A label that does not fit is left out, the right one
-/// first.
+/// first; a caller that can say the same thing shorter composes it that way
+/// before calling, as the composer does for its workspace label.
 fn border_line(
     corners: (&str, &str),
     left: Option<&str>,
@@ -7847,12 +8162,12 @@ mod tests {
             );
             app.fullscreen = fullscreen;
             let frame = app.frame((160, 30));
-            let cwd = crate::ui::tilde(&std::env::current_dir().unwrap().display().to_string());
+            let cwd = crate::ui::tilde(&root.path().to_string_lossy());
             let row = frame
                 .live
                 .iter()
                 .find(|row| row.contains(&cwd))
-                .expect("the composer shows the working directory without Git");
+                .expect("the composer names the workspace it was given, not the process's");
             assert!(
                 !row.contains(&format!("{cwd} (")),
                 "a workspace without Git must show only its path: {row}"
@@ -7986,6 +8301,657 @@ mod tests {
             }
             std::fs::write(&head, saved).unwrap();
         }
+    }
+
+    /// The reported flow: in fullscreen, a linked worktree, a running turn.
+    /// The label must survive 80 columns by degrading, and the border must
+    /// keep its width whatever form it takes.
+    #[test]
+    fn a_running_turn_in_a_worktree_keeps_the_workspace_label_at_eighty_columns() {
+        use crate::ui::render::panel::visible_width;
+
+        i18n::set(i18n::Locale::En);
+        let root = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let workspace = "~/Projects/repo/dim.worktrees/T-4440f2";
+        let branch = "rex-team/T-4440f2";
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            root.path().join("home"),
+            "/tmp/T-4440f2".into(),
+        );
+        app.workspace = workspace.to_owned();
+        app.branch = Some(branch.to_owned());
+        app.fullscreen = true;
+        // A running turn: the run status, the elapsed clock and the
+        // interrupt hint, which is the dock the reported screenshot shows.
+        app.snapshot = Some(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            main_running: true,
+            focus: "main".into(),
+            ..ViewSnapshot::default()
+        });
+        app.run_started = Some(Instant::now());
+        let border = |app: &mut App, cols| {
+            let size = (cols, 30);
+            let frame = app.frame(size);
+            let row = frame
+                .live
+                .iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default();
+            let mut screen = FullScreen::new(size, true);
+            let bytes = screen.render(&frame, size, &app.palette, app);
+            let mut emu = crate::ui::render::testterm::Emu::new(cols as usize, 30);
+            emu.feed(&bytes);
+            let painted = emu
+                .rows_text()
+                .iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default();
+            (row, painted)
+        };
+        for cols in [80u16, 100, 120, 160] {
+            let (row, painted) = border(&mut app, cols);
+            // The frame is the margin plus `outer`, two cells short of the
+            // terminal; the label must not change that.
+            for text in [&row, &painted] {
+                assert_eq!(
+                    visible_width(text),
+                    usize::from(cols) - 2,
+                    "{cols}: the border must keep its width: {text:?}"
+                );
+            }
+        }
+        // At 80 columns the dock leaves too few cells for the whole label:
+        // the tail of the path and the branch survive.
+        let (row, _) = border(&mut app, 80);
+        assert!(
+            row.contains(&format!("orktrees/T-4440f2 ({branch})")),
+            "80: the path's tail and the branch must survive: {row:?}"
+        );
+        assert!(
+            !row.contains(workspace),
+            "80: the whole path must not fit beside this dock: {row:?}"
+        );
+        // The Chinese dock is narrower than the English one, so it keeps a
+        // longer tail at the same width.
+        i18n::set(i18n::Locale::ZhCn);
+        let (zh, _) = border(&mut app, 80);
+        i18n::set(i18n::Locale::En);
+        let (en, _) = border(&mut app, 80);
+        assert!(
+            visible_width(&zh) == visible_width(&en),
+            "both docks must fill the same border: {zh:?} / {en:?}"
+        );
+        assert!(
+            zh.contains("dim.worktrees") && !en.contains("dim.worktrees"),
+            "the narrower dock keeps more of the path: {zh:?} / {en:?}"
+        );
+        // A branch too long beside any usable tail gives way to the path.
+        app.branch = Some("rex-team/T-4440f2-and-a-much-longer-name".into());
+        let (row, _) = border(&mut app, 80);
+        assert!(
+            row.contains("worktrees/T-4440f2") && !row.contains("(rex-team"),
+            "80: the branch gives way when its tail is too short: {row:?}"
+        );
+    }
+
+    /// A launch with an explicit workspace names that workspace, not the
+    /// process's directory, and the unread badge measures against the same
+    /// budget as the place so it cannot push the label out of the border.
+    #[test]
+    fn the_label_names_the_sessions_workspace_and_the_badge_shares_its_budget() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+
+        let root = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            root.path().to_path_buf(),
+            "/tmp/the-launch-directory".into(),
+        );
+        app.workspace = "~/Projects/repo/dim.worktrees/T-4440f2".into();
+        app.branch = Some("rex-team/T-4440f2".into());
+        app.fullscreen = false;
+        let bottom = |app: &mut App, cols| {
+            let frame = app.frame((cols, 30));
+            let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+            rows.iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let row = bottom(&mut app, 160);
+        assert!(
+            row.contains("~/Projects/repo/dim.worktrees/T-4440f2 (rex-team/T-4440f2)"),
+            "the label follows the Session's workspace: {row:?}"
+        );
+        assert!(
+            !row.contains("the-launch-directory"),
+            "the process's directory must not reach the border: {row:?}"
+        );
+
+        let mut snapshot = app.snapshot.clone().unwrap_or_default();
+        snapshot.unread_lines.insert("b-7c".into());
+        app.snapshot = Some(snapshot);
+        for cols in [160u16, 80, 40, 24] {
+            let row = bottom(&mut app, cols);
+            let width = visible_width(&row);
+            assert_eq!(width, usize::from(cols) - 2, "{cols}: {row:?}");
+            assert!(
+                row.contains("╰") && row.contains("╯"),
+                "{cols}: the border stays closed: {row:?}"
+            );
+        }
+        // The place survives beside the badge where the room allows both.
+        let row = bottom(&mut app, 160);
+        assert!(row.contains("Unread (1)"), "{row:?}");
+        assert!(
+            row.contains("T-4440f2"),
+            "the place keeps its tail: {row:?}"
+        );
+    }
+
+    /// The reported flow: launched in workspace A, the client attaches a
+    /// Session that lives in workspace B (an explicit `--cwd`, a `/resume`
+    /// into another worktree). The border must name B, its branch included,
+    /// and going Home must put A back. `@` file completion is not the
+    /// Session's: interactive local paths keep the selected `--cwd` as their
+    /// base, so it offers A's files throughout, and that is asserted here so
+    /// the border cannot quietly take the mention root with it.
+    #[test]
+    fn a_session_attached_elsewhere_moves_the_border_but_not_the_mention_base() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+
+        let root = tempfile::tempdir().unwrap();
+        let git = |cwd: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        // Long enough that the narrow title's tail cannot hold it whole under
+        // any platform's temp root, and short enough that the wide title
+        // still names the whole path.
+        const LONG: &str = "a-checkout-longer-than-the-narrow-titles-tail-can-hold";
+        let launch = root.path().join(LONG).join("A");
+        let other = root.path().join("B");
+        for (path, branch) in [(&launch, "launch-line"), (&other, "session-line")] {
+            std::fs::create_dir_all(path).unwrap();
+            git(path, &["init", "-q", "-b", branch]);
+            git(
+                path,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    "Initial",
+                ],
+            );
+        }
+        let launch_workspace = crate::ui::tilde(&launch.to_string_lossy());
+        let session_workspace = crate::ui::tilde(&other.to_string_lossy());
+        // Each workspace holds a file of its own, so an `@` candidate names
+        // the workspace it was found in.
+        std::fs::write(launch.join("launch-note.txt"), "").unwrap();
+        std::fs::write(other.join("session-note.txt"), "").unwrap();
+        let theme = test_theme();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            root.path().join("home"),
+            launch.to_string_lossy().into_owned(),
+        );
+        let border = |app: &mut App, cols: u16| {
+            let frame = app.frame((cols, 30));
+            let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+            let row = rows
+                .iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                visible_width(&row),
+                usize::from(cols) - 2,
+                "{cols}: the border keeps its width: {row:?}"
+            );
+            row
+        };
+        // The `@` picker for `@note`: the panel's title row and the file
+        // names it offers, read from one frame once the walk reports that it
+        // has finished.
+        let picker = |app: &mut App, cols: u16| -> (String, Vec<String>) {
+            let names = ["launch-note.txt", "session-note.txt"];
+            typed(app, "@note");
+            let started = Instant::now();
+            let rows = loop {
+                let frame = app.frame((cols, 30));
+                let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+                if !app.composer.mention_searching() {
+                    break rows;
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(10),
+                    "the `@` walk did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            app.composer.clear();
+            // The title row is where the panel writes its heading: the row
+            // carrying the `Files` title, whatever its box draws above it.
+            let title = rows
+                .iter()
+                .find(|row| row.contains("Files"))
+                .cloned()
+                .expect("the picker draws its title");
+            let offered = names
+                .iter()
+                .filter(|name| rows.iter().any(|row| row.contains(*name)))
+                .map(|name| (*name).to_owned())
+                .collect();
+            (title, offered)
+        };
+
+        // Launched in A: Home names A and its branch, and `@` offers A's
+        // files, the base pasted and dropped paths also use. The picker's
+        // title says nothing extra while the border names that base too.
+        let row = border(&mut app, 160);
+        assert!(
+            row.contains(&format!("{launch_workspace} (launch-line)")),
+            "Home names the launch workspace: {row:?}"
+        );
+        let (title, offered) = picker(&mut app, 160);
+        assert_eq!(
+            offered,
+            ["launch-note.txt"],
+            "Home offers the launch workspace's files"
+        );
+        assert!(
+            title.contains("Files") && !title.contains(&launch_workspace),
+            "Home's border already names the base: {title:?}"
+        );
+
+        // A Session in B is attached, as `/resume` into a sibling worktree
+        // does: the daemon reports B and the border moves with it.
+        app.apply(Update::Switched {
+            session_id: "s-b".into(),
+            kind: SwitchKind::Resumed,
+            cwd: Some(other.to_string_lossy().into_owned()),
+        });
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s-b".into(),
+            focus: "main".into(),
+            ..ViewSnapshot::default()
+        })));
+        let row = border(&mut app, 160);
+        assert!(
+            row.contains(&format!("{session_workspace} (session-line)")),
+            "the border names the Session's workspace and its branch: {row:?}"
+        );
+        assert!(
+            !row.contains(&launch_workspace),
+            "the launch workspace must not stand in for it: {row:?}"
+        );
+        let (title, offered) = picker(&mut app, 160);
+        assert_eq!(
+            offered,
+            ["launch-note.txt"],
+            "the mention picker keeps the local `--cwd` while the border names the Session's workspace"
+        );
+        assert!(
+            title.contains(&format!("Files · {launch_workspace}")),
+            "the picker names the base the border no longer does: {title:?}"
+        );
+        assert!(
+            !title.contains(&session_workspace),
+            "the picker names the base, not the border's workspace: {title:?}"
+        );
+        // Too narrow for the whole path, the title keeps its tail, as the
+        // border's does, so the checkout it ends in is still readable. The
+        // title leaves 54 path cells at 80 columns, and the fixture's path
+        // outgrows them under any platform's temp root.
+        const NARROW: u16 = 80;
+        use std::path::MAIN_SEPARATOR;
+        let (narrow, _) = picker(&mut app, NARROW);
+        let named = narrow
+            .split("Files · ")
+            .nth(1)
+            .unwrap_or_default()
+            .split("esc close")
+            .next()
+            .unwrap_or_default()
+            .trim_end();
+        assert!(
+            named.starts_with('…'),
+            "a narrow title cuts the path's front: {narrow:?}"
+        );
+        assert!(
+            named.ends_with(&format!("{MAIN_SEPARATOR}A")),
+            "a narrow title keeps the checkout it ends in: {narrow:?}"
+        );
+        assert!(
+            !narrow.contains(LONG),
+            "a narrow title keeps the tail, not the whole path: {narrow:?}"
+        );
+
+        // The daemon may spell the same directory another way. A trailing
+        // separator changes nothing, so the picker stays plain: the border
+        // already names that base.
+        let spelled = format!("{}{MAIN_SEPARATOR}", launch.to_string_lossy());
+        app.apply(Update::Switched {
+            session_id: "s-a".into(),
+            kind: SwitchKind::Resumed,
+            cwd: Some(spelled),
+        });
+        let row = border(&mut app, 160);
+        assert!(
+            row.contains(&launch_workspace) && row.contains("(launch-line)"),
+            "the border names that base and its branch: {row:?}"
+        );
+        let (title, offered) = picker(&mut app, 160);
+        assert_eq!(
+            offered,
+            ["launch-note.txt"],
+            "the picker keeps the launch workspace's files"
+        );
+        assert!(
+            !title.contains(&launch_workspace),
+            "the same directory in another spelling is not another base: {title:?}"
+        );
+
+        // `/new` goes Home: the Session is gone and the launch workspace is
+        // what the next Session will work in.
+        app.apply(Update::Switched {
+            session_id: String::new(),
+            kind: SwitchKind::New,
+            cwd: None,
+        });
+        let row = border(&mut app, 160);
+        assert!(
+            row.contains(&format!("{launch_workspace} (launch-line)")),
+            "Home moves the border back to the launch workspace: {row:?}"
+        );
+        let (title, offered) = picker(&mut app, 160);
+        assert_eq!(
+            offered,
+            ["launch-note.txt"],
+            "Home keeps the mention picker on the launch workspace"
+        );
+        assert!(
+            !title.contains(&launch_workspace),
+            "Home's border names the base again, so the picker drops it: {title:?}"
+        );
+    }
+
+    /// The workspace label steps down through four forms in the border
+    /// instead of vanishing, and the border keeps its width through all of
+    /// them: the whole label, the whole label with the path's front cut while
+    /// its tail is still worth reading, the path alone, then the path alone
+    /// cut. Each workspace is attached the way `/resume` attaches one, so the
+    /// path and the branch are the daemon's answer rather than a field a test
+    /// filled in. The border gives a right label `cols - 9` cells: the margin,
+    /// the two border cells, and the `─ ` and ` ─` around it.
+    #[test]
+    fn the_workspace_label_steps_down_in_four_forms_in_the_border() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+
+        /// The cells the border keeps for itself around a right label.
+        const BORDER: usize = 9;
+        /// The narrowest path tail worth putting a branch beside.
+        const TAIL: usize = 8;
+
+        let root = tempfile::tempdir().unwrap();
+        let repository = |name: &str, branch: &str| {
+            let path = root.path().join(name);
+            std::fs::create_dir(&path).unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&path)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "git {args:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q", "-b", branch]);
+            git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ]);
+            crate::ui::tilde(&path.to_string_lossy())
+        };
+
+        let theme = test_theme();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            root.path().join("home"),
+            root.path().join("launch").to_string_lossy().into_owned(),
+        );
+        // The row the border draws the workspace in: the label sits between
+        // the `─ ` and ` ─` the border keeps around it.
+        let label_row = |app: &mut App, cells: usize| {
+            let cols = (cells + BORDER) as u16;
+            let frame = app.frame((cols, 30));
+            let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+            let row = rows
+                .iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                visible_width(&row),
+                usize::from(cols) - 2,
+                "{cols}: the border keeps its width whatever the label: {row:?}"
+            );
+            row
+        };
+        let label = |app: &mut App, cells: usize| {
+            let row = label_row(app, cells);
+            let label = row
+                .split("─ ")
+                .nth(1)
+                .and_then(|rest| rest.split(" ─").next())
+                .unwrap_or_default()
+                .to_owned();
+            assert!(
+                visible_width(&label) <= cells,
+                "{cells}: the label stays inside its cells: {label:?}"
+            );
+            label
+        };
+        let attach = |app: &mut App, id: &str, cwd: &str| {
+            app.apply(Update::Switched {
+                session_id: id.into(),
+                kind: SwitchKind::Resumed,
+                cwd: Some(cwd.into()),
+            });
+        };
+
+        // A branch wider than the path, so the path-alone rung is reachable:
+        // it takes over once the tail beside the branch would be too short.
+        let path = root.path().join("checkout").to_string_lossy().into_owned();
+        let branch = format!("team/{}", "x".repeat(width_of(&crate::ui::tilde(&path))));
+        let path = repository("checkout", &branch);
+        let suffix = format!(" ({branch})");
+        let whole = format!("{path}{suffix}");
+        assert!(
+            width_of(&suffix) + TAIL > width_of(&path),
+            "this repository shows the path-alone rung"
+        );
+        attach(&mut app, "s-a", &path);
+
+        // The whole label, at the last column that holds it.
+        assert_eq!(label(&mut app, width_of(&whole)), whole);
+        // One column short: the path's front is cut and the branch stays.
+        let cut = label(&mut app, width_of(&whole) - 1);
+        assert!(cut.ends_with(&suffix), "the branch stays: {cut:?}");
+        assert!(cut.starts_with('…'), "the cut is marked: {cut:?}");
+        // A tail of exactly eight cells is still worth reading beside it.
+        let tail = label(&mut app, width_of(&suffix) + TAIL);
+        assert!(
+            tail.ends_with(&suffix),
+            "an eight-cell tail keeps it: {tail:?}"
+        );
+        // Seven is not: the branch gives way, and the path is all there is.
+        let without = label(&mut app, width_of(&suffix) + TAIL - 1);
+        assert!(
+            !without.contains(&branch),
+            "the branch gives way: {without:?}"
+        );
+        // The path alone, whole at its own width, then cut from the front.
+        assert_eq!(
+            label(&mut app, width_of(&path)),
+            path,
+            "the whole path stays when the branch gives way"
+        );
+        let cut = label(&mut app, width_of(&path) - 1);
+        assert!(
+            cut.starts_with('…') && cut != path,
+            "the path is cut: {cut:?}"
+        );
+        // No form fits: with a cell left the label is the cut mark alone,
+        // and only a border with no cells at all drops it.
+        assert_eq!(label(&mut app, 1), "\u{2026}");
+        assert!(label(&mut app, 0).is_empty());
+
+        // The budget is in cells, not characters: a CJK path spends two cells
+        // on a character, so the same columns hold fewer of them.
+        let ascii = repository("ascii", "main");
+        let cjk = repository("项目", "main");
+        assert!(
+            width_of(&cjk) > cjk.chars().count(),
+            "{cjk:?} must spend two cells on a character"
+        );
+        let tail_of = |app: &mut App, path: &str| {
+            attach(app, "s-b", path);
+            let tail = label(app, width_of(" (main)") + TAIL);
+            assert!(tail.ends_with(" (main)"), "{tail:?}");
+            tail
+        };
+        let ascii_tail = tail_of(&mut app, &ascii);
+        let cjk_tail = tail_of(&mut app, &cjk);
+        assert_eq!(
+            width_of(&ascii_tail),
+            width_of(&cjk_tail),
+            "both tails spend the same cells: {ascii_tail:?} / {cjk_tail:?}"
+        );
+        assert!(
+            cjk_tail.chars().count() < ascii_tail.chars().count(),
+            "the CJK tail holds fewer characters at the same width: \
+             {cjk_tail:?} / {ascii_tail:?}"
+        );
+        assert!(
+            cjk_tail.starts_with('…'),
+            "the CJK tail is cut, not dropped: {cjk_tail:?}"
+        );
+    }
+
+    /// A shown line outranks the workspace in the border: where the whole
+    /// place fits it is drawn whole, one column short of that it keeps `⑂`
+    /// alone, and where even that does not fit the border drops the label
+    /// rather than falling back to a shortened path.
+    #[test]
+    fn a_shown_line_keeps_its_forms_in_the_border_and_comes_before_the_workspace() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+
+        let home = tempfile::tempdir().unwrap();
+        let theme = test_theme();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/w".into(),
+        );
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "b-7c".into(),
+            lines: vec![LineView {
+                id: "main".into(),
+                parent: None,
+                purpose: String::new(),
+                state: LineState::Main,
+                cut: None,
+            }],
+            ..ViewSnapshot::default()
+        })));
+        let border = |app: &mut App, cols: u16| {
+            let frame = app.frame((cols, 30));
+            let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+            let row = rows
+                .iter()
+                .rev()
+                .find(|row| row.contains('╰'))
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                visible_width(&row),
+                usize::from(cols) - 2,
+                "{cols}: the border keeps its width: {row:?}"
+            );
+            row
+        };
+        // `/w · ⑂ b-7c` is 11 cells and `⑂ b-7c` is 6, so the border's nine
+        // fixed cells put the whole place at 20 columns and `⑂` alone at 15:
+        // one column short of the line's own width drops it.
+        let row = border(&mut app, 20);
+        assert!(row.contains("/w · ⑂ b-7c"), "{row:?}");
+        let row = border(&mut app, 19);
+        assert!(
+            row.contains("⑂ b-7c") && !row.contains("/w"),
+            "a column short, the line keeps itself and the path gives way: {row:?}"
+        );
+        let row = border(&mut app, 15);
+        assert!(
+            row.contains("⑂ b-7c") && !row.contains("/w"),
+            "the `⑂` form survives to its own width: {row:?}"
+        );
+        let row = border(&mut app, 14);
+        assert!(
+            !row.contains('⑂'),
+            "below the line's own form the border drops it: {row:?}"
+        );
     }
 
     #[test]
@@ -8154,6 +9120,557 @@ mod tests {
             Vec::new()
         }
         fn shutdown(self: Box<Self>) {}
+    }
+
+    /// An unfinished command task named `label`.
+    fn background_task(id: &str, label: &str) -> crate::model::view::TaskView {
+        crate::model::view::TaskView {
+            id: id.into(),
+            branch_id: "main".into(),
+            kind: crate::model::view::TaskKind::Command(TaskTarget {
+                branch_id: "main".into(),
+                task_id: id.into(),
+            }),
+            label: label.into(),
+            started_at: 0,
+            finished: None,
+        }
+    }
+
+    /// A task the live stream ended with `outcome`.
+    fn finished(
+        mut task: crate::model::view::TaskView,
+        outcome: TaskOutcome,
+    ) -> crate::model::view::TaskView {
+        task.finished = Some(crate::model::view::TaskFinish {
+            at: 1,
+            status: match outcome {
+                TaskOutcome::Completed => "Completed",
+                TaskOutcome::Failed => "Failed",
+                TaskOutcome::Stopped => "Cancelled",
+            },
+            outcome,
+            replayed: false,
+            text: String::new(),
+            exit_code: None,
+        });
+        task
+    }
+
+    /// A task that ended at `at_ms`, Unix milliseconds.
+    fn ended_at(
+        mut task: crate::model::view::TaskView,
+        at_ms: u64,
+    ) -> crate::model::view::TaskView {
+        task.finished = Some(crate::model::view::TaskFinish {
+            at: at_ms,
+            status: "Completed",
+            outcome: TaskOutcome::Completed,
+            replayed: false,
+            text: String::new(),
+            exit_code: None,
+        });
+        task
+    }
+
+    #[test]
+    fn the_task_line_names_running_tasks_and_fades_an_ended_one() {
+        use crate::ui::render::panel::strip_escapes;
+        let p = &test_theme().palette;
+        let now = 1_000;
+        let running = background_task("t1", "cargo build");
+        let mut running = running;
+        running.started_at = (now - 72) * 1000;
+        let line = task_line(shown_tasks(&[running.clone()], now), now, 60, p)
+            .expect("a running task draws a line");
+        let plain = strip_escapes(&line);
+        assert_eq!(plain, "◐ 1 · cargo build 1m12s", "{plain}");
+
+        let mut second = background_task("t2", "cargo test");
+        second.started_at = (now - 34) * 1000;
+        let line = task_line(
+            shown_tasks(&[running.clone(), second.clone()], now),
+            now,
+            60,
+            p,
+        )
+        .expect("two tasks draw one line");
+        let plain = strip_escapes(&line);
+        assert_eq!(plain, "◐ 2 · cargo build 1m12s · cargo test 34s", "{plain}");
+
+        let ended = ended_at(running, now * 1000);
+        let both = [ended.clone(), second.clone()];
+        let shown = shown_tasks(&both, now);
+        let plain = strip_escapes(&task_line(shown.clone(), now, 60, p).expect("a line"));
+        assert!(plain.starts_with("◐ 1 · ✓ cargo build 1m12s"), "{plain}");
+        assert!(plain.contains("cargo test 34s"), "{plain}");
+
+        // An ended task that has not faded yet is the only one the row
+        // shows, so it carries no count.
+        let ended_now = |task, outcome| {
+            let mut task = finished(task, outcome);
+            task.finished.as_mut().expect("a finish").at = now * 1000;
+            task
+        };
+        let mut failed = ended_now(background_task("t3", "cargo build"), TaskOutcome::Failed);
+        failed.started_at = (now - 72) * 1000;
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&[failed], now), now, 60, p).expect("a line"));
+        assert!(plain.starts_with("✗ cargo build 1m12s"), "{plain}");
+
+        let mut stopped = ended_now(background_task("t4", "cargo test"), TaskOutcome::Stopped);
+        stopped.started_at = (now - 12) * 1000;
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&[stopped], now), now, 60, p).expect("a line"));
+        assert_eq!(plain, "⊘ cargo test 12s", "{plain}");
+
+        // Five seconds after the end the ended task leaves; nothing else runs.
+        let later = now + TASK_FADE;
+        assert!(
+            shown_tasks(&[ended], later).is_empty(),
+            "an ended task fades out"
+        );
+        assert!(task_line(Vec::new(), later, 60, p).is_none());
+    }
+
+    /// With nothing running the count has nothing to say, so the row starts
+    /// at the first entry's mark and carries no leading separator; a narrow
+    /// row still names that task.
+    #[test]
+    fn a_row_of_ended_tasks_starts_at_the_first_mark_without_a_count() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+        let p = &test_theme().palette;
+        let now = 1_000;
+        let ended_now = |task, outcome| {
+            let mut task = finished(task, outcome);
+            task.finished.as_mut().expect("a finish").at = now * 1000;
+            task
+        };
+        let mut first = ended_now(
+            background_task("t1", "cargo build --all-targets --locked"),
+            TaskOutcome::Completed,
+        );
+        first.started_at = (now - 72) * 1000;
+        let mut second = ended_now(
+            background_task("t2", "cargo test --workspace --locked"),
+            TaskOutcome::Stopped,
+        );
+        second.started_at = (now - 34) * 1000;
+
+        let tasks = [first.clone(), second.clone()];
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&tasks, now), now, 100, p).expect("a line"));
+        assert_eq!(
+            plain,
+            "✓ cargo build --all-targets --locked 1m12s · ⊘ cargo test --workspace --locked 34s",
+            "{plain}"
+        );
+
+        for width in [20, 30, 40, 100] {
+            let line = strip_escapes(
+                &task_line(shown_tasks(&[first.clone()], now), now, width, p).expect("a line"),
+            );
+            assert!(!line.starts_with(" ·"), "{width}: {line:?}");
+            assert!(line.starts_with("✓ "), "{width}: {line:?}");
+            assert!(visible_width(&line) <= width, "{width}: {line:?}");
+            assert!(line.contains("cargo"), "{width}: {line:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_task_line_cuts_labels_and_still_names_the_first_task() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+        let p = &test_theme().palette;
+        let now = 100;
+        let mut first = background_task("t1", "cargo build --all-targets --locked");
+        first.started_at = 0;
+        let mut second = background_task("t2", "cargo test --workspace --locked");
+        second.started_at = 0;
+        for width in [20, 30, 40, 120] {
+            let line = task_line(
+                shown_tasks(&[first.clone(), second.clone()], now),
+                now,
+                width,
+                p,
+            )
+            .expect("a line");
+            assert!(
+                visible_width(&line) <= width,
+                "{width}: too wide: {:?}",
+                strip_escapes(&line)
+            );
+            let plain = strip_escapes(&line);
+            assert!(plain.contains("cargo"), "{width}: {plain:?}");
+        }
+    }
+
+    #[test]
+    fn the_dock_draws_the_task_line_above_the_composer_and_enter_opens_the_tasks() {
+        use crate::model::session::Command;
+        use crate::ui::render::panel::strip_escapes;
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let mut task = background_task("t1", "cargo build");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        task.started_at = (now - 72) * 1000;
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "main".into(),
+            tasks: vec![task.clone()],
+            ..ViewSnapshot::default()
+        })));
+        for fullscreen in [false, true] {
+            app.fullscreen = fullscreen;
+            let rows: Vec<String> = app
+                .frame((80, 30))
+                .live
+                .iter()
+                .map(|row| strip_escapes(row))
+                .collect();
+            let line = rows
+                .iter()
+                .position(|row| row.contains("cargo build 1m12s"))
+                .unwrap_or_else(|| panic!("{fullscreen}: no task line in {rows:?}"));
+            let composer = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .expect("the composer's top border");
+            assert!(line < composer, "{fullscreen}: the line sits above it");
+        }
+
+        app.fullscreen = false;
+        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Enter,
+            Modifiers::NONE,
+        )));
+        assert!(
+            matches!(app.prompt, Some(Prompt::Tasks(_))),
+            "Enter on the line opens /tasks"
+        );
+        assert!(
+            sent.borrow()
+                .iter()
+                .any(|command| matches!(command, Command::TaskHistory { .. })),
+            "the panel reads the Session's task history"
+        );
+    }
+
+    /// The row's end is the pulse's doing: an ended task keeps its place while
+    /// it fades, and the tick that finds it gone asks for the frame that
+    /// erases the row, so the composer never keeps a row nothing draws into.
+    #[test]
+    fn the_pulse_asks_for_the_frame_that_erases_an_ended_task_row() {
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let snapshot = |tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let fading = ended_at(background_task("t1", "cargo build"), (now - 1) * 1000);
+        app.apply(snapshot(vec![fading]));
+        assert!(app.task_line_shown(), "an ended task stays while it fades");
+        assert!(app.tick(), "the pulse repaints the fading row");
+        assert!(app.task_row, "the frame it asked for drew the row");
+
+        // The end is older than the fade: nothing draws the row, and the
+        // pulse still asks for the frame that erases what it last drew. The
+        // pulse runs once a second, so the recorded second is moved back the
+        // way the clock would.
+        let gone = ended_at(
+            background_task("t2", "cargo test"),
+            (now - TASK_FADE) * 1000,
+        );
+        app.apply(snapshot(vec![gone]));
+        assert!(!app.task_line_shown(), "an ended task leaves");
+        app.task_second -= 1;
+        assert!(app.tick(), "the pulse asks for the erasing frame");
+        assert!(!app.task_row, "and then stops asking");
+    }
+
+    /// A task whose end a read of recorded history applied, as the attach
+    /// read and every history page do.
+    fn replayed(
+        mut task: crate::model::view::TaskView,
+        outcome: TaskOutcome,
+    ) -> crate::model::view::TaskView {
+        task = finished(task, outcome);
+        if let Some(finish) = &mut task.finished {
+            finish.replayed = true;
+        }
+        task
+    }
+
+    #[test]
+    fn each_background_task_is_reported_ended_once() {
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let build = |notify: bool| {
+            let mut app = App::new(
+                Box::new(Idle),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            app.notify = notify;
+            app
+        };
+        let snapshot = |tasks: Vec<crate::model::view::TaskView>| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let mut app = build(true);
+        app.apply(snapshot(vec![background_task("t1", "cargo build")]));
+        assert!(app.notifications.is_empty());
+
+        let ended = vec![finished(
+            background_task("t1", "cargo build"),
+            TaskOutcome::Failed,
+        )];
+        app.apply(snapshot(ended.clone()));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo build".into(),
+                outcome: TaskOutcome::Failed,
+            }]
+        );
+
+        app.notifications.clear();
+        app.apply(snapshot(ended));
+        assert!(app.notifications.is_empty(), "{:?}", app.notifications);
+
+        let mut quiet = build(false);
+        quiet.apply(snapshot(vec![background_task("t2", "cargo test")]));
+        quiet.apply(snapshot(vec![finished(
+            background_task("t2", "cargo test"),
+            TaskOutcome::Completed,
+        )]));
+        assert!(quiet.notifications.is_empty(), "the switch is respected");
+    }
+
+    /// A finish a read applied is history: the attach read and every task
+    /// history page replay the ends a Session already recorded, and none of
+    /// them is news. Only an end the live stream carries after attach is,
+    /// whatever snapshot happens to show it first.
+    #[test]
+    fn a_replayed_end_is_history_and_a_live_one_is_news() {
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let snapshot = |tasks: Vec<crate::model::view::TaskView>| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+
+        // The worker publishes an empty or loading snapshot before the
+        // delayed history reply lands.
+        app.apply(snapshot(Vec::new()));
+        assert!(app.notifications.is_empty());
+
+        app.apply(snapshot(vec![replayed(
+            background_task("t1", "already done"),
+            TaskOutcome::Completed,
+        )]));
+        assert!(
+            app.notifications.is_empty(),
+            "a restored end is history: {:?}",
+            app.notifications
+        );
+
+        app.apply(snapshot(vec![
+            replayed(
+                background_task("t1", "already done"),
+                TaskOutcome::Completed,
+            ),
+            finished(background_task("t2", "live now"), TaskOutcome::Stopped),
+        ]));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "live now".into(),
+                outcome: TaskOutcome::Stopped,
+            }],
+            "a stop the live stream carried is one notification"
+        );
+    }
+
+    /// Switching away from a Session and back re-reads its history: those
+    /// ends are replayed and raise nothing, while a task that ends after the
+    /// return still does.
+    #[test]
+    fn returning_to_a_session_reports_none_of_its_ended_tasks_again() {
+        use crate::model::session::SwitchKind;
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let snapshot = |session: &str, tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: session.into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let ended = replayed(background_task("t1", "cargo build"), TaskOutcome::Completed);
+
+        app.apply(snapshot("s1", vec![background_task("t1", "cargo build")]));
+        app.apply(snapshot(
+            "s1",
+            vec![finished(
+                background_task("t1", "cargo build"),
+                TaskOutcome::Completed,
+            )],
+        ));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo build".into(),
+                outcome: TaskOutcome::Completed,
+            }]
+        );
+
+        app.notifications.clear();
+        app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        app.apply(snapshot(
+            "s2",
+            vec![replayed(
+                background_task("u1", "cargo test"),
+                TaskOutcome::Completed,
+            )],
+        ));
+        assert!(
+            app.notifications.is_empty(),
+            "another Session's history is not news: {:?}",
+            app.notifications
+        );
+
+        app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        app.apply(snapshot("s1", vec![ended.clone()]));
+        assert!(
+            app.notifications.is_empty(),
+            "coming back replays its ends instead of reporting them: {:?}",
+            app.notifications
+        );
+
+        app.apply(snapshot(
+            "s1",
+            vec![
+                ended,
+                finished(background_task("t2", "cargo run"), TaskOutcome::Failed),
+            ],
+        ));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo run".into(),
+                outcome: TaskOutcome::Failed,
+            }],
+            "a task that ends after the return still reports"
+        );
+    }
+
+    #[test]
+    fn the_background_count_survives_a_running_turn() {
+        use crate::ui::render::panel::strip_escapes;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            tasks: vec![
+                background_task("t1", "cargo build"),
+                background_task("t2", "cargo test"),
+            ],
+            ..ViewSnapshot::default()
+        })));
+        let line = strip_escapes(&app.status_line(160));
+        assert!(line.contains("esc interrupt"), "{line}");
+        assert!(line.contains("2 in background · /tasks"), "{line}");
+
+        let docked = app
+            .dock_status(Some("· working…  1s"))
+            .expect("a status corner");
+        let docked = strip_escapes(&docked);
+        assert!(docked.contains("esc interrupt"), "{docked}");
+        assert!(docked.contains("2 in background · /tasks"), "{docked}");
+
+        let mut no_tasks = ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            ..ViewSnapshot::default()
+        };
+        app.apply(Update::Snapshot(Box::new(no_tasks.clone())));
+        let line = strip_escapes(&app.status_line(160));
+        assert!(line.contains("esc interrupt"), "{line}");
+        assert!(!line.contains("in background"), "{line}");
+
+        no_tasks.tasks = vec![background_task("t3", "cargo fmt")];
+        app.apply(Update::Snapshot(Box::new(no_tasks)));
+        assert!(
+            strip_escapes(&app.status_line(160)).contains("1 in background · /tasks"),
+            "a new task counts again"
+        );
     }
 
     /// A session that keeps every command the interface sends.
@@ -8705,7 +10222,7 @@ mod tests {
         let key = |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
         app.apply(snapshot("main"));
         app.draft_line(4, "try RwLock");
-        assert!(app.place_label().contains("new line from main"));
+        assert!(app.place_label(80).contains("new line from main"));
         app.handle_input(key(KeyCode::Char('!')));
         app.handle_input(key(KeyCode::Enter));
         match sent.borrow().last() {
@@ -8771,6 +10288,7 @@ mod tests {
         app.apply(Update::Switched {
             session_id: "s2".into(),
             kind: SwitchKind::Forked,
+            cwd: None,
         });
         assert_eq!(app.composer.text(), "try RwLock");
     }
@@ -9701,6 +11219,118 @@ mod tests {
         assert_eq!(drawn.app.busy_reason(), Some(ExitReason::AgentRunning));
     }
 
+    /// What the main loop writes for a queued notification, not the bytes a
+    /// form is built from: a permission request that appears while the
+    /// terminal sits behind a multiplexer reaches the write the loop performs
+    /// in the shape that one carries, with the bare `BEL` after it that still
+    /// rings where the sequence itself is dropped.
+    #[test]
+    fn a_notification_reaches_the_terminal_through_the_write_path_it_takes() {
+        use crate::model::view::ApprovalView;
+        use crate::ui::notify::{Event as Notification, Multiplexer, Terminal as NotifyTerminal};
+
+        let approval = |request: &str| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                approvals: vec![ApprovalView {
+                    member: None,
+                    request_id: request.into(),
+                    branch_id: "main".into(),
+                    reason: "shell command".into(),
+                    tool_name: "exec".into(),
+                    tool_input: serde_json::Value::Null,
+                    always: None,
+                }],
+                ..ViewSnapshot::default()
+            }))
+        };
+        let terminal = |multiplexer, term_program: &str, term: &str| NotifyTerminal {
+            multiplexer,
+            term_program: term_program.into(),
+            term: term.into(),
+            ..NotifyTerminal::default()
+        };
+        let mut drawn = Drawn::new((80, 24), None, true);
+        drawn.app.notify = true;
+        let cases = [
+            (
+                terminal(Multiplexer::Tmux, "iTerm.app", "tmux-256color"),
+                "\x1bPtmux;\x1b\x1b]9;DIM: Permission needed: exec\x07\x1b\\\x07",
+                "tmux: the wrapped form and a bare BEL after it",
+            ),
+            (
+                terminal(Multiplexer::Screen, "iTerm.app", "screen-256color"),
+                "\x1b]9;DIM: Permission needed: exec\x07\x07",
+                "screen with a BEL-terminated form: the form as it is, then a BEL",
+            ),
+            (
+                terminal(Multiplexer::Screen, "", "xterm-kitty"),
+                "\x07",
+                "screen with kitty's ST-terminated form: the bell alone",
+            ),
+            (
+                terminal(Multiplexer::None, "iTerm.app", "xterm-256color"),
+                "\x1b]9;DIM: Permission needed: exec\x07",
+                "no multiplexer: the form alone",
+            ),
+        ];
+        for (index, (terminal, expected, what)) in cases.into_iter().enumerate() {
+            drawn.app.apply(approval(&format!("approval-{index}")));
+            assert_eq!(
+                drawn.app.notifications,
+                vec![Notification::Permission("exec".into())],
+                "{what}"
+            );
+            let mut written = String::new();
+            write_notifications(&mut drawn.app.notifications, &terminal, |bytes| {
+                written.push_str(std::str::from_utf8(bytes).expect("the form is text"));
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(written, expected, "{what}");
+            assert_eq!(
+                drawn.app.notifications,
+                Vec::<Notification>::new(),
+                "{what}: sent once"
+            );
+            write_notifications(&mut drawn.app.notifications, &terminal, |bytes| {
+                panic!("nothing is owed after the write: {bytes:?}")
+            })
+            .unwrap();
+        }
+
+        // A background task's end takes the same write: the task runs on the
+        // first snapshot, ends on the next, and the form is the one this
+        // terminal understands.
+        let snapshot = |tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let task = background_task("t1", "cargo build");
+        drawn.app.apply(snapshot(vec![task.clone()]));
+        drawn
+            .app
+            .apply(snapshot(vec![finished(task, TaskOutcome::Completed)]));
+        let mut written = String::new();
+        write_notifications(
+            &mut drawn.app.notifications,
+            &terminal(Multiplexer::Tmux, "iTerm.app", "tmux-256color"),
+            |bytes| {
+                written.push_str(std::str::from_utf8(bytes).expect("the form is text"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            written,
+            "\x1bPtmux;\x1b\x1b]9;DIM: Background task finished: cargo build\x07\x1b\\\x07",
+            "a background end: the wrapped form and a bare BEL after it"
+        );
+    }
+
     #[test]
     fn the_window_topic_stays_mains_message_while_a_line_is_shown() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -10511,6 +12141,7 @@ mod tests {
                 drawn.app.apply(Update::Switched {
                     session_id: "forked".into(),
                     kind: SwitchKind::Forked,
+                    cwd: None,
                 });
             }
             assert!(drawn.app.composer.text().contains("look [Image #7]"));
@@ -10608,6 +12239,7 @@ mod tests {
         drawn.app.apply(Update::Switched {
             session_id: "s2".into(),
             kind: crate::model::session::SwitchKind::Resumed,
+            cwd: None,
         });
         drawn.show(&[("m2", "second session work")], "main", true);
         let committed = |app: &App| format!("{:?}", app.history);
@@ -10643,6 +12275,7 @@ mod tests {
         drawn.app.apply(Update::Switched {
             session_id: "s2".into(),
             kind: crate::model::session::SwitchKind::Resumed,
+            cwd: None,
         });
         drawn.app.apply(snapshot("s2", "main", true));
         drawn.draw();
@@ -11234,6 +12867,33 @@ mod tests {
         assert_eq!(app.composer.text(), "second");
     }
 
+    /// A withdrawn message returns as the operator's own words: a block the
+    /// runtime appended after them stays out of the draft, and a later
+    /// operator block that merely opens a `<dim-` name comes back.
+    #[test]
+    fn a_withdrawal_restores_the_operators_blocks_not_the_appended_context() {
+        let (mut app, _sent, _home) = session_with_queue(true, &[]);
+        app.apply(Update::Withdrawn(dim_agent_types::UserInput {
+            content: vec![
+                dim_agent_types::ContentBlock::Text {
+                    text: "Why does the parser stall?".into(),
+                },
+                dim_agent_types::ContentBlock::Text {
+                    text: "<dim-hooks kind=\"prompt-submit\">read src/parser.rs</dim-hooks>".into(),
+                },
+                dim_agent_types::ContentBlock::Text {
+                    text:
+                        "<dim-typed-by-the-operator>a second paragraph</dim-typed-by-the-operator>"
+                            .into(),
+                },
+            ],
+        }));
+        assert_eq!(
+            app.composer.text(),
+            "Why does the parser stall?\n<dim-typed-by-the-operator>a second paragraph</dim-typed-by-the-operator>"
+        );
+    }
+
     /// Enter on an empty draft steers the oldest queued message, as Ctrl+S does.
     #[test]
     fn enter_on_an_empty_draft_steers_like_ctrl_s() {
@@ -11523,16 +13183,6 @@ mod tests {
     }
 
     fn open_test_report(app: &mut App) -> u64 {
-        app.apply(Update::Reportable {
-            error: crate::report::Captured::observed(
-                "s1",
-                "main",
-                crate::report::Operation::SessionRead,
-                Some("session_closed"),
-                "Could not read conversation state".into(),
-            ),
-            show_error: true,
-        });
         press(app, KeyCode::Char('/'));
         typed(app, "report");
         press(app, KeyCode::Enter);
@@ -11547,10 +13197,85 @@ mod tests {
             "reportId": report_id,
             "plan": {
                 "planId": plan_id, "generation": {"kind": "local"},
-                "evidence": {"unavailable": "no_reference"}, "instructionsStatus": "none"
+                "evidence": {"timeline":{"recent":[],"truncated":false}}, "instructionsStatus": "none"
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn report_targets_the_shown_session_during_a_run_and_keeps_the_home_fallback() {
+        use crate::report::{Action, Captured, Operation, Reply, Request, Target};
+
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = asked();
+            app.fullscreen = fullscreen;
+            app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            app.run_command("report", "");
+            assert_eq!(
+                app.notice.as_ref().map(|(text, _)| text.as_str()),
+                Some(t("No session to report."))
+            );
+            app.apply(Update::Reportable {
+                error: Captured::observed(
+                    Operation::SessionRead,
+                    Some("session_closed"),
+                    "Could not read conversation state".into(),
+                ),
+                show_error: true,
+            });
+            open_test_report(&mut app);
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::Report(Request {
+                    action: Action::Prepare(Target::Error(_)),
+                    ..
+                }))
+            ));
+            press(&mut app, KeyCode::Esc);
+
+            app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: Some("/work".into()),
+            });
+            app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s2".into(),
+                running: true,
+                ..ViewSnapshot::default()
+            })));
+            assert!(app.running());
+            let panel = open_test_report(&mut app);
+            assert!(
+                matches!(sent.borrow().last(), Some(Command::Report(Request { action: Action::Prepare(Target::Session(session)), .. })) if session == "s2")
+            );
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Prepared(Some("s2".into()), prepared_report("r2", "p1")),
+            });
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel")
+            };
+            let screen = report.render(90, 20, &app.palette).join("\n");
+            assert!(screen.contains(t("Report this session")));
+            assert!(screen.contains(t("Evidence · No recent session activity")));
+            press(&mut app, KeyCode::Esc);
+
+            app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            app.run_command("report", "");
+            assert_eq!(
+                app.notice.as_ref().map(|(text, _)| text.as_str()),
+                Some(t("No session to report."))
+            );
+        }
     }
 
     #[test]
@@ -11560,6 +13285,7 @@ mod tests {
         for fullscreen in [false, true] {
             let (mut app, sent, _home) = asked();
             app.fullscreen = fullscreen;
+            app.session_id = "s1".into();
             press(&mut app, KeyCode::Char(' '));
             let answer = selection(&app).expect("selected answer");
             let panel = open_test_report(&mut app);
@@ -11575,7 +13301,7 @@ mod tests {
             assert_eq!(selection(&app), Some(answer));
             assert!(matches!(
                 sent.borrow().last(),
-                Some(Command::ErrorReport(Request { action: Action::Cancel { draft, generation: false }, .. }))
+                Some(Command::Report(Request { action: Action::Cancel { draft, generation: false }, .. }))
                     if draft.report_id == "r1"
             ));
         }
@@ -11583,9 +13309,10 @@ mod tests {
 
     #[test]
     fn report_replans_after_a_failed_generate_and_preserves_options_after_expiry() {
-        use crate::report::{Action, Reply, Request};
+        use crate::report::{Action, Reply, Request, Target};
 
         let (mut app, sent, _home) = asked();
+        app.session_id = "s1".into();
         let panel = open_test_report(&mut app);
         app.apply(Update::ReportReply {
             panel,
@@ -11602,6 +13329,7 @@ mod tests {
         typed(&mut app, "omit timeline");
         press(&mut app, KeyCode::Enter);
         let mut plan = prepared_report("r1", "p3").plan;
+        plan.evidence.timeline = None;
         plan.evidence.unavailable = Some(crate::report::EvidenceUnavailable::Omitted);
         app.apply(Update::ReportReply {
             panel,
@@ -11620,7 +13348,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Generate(draft), .. }))
+            Some(Command::Report(Request { action: Action::Generate(draft), .. }))
                 if draft.plan_id == "p3"
         ));
         app.apply(Update::ReportReply {
@@ -11633,7 +13361,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
                 if draft.report_id == "r1" && instructions == "omit timeline"
         ));
         app.apply(Update::ReportReply {
@@ -11643,20 +13371,25 @@ mod tests {
                 draft_missing: true,
             },
         });
+        app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: Some("/work".into()),
+        });
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Prepare(error), .. }))
-                if error.session == "s1" && error.message == "Could not read conversation state"
+            Some(Command::Report(Request { action: Action::Prepare(Target::Session(session)), .. }))
+                if session == "s1"
         ));
         app.apply(Update::ReportReply {
             panel,
-            reply: Reply::Prepared(None, prepared_report("r2", "p4")),
+            reply: Reply::Prepared(Some("s1".into()), prepared_report("r2", "p4")),
         });
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
-                if draft.report_id == "r2" && draft.session.is_none() && instructions == "omit timeline"
+            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+                if draft.report_id == "r2" && draft.session.as_deref() == Some("s1") && instructions == "omit timeline"
         ));
     }
 
@@ -11674,6 +13407,7 @@ mod tests {
             (valid, true),
         ] {
             let (mut app, _sent, home) = asked();
+            app.session_id = "s1".into();
             app.cwd_key = home.path().display().to_string();
             let panel = open_test_report(&mut app);
             app.apply(Update::ReportReply {

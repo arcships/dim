@@ -1915,7 +1915,6 @@
       "unexpandedMacros": [
         "format",
         "json",
-        "matches",
         "panic",
         "tokio::select",
         "vec"
@@ -2066,6 +2065,7 @@
       "parent": "dim_agent_types::markup",
       "file": "crates/dim-agent-types/src/markup.rs",
       "unexpandedMacros": [
+        "assert",
         "assert_eq"
       ]
     },
@@ -5513,6 +5513,7 @@
       "parent": "dim_cli::ui::notify",
       "file": "crates/dim-cli/src/ui/notify.rs",
       "unexpandedMacros": [
+        "assert",
         "assert_eq"
       ]
     },
@@ -6159,6 +6160,7 @@
       "parent": "dim_cli::ui::title",
       "file": "crates/dim-cli/src/ui/title.rs",
       "unexpandedMacros": [
+        "assert",
         "assert_eq"
       ]
     },
@@ -6943,6 +6945,7 @@
       "unexpandedMacros": [
         "format",
         "json",
+        "write",
         "writeln"
       ]
     },
@@ -12249,6 +12252,7 @@
       "references": [
         "path MethodCall",
         "path RpcError::app",
+        "path RpcError::from",
         "path RpcError::interrupted",
         "path SessionMethods",
         "path params",
@@ -12400,6 +12404,13 @@
       "to": "dim_agent_types::input",
       "references": [
         "path input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path markup::runtime_context"
       ]
     },
     {
@@ -19867,8 +19878,7 @@
       "from": "dim_agent_scheduler",
       "to": "dim_agent_scheduler::engine",
       "references": [
-        "mod engine",
-        "path engine::REPORT_GUIDANCE"
+        "mod engine"
       ]
     },
     {
@@ -19984,16 +19994,12 @@
       "references": [
         "path Job",
         "path Mode::Reuse",
-        "path Origin::Tool",
-        "path Origin::User",
-        "path Target",
         "path Target::Launch",
         "path Target::Session",
         "path canonical_instant",
         "path crate::document::DisabledReason",
         "use crate::document::Job",
         "use crate::document::Mode",
-        "use crate::document::Origin",
         "use crate::document::Schedule",
         "use crate::document::Target",
         "use crate::document::canonical_instant"
@@ -20017,23 +20023,14 @@
       "references": [
         "path Delivery",
         "path DeliveryState",
-        "path DeliveryState::Cancelled",
-        "path DeliveryState::Completed",
         "path DeliveryState::Delivered",
         "path DeliveryState::Delivering",
         "path DeliveryState::Failed",
-        "path DeliveryState::Launching",
         "path DeliveryState::Lost",
         "path DeliveryState::Missed",
-        "path DeliveryState::Running",
-        "path DeliveryState::Skipped",
-        "path DeliveryState::Submitted",
-        "path DeliveryState::TimedOut",
-        "path ReportTo",
         "path SchedulerError",
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
-        "path SessionOrigin",
         "path SessionOrigin::Launch",
         "path runs",
         "path runs::read",
@@ -20043,7 +20040,6 @@
         "use crate::runs",
         "use crate::runs::Delivery",
         "use crate::runs::DeliveryState",
-        "use crate::runs::ReportTo",
         "use crate::runs::SchedulerError",
         "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
@@ -20053,18 +20049,8 @@
       "from": "dim_agent_scheduler::engine",
       "to": "dim_agent_types::events",
       "references": [
-        "path AgentEvent",
-        "path EventKind::InputApplied",
-        "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
-        "path EventKind::StopInterrupt",
-        "path EventKind::TurnEnd",
-        "path TurnOutcome::Cancelled",
-        "path TurnOutcome::Completed",
-        "path TurnOutcome::Failed",
-        "use dim_agent_types::AgentEvent",
-        "use dim_agent_types::EventKind",
-        "use dim_agent_types::TurnOutcome"
+        "path InputMode::Queue",
+        "use dim_agent_types::InputMode"
       ]
     },
     {
@@ -20165,7 +20151,6 @@
         "path Origin::User",
         "path Schedule",
         "path Target",
-        "path Target::Launch",
         "path Target::Session",
         "path canonical_instant",
         "path crate::document::ScheduleDocument",
@@ -20206,7 +20191,6 @@
         "path stamp",
         "use crate::runs",
         "use crate::runs::Delivery",
-        "use crate::runs::DeliveryState",
         "use crate::runs::SchedulerError",
         "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
@@ -20248,22 +20232,6 @@
       "references": [
         "path InputMode",
         "use dim_agent_types::InputMode"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::methods",
-      "to": "dim_agent_types::permission",
-      "references": [
-        "path PermissionPolicy",
-        "use dim_agent_types::PermissionPolicy"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::methods",
-      "to": "dim_app_server::agents::sessions",
-      "references": [
-        "path SessionPermissions",
-        "use dim_app_server::SessionPermissions"
       ]
     },
     {
@@ -21007,7 +20975,8 @@
       "from": "dim_agent_types::markup::tests",
       "to": "dim_agent_types::markup",
       "references": [
-        "use super::escaped"
+        "use super::escaped",
+        "use super::runtime_context"
       ]
     },
     {
@@ -28844,6 +28813,7 @@
         "path ModelProtocol::XaiResponses",
         "path ProviderOptions",
         "path ProviderReasoningConfig::default",
+        "path SummaryStyle::Detailed",
         "use dim_agent_capabilities::host::ModelProtocol"
       ]
     },
@@ -30259,6 +30229,14 @@
         "path InputMessageData",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::InputMessageData"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::catalog",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path runtime_context",
+        "use dim_agent_types::markup::runtime_context"
       ]
     },
     {
@@ -35938,6 +35916,9 @@
         "path TaskKind::Command",
         "path TaskKind::Member",
         "path TaskKind::Workflow",
+        "path TaskOutcome::Completed",
+        "path TaskOutcome::Failed",
+        "path TaskOutcome::Stopped",
         "path TaskTarget",
         "path TaskView",
         "path TurnEnd",
@@ -35967,6 +35948,7 @@
         "use crate::model::view::RowTone",
         "use crate::model::view::TaskFinish",
         "use crate::model::view::TaskKind",
+        "use crate::model::view::TaskOutcome",
         "use crate::model::view::TaskTarget",
         "use crate::model::view::TaskView",
         "use crate::model::view::TurnEnd",
@@ -36080,7 +36062,10 @@
       "to": "dim_cli::model::view",
       "references": [
         "path CompactionState",
-        "path RowKind::Error"
+        "path RowKind::Error",
+        "path TaskOutcome::Completed",
+        "path TaskOutcome::Failed",
+        "path TaskOutcome::Stopped"
       ]
     },
     {
@@ -36936,7 +36921,6 @@
         "path Command::Configure",
         "path Command::Earlier",
         "path Command::EndLine",
-        "path Command::ErrorReport",
         "path Command::Export",
         "path Command::FindRepository",
         "path Command::FocusLine",
@@ -36967,6 +36951,7 @@
         "path Command::Recording",
         "path Command::RefreshAccountModels",
         "path Command::Rename",
+        "path Command::Report",
         "path Command::ResetIsolation",
         "path Command::ResetPromptSetting",
         "path Command::Resume",
@@ -37538,19 +37523,21 @@
         "path Action::Prepare",
         "path Captured",
         "path Draft",
-        "path Prepared",
         "path Reply",
         "path Reply::Failed",
         "path Reply::Plan",
         "path Reply::Prepared",
         "path Request",
+        "path Target",
+        "path Target::Error",
+        "path Target::Session",
         "path session_admission_failed",
         "use crate::report::Action",
         "use crate::report::Captured",
         "use crate::report::Draft",
-        "use crate::report::Prepared",
         "use crate::report::Reply",
         "use crate::report::Request",
+        "use crate::report::Target",
         "use crate::report::session_admission_failed"
       ]
     },
@@ -37599,6 +37586,8 @@
       "references": [
         "path Action::Prepare",
         "path Request",
+        "path Target::Error",
+        "path Target::Session",
         "use crate::report::Operation"
       ]
     },
@@ -38271,6 +38260,13 @@
     },
     {
       "from": "dim_cli::ui::composer",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path dim_agent_types::markup::runtime_context"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::composer",
       "to": "dim_cli::attachments",
       "references": [
         "path MAX_IMAGES",
@@ -38301,6 +38297,13 @@
         "path DraftPart::Paste",
         "path DraftPart::Text",
         "use crate::model::session::DraftPart"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::composer",
+      "to": "dim_cli::ui",
+      "references": [
+        "path crate::ui::tilde"
       ]
     },
     {
@@ -38506,20 +38509,25 @@
         "path Row",
         "path footer",
         "path panel_row",
+        "path title_room",
         "use crate::ui::rows::Columns",
         "use crate::ui::rows::Kind",
         "use crate::ui::rows::Row",
         "use crate::ui::rows::footer",
         "use crate::ui::rows::panel_row",
-        "use crate::ui::rows::title"
+        "use crate::ui::rows::title",
+        "use crate::ui::rows::title_room"
       ]
     },
     {
       "from": "dim_cli::ui::composer::mentions",
       "to": "dim_cli::ui::text",
       "references": [
+        "path display_width",
         "path truncate_cells",
-        "use crate::ui::text::truncate_cells"
+        "use crate::ui::text::display_width",
+        "use crate::ui::text::truncate_cells",
+        "use crate::ui::text::truncate_cells_start"
       ]
     },
     {
@@ -40595,6 +40603,17 @@
     },
     {
       "from": "dim_cli::ui::notify",
+      "to": "dim_cli::model::view",
+      "references": [
+        "path TaskOutcome",
+        "path TaskOutcome::Completed",
+        "path TaskOutcome::Failed",
+        "path TaskOutcome::Stopped",
+        "use crate::model::view::TaskOutcome"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::notify",
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
@@ -40615,8 +40634,14 @@
       "to": "dim_cli::ui::notify",
       "references": [
         "path Event::Complete",
+        "path Event::Question",
+        "path Multiplexer",
+        "path Multiplexer::Screen",
+        "path Multiplexer::Tmux",
+        "path Multiplexer::of",
         "path Terminal",
-        "path Terminal::default"
+        "path Terminal::default",
+        "path sequence"
       ]
     },
     {
@@ -41055,6 +41080,14 @@
         "use crate::ui::theme::Appearance",
         "use crate::ui::theme::ColorMode",
         "use crate::ui::theme::palette::terminal_palette"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::progress",
+      "to": "dim_cli::ui::notify",
+      "references": [
+        "path Terminal::of",
+        "use crate::ui::notify::Terminal"
       ]
     },
     {
@@ -42141,9 +42174,7 @@
         "path Action::Generate",
         "path Action::Plan",
         "path Action::Prepare",
-        "path Captured",
         "path Draft",
-        "path EvidenceUnavailable::FailureUnavailable",
         "path EvidenceUnavailable::NoReference",
         "path EvidenceUnavailable::Omitted",
         "path EvidenceUnavailable::ReadFailed",
@@ -42155,13 +42186,16 @@
         "path Reply::Generated",
         "path Reply::Plan",
         "path Reply::Prepared",
+        "path Target",
+        "path Target::Error",
+        "path Target::Session",
         "use crate::report::Action",
-        "use crate::report::Captured",
         "use crate::report::Draft",
         "use crate::report::EvidenceUnavailable",
         "use crate::report::GeneratedReport",
         "use crate::report::Plan",
-        "use crate::report::Reply"
+        "use crate::report::Reply",
+        "use crate::report::Target"
       ]
     },
     {
@@ -42803,6 +42837,7 @@
         "path TaskKind::Command",
         "path TaskKind::Member",
         "path TaskKind::Workflow",
+        "path TaskOutcome::Failed",
         "path TaskOutputState",
         "path TaskOutputState::Finished",
         "path TaskOutputState::Live",
@@ -42822,6 +42857,7 @@
         "use crate::model::view::MemberTarget",
         "use crate::model::view::RowKind",
         "use crate::model::view::TaskKind",
+        "use crate::model::view::TaskOutcome",
         "use crate::model::view::TaskOutputState",
         "use crate::model::view::TaskTarget",
         "use crate::model::view::TaskView",
@@ -43055,8 +43091,8 @@
         "path KeyboardProtocol::Legacy",
         "path KeyboardProtocol::ModifyOtherKeys",
         "path keyboard::FENCE_QUERY",
-        "path keyboard::PROBE_QUERY",
         "path keyboard::da1_reply_len",
+        "path keyboard::probe_query",
         "path keyboard::scan_probe",
         "use keyboard::KeyboardProtocol"
       ]
@@ -43173,6 +43209,13 @@
         "path InputEvent::Mouse",
         "path KeyCode",
         "path coalesce_paste"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::terminal::keyboard",
+      "to": "dim_cli::ui::status",
+      "references": [
+        "path crate::ui::status::reports"
       ]
     },
     {
@@ -43735,6 +43778,11 @@
       "from": "dim_cli::ui::title::tests",
       "to": "dim_cli::ui::status",
       "references": [
+        "path Status::Done",
+        "path Status::Error",
+        "path Status::Idle",
+        "path Status::Permission",
+        "path Status::Question",
         "path Status::Working"
       ]
     },
@@ -44434,7 +44482,6 @@
         "path Command::Configure",
         "path Command::Earlier",
         "path Command::EndLine",
-        "path Command::ErrorReport",
         "path Command::Export",
         "path Command::FindRepository",
         "path Command::FocusLine",
@@ -44464,6 +44511,7 @@
         "path Command::Recording",
         "path Command::RefreshAccountModels",
         "path Command::Rename",
+        "path Command::Report",
         "path Command::ResetIsolation",
         "path Command::ResetPromptSetting",
         "path Command::Resume",
@@ -44628,14 +44676,19 @@
         "path RowKind::ToolCall",
         "path RowKind::UserMessage",
         "path SideLine",
+        "path TaskFinish::failed",
+        "path TaskOutcome",
         "path TaskTarget",
         "path ViewRow",
         "path ViewSnapshot",
+        "path crate::model::view::TaskView",
         "use crate::model::view::CompactionState",
         "use crate::model::view::LineState",
         "use crate::model::view::LineView",
         "use crate::model::view::RowKind",
         "use crate::model::view::SideLine",
+        "use crate::model::view::TaskFinish",
+        "use crate::model::view::TaskOutcome",
         "use crate::model::view::TaskTarget",
         "use crate::model::view::ViewRow",
         "use crate::model::view::ViewSnapshot"
@@ -44666,7 +44719,9 @@
         "path crate::report::Draft",
         "path crate::report::HINT",
         "path crate::report::Reply::Prepared",
-        "path crate::report::Request"
+        "path crate::report::Request",
+        "path crate::report::Target::Error",
+        "path crate::report::Target::Session"
       ]
     },
     {
@@ -44859,6 +44914,7 @@
       "references": [
         "path crate::ui::notify::Event",
         "path crate::ui::notify::NOTIFY_KEY",
+        "path crate::ui::notify::Terminal",
         "path crate::ui::notify::Terminal::from_env",
         "path crate::ui::notify::sequence"
       ]
@@ -45213,10 +45269,12 @@
         "path STATUS_MARK",
         "path display_width",
         "path truncate_cells",
+        "path truncate_cells_start",
         "use crate::ui::text::RUNNING_MARK",
         "use crate::ui::text::STATUS_MARK",
         "use crate::ui::text::display_width",
-        "use crate::ui::text::truncate_cells"
+        "use crate::ui::text::truncate_cells",
+        "use crate::ui::text::truncate_cells_start"
       ]
     },
     {
@@ -45293,8 +45351,7 @@
       "from": "dim_cli::ui::tui",
       "to": "dim_cli::ui::title",
       "references": [
-        "path WindowTitle::new",
-        "path crate::ui::title::apple_terminal",
+        "path WindowTitle::from_env",
         "path crate::ui::title::topic",
         "use crate::ui::title::WindowTitle"
       ]
@@ -45554,6 +45611,8 @@
         "path SessionPort",
         "path SuggestionSetting",
         "path SwitchKind::Forked",
+        "path SwitchKind::New",
+        "path SwitchKind::Resumed",
         "path Update",
         "path Update::EffortChoices",
         "path Update::Failed",
@@ -45604,11 +45663,19 @@
         "path RowKind::ToolCall",
         "path RowKind::UserMessage",
         "path SideLine",
+        "path TaskOutcome",
+        "path TaskOutcome::Completed",
+        "path TaskOutcome::Failed",
+        "path TaskOutcome::Stopped",
+        "path TaskTarget",
         "path ViewRow",
         "path ViewSnapshot",
         "path ViewSnapshot::default",
         "path crate::model::view::QueuedInput",
         "path crate::model::view::RowTone::Danger",
+        "path crate::model::view::TaskFinish",
+        "path crate::model::view::TaskKind::Command",
+        "path crate::model::view::TaskView",
         "path crate::model::view::TurnEnd::Completed"
       ]
     },
@@ -45623,9 +45690,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::report",
       "references": [
-        "path crate::report::Captured::observed",
         "path crate::report::EvidenceUnavailable::Omitted",
-        "path crate::report::Operation::SessionRead",
         "path crate::report::Prepared"
       ]
     },
@@ -45820,7 +45885,8 @@
         "path live_thinking",
         "path render_block",
         "path render_shell",
-        "path settled_thinking"
+        "path settled_thinking",
+        "path width_of"
       ]
     },
     {
@@ -45854,14 +45920,18 @@
         "path Prompt::Sessions",
         "path QUEUE_HINT",
         "path QUEUE_HINT_MORE",
+        "path TASK_FADE",
         "path WebOpened",
         "path banner",
         "path chunk",
         "path live_panel_rows",
         "path overlay_panel_rows",
         "path queue_strip",
+        "path shown_tasks",
         "path side_reply",
-        "path web_panel"
+        "path task_line",
+        "path web_panel",
+        "path write_notifications"
       ]
     },
     {
@@ -49156,6 +49226,7 @@
       "references": [
         "path ErrorReference",
         "path Snapshot",
+        "path Snapshot::capture_session",
         "use crate::evidence::ErrorReference",
         "use crate::evidence::Snapshot"
       ]
@@ -49199,10 +49270,20 @@
     },
     {
       "from": "dim_report::evidence",
+      "to": "dim_agent_runtime::branch",
+      "references": [
+        "path Branch",
+        "use dim_agent_runtime::Branch"
+      ]
+    },
+    {
+      "from": "dim_report::evidence",
       "to": "dim_agent_runtime::error",
       "references": [
-        "path dim_agent_runtime::AgentError::InvalidInput",
-        "path dim_agent_runtime::AgentError::UnknownBranch"
+        "path AgentError",
+        "path AgentError::InvalidInput",
+        "path AgentError::UnknownBranch",
+        "use dim_agent_runtime::AgentError"
       ]
     },
     {
@@ -49217,6 +49298,7 @@
       "from": "dim_report::evidence",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryEvent",
         "path QueryFilter::In",
         "path QueryOperand::Field",
         "path QueryOutput::Events",
@@ -49224,6 +49306,7 @@
         "path QuerySelect::Events",
         "path QuerySpec",
         "path TimelineQuery",
+        "use dim_agent_runtime::QueryEvent",
         "use dim_agent_runtime::QueryFilter",
         "use dim_agent_runtime::QueryOperand",
         "use dim_agent_runtime::QueryOutput",
@@ -49255,6 +49338,9 @@
         "path EventKind::BranchResume",
         "path EventKind::BranchStart",
         "path EventKind::ModelOutputEnd",
+        "path EventKind::ModelStart",
+        "path EventKind::ToolCompleted",
+        "path EventKind::ToolStart",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
         "path ModelOutputOutcome::Cancelled",
@@ -49311,6 +49397,8 @@
         "path Missing::ReadFailed",
         "path Snapshot",
         "path TimelineEvidence",
+        "path TimelineEvidence::Failure",
+        "path TimelineEvidence::Recent",
         "use crate::evidence::CapturedError",
         "use crate::evidence::Missing",
         "use crate::evidence::Snapshot",
@@ -49470,6 +49558,14 @@
         "use dim_agent_types::EventKind",
         "use dim_agent_types::InputBlock",
         "use dim_agent_types::UserInput"
+      ]
+    },
+    {
+      "from": "dim_session_title",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path runtime_context",
+        "use dim_agent_types::markup::runtime_context"
       ]
     },
     {
@@ -49745,6 +49841,10 @@
     {
       "module": "dim_agent_types::finite_number",
       "path": "S::Ok"
+    },
+    {
+      "module": "dim_agent_types::markup",
+      "path": "char::is_whitespace"
     },
     {
       "module": "dim_agent_types::model",
@@ -50780,6 +50880,10 @@
     },
     {
       "module": "dim_cli::ui::tui",
+      "path": "Event::BackgroundFinished"
+    },
+    {
+      "module": "dim_cli::ui::tui",
       "path": "Event::Complete"
     },
     {
@@ -50876,6 +50980,10 @@
     },
     {
       "module": "dim_cli::ui::tui::tests",
+      "path": "Captured::observed"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
       "path": "ColorMode::TrueColor"
     },
     {
@@ -50892,6 +51000,22 @@
     },
     {
       "module": "dim_cli::ui::tui::tests",
+      "path": "Multiplexer::None"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "Multiplexer::Screen"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "Multiplexer::Tmux"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "NotifyTerminal::default"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
       "path": "OauthEvent::Device"
     },
     {
@@ -50901,6 +51025,10 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "OauthEvent::Url"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "Operation::SessionRead"
     },
     {
       "module": "dim_cli::ui::tui::tests",

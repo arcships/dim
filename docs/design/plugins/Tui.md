@@ -186,6 +186,36 @@ uses WorkspaceTools' optional C1 method `session.exec.output`. This UI consumes
 that read when provided; a profile without it displays an unavailable state. It never opens a
 daemon path or falls back to a tool call.
 
+Both interfaces also draw one row of the unfinished tasks above the composer, so
+work running apart from the turn is named without opening `/tasks`:
+
+```text
+ ◐ 2 · cargo build 1m12s · cargo test 34s
+ ╭─ · working…  3s ──────────────── provider / model ─╮
+ │ › Ask anything...                                   │
+ ╰─────────────────────────────────────────────────────╯
+```
+
+The count of running tasks leads the row, then each task's label and elapsed
+time. A label longer than the row is cut to fit one line; when the row cannot
+hold every task, the remaining ones read `· …`. A task that ends keeps its place
+for five seconds with `✓`, `⊘` when it was stopped or `✗` when it failed, before
+leaving the row, so its completion is not lost under the eye. With no task
+running the count has nothing to say, so the row starts at the first entry's
+mark and carries no leading separator:
+
+```text
+ ✓ cargo build 1m12s
+```
+
+The row draws only while a task runs or one is still fading, so an idle Session
+keeps the space, and it reads the same `ViewSnapshot.tasks` the panel does. It
+adds interface-local fields of its own — the second the fade last drew, and
+whether the row was drawn then — but no Session state, read or event. `Enter` on
+an empty composer opens `/tasks` while the row shows, after the shell-run guard
+and the steer of a held message; the row itself selects and stops nothing, which
+the panel already does (`cli-commands.md` owns the key map).
+
 ```text
 +-- Background tasks -------------------------------------------+
 | > cargo build                                  command         |
@@ -443,6 +473,56 @@ Tool and shell text loses terminal escape/control sequences before layout; only 
 renderer adds terminal styling. The write path keeps that promise for every row, model
 text included: of the sequences a row carries, only SGR and an OSC 8 link to an `http`,
 `https` or `mailto` target reach the terminal. Clicked links use only those schemes.
+
+### Terminal channels
+
+Three channels can say a run is working: the program status record (`OSC 7501`), the
+progress bar (`OSC 9;4`) and the window title's turning quarter-circle. The startup probe
+that already asks for the keyboard and clipboard protocols also asks whether the terminal
+keeps the record (`OSC 7501;?`, ahead of the DA1 sentinel), and that one answer decides
+which of the three speak:
+
+```text
+terminal answered OSC 7501;?          record only
+  window title     DIM | topic        no mark, no frame
+  progress bar     (none)             the terminal draws from the record
+  notifications    OSC 9 / 99 / 777   a one-off event, not a record
+
+terminal answered DA1 alone           today's behaviour
+  window title     ◐ DIM | topic      120 ms per frame
+  progress bar     OSC 9;4 where drawn
+  notifications    OSC 9 / 99 / 777
+```
+
+DA1 decides, not a timeout: tmux and GNU screen drop the query and still answer the
+sentinel, so they keep today's behaviour with no wait. `DIM_TERMINAL_STATUS=off` omits the
+query along with the reports. `DIM_TERMINAL_TITLE=always` and `DIM_TERMINAL_PROGRESS=on`
+are escape hatches for a terminal that answers but draws nothing.
+
+Notifications are exempt from the multiplexer rule the record and the bar follow, because
+a delivered notification asserts nothing afterwards, but a multiplexer may keep a part
+of one, so the shape it carries is followed by the bell that still rings when the rest is
+dropped:
+
+```text
+no multiplexer, herdr   one form, or BEL where none is known
+tmux                    ESC P tmux; <form, ESC doubled> ESC \   + BEL
+screen, BEL-terminated  <form, as it is>                        + BEL
+screen, ST-terminated   BEL
+```
+
+tmux 3.3 and later default `allow-passthrough` to off, so a wrapped sequence may be
+dropped whole; the bare `BEL` after it is what still rings there, while a tmux that
+forwards the wrapper draws the notification. GNU screen gets the same rule for the same
+reason: it doubles nothing, since `ESC P` opens a passthrough it ends differently from
+tmux, and some builds forward an `OSC` closed by `BEL` while others drop every `OSC` a
+pane writes, so a `BEL`-terminated form goes through unwrapped and a bare `BEL` follows
+it — the form is drawn where it is forwarded and the extra `BEL` still rings where it is
+dropped. kitty's `ST`-terminated `OSC 99` has no shape screen carries whole, so it
+becomes the bell alone, which makes a `BEL` that no `OSC` introduced. herdr keeps the
+bell whatever its `TERM_PROGRAM` names: it reads a pane's `OSC`s for itself and notifies
+from its own list of terminals, so a form the pane's variables carry is not known to
+reach the user, while a `BEL` is not an `OSC` it takes.
 
 ## 5. Context mapping
 

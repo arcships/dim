@@ -4,8 +4,8 @@
 //! conversation; Workflow details show the owner's stored stages and logs.
 
 use crate::model::view::{
-    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutputState, TaskTarget,
-    TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
+    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutcome, TaskOutputState,
+    TaskTarget, TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
 };
 use crate::sanitize::safe;
 use crate::ui::i18n::t;
@@ -218,7 +218,7 @@ impl TasksPanel {
                 *text = finish.text.clone();
                 *state = TaskOutputState::Finished {
                     status: finish.status,
-                    failed: finish.failed,
+                    outcome: finish.outcome,
                 };
             }
         }
@@ -371,7 +371,7 @@ impl TasksPanel {
                     .map_or(TaskOutputState::Loading, |finish| {
                         TaskOutputState::Finished {
                             status: finish.status,
-                            failed: finish.failed,
+                            outcome: finish.outcome,
                         }
                     }),
             },
@@ -515,9 +515,13 @@ impl TasksPanel {
                         format!("{}: {}", t("Output read failed"), safe(error)),
                         &p.danger,
                     ),
-                    TaskOutputState::Finished { status, failed } => (
+                    TaskOutputState::Finished { status, outcome } => (
                         t(status).to_owned(),
-                        if *failed { &p.danger } else { &p.muted },
+                        if *outcome == TaskOutcome::Failed {
+                            &p.danger
+                        } else {
+                            &p.muted
+                        },
                     ),
                 };
                 content.push(fg(&truncate_cells(&status, inner), color));
@@ -648,7 +652,7 @@ impl TasksPanel {
                 title = format!("{}: {title}", t("Delegation result"));
                 content.push(fg(
                     t(finish.status),
-                    if finish.failed { &p.danger } else { &p.muted },
+                    if finish.failed() { &p.danger } else { &p.muted },
                 ));
                 lines.extend(
                     wrap_cells(&safe(&finish.text), inner)

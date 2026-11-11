@@ -278,10 +278,7 @@ pub async fn run_where(
 /// The job's run with `run_id`, once it is terminal.
 pub async fn settled(client: &mut Client, job_id: &str, run_id: &str) -> Value {
     run_where(client, job_id, run_id, |run| {
-        !matches!(
-            run["state"].as_str(),
-            Some("delivering" | "launching" | "submitted" | "running")
-        )
+        run["state"] != json!("delivering")
     })
     .await
 }

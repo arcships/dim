@@ -19,6 +19,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Agent context: goals and requirements to define](design/agent-context.md)（中文；branches, compaction, model prompts; requirements, not design）
 - [Migration plugin](design/plugins/Migration.md)（中文；on-demand legacy data import, native-role history, retry and incremental import; implementation plan included）
 - [Plugin management: requirements](design/plugin-management.md)（中文；one plugin concept, install, reload, replacement; requirements, not design）
+- [插件发现、分发与作者入口](design/plugin-distribution.md)（中文）：GitHub topic、内置官方目录、仓库子目录安装、runtime 选择与文档/skill 分工
 - [Skills installation](design/plugins/Skills.md): preview of a local or Git source without a manifest, selective installation into the user root, update and confirmed removal of loose Skills (#740)
 - [Document templates](templates/README.md)
 - [ADR 002 — Plugin scope](adr/002-plugin-scope.md)（[中文](zh/adr/002-plugin-scope.md)）
@@ -63,7 +64,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Native CLI contract](../crates/dim-cli/README.md)
 - [CLI commands, conversation export and JSONL execution](design/cli-commands.md)（[中文](zh/design/cli-commands.md)）
 - [CLI attachment input and paste handling](design/cli-attachment-input.md)
-- [Shared error reports](design/plugins/Report.md) ([#1319](https://github.com/arcships/dim/issues/1319))
+- [Session and error reports](design/plugins/Report.md) ([#1319](https://github.com/arcships/dim/issues/1319))
 - [Read-only member conversations in the CLI](design/member-conversation.md) (#300, #333, #324, #263)
 - [Subagent model policy](design/subagent-model-policy.md) (#263)
 - [Subagent tool approval and permission inheritance](design/subagent-tool-approval.md): requesting-branch policy, leader decision tools, user review, cancellation and recovery (#19, #29, #257)

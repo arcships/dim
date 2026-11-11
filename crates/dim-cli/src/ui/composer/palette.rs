@@ -506,7 +506,7 @@ mod tests {
             names("/se", SCROLLBACK),
             [
                 "settings", "resume", "new", "models", "effort", "fast", "agent", "fork", "lines",
-                "rename", "mcp"
+                "rename", "mcp", "report"
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);

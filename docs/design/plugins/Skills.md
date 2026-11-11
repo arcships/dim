@@ -467,9 +467,10 @@ trip, and no AgentLoop change. The design is:
   `$skill: name` marker followed in the same message by a `<dim-skill name="name">` block means
   the Skill is already loaded: follow it, and do not call `skill` for it. A marker without such
   a block is loaded with the tool, as today. Every other rule stays.
-- **Consumers see the block where hook contexts appear.** SessionTitle's title text and Recall
-  read the input's `user` content, so they see the added block after the operator's text,
-  exactly as they see a `UserPromptSubmit` context (Hooks A.6.2). That is accepted.
+- **Consumers see the block where hook contexts appear.** Recall reads the input's `user` content,
+  so it sees the added block after the operator's text, exactly as it sees a `UserPromptSubmit`
+  context (Hooks A.6.2). A reader that wants the operator's words alone leaves it out the same
+  way, as SessionTitle's title text does ([SessionTitle §0.1](SessionTitle.md#01-fields-read-for-one-title-attempt)).
 - **Clients show one line.** A text block of an operator input's `user` content that is not the
   first block and starts with `<dim-skill name="` is shown as one line naming the loaded Skill,
   never as its text ([clients](../clients.md)). The ACP gateway applies the same rule when it

@@ -632,16 +632,28 @@ impl SubmitChecks {
 }
 
 /// Appends the checks' contexts after the operator's own content (Hooks
-/// A.6.2); an input with no user content takes none.
+/// A.6.2); an input without operator content takes none. A context placed
+/// there would be the input's first block, which every reader takes for the
+/// operator's words.
+///
+/// Each block must be one runtime marker element
+/// (`dim_agent_types::markup::runtime_context`), which is the producer's
+/// precondition: a block that is not one is dropped with a diagnostic instead
+/// of appended, because both readers would take it for the operator's words.
 pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
-    let Some(user) = user else {
+    let Some(user) = user.as_mut().filter(|user| user.has_operator_content()) else {
         if !blocks.is_empty() {
-            tracing::warn!("submit check contexts dropped: the input has no user content");
+            tracing::warn!("submit check contexts dropped: the input has no operator content");
         }
         return;
     };
-    user.content
-        .extend(blocks.into_iter().map(|text| ContentBlock::Text { text }));
+    for text in blocks {
+        if !markup::runtime_context(user.content.len(), &text) {
+            tracing::warn!("submit check context dropped: it is not a runtime marker element");
+            continue;
+        }
+        user.content.push(ContentBlock::Text { text });
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -711,6 +723,13 @@ impl DynPlugin for InputMethodsPlugin {
                             ..Default::default()
                         });
                         if let Some(input) = &steer {
+                            // The operator's own content is validated before
+                            // the checks run: a check's context must never be
+                            // what makes an input valid, and a refusal here
+                            // writes neither the withdrawal nor a replacement.
+                            input
+                                .validate()
+                                .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
                             // A blocked steer writes neither the withdrawal nor
                             // the new input (Hooks A.6.2).
                             match checks

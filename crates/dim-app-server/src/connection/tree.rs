@@ -47,6 +47,12 @@ impl Connection {
             mode: params.mode,
             ..InputMessageData::default()
         };
+        // The checks' contexts are appended to the operator's own content, so
+        // an input that carries none must be refused before the checks run:
+        // otherwise a check's context would be the only content, and the input
+        // it made valid would be written and titled after all.
+        data.validate()
+            .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
         match self
             .submit_check(
                 rpc,

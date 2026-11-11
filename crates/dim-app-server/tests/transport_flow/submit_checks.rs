@@ -13,6 +13,9 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+/// A block a check returns: one runtime marker element (Hooks A.6.2).
+const CONTEXT: &str = "<dim-hooks kind=\"prompt-submit\">check context</dim-hooks>";
+
 #[derive(Clone, Default)]
 enum Answer {
     #[default]
@@ -246,7 +249,7 @@ async fn a_block_fails_the_operator_entries_and_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_allowed_prompt_carries_the_checks_context_after_the_operator_text() {
     let check = Arc::new(TestCheck::default());
-    check.set(Answer::ProceedWith(vec!["check context".into()]));
+    check.set(Answer::ProceedWith(vec![CONTEXT.into()]));
     let (server, agent, model) = launch(check.clone()).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let created = client
@@ -275,7 +278,7 @@ async fn an_allowed_prompt_carries_the_checks_context_after_the_operator_text() 
                 text: "hello".into()
             },
             ContentBlock::Text {
-                text: "check context".into()
+                text: CONTEXT.into()
             },
         ],
         "the context follows the operator's own content"
@@ -289,7 +292,65 @@ async fn an_allowed_prompt_carries_the_checks_context_after_the_operator_text() 
         .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
         .await;
     assert_ok(&idle);
-    assert_eq!(model.last_user_texts(), ["hello", "check context"]);
+    assert_eq!(model.last_user_texts(), ["hello", CONTEXT]);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: every block a check returns must be a runtime marker element, since
+/// both readers of the input's content take anything else after the first
+/// block for the operator's words. The entry appends the marker and drops the
+/// bare text, so the written input carries the operator's text and one marker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_block_that_is_not_a_runtime_marker_is_dropped() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWith(vec![
+        "bare text".into(),
+        CONTEXT.into(),
+    ]));
+    let (server, agent, model) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert_ok(&submitted);
+    let user = inputs(&session)
+        .await
+        .pop()
+        .expect("the input was written")
+        .user
+        .expect("the input is operator input");
+    assert_eq!(
+        user.content,
+        vec![
+            ContentBlock::Text {
+                text: "hello".into()
+            },
+            ContentBlock::Text {
+                text: CONTEXT.into()
+            },
+        ],
+        "the bare block is not appended"
+    );
+
+    let idle = client
+        .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
+        .await;
+    assert_ok(&idle);
+    assert_eq!(model.last_user_texts(), ["hello", CONTEXT]);
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -297,7 +358,7 @@ async fn an_allowed_prompt_carries_the_checks_context_after_the_operator_text() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_proceeding_branch_create_drops_the_checks_context() {
     let check = Arc::new(TestCheck::default());
-    check.set(Answer::ProceedWith(vec!["check context".into()]));
+    check.set(Answer::ProceedWith(vec![CONTEXT.into()]));
     let (server, agent, _) = launch(check.clone()).await;
     let mut client = Client::new_version(&server, false, 3).await;
     let created = client

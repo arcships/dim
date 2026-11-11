@@ -212,6 +212,9 @@ pub struct Terminal {
     keyboard: KeyboardProtocol,
     background_report: Option<String>,
     clipboard: bool,
+    /// The terminal answered the program status query (`OSC 7501`): it keeps
+    /// a record of the run, so the title and the bar give up the job.
+    program_status: bool,
     last_input: Instant,
     left: bool,
     /// The last size the terminal reported: a zero-sized window (a pane
@@ -245,6 +248,7 @@ impl Terminal {
             keyboard: KeyboardProtocol::Legacy,
             background_report: None,
             clipboard: false,
+            program_status: false,
             left: false,
             last_size: std::cell::Cell::new((80, 24)),
         };
@@ -333,8 +337,15 @@ impl Terminal {
         self.clipboard
     }
 
+    /// The terminal answered the startup probe's program status query: it
+    /// keeps a record of the run (`ui::status`), so the title writes plain
+    /// text and no progress bar (`ui::progress`) is drawn.
+    pub fn program_status(&self) -> bool {
+        self.program_status
+    }
+
     fn negotiate_keyboard(&mut self) -> io::Result<()> {
-        sys::write_all(sys::STDOUT, keyboard::PROBE_QUERY)?;
+        sys::write_all(sys::STDOUT, &keyboard::probe_query())?;
         let deadline = Instant::now() + PROBE_TIMEOUT;
         let mut seen = Vec::new();
         let mut buf = [0u8; 256];
@@ -360,6 +371,7 @@ impl Terminal {
         }
         self.background_report = scan.background_report;
         self.clipboard = scan.complete && scan.clipboard;
+        self.program_status = scan.complete && scan.program_status;
         let mut carry = scan.typeahead;
         carry.extend_from_slice(&scan.rest);
         if !carry.is_empty() {

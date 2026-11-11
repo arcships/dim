@@ -20,6 +20,10 @@ The base CLI's development, alpha and release payloads do not bundle Workflow or
 No external distribution channel or standalone packaging scheme is defined; that work is tracked
 in [#1091](https://github.com/arcships/dim/issues/1091).
 
+The [plugin distribution proposal](../../../docs/design/plugin-distribution.md) describes discovery
+through an embedded official catalog and installation from this repository subdirectory. Its
+catalog commands are proposed interfaces; the source installation below remains the supported path.
+
 The plugin directory carries [dim-plugin.json](dim-plugin.json). After the checkout setup above,
 install it explicitly through PluginManager with
 `dimcode plugin install /absolute/path/to/dim/runtime/plugins/workflow --id workflow`.

@@ -963,17 +963,22 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
  user message
                           one normal separator row
  ◆ Thinking… · text
-                          released layout space, if any
+ ◐ 1 · cargo build 1m12s  the tasks running apart from the turn
  ╭─ · thinking… ─────────────────────────────╮
  │ › Ask anything...                        │   composer stays anchored
  ╰──────────────────────────────────────────╯
 ```
+
+The task row sits above the composer here as it does above the dock in fullscreen,
+so the released space of a closing menu still returns below it and the composer
+keeps its place.
 
 While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
 
 Fullscreen takes the alternate screen, keeps the transcript itself and scrolls it in a viewport above a dock that never moves. A transcript shorter than the viewport sits on the dock and grows upwards:
 
 ```text
+ ◐ 2 · cargo build 1m12s · cargo test 34s
  answer row                                                     ▁   scrollbar: last column,
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
@@ -983,6 +988,14 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
 ```
+
+The row above the composer names the tasks running apart from the turn, in both
+modes: `◐ <count> · <label> <elapsed>` for each, cut to one line, with `✓`, `⊘`
+for a stop or `✗` for a failure where a task that just ended keeps its place for
+five seconds. With nothing running the count is dropped, so the row starts at
+the first mark: `✓ cargo build 1m12s`. It reads the same Session task list
+`/tasks` shows and draws nothing while none runs. `Enter` on an empty composer
+opens `/tasks` while it shows, once no held message is left to steer.
 
 | Fullscreen input | Effect |
 | --- | --- |
@@ -1039,7 +1052,7 @@ answer text (including its retained streaming tail)
 · stopped
 ```
 
-The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the working directory and git branch at the right. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
+The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
 
 The Git branch label follows branch switches in both modes, including switches made by tools or another terminal. At startup the client resolves the workspace's own Git `HEAD` path (including linked worktrees); the existing UI timer reads that file at most once every 10 seconds, without spawning more Git processes, and requests a repaint only when the name changes. Detached HEAD displays `HEAD`; a transient read failure keeps the last known name until the next check.
 
@@ -1117,7 +1130,7 @@ Typing ranks the matches: the exact name, a name prefix, an alias prefix, a pref
 
 `/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. Collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. Compaction bodies show only in expanded. `/tools` cycles the three forms without changing thinking. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
 
-Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; tmux and any other terminal get a bell, which tmux forwards and terminals turn into a Dock bounce, a taskbar flash or a tab badge.
+Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; any other terminal gets a bell, which it turns into a Dock bounce, a taskbar flash or a tab badge. Inside a multiplexer the bytes differ, because neither carries the form upward by itself and a notification asserts nothing after it is delivered, so the record's reasons for staying inside a multiplexer (`ui::status`, `ui::progress`) do not apply to it. tmux gets the form in its passthrough wrapper (`ESC P tmux;`, the sequence's `ESC`s doubled, `ESC \`) followed by a bare `BEL`: tmux 3.3 and later default `allow-passthrough` to off, so a tmux that forwards the wrapper draws the notification and one that drops it still rings. GNU screen follows the same rule for the same reason: it doubles no `ESC` (`ESC P` opens a passthrough it ends differently from tmux, which a notification does not need), and some builds forward an `OSC` closed by `BEL` while others drop every `OSC` a pane writes — so a `BEL`-terminated form (`OSC 9`, `OSC 777`) goes through unwrapped as it is and a bare `BEL` follows it, which draws the notification where the form is forwarded and rings where it is dropped. kitty's `ST`-terminated `OSC 99` has no shape screen carries whole, so it becomes the bell alone. herdr gets a bell whatever its `TERM_PROGRAM` says: it reads a pane's `OSC`s for itself and notifies from its own list of terminals, so a form the pane's variables name is not known to reach the user, while a `BEL` is not an `OSC` it takes.
 
 The terminal UI also tells the terminal what the run is doing now, with the [Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status) (`OSC 7501`), so tab indicators, session pickers and agent inboxes can show it without reading the screen. Scrollback and fullscreen report the same way. Every report goes to the terminal's root record with `app=dim` and ends with `ESC \`:
 
@@ -1145,6 +1158,10 @@ A pending request outranks the run it holds up. `done` and `error` come only fro
 
 Reporting is on by default and independent of `tuiNotifyOnComplete`, because a status report does not interrupt anyone. `DIM_TERMINAL_STATUS=off` turns it off, for example in the profile of a terminal that prints unknown escape sequences instead of ignoring them. Only the terminal UI reports: `dimcode exec`, `-p`, redirected stdin and `--no-tui` never write a report, so `--json` output and redirected output stay clean. Inside tmux the reports stop at tmux, which keeps an `OSC` it does not know to itself; they are not wrapped for passthrough as `OSC 52` is, because the outer terminal would keep one record for all of the tmux client's panes, and a pane killed mid-run would leave its `working` behind.
 
+The interface asks once, in the startup probe it already sends, whether the terminal keeps that record: `OSC 7501;?` goes ahead of the `CSI c` sentinel, and the terminal's answer decides which of the three channels speak. A terminal that answers keeps the record and draws its own indicator from it, so the interface sends only the reports: the window title becomes the plain text `DIM | topic` with no mark and no frame to turn, and no progress bar is drawn (see below). A terminal that does not answer — tmux and GNU screen drop the query and still answer the sentinel — sees today's behaviour, and the title turns its quarter-circle as before. The sentinel decides, not a timeout, so a missing reply costs no wait. `DIM_TERMINAL_STATUS=off` omits the query along with the reports: an interface that reports nothing has nothing to ask about, and keeps the animated title. Two switches are escape hatches for a terminal that answers but shows nothing: `DIM_TERMINAL_TITLE=always` keeps the title's mark, and `DIM_TERMINAL_PROGRESS=on` draws the bar.
+
+The window title is `DIM`, or `DIM | <topic>` from the Session's stored title or its first message. While a run works, a quarter-circle (`◐◓◑◒`) turns in front of it every 120 ms; while one waits on a permission or a question, a still `●` stands there instead. A terminal that answered the probe's `OSC 7501;?` draws the run's state from the record, so the title writes the plain text with neither mark, and nothing is redrawn while the run works.
+
 Terminals that draw a progress bar for `OSC 9;4` (ConEmu's sequence, which Windows Terminal also shows on the taskbar button) get one from the same status, in both modes:
 
 | Status | Bar |
@@ -1163,7 +1180,7 @@ Terminals that draw a progress bar for `OSC 9;4` (ConEmu's sequence, which Windo
  /exit, signal           ->   (removed)
 ```
 
-A bar means a run is under way or held up, so a finished or failed run removes it; the result stays in the record. `OSC 9;4` shares its number with iTerm2's notification, and a terminal that knows only the notification shows every update as one, so the bar is drawn only where it is known to work: Windows Terminal (`WT_SESSION`), ConEmu (`ConEmuANSI=ON`), Ghostty (`TERM_PROGRAM=ghostty` or `TERM=xterm-ghostty`), WezTerm, and iTerm2 from 3.6.6. Inside tmux, GNU screen or herdr there is no bar: tmux and screen keep the sequence, the outer terminal's variables leak into the pane, and passed through, the outer terminal would show one bar for all panes and keep a killed pane's. `DIM_TERMINAL_PROGRESS=off` turns the bar off and `on` draws it in any terminal, for one this list does not recognise; it is independent of `DIM_TERMINAL_STATUS`. Ghostty drops a bar it has not seen for about 15 seconds, so a bar that shows is drawn again every second. Once a bar was drawn, leaving removes it, also from the restore after a panic or a fatal signal. As with the reports, only the terminal UI draws it.
+A bar means a run is under way or held up, so a finished or failed run removes it; the result stays in the record. `OSC 9;4` shares its number with iTerm2's notification, and a terminal that knows only the notification shows every update as one, so the bar is drawn only where it is known to work: Windows Terminal (`WT_SESSION`), ConEmu (`ConEmuANSI=ON`), Ghostty (`TERM_PROGRAM=ghostty` or `TERM=xterm-ghostty`), WezTerm, and iTerm2 from 3.6.6. Inside tmux, GNU screen or herdr there is no bar: tmux and screen keep the sequence, the outer terminal's variables leak into the pane, and passed through, the outer terminal would show one bar for all panes and keep a killed pane's. A terminal that answered the probe's `OSC 7501;?` keeps the record and draws the bar from it, so none is drawn there either. `DIM_TERMINAL_PROGRESS=off` turns the bar off and `on` draws it in any terminal, for one this list does not recognise or a record-bearing one whose bar does not show; it is independent of `DIM_TERMINAL_STATUS`. Ghostty drops a bar it has not seen for about 15 seconds, so a bar that shows is drawn again every second. Once a bar was drawn, leaving removes it, also from the restore after a panic or a fatal signal. As with the reports, only the terminal UI draws it.
 
 `/keys` writes the interface's keys into the transcript; in scrollback it adds how the terminal that owns the history scrolls, searches and copies (tmux copy mode, iTerm2 and Apple Terminal `Cmd` keys, `Shift+PageUp` in Ghostty, WezTerm, kitty and Alacritty, Windows Terminal).
 
@@ -1253,7 +1270,10 @@ its rows and queued retries are discarded.
 The same collection keeps all unfinished work and the latest 50 terminal facts,
 ordered by the terminal event timestamp and then branch/start-event identity.
 Only actual command ends, delivery failures and delegation results finish rows.
-The status strip counts unfinished work. Enter shows a command's live output or
+The status strip counts unfinished work beside the run status rather than in its
+place, so a running turn does not hide what it left running. A task that ends in
+the background sends one terminal notification, once per task; a reconnect that
+finds tasks already finished sends none. Enter shows a command's live output or
 its recorded final result, or opens a delivered member's read-only conversation.
 Finished delivery results remain available even without a member Session.
 

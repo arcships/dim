@@ -536,6 +536,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "zeichne Diagramm… {count} Zeilen",
         // notify.rs
         "Task complete" => "Aufgabe erledigt",
+        "Background task finished: {label}" => "Hintergrundaufgabe beendet: {label}",
+        "Background task failed: {label}" => "Hintergrundaufgabe fehlgeschlagen: {label}",
+        "Background task stopped: {label}" => "Hintergrundaufgabe gestoppt: {label}",
         "Permission needed: {tool}" => "Freigabe nötig: {tool}",
         "Question waiting for your answer" => "Frage wartet auf Antwort",
         "Notify when agent needs you" => "Benachrichtigen, wenn Agent Eingabe braucht",

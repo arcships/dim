@@ -1042,6 +1042,104 @@ fn tui_task_stop_all_keeps_admitted_targets_after_a_session_switch() {
     daemon.join().unwrap();
 }
 
+/// An end the task history read restores is history, not news (zerob13's
+/// report on #1400). The worker publishes an empty snapshot first, the
+/// delayed reply replays a saved `exec/started` and `exec/ended`, and no
+/// notification follows; the end the live stream carries after attach raises
+/// exactly one, and a stop reports as stopped.
+#[test]
+fn tui_task_end_restored_by_history_is_not_notified_but_a_live_one_is() {
+    let home = Home::new();
+    // The test releases the delayed history reply and then the live end.
+    let (go_history, history_gate) = std::sync::mpsc::channel();
+    let (go_live, live_gate) = std::sync::mpsc::channel();
+    let notification = "\x1b]9;DIM: Background task";
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        // The reply lands after the worker published its empty snapshot.
+        history_gate.recv_timeout(PATIENCE).unwrap();
+        let ended_at = now_ms();
+        wire.reply(
+            &history,
+            json!({"events":[
+                command("replayed", 3, ended_at - 60_000, "replayed build"),
+                fact("replayed-end", 4, ended_at - 1_000, "exec", "ended",
+                    json!({"task_id":"replayed","status":"completed",
+                           "result":{"content":"done","structuredContent":{"exitCode":0}}})),
+            ],"through":8,"nextAfter":8,"done":true}),
+        );
+        live_gate.recv_timeout(PATIENCE).unwrap();
+        // The live stream's own end, in the shape the command owner writes
+        // for a user stop: `Cancelled` with `isError` set.
+        let started_at = now_ms();
+        event(
+            wire,
+            "main",
+            command("live", 9, started_at - 12_000, "live build"),
+        );
+        event(
+            wire,
+            "main",
+            fact(
+                "live-end",
+                10,
+                started_at,
+                "exec",
+                "ended",
+                json!({"task_id":"live","status":"cancelled",
+                   "result":{"content":"Command cancelled by user.","isError":true}}),
+            ),
+        );
+        wire.hold();
+    });
+    let mut command = home.command();
+    command
+        .env("TERM_PROGRAM", "iTerm.app")
+        .env("TERM", "xterm-256color");
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    go_history.send(()).unwrap();
+    // The projection applied the restored end, so the row is there to see.
+    terminal.write(b"/tasks\r");
+    terminal.until("replayed build");
+    terminal.until("Completed");
+    assert!(
+        !terminal.transcript.contains(notification),
+        "a restored end must not notify: {}",
+        terminal.transcript
+    );
+    terminal.write(b"\x1b[27u");
+    go_live.send(()).unwrap();
+    terminal.until("Background task stopped: live build");
+    assert_eq!(
+        terminal.transcript.matches(notification).count(),
+        1,
+        "the live end notifies once: {}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal.transcript.contains("Background task finished"),
+        "the cancelled task is not reported as finished: {}",
+        terminal.transcript
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
 #[test]
 fn tui_task_inventory_keeps_fifty_terminal_facts_and_their_original_results() {
     let home = Home::new();

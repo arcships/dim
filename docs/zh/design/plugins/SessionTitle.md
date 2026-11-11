@@ -20,7 +20,9 @@ Node/Python 安装或语言运行时获取。辅助调用和标题元数据仍�
 App Server 测试不依赖 SessionTitle，仅覆盖通用宿主行为。验证使用无需语言运行时的原生
 [native_flow.rs](../../../../crates/dim-session-title/tests/native_flow.rs) 流程，
 覆盖固定前缀历史、Settings 校验、RPC、HTTP 辅助调用、Unicode 上限、并发采纳、标题通知、
-手工与自动标题冲突、恢复、fork 和关闭结算。依赖 Node 的
+手工与自动标题冲突、恢复、fork 和关闭结算。
+[appended_context_flow.rs](../../../../crates/dim-session-title/tests/appended_context_flow.rs)
+覆盖追加在操作者文本之后的上下文（Hooks A.6.2、Skills §9）不参与标题。依赖 Node 的
 [scheduler_flow.rs](../../../../crates/dim-session-title/tests/scheduler_flow.rs)
 覆盖调度报告的输入来源，确保报告不会提供标题文本。诊断仅记录结果与时长。
 
@@ -224,7 +226,7 @@ revision 检查就是复检：手动标题总是胜出。
 | 部分 | 内容 |
 | --- | --- |
 | System | `Write a short title for this conversation: at most 8 words, in the language of the user's message, no quotes, no trailing punctuation. Reply with the title only.`（A2） |
-| User 消息 | `main` 上第一条被采用 (有 `input/applied`) 的操作者 `input/message` 的文本块，以换行连接，或 Goal 第一条被采用的 `goal:state` 记录中的 `<objective>` 元素，截断到 2000 个字符 (A2, A10) |
+| User 消息 | `main` 上第一条被采用 (有 `input/applied`) 的操作者 `input/message` 中承载操作者本人话语的文本块，以换行连接，或 Goal 第一条被采用的 `goal:state` 记录中的 `<objective>` 元素，截断到 2000 个字符 (A2, A10) |
 
 从不发送：图片、raw 输入块、被删除的输入、后续输入、助手输出、系统提示词、工具调用与结果、子分支事件。诊断只记录结果与耗时。
 

@@ -13,8 +13,9 @@ branch's InputQueue. It also provides the Session table `submitChecks`
 Session parts register submit checks with it from their own `apply` and the
 registration is withdrawn when that part unloads. A `session.input.withdraw`
 with `steer` calls each check registered now, in name order, before its batch;
-any block fails the call with `input_blocked` and writes nothing, else the
-checks' contexts become text blocks after the steer's own content. This is
+any block fails the call with `input_blocked` and writes nothing, else each
+context that is one runtime marker element becomes a text block after the
+steer's own content, and one that is not is dropped with a diagnostic. This is
 Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
 with none registered the withdrawal writes unchecked.
 

@@ -265,6 +265,8 @@ The terminal UI offers a newer version on its npm channel (alpha, beta or latest
   DIMCODE_UPDATE_CHECK=0 skips that check.\n\
 The terminal UI reports the run's state to the terminal (OSC 7501);\n\
   DIM_TERMINAL_STATUS=off turns that off.\n\
+A terminal that answers the startup probe's OSC 7501 query draws that record itself,\n\
+  so the window title stops turning there; DIM_TERMINAL_TITLE=always keeps its mark.\n\
 It also draws a progress bar where the terminal is known to (OSC 9;4);\n\
   DIM_TERMINAL_PROGRESS=off turns that off, =on draws it in any terminal.\n\
 Questions take option numbers (comma separated for several) or 0 to type your\n\

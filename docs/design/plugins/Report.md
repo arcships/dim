@@ -18,25 +18,28 @@ TUI /report        Desktop or Web "Report this error"
           Report preview, generation and ZIP
 ```
 
-The Session part owns the draft and reads only the admitted Session. If that Session opens but its history read fails, the same draft proceeds with the observed error and an explicit missing-evidence reason. If Session admission itself fails, the Session handler is unreachable. The process part serves an error-only draft using the same flow without accepting a Session or branch ID. It owns the draft because there may be no loaded Session.
+The Session part owns the draft and reads only the admitted Session. If its history read fails, the draft proceeds with an explicit missing-evidence reason and any captured error supplied by the client. If Session admission fails, the process part can prepare an error-only draft from a client-observed error. The process request accepts neither a Session nor a branch ID.
 
 The error-only entry uses `managementMethods` on the local App Server connection and requires explicit admission on the authenticated local Web entry (§7). Paired connections can use `session.report.*` while Session admission succeeds. The paired error-only entry is a separate admission decision in §7. Preparing a report requires a live connection. A TUI that already received the generated ZIP can still save it after the connection closes.
 
 ## 2. Client interaction
 
-Both TUI modes display the hint below a reportable error, including a failed conversation read. `/report` selects the most recent error for which that TUI displayed the hint and retains the error's original Session and branch reference, if present. A Session switch never rebinds that error. With no reportable error, the command says so. Desktop and Web bind the action to the selected error. A failure of the report flow itself stays inside the dialog.
+In both TUI modes, `/report` opens a report for the current Session, including while a turn is running. It needs no captured error. Users can report an unsatisfactory answer or a repeating turn without waiting for a failure or stopping the turn. The dialog keeps the Session selected when it opened, including when preparing again after expiry. Returning to the composer and running `/report` again selects the Session shown at that time.
+
+Both modes show `Run /report to create a report.` below reportable errors. When a Session is shown, the hint points to the Session report and its recent activity excerpt (§3). On Home, the command can report a conversation-open failure from that view through the process entry. Leaving a Session clears its eligibility as an error source for Home. With neither a Session nor a conversation-open failure to report, the command shows `No session to report.` Desktop and Web error actions remain bound to the selected error. A failure of the report flow stays inside the dialog.
 
 ```text
-! Could not read conversation state
-  Run /report to report this error.
+> /report
 
-+-- Report this error -----------------------------------------+
-| Model      provider/model (current)              [Change]    |
-| Redact     [x]                                  [Options]    |
-| Evidence   Error captured. Conversation evidence missing.    |
-| Model send [Review material]       Up to 1,024 output tokens |
-| Estimated cost unknown                                       |
-| [Generate report]                                 [Cancel]   |
++-- Report this session ---------------------------------------+
+| Session model provider/model                                 |
+| Local generation makes zero model requests.                  |
+| Evidence: Recent session activity                            |
+| > Model: Generate locally                                    |
+|   Redact: On                                                 |
+|   Options                                                    |
+|   Generate report                                            |
+|   Close                                                      |
 +--------------------------------------------------------------+
 
 +-- Report ready ----------------------------------------------+
@@ -48,24 +51,25 @@ Both TUI modes display the hint below a reportable error, including a failed con
   After saving: <ZIP path> · GitHub · Discord
 ```
 
-Local generation is available on its own. Clients can expose a model picker once the one-shot operation in §7 is available. Its initial model is the adopted model of the referenced branch, or of the Session's main branch for an observed-only report. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report from the original error and reapplies the chosen options.
+The error-only overlay uses `Report this error`. The Session overlay shows when the Timeline could not be read or the bounded excerpt has no reportable activity. Either state permits generation. Local generation is available on its own. Clients can expose a model picker once the one-shot operation in §7 is available. Its initial model is the adopted model of the referenced branch, or of the Session's main branch when there is no branch reference. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report for the original target and reapplies the chosen options.
 
-The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns that order change (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
+The overlay follows the TUI's focus and list conventions. Up and Down move between controls, and Tab and Shift+Tab cycle focus. Enter activates the focused control. Esc closes a picker first, cancels generation while busy, or closes the report. Focus starts on Model. The TUI shortens the error and report title to fit the overlay and keeps the focused action visible. The result lists the archive contents and shows the saved path so users can inspect the files with their own tools. Place `/report` immediately before `/exit` in both curated menus with the description `report the current session`, following the existing exact-name, Enter and Tab behavior. The CLI command owner owns the menu (§7). [TUI design](Tui.md), [command menu contract](../cli-commands.md#command-menu).
 
 ## 3. Evidence and redaction
 
-The client supplies either a typed Timeline failure reference with an observed-error fallback, or an observed error alone. A typed reference contains the branch and committed sequence in the admitted Session. An observed error contains a registered client operation, a stable error code if present, the observation time and the client version. The client keeps the displayed message for the dialog. The report projects a stable operation summary and registered error code from that input. Unknown codes collapse to a generic failure for that operation. The request has no field for that message, since an error string can contain a credential, provider response or file path.
+For a report about the Session, the admitted Session is the entire client-supplied reference. The Report part captures recent activity from its main branch at the published head. Error actions can supply a typed Timeline failure reference with an observed-error fallback, or an observed error alone. A typed reference contains the branch and committed sequence in the admitted Session. An observed error contains a registered client operation, a stable error code if present, the observation time and the client version. The client keeps the displayed message for the dialog. The report projects a stable operation summary and registered error code from that input. Unknown codes collapse to a generic failure for that operation. The request has no field for that message, since an error string can contain a credential, provider response or file path.
 
 Project only the following fields, with their provenance, into the snapshot.
 
 | Source | Fields |
 | --- | --- |
+| Current Session's main branch, when readable | Up to 16 recent turn, model, tool and branch lifecycle records reduced to event kind, timestamp, sequence and registered outcome. Successful, failed and cancelled activity are eligible. |
 | Captured error | Operation, registered error code, UTC observation time, fixed diagnostic summary |
-| Authorized branch, when readable | The referenced terminal failure, time, verified correlation IDs and up to 16 nearby committed failure or lifecycle records reduced to event kind, timestamp, sequence and registered outcome |
+| Error's referenced branch, when readable | The referenced terminal failure, time, verified correlation IDs and up to 16 nearby committed failure or lifecycle records reduced to event kind, timestamp, sequence and registered outcome |
 | Process diagnostics | Product and protocol versions, platform, and typed diagnostic metadata only when the owner supplies it for this error |
 | Evidence status | Source and stable reason for missing or truncated evidence |
 
-The Timeline read is branch-local and bounded by 32 candidate events around the reference. Validate that the reference resolves to a reportable failure in that branch. An observed-only error has no Timeline anchor. An unavailable reference, failed read or unavailable diagnostics source leaves the observed error intact. The process entry performs zero Session reads. The report neither repeats the failed operation nor searches other Sessions. It reads through the existing public owners and applies the two observation layers. [Timeline read ownership](../timeline-read-ownership.md), [observability boundaries](../../adr/005-observability.md#d1-two-observation-layers).
+The Timeline read is branch-local and bounded by 32 candidate events ending at the captured head or the referenced failure. Validate that a failure reference resolves to a reportable failure in that branch. An observed-only error has no Timeline anchor. An unavailable reference, failed read or unavailable diagnostics source leaves the observed error intact. A successful Session read with zero eligible records is an empty excerpt. The process entry performs zero Session reads. Preparation reads published evidence without interrupting or rerunning work and uses only the admitted Session. [Timeline read ownership](../timeline-read-ownership.md), [observability boundaries](../../adr/005-observability.md#d1-two-observation-layers).
 
 Project fields before applying the optional redaction setting. Reject arbitrary nested data. Raw log lines, messages, full history, workspace files, paths, tool input and output, raw requests and credentials have no fields in the export schema. Each approved string comes from a typed source or a fixed rendering, and correlation IDs come from verified metadata. Redaction on removes correlation IDs and any deployment-specific labels. Options maps recognized omit or keep instructions to safe field directives, shows unsupported instructions in the dialog, and sends only recognized directives. Keep directives cannot restore forbidden data. Model-selected semantic omissions can further reduce the approved fields. The generation result cannot add new evidence.
 
@@ -75,10 +79,12 @@ Register the Session namespace in `sessionMethods` and discover it via `session.
 
 | Method | Inputs | Reply |
 | --- | --- | --- |
-| `prepare` | `{error}`. Session error is `{kind: "timeline", branchId, sequence, observed}` or `{kind: "observed", observed}`. The process part accepts only the observed variant. | `{reportId, defaultModel?, plan}`. Evidence availability is included in the plan. The default plan lets the dialog open with a preview without an extra round trip. |
+| `prepare` | Session calls accept optional `error`. Omit it for a report on the admitted Session. When supplied, `error` is `{kind: "timeline", branchId, sequence, observed}` or `{kind: "observed", observed}`. The process part requires `error` in the observed variant. | `{reportId, defaultModel?, plan}`. Evidence availability is included in the plan. The default plan lets the dialog open with a preview without an extra round trip. |
 | `plan` | `{reportId, generation, redact, instructions?}`, with generation `{kind: "local"}` or `{kind: "model", model: {providerId, modelId}}` | `{planId, generation, evidence, instructionsStatus}`. A model plan includes `material`, `maxOutputTokens` and `estimatedCost` as `{amount, currency}` or `null` for unknown. A successful replacement invalidates the previous plan. |
 | `generate` | `{reportId, planId}` | `{title, body, files: {"report.md", "diagnostics.json"}, archive: {filename, base64}, sharing: {githubIssueUrl, discordUrl, description}}` |
 | `cancel` | `{reportId, target: "generation", planId}` or `{reportId, target: "report"}` | `{cancelled: boolean}`. Generation cancellation affects only the named in-flight plan and keeps the evidence available for a new plan. An inactive plan returns `{cancelled: false}`. Report cancellation drops the draft. |
+
+The TUI omits `error` for a Session report and sends the `observed` variant to the process entry for a conversation-open failure. Clients with an error-bound action, such as the Desktop and Web action in §2, can use the `timeline` variant to attach a known failure position in an admitted Session.
 
 The local plan uses `generation: {kind: "local"}`. The `evidence` object includes the filtered sources and a Timeline availability reason when the excerpt is absent. Options recognizes comma- or newline-separated `omit` and `keep` directives for `timeline`, `error codes`, and `correlation ids`. The reply reports `instructionsStatus` as `none`, `applied`, `partially_applied`, or `unsupported`. It does not echo the entered text. Redaction always removes correlation IDs, so `keep correlation ids` is unsupported while redaction is on.
 
@@ -96,7 +102,7 @@ The Agent's operation uses the one-shot auxiliary model boundary, with the singl
 
 ## 6. Preview and sharing
 
-Build `report.md` and versioned `diagnostics.json` from the same approved content used for the report. Diagnostics v1 contains `{version: 1, evidence, unavailable}`. The ZIP contains exactly those two files. Return the two UTF-8 file contents and the base64-encoded ZIP in the direct reply so clients can save after the connection closes. Cap the ZIP at 64 KiB before encoding. The TUI exposes share actions after the ZIP has been saved and the user can open it. It leaves the saved path in the transcript when the dialog closes. Clients with inline previews display the body and both file contents before exposing share actions and treat them as data when rendering them.
+Build `report.md` and versioned `diagnostics.json` from the same approved content used for the report. Error reports use diagnostics v1 (`{version: 1, evidence, unavailable}`), with `evidence.capturedError` and any referenced failure evidence. Reports on the current Session use diagnostics v2 (`{version: 2, evidence, unavailable}`), with `evidence.process` and, when included, `evidence.timeline` containing `recent` records and `truncated`. The generated title is `Session report`. The ZIP contains exactly those two files. Return the two UTF-8 file contents and the base64-encoded ZIP in the direct reply so clients can save after the connection closes. Cap the ZIP at 64 KiB before encoding. The TUI exposes share actions after the ZIP has been saved and the user can open it. It leaves the saved path in the transcript when the dialog closes. Clients with inline previews display the body and both file contents before exposing share actions and treat them as data when rendering them.
 
 | Action | Client behavior |
 | --- | --- |
@@ -116,7 +122,7 @@ The client keeps the completed preview and bytes when a share action fails. The 
 
 ## 8. Dependencies and rule check
 
-The Session part declares `sessionMethods`, Session lifecycle, public Session/branch reads for evidence and adopted model selection, and the optional model catalog and auxiliary model owner. The process part declares `managementMethods` and optional model services. Both use caller origin and the process build metadata already available to App Server. With no approved typed diagnostics source, build and platform information are sufficient process evidence. App Server composes the parts as one feature.
+The Session part declares the `sessionMethods`, `sessionLifecycle` and `treeCommands` data faces. It uses the [public branch read surface](../timeline-read-ownership.md#8-binding-appendix) for the published cutoff and adopted model selection. The process part declares the `managementMethods` and `partRegistry` data faces. Both use caller origin and the process build metadata already available to App Server. With no approved typed diagnostics source, build and platform information are sufficient process evidence. Model-assisted generation depends on the model owners in §7. App Server composes the parts as one feature. [Service catalog](../../architecture/rust-agent/generated/catalog.md).
 
 | Rule | Check |
 | --- | --- |
@@ -132,7 +138,8 @@ The Session part declares `sessionMethods`, Session lifecycle, public Session/br
 
 ## 9. Verification
 
-- Exercise the same error, keyboard flow and no-error state in both TUI renderers, including an unreadable conversation. Verify that an error remains bound to its original Session and branch after switching views.
+- Exercise `/report` in both TUI modes with an error-free Session, during a running turn, and after switching from a Session with an earlier error. Verify that the report stays bound to the Session selected when it opened and that a fresh command targets the newly shown Session. Cover Home with and without a failed conversation open.
+- Generate a ZIP from a Session with successful and repeated activity. Verify the excerpt comes from the main branch at the captured head, excludes later activity, respects the window and record bounds, and supports an empty excerpt. Verify both archive versions through their corresponding prepare inputs.
 - Exercise a failed authorized history read and failed Session admission separately. Confirm the process route does not read Session data, the local Web route requires authentication, and guessed, foreign or stale report IDs do not expose drafts.
 - Seed forbidden fields and free-text secrets into source errors and evidence. Assert their absence from the model material and both ZIP members under either redaction setting. Compare the returned preview files byte-for-byte with the archive entries.
 - Use a counting provider to verify zero local requests, one model request after Generate, and no retry after a failed or duplicate call. Verify cancellation, expiry, close and reconnect settle work, discard late output and allow local generation from the same evidence while the draft remains open. A late cancellation for a settled plan leaves its successor running.
@@ -140,4 +147,4 @@ The Session part declares `sessionMethods`, Session lifecycle, public Session/br
 
 ## 10. Ablation
 
-The Session namespace alone cannot serve an error that fails Session admission. The process entry uses the same flow with fewer evidence sources and does not restore a Session. The plan ID is needed to tie a paid request to the exact preview the user confirmed. Returning the bounded ZIP in the generation reply avoids a second download resource or an archive store. An isolated one-shot model operation supplies drafting and redaction without a general-purpose report Session.
+The Session namespace serves current-Session reports through the existing prepare method. The process entry is needed for a conversation-open error that fails Session admission and uses the same flow with fewer evidence sources. The plan ID ties a paid request to the exact preview the user confirmed. The bounded ZIP in the generation reply lets the client save without a second download resource or archive store. An isolated one-shot model operation supplies drafting and redaction without a general-purpose report Session.

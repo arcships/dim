@@ -496,6 +496,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "図を描画中… {count} 行",
         // notify.rs
         "Task complete" => "タスク完了",
+        "Background task finished: {label}" => "バックグラウンドタスク完了：{label}",
+        "Background task failed: {label}" => "バックグラウンドタスク失敗：{label}",
+        "Background task stopped: {label}" => "バックグラウンドタスク停止：{label}",
         "Permission needed: {tool}" => "許可が必要：{tool}",
         "Question waiting for your answer" => "回答待ちの質問あり",
         "Notify when agent needs you" => "要対応時に通知",

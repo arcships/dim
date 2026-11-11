@@ -37,6 +37,65 @@ fn input(sequence: u64, content: Vec<ContentBlock>) -> StoredEvent {
     )
 }
 
+/// The catalog preview a Session's first user input decides (#1378): the
+/// operator's text alone, never the context a capability appended after it.
+#[tokio::test]
+async fn catalog_preview_skips_appended_context_after_the_operators_text() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    let hook = "<dim-hooks kind=\"prompt-submit\">read src/parser.rs first</dim-hooks>";
+    let typed = "<dim-hooks kind=\"prompt-submit\">the operator pasted a marker</dim-hooks>";
+    for (id, content) in [
+        (
+            "hook",
+            vec![
+                ContentBlock::Text {
+                    text: "Why does the parser stall?".into(),
+                },
+                ContentBlock::Text { text: hook.into() },
+            ],
+        ),
+        // The first block is the operator's, whatever it opens with.
+        ("typed", vec![ContentBlock::Text { text: typed.into() }]),
+        (
+            "plain",
+            vec![ContentBlock::Text {
+                text: "Only the operator's words".into(),
+            }],
+        ),
+    ] {
+        store
+            .create_session(id, &SessionConfig::default())
+            .await
+            .unwrap();
+        append(&store, key(id, "main"), vec![input(1, content)])
+            .await
+            .unwrap();
+    }
+    let preview = |id: &str| {
+        connection
+            .query_row(
+                "SELECT preview FROM session_catalog WHERE session_id=?1",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        preview("hook").as_deref(),
+        Some("Why does the parser stall?")
+    );
+    assert_eq!(preview("typed").as_deref(), Some(typed));
+    assert_eq!(
+        preview("plain").as_deref(),
+        Some("Only the operator's words")
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
 fn batch(mut events: Vec<StoredEvent>) -> Vec<StoredEvent> {
     let end = events.last().unwrap().event.sequence;
     for event in &mut events {

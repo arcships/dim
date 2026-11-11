@@ -95,7 +95,7 @@ Settings 变更使用已声明的来源与既有的变更投递，不重载进�
 
 进程行注册的声明是 A.3 的七个字面方法。`list`、`history` 与 `watch` 是非变更的 `interruption:"report"`；其余四个是变更的 `interruption:"drain"`。除 `watch` 外都用 `progress:false`；`watch` 声明 progress，其项是观察到的变化(§11.2、A.3)。它们的 JSON 值与错误使用既有 `MethodReply`；工具把 A.2 的回复映射到 `ToolResult.content` 与 `isError`。不新增 App Server 方法。
 
-投递不读取任何权限状态。session 目标的任务不携带策略：投递的输入是目标分支的普通输入，其工具按该分支自己的 Permission 状态准入。launch 目标的 Session 收到任务可选的预设，由 `sessions.launch` 按实时宿主上限收拢(§3.3)。两条路径都不在保存时捕获策略，因此包不需要 `sessionPermissions` 依赖，也不需要复用比较。
+投递不读取任何权限状态。session 目标的任务不携带策略：投递的输入是目标分支的普通输入，其工具按该分支自己的 Permission 状态准入。launch 目标的 Session 收到任务可选的预设，由 `sessions.launch` 按实时宿主上限收拢(§3.3)。两条路径都不在保存时捕获策略，因此包不声明 `sessionPermissions` 依赖，也不保留复用比较。
 
 ## 2. 数据与状态
 
@@ -150,7 +150,7 @@ classDiagram
 
 | 状态 | 含义 | 终态 |
 | --- | --- | --- |
-| `delivering` | 记录已命名目标(launch 目标还命名 Session)，输入可能已被接受也可能没有。重启后由 `sessions.lookup` 结算(A.6)。 | 否 |
+| `delivering` | 记录已命名目标，`launch` 在启动回复到达后还命名它创建的 Session；输入可能已被接受也可能没有。重启后由 `sessions.lookup` 结算(A.6)。 | 否 |
 | `delivered` | 目标分支已发布该输入；`input_event_id` 是回执。 | 是 |
 | `failed` | 该窗口没有写入输入，或要写入的 Session 无法创建。`detail` 携带原因。 | 是 |
 | `lost` | 写入结果未在查询上限内确定(A.6)，且该窗口不重试。`detail` 命名最后一次查询回答。 | 是 |
@@ -160,7 +160,7 @@ classDiagram
 
 ### 2.3 本次变更之前保存的任务与投递
 
-存储形状是增量变化：本次变更之前保存的任务没有 `target`，其旧字段会被读出、映射为目标，并由写入保留。`Job` 把 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes` 保留为旧字段(A.1)；它们永不被报告；保存唯一写入的旧字段是 `policy_cap`，且只在 `launch` 目标上，作为保留的 launch 路由的保存期上限(附录 F)；把任务从 `launch` 目标改为 `session` 目标的保存会丢弃该上限。
+存储形状是增量变化：本次变更之前保存的任务没有 `target`，其旧字段会被读出、映射为目标，并由写入保留。`Job` 把 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes` 保留为旧字段(A.1)；它们永不被报告，任何保存也不写入其中之一。因此 `policy_cap` 只被读取并由写入保留，没有保存会捕获当时的宿主上限：启动在启动时刻应用当时的上限(§3.3)。
 
 映射是固定的，取决于保存来源，而不是目标的方便：
 
@@ -195,26 +195,28 @@ sequenceDiagram
   S->>IQ: Dispatcher：input/applied、input/consumed、turn
 ```
 
-`launch` 目标在写入前多一步：
+`launch` 目标记录窗口、启动一次、记下启动回复给出的 Session 与停止时刻、写一条输入，并起停止定时器：
 
 ```mermaid
 sequenceDiagram
   participant T as Scheduler 定时器
-  participant AG as Agents
   participant ST as 进程存储
-  T->>T: 复核任务与窗口
+  participant AG as Agents
+  T->>ST: 保存 delivering，含 deadline_at
   T->>AG: sessions.launch(cwd, agent?, policy?)
   AG-->>T: {sessionId, policy}
-  T->>ST: 保存 delivering，含 sessionId、分支、deadline_at
+  T->>ST: 保存 sessionId、分支、policy
   T->>AG: sessions.input(sessionId, main, queue, 标记, 提示词)
   AG-->>T: {inputId, sequence}
   T->>ST: 保存 delivered
   Note over T: 到 deadline_at：sessions.stop(main)
 ```
 
+这就是目标的全部：一次启动、一条输入与停止定时器。Scheduler 不读被启动 Session 的历史，也不订阅其广播，因此投递只由它自己的写入结算，启动之后不再跟随任何东西(A.6)。
+
 窗口求值遵循 `settings/schedule`、墙钟分钟变化、当前分钟内最早剩余窗口与已接受投递的结算。自有定时器每秒检查这些截止时刻，空闲节拍既不读 Settings 也不读存储。
 
-`delivering` 记录先于任何外部效果持久化，因此重启靠查询结算它，而不是再写一次。一个窗口至多写入一次：分支对每个 `submissionId` 只接受一次([sessions 服务 §6.2](../appserver/sessions-service.md#62-input))，以同一 id 重试返回同一回执。
+`delivering` 记录先于任何外部效果持久化，因此重启靠查询结算它，而不是再写一次。`launch` 窗口在第一次写入时记下停止时刻，在启动回复到达时记下 Session，因此在这两者之间崩溃会留下一条不命名任何 Session 的 `delivering` 记录：没有任何查询能到它，它以 `detail: launch_reply_unknown` 结算为 `lost`(附录 F)。一个窗口至多写入一次：分支对每个 `submissionId` 只接受一次([sessions 服务 §6.2](../appserver/sessions-service.md#62-input))，以同一 id 重试返回同一回执。
 
 **重叠。** 该任务只要还有任意一条 `delivering` 记录，窗口就被跳过，因此一个任务同时至多有一条 `delivering` 记录。被跳过的窗口不写输入，并记录一条带 `detail: previous_delivery_unsettled` 的 `missed` 投递(A.6)，它计入保留期(A.7)。这条记录是终态，本身不会放行下一个窗口：条件是该任务的 `delivering` 记录，而不是它前面那一条投递。`schedule.run_now` 遵循同一规则；它为手动窗口记录自己的投递，有它自己的 `run_id` 与 `window`，绝不返回定时器路径的记录，因此被该规则跳过的手动窗口返回那条 `missed` 记录。跳过持续的时间不超过那条 `delivering` 记录保持未结的时间，下面的上限固定了它。
 
@@ -229,7 +231,7 @@ sequenceDiagram
 **超时。** 只有 `launch` 目标有超时。`max_run_minutes` 是 Session 的停止时刻，在投递被接受时固化为 `created_at + max_run_minutes`；定时器在到点时停止该 Session：
 
 - `sessions.stop {sessionId, branchId:"main", reason:"scheduled run reached its stop time"}`。投递保持 `delivered`；停止是对启动工作的界，不是运行结果。
-- 停止失败时，定时器在记录仍命名该 Session 期间至多每分钟重试一次。投递本身不变。
+- 停止失败时，定时器在记录仍然存在期间至多每分钟重试一次。投递本身不变。
 - 在停止时刻被停止的 Session，在其最后一条命名记录离开存储时由保留期删除(A.7)，绝不在停止时刻之前删除。
 
 `session` 目标没有超时：投递属于用户的分支，Scheduler 永不撤回或停止它。
@@ -240,7 +242,7 @@ session 目标的投递不携带任何权限。它是目标分支的普通输入
 
 launch 目标的 Session 用任务可选的预设创建，由 `sessions.launch` 按实时宿主上限收拢——即 S2 D4 的 `ServerConfig.session_defaults.permission_policy`([sessions 服务](../appserver/sessions-service.md#3-决定))。没有预设时请求为只读。返回的策略记录在投递上，作为启动时观察到的权限；它是记录，不是授权，之后的 Permission 变化会收窄它。
 
-自动化永不扩大权限(E2)。因为任务不捕获策略也不做比较，之前的保存时上限、接管与复用比较都已移除：保存只存一个预设，每次启动都应用 S2 的实时上限。高于宿主上限的预设在保存时不被拒绝；启动时收拢它，记录显示 Session 实际收到的策略。
+自动化永不扩大权限(E2)。因为任务不捕获策略也不做比较，没有保存时上限、接管或复用比较：保存只存一个预设，每次启动都应用 S2 的实时上限。高于宿主上限的预设在保存时不被拒绝；启动时收拢它，投递记录 Session 实际收到的策略。
 
 ## 4. 时序与冲突
 
@@ -301,7 +303,18 @@ sequenceDiagram
 | 运行标记 | 协议：元素 `dim-scheduler`、其种类 `scheduled-run` 与 `wakeup`、`scheduled-run` 上的 `job` 属性与 `run` 属性，以及各自开启的输入。scheduled-run 的主体是任务名，标记之后的文本是为该任务保存的提示词；wakeup 的主体是唤醒 id，之后的文本是保存唤醒时的提示词 |
 | 投递记录 | 协议：状态 `delivering`、`delivered`、`failed`、`lost` 与 `missed`，窗口、目标 Session 与分支，以及 `detail` |
 
-描述是工厂成员：`description` 替换声明的描述(附录 G)；产品不设置任何值，因此内置文本生效。流程测试固定每个协议句。想要策略句的配置自行添加，并承担随之而来的 §8.1 评估；内置文本没有策略句，因此出货的声明永远不会因它本身成为策略变更。本次变更替换的文本曾含一句策略句 "Inspect the old-to-new authority transition in the result."；它所描述的过渡已不存在，因此该句随之移除，这也是本次变更唯一的策略变化。
+描述是工厂成员：`description` 替换声明的描述(附录 G)；产品不设置任何值，因此内置文本生效。流程测试固定每个协议句。想要策略句的配置自行添加，并承担随之而来的 §8.1 评估；内置文本没有策略句，因此出货的声明永远不会因它本身成为策略变更。
+
+**退役的报告文本。** 退役报告种类会从 guide 条目(§5.2)中删除句子，该删除按 [model-facing prompts §4](../model-prompts.md#4-协议与策略) 逐句判定：
+
+| 被删句子 | 类别 | 理由 |
+| --- | --- | --- |
+| "`<dim-scheduler kind="report" job="nightly-build" run="run-7f2">`: how that run ended." | 协议 | 命名标记种类与它开启的内容；该标记已不存在 |
+| "job names the job, run names the run, in both." | 协议 | 说明两个标记携带的属性，而 "in both" 只在有两个标记时为真 |
+| "In the report tag the body states the run's outcome and, when known, the session it ran in: the scheduler's account of how the run ended, information, not a request." | 协议 | 说明报告的主体与其信任类别；该主体已不存在 |
+| "The report's last line is not part of that account: it is guidance on what to do next." | 协议 | 说明一个 Scheduler 输入已不再携带的主体的框架，而它所描述的指引行也随 `report_guidance` 一并消失 |
+
+删掉的每一句都在说明运行时写什么、以及怎样读它。没有一句告诉模型该怎么工作，因此这次删除是协议变更：它随断言该条目的流程测试一起落地，不需要 §8.1 评估。声明自身已退役的策略句 "Inspect the old-to-new authority transition in the result." 已在上一次变更中随该过渡一起删除。
 
 ### 5.2 guide 条目
 
@@ -322,7 +335,7 @@ sequenceDiagram
 
 两种标记都携带该 guide 条目：Scheduler Session 部分在 `apply` 中注册一个 `dim-scheduler` 条目，作用域为 Session，因此 scheduled-run 标记开启的 Session 中的请求与 wakeup 标记开启的被唤醒 Session 中的请求，都携带来自该 Session 部分的条目([Prompt §6.2](Prompt.md#62-写入者))。
 
-在本次变更之前恢复的历史保留写下的任何 `dim-scheduler kind="report"` 块：没有任何东西重写历史，该标记只是一个没有条目描述的普通元素([model-facing prompts §6.1](../model-prompts.md#61-覆盖什么))。
+Scheduler 不写 `dim-scheduler kind="report"` 输入，因此没有条目描述该种类。在本次变更之前恢复的历史保留写下的任何这类块：没有任何东西重写历史，该标记只是一个没有条目描述的普通元素([model-facing prompts §6.1](../model-prompts.md#61-覆盖什么))。
 
 ## 6. 接口（摘要）
 
@@ -338,7 +351,7 @@ sequenceDiagram
 
 ## 7. 安全
 
-`schedule` 声明风险 `persistent_configuration`，Permission 将其视为未分类：FullAccess 允许(E1)，WorkspaceWrite 询问，ReadOnly 拒绝。无需 Permission 变更(#45)。投递只写一条输入；目标分支的工具按其自身策略准入，审批不被预先授予。由管理保存的 launch 任务按保存时存的预设运行，由 S2 实时收拢，其审批归它自己。
+`schedule` 声明风险 `persistent_configuration`，Permission 将其视为未分类：FullAccess 允许(E1)，WorkspaceWrite 询问，ReadOnly 拒绝。无需 Permission 变更(#45)。投递只写一条输入；目标分支的工具按其自身策略准入，审批不被预先授予。由管理保存的 launch 任务按它存储的预设运行，由 S2 在启动时实时收拢，其审批归它自己。
 
 在宿主内，工具访问对 Scheduler 是全局的：一个被准入的交互式 leader 可以跨 Session/工作区列出/读取任务提示词，并更新另一个分支的任务。更新会为其后续窗口重定向该任务；它不通知原目标分支，也不改变任何已记录的投递。管理访问同样可以读取全部任务提示词。这不是 Session/cwd 隔离。
 
@@ -356,7 +369,7 @@ Scheduler 进程行在其 `apply` 中注册一个来源([Settings §3.1](../apps
 | `userFile` | `schedule.json`；原生 profile 使用 Settings 既有的 `user/schedule` 行 |
 | `projectFile` | 缺省：仅用户作用域，无项目作用域、无合并 |
 | 文档根 | 含 `jobs`(数组，默认 `[]`)的对象；任务字段与约束见 A.1/A.4 |
-| 旧字段 | 存储的任务还可以携带 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes`；它们按 §2.3 读取并映射，并由写入保留(`policy_cap` 由保存按 §2.3 管理)。`max_concurrent_runs`(整数，最小 1，默认 4)保持可读，并仅因存储文档兼容而被任务写入保留；它不影响投递。无需用户可配置的并发字段或 `userOnly` 声明。 |
+| 旧字段 | 存储的任务还可以携带 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes`；它们按 §2.3 读取并映射，并由写入保留，任何保存都不写入其中之一(§2.3)。`max_concurrent_runs`(整数，最小 1，默认 4)保持可读，并仅因存储文档兼容而被任务写入保留；它不影响投递。无需用户可配置的并发字段或 `userOnly` 声明。 |
 
 Settings 在边界处应用这些默认值并校验外部文档一次。非法文档是错误，不是空任务列表。来源只保存任务；A.7 的内层 v1 投递历史留在 `pluginFiles`。读取或修改该文档绝不结构性地重载包。
 
@@ -495,9 +508,9 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 | 任务目标 `launch` | `cwd`、`agent_id?`(一个 Agent profile；缺省为默认 profile)、`policy?`(可选预设)、`max_run_minutes?`(默认 60，A7) |
 | Delivery | `run_id`、`job_id`、`window`(时刻或 `manual`)、`state`(§2.2)、`session_id?`、`branch_id?`、`input_event_id?`、`submission_id`、`deadline_at?`、`created_at`、`ended_at?`、`detail`、`attempts?`、`released?`、`job_revision?`。时间戳使用 UTC `YYYY-MM-DDTHH:mm:ss.sssZ`，恒为三位小数，因此时间顺序与字典顺序一致。 |
 
-投递状态：`delivering`、`delivered`、`failed`、`lost`、`missed`。终态投递带 `ended_at`；`delivering` 记录不带。`delivered` 同时需要 `input_event_id` 与目标身份；`launch` 投递还带 `deadline_at`。`missed` 记录不带目标也不带输入。`session_id` 与 `branch_id` 同时存在或同时缺省。`submission_id` 为 `scheduler:<run_id>`。`delivering` 记录可携带 `attempts`，即已为它进行的 `sessions.lookup` 尝试次数；第一次尝试之前它缺省，读作零。本次变更之前写入的记录可在 launch 来源上携带 `released: true`(A.7)：记录保留其记录的 `session_origin: launch`，不再携带对该 Session 的删除权威。`released` 只在该记录的 `session_origin` 为 `launch` 时有效；来源为其他值或缺省的记录携带它即为非法数据。本次变更写入的投递还会记录 `job_revision`，即它到期时所依据的任务修订号(A.7)。
+投递状态：`delivering`、`delivered`、`failed`、`lost`、`missed`。终态投递带 `ended_at`；`delivering` 记录不带。`delivered` 同时需要 `input_event_id` 与目标身份；`launch` 投递还带 `deadline_at`。`missed` 记录不带目标也不带输入。`session_id` 与 `branch_id` 同时存在或同时缺省。`submission_id` 为 `scheduler:<run_id>`。`delivering` 记录可携带 `attempts`，即已为它进行的 `sessions.lookup` 尝试次数；第一次尝试之前它缺省，读作零。记录可在 launch 来源上携带 `released: true`(A.7)：记录保留其记录的 `session_origin: launch`，不再携带对该 Session 的删除权威。`released` 只在该记录的 `session_origin` 为 `launch` 时有效；来源为其他值或缺省的记录携带它即为非法数据。本次变更写入的投递还会记录 `job_revision`，即它到期时所依据的任务修订号(A.7)。
 
-本次变更之前保存的任务还可能携带 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes`。它们按 §2.3 读取并映射，由每次写入保留(`policy_cap` 除外)，永不被报告。保存唯一写入的旧字段是 `policy_cap`，且只在 `launch` 目标上，作为保留的 launch 路由的保存期上限(附录 F)；把 `launch` 任务改为 `session` 目标的保存会丢弃它，其他保存保留存储的上限，包括显式发送旧任务映射后的 `session` 目标的那次保存。存储的 `enabled_at` 保持其含义：成功的 Settings CAS 在创建即启用或从禁用转为启用时把它设为该次保存的 UTC 时刻；禁用会移除它。已经启用的保存保留它，包括计划编辑。直接本地配置遵循同一不变量；没有 schema 默认值，也不在加载时以当前时间替换。
+本次变更之前保存的任务还可能携带 `mode`、`session_id`、`cwd`、`model`、`agent_id`、`policy`、`policy_cap` 与 `max_run_minutes`。它们按 §2.3 读取并映射，由每次写入保留，永不被报告；任何保存都不写入其中之一。因此任务不存储任何被捕获的权限：它命名的唯一预设是 `target.policy`，由 `sessions.launch` 在启动时刻按当时的上限收拢(§3.3)。存储的 `enabled_at` 保持其含义：成功的 Settings CAS 在创建即启用或从禁用转为启用时把它设为该次保存的 UTC 时刻；禁用会移除它。已经启用的保存保留它，包括计划编辑。直接本地配置遵循同一不变量；没有 schema 默认值，也不在加载时以当前时间替换。
 
 投递历史为每个现存任务保留最近 100 条终态投递，另加 `delivering` 记录以及命名 launch 自有 Session 的最后一条记录(A.7)。Settings 来源 `schedule` 保存一份含 §7.1 旧字段说明的任务文档。Settings 在写入时与读取持久数据时应用 Scheduler 的文档默认值与校验；Scheduler 直接使用交付的任务。任务写入是 Scheduler 对那份文档的类型化写入，按其修订做 CAS，因此工具与管理保存绝不会静默互相覆盖；这不对其他客户端/文件写入做认证(§7)。`Job.revision` 是所选任务的修订，由 Scheduler 在每次任务变更时推进。它与 CAS 使用的 Settings 不透明文档修订不同。投递记录使用既有 `pluginFiles` 事务(A.7)。
 
@@ -507,8 +520,8 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 | --- | --- | --- |
 | `Job.enabled_at` | 成功的 Settings CAS 按上述规则设置。 | A.4 的 `every` 锚点；重载保留其相位。 |
 | `Job.disabled_reason` | 投递以目标消失类代码结算为 `failed` 时与 `enabled = false` 一同写入(§A.3)；一次保存或重新启用任务会清除它。 | `schedule.list`，让客户端显示任务为何停止。 |
-| `Delivery.deadline_at` | 与 launch 目标的 `delivering` 记录一同设为 `created_at + snapshot.max_run_minutes`；保留在 `delivered` 记录上。 | §3.2 的停止定时器，包括重启或任务编辑后的恢复。启动与准入时间计入该上限。 |
-| `Delivery.session_id`/`branch_id` | launch 目标在写入输入之前与 `deadline_at` 一同持久化(启动回复的 Session)；`session` 目标在接受时持久化。 | A.7 的所有权：只有 Scheduler 自己成功 `sessions.launch` 记录下的 Session 才会被删除。 |
+| `Delivery.deadline_at` | 与 launch 目标的 `delivering` 记录一同设为 `created_at + snapshot.max_run_minutes`；保留在 `delivered` 记录上。 | §3.2 的停止定时器，包括重启之后。启动与准入时间计入该上限。 |
+| `Delivery.session_id`/`branch_id` | launch 目标在写入输入之前与启动回复的 `policy` 一同持久化；`session` 目标在接受时持久化。 | A.7 的所有权：只有 Scheduler 自己成功 `sessions.launch` 记录下的 Session 才会被删除。 |
 | `Delivery.input_event_id` | 已发布回执，或确认输入的 `lookup` 回复。 | 投递是否为 `delivered`；恢复绝不为其记录再次写入。 |
 | `Delivery.attempts` | 查询通道在发送查询之前持久化递增后的计数，遵循“在进行任何 `sessions` 调用之前释放文件事务”的规则；在持久化与查询之间崩溃仍计入该次尝试。 | 下一个查询通道，包括重启之后，读取存储的计数：已达上限的计数在发送任何查询之前把记录结算为带 `detail: lookup_budget_exhausted` 的 `lost`，第五次不带事实的回答把它结算为 `lost`(§3.1)。 |
 | `Delivery.released` | 由改变目标的保存、删除或重新推导释放的保留期通道设置在 launch 来源记录上；记录保留其记录的来源。 | A.7 的删除权威：已释放记录不拥有任何 Session，与任何其他记录一样被保留并报告；较早构建把该文件整体拒绝为非法数据。 |
@@ -570,17 +583,17 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 | --- | --- |
 | 触发 | 定时器任务为每个启用任务计算下一个窗口；窗口到期时应用宽限与启用规则，并以新的 `run_id` 持久化 `delivering` |
 | Session 目标 | `sessions.input {sessionId, branchId, mode, submissionId:"scheduler:<run_id>", rawBlocks:[{text:"<dim-scheduler …>…</dim-scheduler>"}], content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`。标记文本在 Scheduler 的外部输入边界构造/转义；S2 接受 `RawBlock {text,key?}`，而不是结构化的标记对象。 |
-| launch 目标 | `sessions.launch {agent?, cwd, policy?}` → `{sessionId,policy}`。Agents 选择 profile 的模型并按实时上限收拢策略；Scheduler 不解析这两者。在写入输入之前把 Session 身份与 `deadline_at` 作为 `delivering` 持久化，然后向该 Session 的 `main` 分支写入同一形状的输入。 |
+| launch 目标 | `sessions.launch {agent?, cwd, policy?}` → `{sessionId,policy}`。Agents 选择 profile 的模型并按实时上限收拢策略；Scheduler 不解析这两者。在 `delivering` 记录上持久化 Session 身份与回复中的 `policy`，起它的停止定时器，然后向该 Session 的 `main` 分支写入同一形状的输入。除此之外什么都不调，之后也不跟随该 Session。 |
 | 结算 | `{inputId,sequence}` → `delivered` 并带 `input_event_id`。确定性拒绝 → `failed: <code>`；目标消失类代码同时禁用任务(A.3)。 |
 | 不确定回复 | `reloading`、`publication_unknown`、`ambiguous` 或传输失败 → `sessions.lookup {sessionId,branchId,submissionId}`(§A.6)。 |
 | 错过 | 超过宽限的窗口记为一条 `missed`；不启动、不写输入。 |
-| 停止 | launch Session 在 `deadline_at` 停止；记录保持 `delivered`(§3.2)。 |
+| 停止 | launch Session 由记录自己的停止定时器在 `deadline_at` 停止；记录保持 `delivered`(§3.2)。 |
 
 被接受的任务快照是为该窗口从 Settings 读取的 `Job` 值。每个窗口只发生一次写入，因此除了文档读取与分支自己的 `submissionId` 规则之外，没有复核、CAS 或绑定来保护它：在投递期间落地的保存只影响后续窗口。
 
 ### A.6 运行结果投递
 
-Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次运行的结果就是它的记录：`schedule.history` 读取它(A.7)，`schedule.watch` 流式送出它的状态变化(§11.2)。本节定义每条已结算记录的含义，以及不确定写入如何被解决。
+Scheduler 不向任何 Session 投递运行结果、不写报告输入，也不发送通知。一次投递的结果就是它的记录：`schedule.history` 读取它(A.7)，`schedule.watch` 流式送出它的状态变化(§11.2)。本节定义每条已结算记录的含义，以及不确定写入如何被解决。
 
 | 情况 | 记录 | 它说明什么 |
 | --- | --- | --- |
@@ -593,7 +606,7 @@ Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次�
 | 该任务仍有 `delivering` 投递时窗口到期 | `missed: previous_delivery_unsettled` | 不写输入；该窗口不重试，记录可清理(A.7) |
 | 守护进程错过了窗口 | `missed` | 不启动、不写输入 |
 
-恢复绝不重写已结算记录，也绝不重发窗口。在持久化 `delivering` 与输入回复之间崩溃，由下次启动时的 `sessions.lookup` 结算；在 launch Session 已创建、其身份尚未记录时崩溃，会留下一条没有记录命名的 Session(附录 F 的已知限制)。每条 `delivering` 记录每个定时器节拍查询一次，总共至多五次，跨重启累计。`accepted` 回答把它结算为 `delivered`；第五次不带事实的回答把它结算为 `lost`(§3.1)。恢复会在查询任何东西之前，把存储的 `attempts` 已达上限的记录结算为带 `detail: lookup_budget_exhausted` 的 `lost`。每个节拍在查询之前持久化递增后的 `attempts`，因此在两次尝试之间崩溃不会重新开始计数。“未结期间永不被清理”因此仍然成立，同时有了上限：目标持续失败的任务，既不会无界增长记录，也不会写两次。
+恢复绝不重写已结算记录，也绝不重发窗口。在持久化 `delivering` 与输入回复之间崩溃，由下次启动时的 `sessions.lookup` 结算；在 launch Session 已创建、其身份尚未记录时崩溃，会留下一条没有记录命名的 Session(附录 F 的已知限制)，而它的记录不命名任何 Session，因此没有查询能到它，它以 `detail: launch_reply_unknown` 结算为 `lost`。查询总是以该趟开始时其记录持有的身份为目标，因此 launch 回复在调用方自己的快照过期之后才到达的投递，会对 launch 出的 Session 对账，而不是凭过期的副本结算为 `lost`。携带其 Session 的 launch 记录以任何状态恢复其停止定时器，`delivered`、`lost` 或 `failed` 皆可：定时器就是记录携带的 `deadline_at`，它属于被 launch 的 Session，直到保留期移除该记录为止(A.7)。每条 `delivering` 记录每个定时器节拍查询一次，总共至多五次，跨重启累计。`accepted` 回答把它结算为 `delivered`；第五次不带事实的回答把它结算为 `lost`(§3.1)。恢复会在查询任何东西之前，把存储的 `attempts` 已达上限的记录结算为带 `detail: lookup_budget_exhausted` 的 `lost`。每个节拍在查询之前持久化递增后的 `attempts`，因此在两次尝试之间崩溃不会重新开始计数。“未结期间永不被清理”因此仍然成立，同时有了上限：目标持续失败的任务，既不会无界增长记录，也不会写两次。
 
 ### A.7 运行存储与保留期
 
@@ -601,11 +614,11 @@ Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次�
 
 内层 v1 不变并保留旧字节：它解码 `state` 为本文状态之一的投递，也解码本次变更之前写下的状态名——`skipped`、`submitted`、`running`、`completed`、`cancelled`、`timed_out`、`lost`、`launching`——按它们写入时的不变量。新记录使用 §2.2 的词表并省略不再适用的字段。没有迁移过程重写该文件，版本保持 1，因为没有已写记录改变含义。投递还可以携带 `attempts`，即已为它进行的 `sessions.lookup` 尝试次数。该字段是增量且可选的：缺少它的记录读作零，重启后的第一个查询通道就是第一次尝试。本次变更之前写入的状态中没有 `delivering`，因此更早构建的存储记录绝不会缺少该字段。投递还记录它到期时所依据的任务修订号 `job_revision`；没有该字段的记录无法证明其依据仍然有效，永不禁用其任务(A.3)。
 
-文件缺失意味着没有投递历史。在这个持久化边界上，拒绝畸形 JSON、缺失或未知版本、非法记录字段与重复 `run_id`。不自动重置、重写、备份或迁移非法字节。读取时校验一次，之后直接传递类型化记录。已提交格式的变更需要新的内层版本与明确的兼容决定。旧读取方把不认识的字段或状态视为非法数据并拒绝写入([runs.rs](../../../../crates/dim-agent-scheduler/src/runs.rs))；因此本设计写出的文件在降级时以 `invalid_data` 被整体拒绝，绝不会被静默丢弃或重置，`attempts`、`released` 与 `job_revision` 和状态 `delivering`、`delivered` 一样属于这一类。版本保持 1，因为没有已写记录改变含义；降级可读性不在提供范围内。任务文档遵循同一规则：本设计保存的任务携带 `target` 并省略遗留字段，因此较早版本的读取器会拒绝整个文档，保留其字节，只有 Scheduler 在升级前不可用；不提供任务文档的降级可读性，旧构建拒绝它而不重写。
+文件缺失意味着没有投递历史。在这个持久化边界上，拒绝畸形 JSON、缺失或未知版本、非法记录字段与重复 `run_id`。不自动重置、重写、备份或迁移非法字节。读取时校验一次，之后直接传递类型化记录。已提交格式的变更需要新的内层版本与明确的兼容决定。旧读取方把不认识的字段或状态视为非法数据并拒绝写入([runs.rs](../../../../crates/dim-agent-scheduler/src/runs.rs))；因此本设计写出的文件在降级时以 `invalid_data` 被整体拒绝，绝不会被静默丢弃或重置，`attempts`、`released` 与 `job_revision` 和状态 `delivering`、`delivered` 一样属于这一类。版本保持 1，因为没有已写记录改变含义；降级可读性不在提供范围内。任务文档遵循同一规则：本设计保存的任务携带 `target`，因此不认识该字段的较早版本的读取器会拒绝整个文档，保留其字节，只有 Scheduler 在升级前不可用；不提供任务文档的降级可读性，旧构建拒绝它而不重写。
 
 每次投递转换使用既有 `scope.withLock` 读/改/`file.replace` 事务。`delivering` 记录先于输入或 launch 的输入持久化；在进行任何 `sessions` 调用之前释放文件事务。不增加 JavaScript 互斥、存储服务、日志或会成为另一权威的内存副本。读取或替换失败会停止新的投递并暴露存储失败；它不是空历史，也不是已确认的转换。清理停止新窗口、结算自有操作与待写记录，然后关闭文件作用域。
 
-保留期遵循 [S2 §8.7](../appserver/sessions-service.md#87-删除运行用的-session)。按 `ended_at` 为每个现存任务选择最近 100 条终态投递，以 `run_id` 作为稳定次序，并保留所有 `delivering` 记录；A.6 限制了它保持未结的时长，因此本设计写出的每条记录最终都会成为终态并可被清理，包括在恢复时计数耗尽的那条。本次变更之前写入的非终态记录——`submitted`、`running` 或 `launching`——按原样解码并保留：没有东西结算它，最近 100 条终态选择永远不会选中它，它也永不被清理。这以这类记录的数量为上限，拥有它们的任务是仅草稿期的旧任务(#317)。终态投递的停止定时器必须先结束，其记录才可被清理；这是在线 I/O 所有权，不是持久化的待办状态。
+保留期遵循 [S2 §8.7](../appserver/sessions-service.md#87-删除运行用的-session)。按 `ended_at` 为每个现存任务选择最近 100 条终态投递，以 `run_id` 作为稳定次序，并保留所有 `delivering` 记录；A.6 限制了它保持未结的时长，因此本设计写出的每条记录最终都会成为终态并可被清理，包括在恢复时计数耗尽的那条。本次变更之前写入的非终态记录——`submitted`、`running` 或 `launching`——按原样解码并保留：没有东西结算它，最近 100 条终态选择永远不会选中它，它也永不被清理。这以这类记录的数量为上限，拥有它们的任务是仅草稿期的旧任务(#317)。launch 投递的停止定时器在记录存在的整个期间从 `deadline_at` 运行，因此停止时刻未到的记录不可被清理；这是在线 I/O 所有权，不是持久化的待办状态。
 
 只有来自 Scheduler 自己成功 `sessions.launch` 回复的 Session 身份才会被删除。`session` 目标指向的 Session 永不被删除，投向 `session` 目标的投递所命名的 Session 同样如此。旧 `reuse` 任务启动的 Session 仍归该任务所有：删除任务会删除它，而改变该任务目标的保存会转而释放它。释放是在记录本身上退役所有权：在其可选字段中设置 `released` 标志，记录保留其记录的 `session_origin: launch`，每条记录保留原位置，`schedule.history` 展示相同的投递，已释放记录与任何其他记录一样被保留并报告，较早版本的读取器会把携带 `released` 的文件整体拒绝为 `invalid_data` 且不重写。保留期通道还会从文档重新推导释放——目标已设置且遗留 `reuse` 绑定命名某 Session 的任务会释放该 Session 的 launch 记录——因此自身释放写入失败的保存会在下一趟自愈；删除在任务离开文档之前释放。该规则只覆盖旧 `reuse` 绑定——唯一命名 Session 的遗留字段：旧 `create` 或工具保存的任务没有这种绑定，其 launch 来源记录遵循普通保留规则。运行记录决定是哪一个 Session(§2.3)：记录带 launch 来源的 Session 属于启动方，任务只是复用的 Session 是外来的，永不被删除。fork 与外部提供的 Session 身份永不被删除。在移除最后一条携带该自有 Session 身份的过期记录之前调用既有 `sessions.delete`，且只在 Session 的停止时刻之后。失败或不确定的删除保留该记录并暴露其失败；下一次保留期通道重新读取它，而不是使用单独的清理队列。删除确认后，原子地移除过期记录。因此删除与记录移除之间崩溃会留下可用于对账的身份。失败的清理可能暂时保留超过 100 条终态记录。没有持久化 Session 身份的丢失启动仍是附录 F 的已知限制。
 
@@ -655,7 +668,7 @@ Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次�
 | 查询回答 `unknown` | 记录保持 `delivering`，该回答计入上限；之后的 `accepted` 结算为 `delivered`，绝不写第二条输入 |
 | 查询回答 `reloading`、`ambiguous` 或传输失败 | 记录保持 `delivering`，每分钟重试；每次回答都计入，第五次不带事实的回答结算为 `lost` |
 | 启动失败 | `failed: <code>`；该窗口不重试 |
-| 停止定时器调用失败 | 在记录仍命名该 Session 期间每分钟重试；投递不变 |
+| 停止定时器调用失败 | 在记录仍然存在期间每分钟重试；投递不变 |
 | 存储不可读或未知格式版本 | Scheduler 应用失败(不静默重置) |
 | 进程退出 | 定时器停止；`delivering` 记录在下次启动结算 |
 
@@ -668,13 +681,13 @@ Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次�
 1. 每种调度种类产生预期窗口，包括 DST 空档/重叠与 `at` 自我禁用。重启保留 `enabled_at`；编辑已启用任务保留锚点，而禁用/重新启用会重置它。缺少锚点的启用配置被拒绝且字节不变。
 2. 到期的 `session` 任务恰好向保存分支写入一条带标记与提示词的输入，记录读作 `delivered`；不向任何其他 Session 写入，任何地方都不存在报告输入。验证默认 `queue` 以及存储的 `steer` 与 `append`。
 3. 工具 create 保存调用方的 Session 与分支，不能设置目标、模型、Agent 或策略；工具 update 保留存储的目标；第 17 条工具创建的任务为 `schedule_invalid`。
-4. 管理 `schedule.save` 设置 `launch` 目标；到期窗口用保存的 Agent 与收拢后的预设启动一个非交互 Session，向 `main` 写入一条输入，并记录带截止时刻的 `delivered`。验证 Session 在停止时刻被停止，且不早于它。
+4. 管理 `schedule.save` 设置 `launch` 目标；到期窗口用保存的 Agent 与收拢后的预设启动一个非交互 Session，向 `main` 写入一条输入，并记录带启动回复给出的停止时刻的 `delivered`。记录中不再跟随该 Session。验证 Session 在停止时刻被停止且不早于它，以及任务不存储任何被捕获的权限。
 5. 超过宽限的窗口记为一条 `missed`，不启动、不写输入。跨窗口重启守护进程得到 `missed`。
 6. 触发时目标已消失的投递以对应代码结算 `failed` 并禁用任务；`schedule.list` 显示原因，保存清除它，后续窗口不再触发。
 7. 丢失的投递回复由查询结算：任一次尝试回答 `accepted` → `delivered` 且无第二条输入；`unknown`、`reloading`、`ambiguous` 或传输失败保持 `delivering` 并计入上限，不写入(第 9 项)。
 8. **未结重叠。** 任务仍有 `delivering` 投递时，它的下一个到期窗口记录 `missed: previous_delivery_unsettled`，不写输入，且该记录计入保留期；同一状态下的 `schedule.run_now` 为手动窗口记录自己的 `missed` 投递并不写入。
 9. **有界查询。** 查询持续回答 `unknown`、`reloading`、`ambiguous` 或传输失败的 `delivering` 记录，在第五次这类回答时结算为 `lost`，`detail` 命名该回答；记录可清理，且不再写入任何输入。写入从未提交的窗口是 `lost`，而不是 `failed`。
-10. 带 `delivering` 记录重启：无重复输入、无重复启动。带停止时刻已过的 `delivered` launch 记录重启：停止该 Session，绝不在其停止时刻之前删除它。
+10. 带 `delivering` 记录重启：无重复输入、无重复启动；启动从未得到回复的记录结算为 `lost: launch_reply_unknown`。带停止时刻已过的 `delivered` launch 记录重启：停止该 Session，绝不在其停止时刻之前删除它。较早构建留在 `launching`、`submitted` 或 `running` 的记录按原样保留。
 11. 旧文档：任何旧 `mode` 的工具保存任务投递到其保存 Session 与分支；用户 `create` 任务映射为 launch 目标；有 Session 的用户 `reuse` 任务映射为该 Session 的 `main`；没有的用户 `reuse` 任务映射为 launch。每种都能读取、投递并往返，且不重写旧字节。旧 `reuse` 任务启动的 Session 仍随其任务；任务只是复用的 Session，以及其他所有目标 Session，在任务删除后存活。
 12. `schedule.history` 读取新词表，并且仍能解码本次变更之前写下的记录；非法内层字节被保留。
 13. 保留期保留未结的 `delivering` 记录与每个任务最近 100 条终态投递；启动的 Session 只在其停止时刻之后被删除；删除失败保留记录并重试。
@@ -716,7 +729,7 @@ Scheduler 不向任何 Session 投递运行结果，也不发送通知。一次�
 | 公开运行存储 | process-typescript §5.2 提供既有 pluginFiles 提供方与真实的公开存储验收。包必须在效果之前持久化 `delivering`；不使用私有托管插件槽位或直接文件系统访问。 |
 | Sessions | `sessions.input`、`launch`、`stop` 与 `delete` 是已交付的 S2 方法；§1.1 保持其信封。 |
 | 原生输入生命周期 | 已准入的输入跨卸载与索引重载继续运行；记录的结算等待它。 |
-| 启动停止定时器 | 由进程部分在其任务跟踪器中拥有；通过 `deadline_at` 跨越重启。 |
+| 启动停止定时器 | 由进程部分在其任务跟踪器中拥有；通过 `deadline_at` 跨越重启，本进程继承的 launch 记录以任何状态恢复它。较早构建留在 `launching`、`submitted` 或 `running` 的记录在这里没有停止定时器：它按原样保留(A.7)。 |
 | 记录 | A.1 定义任务与投递字段，A.7 定义内层 v1 存储；附录 D 演练重启、不确定回复、停止定时器与保留期。无需核心或协议需求。 |
 | 原生空闲生命周期 | [#126](https://github.com/arcships/dim/issues/126) 由已合入的 #331 交付。Scheduler 使用既有 S2 持有，不实现宿主卸载。 |
 
@@ -747,7 +760,7 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
 | 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |
 | 定时器、投递写入与停止定时器 | 由进程部分拥有：定时器、投递任务与保留期在其任务跟踪器中运行，并在其方法与服务注册之后启动。卸载时(`ctx.cancellation_token()`)，新工作停止、等待结束，清理在关闭存储作用域之前等待跟踪器；已准入的 `sessions` 调用先结算。仍为 `delivering` 的记录留在文件中，交给下一代的恢复。Session 工具返回 §1.3 的卸载结果及其自己的 `schedule: cancelled before handover` 或 `wakeup: cancelled before handover`。 |
-| 策略文本 | `install_with(builder, SchedulerTexts {description})`；`install` 使用内置文本。描述只含协议，因此不携带评估成员。 |
+| 策略文本 | `install_with(builder, SchedulerTexts {description})`；`install` 使用内置文本。描述只含协议，因此不携带评估成员，也不需要校验。 |
 | guide 条目 | Session 部分取得 `GuideEntries` 并注册 §5.2 的条目，作用域为 Session，order 110 |
 | 可选行 | `AgentBuilder::optional_plugin`：宿主不等待该行，因此缺失依赖或不可读的投递存储只使 Scheduler 失败(附录 D 第 14 项) |
 | cron 与时区 | `croner` 与 `chrono-tz`，由 `deny.toml` 检查。Scheduler 跳过墙钟落在 DST 空档的发生，并把重复的秋季回溯时刻在较早的那一刻触发一次 |

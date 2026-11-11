@@ -255,6 +255,7 @@ struct Worker {
     /// The Session `/new` left: still attached until the next one is entered.
     parked: String,
     projection: Projection,
+    retired_inputs: std::collections::HashMap<String, bool>,
     question_responses: Vec<(u64, String, crate::question::Call)>,
     approval_details: std::collections::BTreeMap<u64, MemberDetailRead>,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
@@ -647,6 +648,7 @@ impl Worker {
             parked: String::new(),
             model_session: None,
             projection: Projection::default(),
+            retired_inputs: Default::default(),
             question_responses: Vec::new(),
             approval_details: Default::default(),
             cursors: Default::default(),
@@ -831,11 +833,10 @@ impl Worker {
                 self.send(Update::Switched {
                     session_id: String::new(),
                     kind,
+                    cwd: None,
                 });
                 self.reportable(
                     crate::report::Captured::observed(
-                        &session_id,
-                        "main",
                         crate::report::Operation::SessionRead,
                         dim_client::app_error(&error),
                         error.to_string(),
@@ -897,7 +898,11 @@ impl Worker {
                 .map_err(|error| format!("permission: unavailable ({error})"));
             self.send(Update::Permissions(policy));
         }
-        self.send(Update::Switched { session_id, kind });
+        self.send(Update::Switched {
+            session_id,
+            kind,
+            cwd: self.session_cwd.clone(),
+        });
         self.refresh_skills().await;
         self.context_stale = true;
         self.publish();
@@ -1157,8 +1162,6 @@ impl Worker {
                 if let Err(error) = opened
                     && !self.reportable(
                         crate::report::Captured::observed(
-                            &session_id,
-                            &parent,
                             crate::report::Operation::BranchCreate,
                             dim_client::app_error(&error),
                             error.to_string(),
@@ -1197,8 +1200,6 @@ impl Worker {
                     Err(error) => {
                         if !self.reportable(
                             crate::report::Captured::observed(
-                                &session_id,
-                                "main",
                                 crate::report::Operation::SessionFork,
                                 dim_client::app_error(&error),
                                 error.to_string(),
@@ -1315,6 +1316,7 @@ impl Worker {
                     self.send(Update::Switched {
                         session_id: String::new(),
                         kind: SwitchKind::New,
+                        cwd: None,
                     });
                 }
             }
@@ -1416,7 +1418,7 @@ impl Worker {
                 }
             }
             Command::Compact => self.compact().await,
-            Command::ErrorReport(request) => self.report_request(request).await,
+            Command::Report(request) => self.report_request(request).await,
             Command::Export(format) => {
                 let extension = match format {
                     crate::export::Format::Markdown => "md",
@@ -2041,17 +2043,21 @@ impl Worker {
                 self.report_failure(result);
             }
             Command::InputControl { input_id, action } => {
+                if let Some(notified) = self.retired_inputs.get_mut(&input_id) {
+                    if !std::mem::replace(notified, true) {
+                        self.send(Update::Notice(QUEUE_LEFT.into()));
+                    }
+                    return Ok(());
+                }
+                let Some(user) = self.shown().held_input(&input_id).cloned() else {
+                    return Ok(());
+                };
                 let mut params = json!({
                     "sessionId": self.session_id,
                     "branchId": self.focus,
                     "inputId": input_id,
                 });
-                let user = self.shown().held_input(&input_id).cloned();
                 if action == "steer" {
-                    let Some(user) = &user else {
-                        self.send(Update::Notice(QUEUE_LEFT.into()));
-                        return Ok(());
-                    };
                     params["steer"] = json!(user);
                 }
                 #[derive(Deserialize)]
@@ -2062,17 +2068,19 @@ impl Worker {
                     .client
                     .typed::<Withdrawn>("session.input.withdraw", params)
                     .await;
-                match (result, user) {
-                    (Ok(withdrawn), _) if withdrawn.status == "notHeld" => {
+                if let Ok(withdrawn) = &result {
+                    self.retired_inputs
+                        .insert(input_id, withdrawn.status == "notHeld");
+                }
+                match result {
+                    Ok(withdrawn) if withdrawn.status == "notHeld" => {
                         self.send(Update::Notice(QUEUE_LEFT.into()))
                     }
-                    (Ok(withdrawn), Some(user))
-                        if withdrawn.status == "deleted" && action == "withdraw" =>
-                    {
+                    Ok(withdrawn) if withdrawn.status == "deleted" && action == "withdraw" => {
                         self.send(Update::Withdrawn(user));
                     }
-                    (Ok(_), _) => {}
-                    (Err(error), _) => self.send(Update::Notice(error.to_string())),
+                    Ok(_) => {}
+                    Err(error) => self.send(Update::Notice(error.to_string())),
                 }
             }
         }
@@ -4119,7 +4127,18 @@ impl Worker {
         Ok(())
     }
 
+    /// Applies an event the live stream carried: a task it ends is news.
     fn apply(&mut self, branch_id: &str, event: Event) {
+        self.fold(branch_id, event, false);
+    }
+
+    /// Applies an event a read of recorded history replayed: a task it ends
+    /// had already ended, so it is history (`Projection::replay`).
+    fn replay(&mut self, branch_id: &str, event: Event) {
+        self.fold(branch_id, event, true);
+    }
+
+    fn fold(&mut self, branch_id: &str, event: Event, replayed: bool) {
         if branch_id == "main"
             && event.sequence > self.model_through
             && let EventContent::Configuration(configuration) = &event.content
@@ -4132,7 +4151,7 @@ impl Worker {
         let captured = if self.report_available()
             && (branch_id == self.focus || self.side.as_deref() == Some(branch_id))
         {
-            crate::report::Captured::event(&self.session_id, branch_id, &event)
+            crate::report::Captured::event(&event)
         } else {
             None
         };
@@ -4145,7 +4164,10 @@ impl Worker {
         {
             line.cursor = event.sequence;
             let previous_rows = line.projection.rows().len();
-            line.projection.apply(branch_id, &event);
+            match replayed {
+                true => line.projection.replay(branch_id, &event),
+                false => line.projection.apply(branch_id, &event),
+            }
             inline_shown = inline_report && line.projection.mark_reportable_error(previous_rows);
         }
         let cursor = self.cursors.entry(branch_id.to_owned()).or_default();
@@ -4171,7 +4193,10 @@ impl Worker {
             });
         }
         let previous_rows = self.projection.rows().len();
-        self.projection.apply(branch_id, &event);
+        match replayed {
+            true => self.projection.replay(branch_id, &event),
+            false => self.projection.apply(branch_id, &event),
+        }
         if let Some(error) = captured
             && (!inline_report
                 || self.projection.mark_reportable_error(previous_rows)
@@ -4300,6 +4325,13 @@ impl Worker {
 
     fn publish(&mut self) {
         self.publish_at = None;
+        self.retired_inputs.retain(|id, _| {
+            self.projection.held_input(id).is_some()
+                || self
+                    .lines
+                    .values()
+                    .any(|line| line.projection.held_input(id).is_some())
+        });
         let mut snapshot = match self.lines.get(&self.focus).filter(|_| self.focus != "main") {
             Some(line) => line.projection.snapshot(),
             None => self.projection.snapshot(),

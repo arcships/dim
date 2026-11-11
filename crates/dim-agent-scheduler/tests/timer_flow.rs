@@ -149,10 +149,7 @@ async fn an_at_job_runs_once_when_its_instant_arrives_and_then_disables() {
                 .await
                 .unwrap();
             if let Some(run) = history["runs"].as_array().unwrap().first().cloned()
-                && !matches!(
-                    run["state"].as_str(),
-                    Some("launching" | "submitted" | "running")
-                )
+                && run["state"] != json!("delivering")
             {
                 return run;
             }
@@ -160,9 +157,9 @@ async fn an_at_job_runs_once_when_its_instant_arrives_and_then_disables() {
         }
     })
     .await
-    .expect("the window's run settles");
+    .expect("the window's delivery settles");
     assert_eq!(run["window"], at.as_str(), "{run}");
-    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["state"], "delivered", "{run}");
 
     let history: Value = client
         .typed("schedule.history", json!({"job_id": job_id}))

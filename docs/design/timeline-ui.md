@@ -110,6 +110,8 @@ While a line is shown, the composer's bottom border names its path from `main`, 
 
 `after message N` counts the user messages in the parent's history, its inherited ones included, at the cut.
 
+The workspace half of that label gives way before the line does. Beside a wide left status it shortens as a whole first — the path's front is cut, then the branch is dropped, then the path alone is cut — instead of disappearing, and only a border with no room for any of those forms drops it. A shown line keeps the three forms it has: the whole place, `⑂` alone, then nothing, so line information is never displaced by path information. The label names the workspace the Session works in rather than the directory the process was started in, and it follows a Session attached elsewhere — an explicit `--cwd`, a `/resume` into another worktree — together with that workspace's branch. Home, which has no Session yet, names the launch workspace again. File mentions, pasted paths and dropped files keep the local `--cwd` base instead ([CLI attachment input](cli-attachment-input.md)), so after a cross-workspace resume the label can name a different directory than they do; when it does, the `@` picker names that base in its title.
+
 ### 4.6 `/timeline`: jumping to a message
 
 The Timeline's points are its user messages. Tab walks them one at a time from the newest; `/timeline` lists them all, as the desktop client's message rail does: each row is the message and the first text of its answer.

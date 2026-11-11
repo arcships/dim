@@ -24,7 +24,8 @@ pub(super) struct Reviewed {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Evidence {
-    captured_error: CapturedError,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    captured_error: Option<CapturedError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeline: Option<TimelineEvidence>,
     process: ProcessDiagnostics,
@@ -80,16 +81,18 @@ pub(super) fn review(
         (true, true) => InstructionsStatus::PartiallyApplied,
     };
     let mut captured_error = snapshot.error.clone();
-    if !code {
-        captured_error.code = None;
+    if !code && let Some(error) = &mut captured_error {
+        error.code = None;
     }
     let (timeline, unavailable) = match &snapshot.timeline {
         Err(reason) => (None, Some(*reason)),
         Ok(_) if !timeline => (None, Some(Missing::Omitted)),
         Ok(evidence) => {
             let mut evidence = evidence.clone();
-            if redact || !correlation {
-                evidence.correlation = None;
+            if (redact || !correlation)
+                && let TimelineEvidence::Failure { correlation, .. } = &mut evidence
+            {
+                *correlation = None;
             }
             (Some(evidence), None)
         }
@@ -113,28 +116,57 @@ pub(super) fn review(
 
 impl Reviewed {
     pub(super) fn generate(self) -> Result<Value, RpcError> {
-        let error = &self.evidence.captured_error;
-        let title = error.summary;
-        let mut body = format!(
-            "## Error\n\n{title}.\n\n- Observed at {}\n- Dim {} (protocol {})\n- Platform {}\n",
-            error.observed_at.to_rfc3339(),
+        let (title, version, mut body) = match &self.evidence.captured_error {
+            Some(error) => (
+                error.summary,
+                1,
+                format!(
+                    "## Error\n\n{}.\n\n- Observed at {}\n",
+                    error.summary,
+                    error.observed_at.to_rfc3339()
+                ),
+            ),
+            None => ("Session report", 2, "## Session\n\n".to_owned()),
+        };
+        write!(
+            body,
+            "- Dim {} (protocol {})\n- Platform {}\n",
             self.evidence.process.product_version,
             self.evidence.process.protocol_version,
             self.evidence.process.platform,
-        );
-        if let Some(code) = error.code {
+        )
+        .expect("writing to a string");
+        if let Some(code) = self
+            .evidence
+            .captured_error
+            .as_ref()
+            .and_then(|error| error.code)
+        {
             writeln!(body, "- Error code `{code}`").expect("writing to a string");
         }
         if let Some(timeline) = &self.evidence.timeline {
+            let (summary, truncated) = match timeline {
+                TimelineEvidence::Failure {
+                    nearby, truncated, ..
+                } => (
+                    format!(
+                        "Timeline failure and {} nearby records in diagnostics",
+                        nearby.len()
+                    ),
+                    truncated,
+                ),
+                TimelineEvidence::Recent { recent, truncated } => (
+                    format!(
+                        "{} recent session activity records in diagnostics",
+                        recent.len()
+                    ),
+                    truncated,
+                ),
+            };
             writeln!(
                 body,
-                "- Timeline failure and {} nearby records in diagnostics{}",
-                timeline.nearby.len(),
-                if timeline.truncated {
-                    " (bounded excerpt)"
-                } else {
-                    ""
-                },
+                "- {summary}{}",
+                if *truncated { " (bounded excerpt)" } else { "" },
             )
             .expect("writing to a string");
         }
@@ -149,7 +181,7 @@ impl Reviewed {
         }
         let report = format!("# {title}\n\n{body}");
         let diagnostics = serde_json::to_string_pretty(&json!({
-            "version": 1,
+            "version": version,
             "evidence": self.evidence,
             "unavailable": self.unavailable,
         }))

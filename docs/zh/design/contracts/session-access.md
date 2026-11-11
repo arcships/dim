@@ -342,6 +342,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 写入路径 | 该服务追加 `input/withdraw`，然后以 InputQueue 对该指令的决定作答。InputQueue 的复核只使用其自身的决策状态（持有集合），从不对另一所有者的事实加锁 |
 | 撤回并作为 Steer 重新提交 | 一个原子批次：针对旧输入的 `input/withdraw` 加新的 Steer `input/message`。撤回只在旧输入仍被持有时生效；新输入无论如何都会写入 |
 | 应用之后 | 已应用的输入无法撤回；Loop 照常消费它，无需改动 |
+| 被拒绝的 `steer` | `steer` 按操作者送来的样子、在任何提交检查之前、撤回被决定之前校验，因此没有操作者内容的 `steer` 以 `session_invalid_input` 失败；针对队列并不持有的输入的 `steer` 回答这个错误而不是 `notHeld`，并且撤回与替代输入都不写入 |
 
 ### A.5 固定前缀读取
 

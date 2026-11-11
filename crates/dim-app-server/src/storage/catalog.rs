@@ -6,7 +6,9 @@ use super::{
 use crate::protocol::{Catalog, CatalogResult, SessionInfo, SessionSummary};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_runtime::{AgentError, Result};
-use dim_agent_types::{ContentBlock, EventKind, InputMessageData, ModelId};
+use dim_agent_types::{
+    ContentBlock, EventKind, InputMessageData, ModelId, markup::runtime_context,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
@@ -153,8 +155,11 @@ pub(super) fn refresh(connection: &Connection, session: &str) -> Result<()> {
             let text = user
                 .content
                 .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                .enumerate()
+                .filter_map(|(index, block)| match block {
+                    ContentBlock::Text { text } if !runtime_context(index, text) => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()

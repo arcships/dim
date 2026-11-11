@@ -141,9 +141,12 @@ do not outlive the daemon's filter set, so a client reads the first page again.
 the first 256 `main` events, and it is batch-complete as today's read is: the batch that holds sequence 256 is read
 whole, so a user input just past 256 in that batch is inside it. The first `input/message` that carries a user part
 among the window's events decides the preview: that part's text blocks joined with newlines, cut to 120 characters and
-ending in `…` when the text is longer. The decision is final — a first user message whose text is empty (an image-only
-message, for example) leaves `preview` NULL and no later message fills it, and a Session with no such message in the
-window keeps NULL. The projection applies the same rule live as in the backfill: a batch may set `preview` only while
+ending in `…` when the text is longer. A text block after the first that starts with a runtime marker is context a
+capability appended after the operator's words (Hooks A.6.2, Skills §9), so it stays out of the preview; the first
+block is the operator's whatever it opens with. The decision is final — a first user message whose text is empty (an
+image-only message, or one whose text is all appended context, for example) leaves `preview` NULL and no later message
+fills it, and a Session with no such message in the window keeps NULL. The projection applies the same rule live as in
+the backfill: a batch may set `preview` only while
 the row's preview is still undecided and the deciding message lies in the window, and once decided it never changes.
 Backfilled and live rows are therefore column-identical
 ([native storage format](native-storage-format.md#556-v23-格式决定)). Dropping or narrowing the window would be a

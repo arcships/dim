@@ -3,8 +3,8 @@ use dim_agent_capabilities::{
     methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, TimelineQuery,
-    TimelineQueryScope,
+    AgentError, Branch, QueryEvent, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
+    QuerySpec, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateFailedData, EventKind, ModelId, ModelOutputOutcome, TimelinePosition,
@@ -26,6 +26,7 @@ const KINDS: &[&str] = &[
     "branch/end",
     "branch/ended",
 ];
+const ACTIVITY_KINDS: &[&str] = &["step/model-start", "step/tool-start", "step/tool-completed"];
 
 #[derive(Deserialize)]
 #[serde(
@@ -70,15 +71,11 @@ impl ErrorReference {
         }
         let default_model = tree
             .and_then(|tree| tree.get(&branch).ok())
-            .and_then(|branch| branch.get::<PromptSnapshot>())
-            .and_then(|snapshot| snapshot.configuration)
-            .map(|configuration| ModelId {
-                provider_id: configuration.provider_id,
-                model_id: configuration.model_id,
-            });
+            .as_ref()
+            .and_then(adopted_model);
         Ok((
             Snapshot {
-                error: observed.into(),
+                error: Some(observed.into()),
                 timeline,
             },
             default_model,
@@ -174,8 +171,40 @@ impl From<Observed> for CapturedError {
 }
 
 pub(super) struct Snapshot {
-    pub(super) error: CapturedError,
+    pub(super) error: Option<CapturedError>,
     pub(super) timeline: Result<TimelineEvidence, Missing>,
+}
+
+impl Snapshot {
+    pub(super) async fn capture_session(tree: &TreeCommands) -> (Self, Option<ModelId>) {
+        let branch = tree.get("main").ok();
+        let timeline = match &branch {
+            Some(branch) => read_window(tree, "main", branch.sequence(), ACTIVITY_KINDS)
+                .await
+                .map(|(events, truncated)| {
+                    let (recent, truncated) = excerpt(&events, truncated, true);
+                    TimelineEvidence::Recent { recent, truncated }
+                })
+                .map_err(|_| Missing::ReadFailed),
+            None => Err(Missing::ReadFailed),
+        };
+        let model = branch.as_ref().and_then(adopted_model);
+        (
+            Self {
+                error: None,
+                timeline,
+            },
+            model,
+        )
+    }
+}
+
+fn adopted_model(branch: &Branch) -> Option<ModelId> {
+    let configuration = branch.get::<PromptSnapshot>()?.configuration?;
+    Some(ModelId {
+        provider_id: configuration.provider_id,
+        model_id: configuration.model_id,
+    })
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -188,13 +217,19 @@ pub(super) enum Missing {
 }
 
 #[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct TimelineEvidence {
-    failure: Record,
-    pub(super) nearby: Vec<Record>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) correlation: Option<Correlation>,
-    pub(super) truncated: bool,
+#[serde(untagged)]
+pub(super) enum TimelineEvidence {
+    Failure {
+        failure: Record,
+        nearby: Vec<Record>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        correlation: Option<Correlation>,
+        truncated: bool,
+    },
+    Recent {
+        recent: Vec<Record>,
+        truncated: bool,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -217,11 +252,12 @@ pub(super) struct Correlation {
     request_id: Option<Uuid>,
 }
 
-fn project(event: &AgentEvent) -> Option<Record> {
+fn project(event: &AgentEvent, include_completed_model: bool) -> Option<Record> {
     let outcome = match &event.kind {
         EventKind::ModelOutputEnd(end) => match end.outcome {
             ModelOutputOutcome::Failed { .. } => "failed",
             ModelOutputOutcome::Cancelled { .. } => "cancelled",
+            ModelOutputOutcome::Completed { .. } if include_completed_model => "completed",
             ModelOutputOutcome::Completed { .. } => return None,
         },
         EventKind::TurnEnd(end) => match end.outcome {
@@ -231,13 +267,19 @@ fn project(event: &AgentEvent) -> Option<Record> {
         },
         EventKind::BranchCreateFailed(BranchCreateFailedData::Failed { .. }) => "failed",
         EventKind::BranchCreateFailed(BranchCreateFailedData::Cancelled { .. }) => "cancelled",
-        EventKind::TurnStart(_) | EventKind::BranchStart(_) => "started",
+        EventKind::TurnStart(_)
+        | EventKind::BranchStart(_)
+        | EventKind::ModelStart(_)
+        | EventKind::ToolStart(_) => "started",
+        EventKind::ToolCompleted(end) if end.result.is_error == Some(true) => "failed",
+        EventKind::ToolCompleted(_) => "completed",
         EventKind::BranchResume(_) => "resumed",
         EventKind::BranchEnd(_) | EventKind::BranchEnded(_) => "ended",
         _ => return None,
     };
     let kind = KINDS
         .iter()
+        .chain(ACTIVITY_KINDS)
         .copied()
         .find(|kind| *kind == event.kind.key())?;
     Some(Record {
@@ -254,50 +296,20 @@ async fn read(
     sequence: u64,
     operation: Operation,
 ) -> Result<TimelineEvidence, Missing> {
-    let from = sequence.saturating_sub(CANDIDATES - 1).max(1);
-    let result = tree
-        .query(
-            branch.to_owned(),
-            TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: Some(TimelinePosition {
-                    branch_id: branch.to_owned(),
-                    sequence: from,
-                }),
-                through: Some(sequence),
-                include_publishing: false,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::In {
-                        value: QueryOperand::Field {
-                            path: "kind".into(),
-                        },
-                        values: KINDS.iter().map(|kind| (*kind).into()).collect(),
-                    }),
-                    select: QuerySelect::Events,
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::new(CANDIDATES).unwrap(),
-                    after: None,
-                }),
-            },
-        )
-        .await
-        .map_err(|error| match error {
-            dim_agent_runtime::AgentError::UnknownBranch(_)
-            | dim_agent_runtime::AgentError::InvalidInput(_) => Missing::FailureUnavailable,
-            _ => Missing::ReadFailed,
-        })?;
-    let QueryOutput::Events { mut events } = result.result else {
-        unreachable!("event selection returns events");
-    };
+    let (mut events, truncated) =
+        read_window(tree, branch, sequence, &[])
+            .await
+            .map_err(|error| match error {
+                AgentError::UnknownBranch(_) | AgentError::InvalidInput(_) => {
+                    Missing::FailureUnavailable
+                }
+                _ => Missing::ReadFailed,
+            })?;
     let anchor = events.pop().ok_or(Missing::FailureUnavailable)?.event;
     if anchor.sequence != sequence || !operation.matches_failure(&anchor.kind) {
         return Err(Missing::FailureUnavailable);
     }
-    let failure = project(&anchor).ok_or(Missing::FailureUnavailable)?;
+    let failure = project(&anchor, false).ok_or(Missing::FailureUnavailable)?;
     let (turn_id, request_id) = match &anchor.kind {
         EventKind::ModelOutputEnd(end) => (
             Uuid::parse_str(&end.turn_id).ok(),
@@ -312,16 +324,75 @@ async fn read(
             turn_id,
             request_id,
         });
-    let mut nearby: Vec<_> = events
-        .iter()
-        .filter_map(|row| project(&row.event))
-        .collect();
-    let truncated = from > 1 || nearby.len() > NEARBY;
-    nearby.drain(..nearby.len().saturating_sub(NEARBY));
-    Ok(TimelineEvidence {
+    let (nearby, truncated) = excerpt(&events, truncated, false);
+    Ok(TimelineEvidence::Failure {
         failure,
         nearby,
         correlation,
         truncated,
     })
+}
+
+async fn read_window(
+    tree: &TreeCommands,
+    branch: &str,
+    through: u64,
+    extra_kinds: &[&str],
+) -> Result<(Vec<QueryEvent>, bool), AgentError> {
+    if through == 0 {
+        return Ok((Vec::new(), false));
+    }
+    let from = through.saturating_sub(CANDIDATES - 1).max(1);
+    let result = tree
+        .query(
+            branch.to_owned(),
+            TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: Some(TimelinePosition {
+                    branch_id: branch.to_owned(),
+                    sequence: from,
+                }),
+                through: Some(through),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: KINDS
+                            .iter()
+                            .chain(extra_kinds)
+                            .map(|kind| (*kind).into())
+                            .collect(),
+                    }),
+                    select: QuerySelect::Events,
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::new(CANDIDATES).unwrap(),
+                    after: None,
+                }),
+            },
+        )
+        .await?;
+    let QueryOutput::Events { events } = result.result else {
+        unreachable!("event selection returns events");
+    };
+    Ok((events, from > 1))
+}
+
+fn excerpt(
+    events: &[QueryEvent],
+    truncated: bool,
+    include_completed_model: bool,
+) -> (Vec<Record>, bool) {
+    let mut records: Vec<_> = events
+        .iter()
+        .filter_map(|row| project(&row.event, include_completed_model))
+        .collect();
+    let omitted = records.len().saturating_sub(NEARBY);
+    records.drain(..omitted);
+    (records, truncated || omitted > 0)
 }
