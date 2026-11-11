@@ -354,16 +354,15 @@ impl Realtime {
                 "Provider does not serve a non-conversational connection",
             ));
         };
-        host.0
-            .resolve_for_modality(
-                ModalityTarget {
-                    target: model.clone(),
-                    operation: row.id("realtime"),
-                },
-                cancel.child_token(),
-            )
-            .await
-            .map_err(crate::host_error)
+        host.connection(
+            ModalityTarget {
+                target: model.clone(),
+                operation: row.id("realtime"),
+            },
+            cancel.child_token(),
+        )
+        .await
+        .map_err(crate::host_error)
     }
 
     /// Starts the supervisor of one session.

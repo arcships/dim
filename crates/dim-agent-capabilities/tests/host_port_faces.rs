@@ -10,8 +10,10 @@ use dim_agent_capabilities::execution_settings::{
     ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost,
 };
 use dim_agent_capabilities::host::{
-    HostError, ModalityModelsReply, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
-    SelectableModelsHost, SelectableModelsReply,
+    HostError, HostFuture, ModalityConnectionHost, ModalityEndpoint, ModalityHttpRequest,
+    ModalityHttpResponse, ModalityModelsReply, ModalityRequests, ModalityTarget, ModelConnection,
+    ModelPortError, ModelProtocol, ModelSelectionHost, ModelSelectionRequest,
+    ResolvedModelConnection, SelectableModelsHost, SelectableModelsReply,
 };
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettings, PromptSuggestionSettingsError, PromptSuggestionSettingsHost,
@@ -349,6 +351,162 @@ async fn an_abandoned_wait_cancels_the_owner_read() {
         .await
         .expect("dropping the wait cancels the owner's read");
     assert_eq!(*cancelled.lock().unwrap(), Some(true));
+}
+
+/// A modality owner that holds the connection's headers and credential the way
+/// Provider does: the caller names the route, the owner performs the request
+/// and applies its own credential to it.
+struct ModalityOwner {
+    secret: String,
+    seen: Arc<Mutex<Vec<ModalityHttpRequest>>>,
+}
+
+impl ModalityRequests for ModalityOwner {
+    fn endpoint(
+        &self,
+        target: ModalityTarget,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModalityEndpoint> {
+        let model = target.target.model_id;
+        Box::pin(async move {
+            Ok(ModalityEndpoint {
+                protocol: ModelProtocol::OpenaiCompatible,
+                model,
+                base_url: Some("https://provider.example/v1".into()),
+                realtime: None,
+            })
+        })
+    }
+    fn resolved(
+        &self,
+        _: ModalityTarget,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+    fn request(
+        &self,
+        request: ModalityHttpRequest,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModalityHttpResponse> {
+        let applied = self.secret.clone();
+        self.seen.lock().unwrap().push(request);
+        Box::pin(async move {
+            use base64::Engine as _;
+            Ok(ModalityHttpResponse {
+                status: 200,
+                headers: vec![("x-served".into(), applied)],
+                body: Some(base64::engine::general_purpose::STANDARD.encode(b"{\"ok\":true}")),
+            })
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_modality_face_carries_no_credential_and_completes_a_request() {
+    use base64::Engine as _;
+
+    let root = Ctx::root().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let owner = ModalityConnectionHost(Arc::new(ModalityOwner {
+        secret: "sk-modality-secret".into(),
+        seen: seen.clone(),
+    }));
+    dim_agent_capabilities::host::provide_modality_connections(&root, &owner).unwrap();
+
+    // The reply is the route, the model and the realtime declaration: no
+    // header value, bearer, key or credential field.
+    let reply = call(
+        &face(&root, "modalityConnectionHost"),
+        "resolveModalityConnection",
+        json!({"target": {"providerId": "provider", "modelId": "media"}, "operation": "image.generate"}),
+    )
+    .await
+    .unwrap();
+    let endpoint: ModalityEndpoint = serde_json::from_value(reply.clone()).unwrap();
+    assert_eq!(endpoint.model, "media");
+    assert_eq!(
+        endpoint.base_url.as_deref(),
+        Some("https://provider.example/v1")
+    );
+    let text = reply.to_string();
+    for secret in [
+        "sk-modality-secret",
+        "bearer",
+        "apiKey",
+        "api_key",
+        "secretAccessKey",
+        "authorization",
+    ] {
+        assert!(!text.contains(secret), "{secret} crossed: {text}");
+    }
+
+    // The caller performs its request through the owner, which applies the
+    // credential; the answer is data.
+    let body = base64::engine::general_purpose::STANDARD.encode(b"{\"prompt\":\"a cat\"}");
+    let request = json!({
+        "target": {
+            "target": {"providerId": "provider", "modelId": "media"},
+            "operation": "image.generate",
+        },
+        "method": "POST",
+        "url": "https://provider.example/v1/images/generations",
+        "headers": [["x-marker", "face"]],
+        "body": body,
+    });
+    let reply = call(
+        &face(&root, "modalityConnectionHost"),
+        "modalityRequest",
+        request,
+    )
+    .await
+    .unwrap();
+    let response: ModalityHttpResponse = serde_json::from_value(reply).unwrap();
+    assert_eq!(response.status, 200);
+    let served = response
+        .body
+        .as_deref()
+        .and_then(|body| base64::engine::general_purpose::STANDARD.decode(body).ok())
+        .unwrap_or_default();
+    assert_eq!(served, b"{\"ok\":true}");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "the owner performed the caller's request");
+        assert_eq!(seen[0].method, "POST");
+        assert_eq!(
+            seen[0].url,
+            "https://provider.example/v1/images/generations"
+        );
+        assert_eq!(
+            seen[0].headers,
+            [("x-marker".to_owned(), "face".to_owned())]
+        );
+    }
+
+    // The binding holds the same connection in process, and its Debug prints
+    // no credential.
+    let typed = root.get::<ModalityConnectionHost>().unwrap();
+    let connection = typed
+        .connection(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: "provider".into(),
+                    model_id: "media".into(),
+                },
+                operation: "image.generate".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(connection.model, "media");
+    assert!(!format!("{connection:?}").contains("sk-modality-secret"));
 }
 
 #[tokio::test]

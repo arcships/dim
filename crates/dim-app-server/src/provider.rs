@@ -40,6 +40,7 @@ use crate::{
     },
     storage::SqliteStorage,
 };
+use base64::Engine as _;
 use dim_agent_capabilities::context_model::output_allowance;
 use dim_agent_capabilities::host::*;
 use dim_agent_runtime::{AgentError, Names};
@@ -2369,6 +2370,77 @@ struct Resolution {
 }
 
 impl ProviderService {
+    /// Performs one non-conversational request: the connection's headers and
+    /// credential are applied here, so they never reach the caller. A URL
+    /// outside the connection's own route is sent without them.
+    async fn modality_http(
+        self: &Arc<Self>,
+        call: ModalityCall,
+        request: ModalityHttpRequest,
+        cancel: &CancellationToken,
+    ) -> Result<ModalityHttpResponse, HostError> {
+        let method = request.method.to_ascii_uppercase();
+        let mut builder = match method.as_str() {
+            "GET" => self.client.get(&request.url),
+            "POST" => self.client.post(&request.url),
+            "PUT" => self.client.put(&request.url),
+            "PATCH" => self.client.patch(&request.url),
+            "DELETE" => self.client.delete(&request.url),
+            other => {
+                return Err(HostError::classified(
+                    HostErrorKind::InvalidRequest,
+                    format!("Unsupported request method {other}"),
+                ));
+            }
+        };
+        if call.credentialed(&request.url) {
+            for (name, value) in &call.headers {
+                builder = builder.header(name.as_str(), value.as_str());
+            }
+        }
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if let Some(body) = &request.body {
+            let body = base64::engine::general_purpose::STANDARD
+                .decode(body)
+                .map_err(|_| {
+                    HostError::classified(HostErrorKind::InvalidRequest, "body is not base64")
+                })?;
+            builder = builder.body(body);
+        }
+        let response = tokio::select! {
+            reply = builder.send() => {
+                reply.map_err(|error| HostError::failed(error.to_string()))?
+            }
+            _ = cancel.cancelled() => {
+                return Err(HostError::Cancelled("Modality request cancelled".into()));
+            }
+        };
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    value.to_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| HostError::failed(error.to_string()))?;
+        Ok(ModalityHttpResponse {
+            status,
+            headers,
+            body: Some(base64::engine::general_purpose::STANDARD.encode(body)),
+        })
+    }
+}
+
+impl ProviderService {
     /// The one resolution both connection ports run: the static vs managed
     /// (OAuth) split, the record read, the catalog build, selection and the
     /// managed credential lease. `use_` decides the selectability rule; the
@@ -2656,16 +2728,59 @@ impl ProductResolver {
     }
 }
 
-impl ResolveModalityConnection for ProductResolver {
-    fn resolve_for_modality(
+impl ModalityRequests for ProductResolver {
+    fn endpoint(
         &self,
         target: ModalityTarget,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, ModalityConnection> {
+    ) -> HostFuture<'_, ModalityEndpoint> {
         Box::pin(async move {
-            self.0.check(&cancel)?;
+            let model = target.target.model_id.clone();
+            let resolution = self.resolve_modality(target, cancel).await?;
+            Ok(endpoint_of(&resolution, model))
+        })
+    }
+
+    fn resolved(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            self.resolve_modality(target, cancel)
+                .await
+                .map(|r| r.connection)
+        })
+    }
+
+    fn request(
+        &self,
+        request: ModalityHttpRequest,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityHttpResponse> {
+        Box::pin(async move {
+            let owner = self.0.clone();
             let resolution = self
-                .0
+                .resolve_modality(request.target.clone(), cancel.clone())
+                .await?;
+            let call = modality_call(&resolution);
+            owner.modality_http(call, request, &cancel).await
+        })
+    }
+}
+
+impl ProductResolver {
+    /// One non-conversational resolution: the connection, the route and the
+    /// declared transport, under the caller's token.
+    fn resolve_modality(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Resolution> {
+        let owner = self.0.clone();
+        Box::pin(async move {
+            owner.check(&cancel)?;
+            owner
                 .resolve_connection(
                     &target.target.provider_id,
                     &target.target.model_id,
@@ -2674,16 +2789,79 @@ impl ResolveModalityConnection for ProductResolver {
                     },
                     &cancel,
                 )
-                .await?;
-            Ok(ModalityConnection {
-                resolved: resolution.connection,
-                protocol: resolution.protocol,
-                model: target.target.model_id,
-                realtime: resolution.realtime,
-            })
+                .await
         })
     }
 }
+
+/// The route facts of one resolution: what the face serves, and no credential.
+fn endpoint_of(resolution: &Resolution, model: String) -> ModalityEndpoint {
+    ModalityEndpoint {
+        protocol: resolution.protocol,
+        model,
+        base_url: match &resolution.connection.connection {
+            ModelConnection::Http(http) => Some(http.base_url.clone()),
+            ModelConnection::Bedrock(bedrock) => Some(bedrock.base_url.clone()),
+            ModelConnection::Local => None,
+        },
+        realtime: resolution.realtime.clone(),
+    }
+}
+
+/// How one request carries the connection: the headers it is sent with, and
+/// the route they belong to.
+struct ModalityCall {
+    headers: Vec<(String, String)>,
+    origin: Option<String>,
+}
+impl ModalityCall {
+    /// Whether `url` is on the connection's own route, and so carries its
+    /// headers and credential.
+    fn credentialed(&self, url: &str) -> bool {
+        self.origin
+            .as_deref()
+            .is_some_and(|origin| url.starts_with(origin))
+    }
+}
+
+fn modality_call(resolution: &Resolution) -> ModalityCall {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut origin = None;
+    match &resolution.connection.connection {
+        ModelConnection::Http(http) => {
+            origin = Some(http.base_url.trim_end_matches('/').to_owned());
+            headers.extend(
+                http.headers
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+            let authorized = headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
+            if let Some(bearer) = http.bearer.as_ref().filter(|_| !authorized) {
+                headers.push(("Authorization".into(), format!("Bearer {bearer}")));
+            }
+            if let Some(api_key) = http.api_key.as_ref() {
+                headers.push(("x-api-key".into(), api_key.clone()));
+            }
+        }
+        ModelConnection::Bedrock(bedrock) => {
+            origin = Some(bedrock.base_url.trim_end_matches('/').to_owned());
+            headers.extend(
+                bedrock
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            );
+            if let BedrockAuth::Bearer(bearer) = &bedrock.auth {
+                headers.push(("Authorization".into(), format!("Bearer {bearer}")));
+            }
+        }
+        ModelConnection::Local => {}
+    }
+    ModalityCall { headers, origin }
+}
+
 struct ManagedRecovery {
     owner: Arc<ProviderService>,
     authority: CredentialAuthority,
@@ -2972,7 +3150,10 @@ impl DynPlugin for ProviderPlugin {
                     selection.resolve(explicit, cwd, cancel)
                 })),
             )?;
-            ctx.provide(ModalityConnectionHost(resolver.clone()))?;
+            dim_agent_capabilities::host::provide_modality_connections(
+                ctx,
+                &ModalityConnectionHost(resolver.clone()),
+            )?;
             let selectable = resolver.clone();
             let modalities = resolver;
             dim_agent_capabilities::host::provide_selectable_models(

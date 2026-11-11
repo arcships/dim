@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：30 data、86 internal、2 shared-no-dispatcher。§3 表覆盖这 86 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 118 个名字：31 data、85 internal、2 shared-no-dispatcher。§3 表覆盖这 85 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -101,7 +101,7 @@ catalog 现在 118 个名字：30 data、86 internal、2 shared-no-dispatcher。
 
 `workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 118 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
 
-同一批还包括宿主端口改成数据面（§4.8）：`executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`、`selectableModelsHost`、`modelSelectionHost` 从 `legacy-no-consumer` 变成 `data`。这五项不改名字、不新增 catalog 行。`modalityConnectionHost` 不迁移（§4.8 末段）：它的回复带连接凭据，改成 `internal(secret)`。
+同一批还包括宿主端口改成数据面（§4.8）：`executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`、`selectableModelsHost`、`modelSelectionHost`、`modalityConnectionHost` 从 `legacy-no-consumer` 变成 `data`。这六项不改名字、不新增 catalog 行。`modalityConnectionHost` 的凭据仍留在 owner：面只给路由事实，请求由 owner 发（§4.8）。
 
 两个 owner API **不进第一批**：它们保留类型化调用。`settings.read` 会新建取消 token、并返回 `SettingsResult` 信封；GoalBranch 需要自己的 stop token，改成数据面会丢取消。`auxiliaryModel.complete` 没有 tools、config 和 cached prefix；PromptSuggestion 克隆的是整轮 `ModelRequest`，换过去是行为变化，不只是形状。它们已有数据兄弟给其他消费者；有 leaf 消费者时再按 §4 的规则扩展。
 
@@ -198,7 +198,6 @@ catalog 现在 118 个名字：30 data、86 internal、2 shared-no-dispatcher。
 | `sessionSkills` | session | Skills | host-resource | 留宿主；本地资源 |
 | `skillsBranch` | branch | SkillsBranch | host-resource | 留宿主；本地资源 |
 | `managedProviders` | process | ManagedProviders | secret | 留宿主；只暴露操作 |
-| `modalityConnectionHost` | process | Provider | secret | 留宿主；连接带凭据，只留类型化端口 |
 
 ### 3.7 数据内容，但还没有 leaf 消费者
 原因 `legacy-no-consumer`：内容是数据，但还没有 leaf 消费者。它们不是“永远不能跨”。
@@ -296,7 +295,7 @@ managedSearch.search {query, count}
 - 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
 - `managedProviders` 保持 internal(secret)：账号、登录、token、租约仍在类型化面。
 - Web 的搜索改调 `managedSearch`；Web 的 settings 仍走 `settings`。
-- 新名字使 catalog 多一行；它不在当前 86 个 internal 名字里。
+- 新名字使 catalog 多一行；它不在当前 85 个 internal 名字里。
 
 ### 4.7 `wakeups`
 
@@ -313,9 +312,9 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 改动：给 `Wakeups` 加数据面（或手写 dispatcher），在 `host_key("wakeups")` 提供；`SchedulerSession` 改注入 `dyn HostDispatch`。`WakeupRequest` 补 serde（camelCase）；`Wakeup` 是持久化记录，已经 snake_case，**不要**给它加 `rename_all`，data face 的 record 用单独的 wire 类型或显式映射。测试：wakeup 的 create/list/cancel flow，加 loopback。
 
-### 4.8 宿主端口：`executionSettingsHost` 等五个
+### 4.8 宿主端口：`executionSettingsHost` 等六个
 
-这五个名字的内容本来就是数据（§3.7），没有 leaf 消费者时留在宿主；这一批把它们做成数据面，名字不变。每个名字只有一份定义：端口类型持有 owner 的读（闭包形式，没有第二个 owner trait），它的 dispatcher 在同一个模块里写出 wire 形状，Rust 绑定是这个 dispatcher 的薄客户端——调用同一个 operation，不写第二份逻辑。调用方拿到的回复是 `cancellable_future`：丢弃等待就取消这次调用，owner 看到的 token 随之取消（`drop_guard`），所以一次被放弃的读不会在宿主里跑下去。
+这六个名字的内容本来就是数据（§3.7），没有 leaf 消费者时留在宿主；这一批把它们做成数据面，名字不变。每个名字只有一份定义：端口类型持有 owner 的读（闭包形式，没有第二个 owner trait），它的 dispatcher 在同一个模块里写出 wire 形状，Rust 绑定是这个 dispatcher 的薄客户端——调用同一个 operation，不写第二份逻辑。调用方拿到的回复是 `cancellable_future`：丢弃等待就取消这次调用，owner 看到的 token 随之取消（`drop_guard`），所以一次被放弃的读不会在宿主里跑下去。
 
 ```text
 executionSettingsHost.read({}) -> {sandbox, network}
@@ -328,16 +327,20 @@ selectableModelsHost.selectableModels({}) -> {models: [ModelCapabilitySnapshot]}
 selectableModelsHost.selectableForModality({}) -> {models: [ModalityModelSnapshot]}
 modelSelectionHost.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
   -> error {code: cancelled | owner_closed | invalid_request | model_unavailable | failed, message}
+modalityConnectionHost.resolveModalityConnection({target, operation})
+  -> {protocol, model, baseUrl?, realtime?}
+modalityConnectionHost.modalityRequest({target, operation, method, url, headers?, body?})
+  -> {status, headers, body?}
+  -> error {code: cancelled | owner_closed | invalid_request | model_unavailable | failed, message}
 ```
 
 - 每个 operation 只收一个请求对象；没有输入的写 `{}`（`provider-management.md` §3.6 的形状），多一个参数或未知字段都是 `invalid_request`。
 - 取消是协议动作：调用方丢弃等待，或被取消的绑定调用不再进入 owner；owner 自己的生命周期仍然约束它启动的 worker。
 - 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用；`cwd` 的请求方向同理，`ModelSelectionRequest::at` 是 Rust 调用方换字段的唯一一处。
+- `modalityConnectionHost` 是操作面，不是 `internal`：`resolveModalityConnection` 只给路由事实（protocol、model、baseUrl、realtime），**没有** header、bearer、api key 或 Bedrock 凭据；`modalityRequest` 由 owner 把这次请求连同连接的 header 与凭据发出去，回报 `{status, headers, body}`。凭据因此只在 owner 里，调用方无论哪种语言都拿不到，也不需要“按名字把 secret 交出去”的授权模型。`body` 是 base64（跨界的字节）。Rust 适配器另有同进程的 `connection`（含解析后的连接），只因为 realtime 会话自己做 WS 握手；它不经过 face，也不序列化。
 - 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。
 - `Names::registered` 现在把 shared 名字也算“assembly 注册了它”：同名从类型键改成 data face 后，可选依赖仍能认出部件存在（PromptSuggestion 的设置端口就是这样，`prompt_suggestion.rs`）。
-- 测试：`host_port_faces.rs` 逐个比对“Rust binding 的结果 == wire 的结果”，钉住 `{}` 请求、字段拼写和错误码，并用一个持有 token 的 owner worker 证明丢弃等待会取消 owner 的读；`provider_flow.rs`、`managed_oauth_flow.rs`、`dim-modality` 与 aimux 的 flow 用真实 Provider 装配跑同样的读。
-
-**`modalityConnectionHost` 不迁移。** 它的回复是 `ModalityConnection`，含解析后的连接（header、bearer/apiKey、Bedrock 凭据）；把它做成 shared 数据面等于把凭据按名字交给任何 leaf，这不是一个调用范围内可撤销的能力，和 §2.4 的 `secret`（只暴露操作，不暴露值）冲突。要转成数据面，先要 owner 定一个 capability-gated operation（Provider 或宿主代为发起这次请求，凭据不出现），并写进 owner 文档；在此之前它保持 `internal(secret)` 的类型化端口。
+- 测试：`host_port_faces.rs` 逐个比对“Rust binding 的结果 == wire 的结果”，钉住 `{}` 请求、字段拼写和错误码，用持有 token 的 owner worker 证明丢弃等待会取消 owner 的读，并用一个持有连接的 modality owner 证明 `resolveModalityConnection` 的回复没有凭据字段、`modalityRequest` 能把调用方的请求送到 owner 并拿到 data 回复；`provider_flow.rs`、`managed_oauth_flow.rs`、`dim-modality` 与 aimux 的 flow 用真实 Provider 装配跑同样的读。
 
 ## 5. 验证
 
@@ -353,12 +356,12 @@ modelSelectionHost.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 86 个 internal 名字里 12 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
+5. **legacy 标记**：当前 85 个 internal 名字里 12 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序
 
 1. **#1289**：`Faces`、`AgentBuilder::internal`、catalog `face`、双向 `xtask check`、leaf 拒绝、`managementMethods` 注册顺序、`localId` dispatcher；`loaderService`/`pluginMounter` 作为两个外部 `shared-no-dispatcher` 例外。
 2. **#1300**：按 §3 的分组在 catalog 里补齐 reason；`xtask graph` 的 diff 就是盘点结果。此 PR 不改服务。
-3. **#1292**：按 `scheduleJobs` → `wakeups` → `sessionFiles` → `managedSearch` 的顺序，一项一个 PR；宿主端口的数据面（§4.8）是同一批的独立 PR。`workflowRuns` 已是数据面，只核对；`settingsService`、`modelHost`、`modalityConnectionHost` 不迁移。
+3. **#1292**：按 `scheduleJobs` → `wakeups` → `sessionFiles` → `managedSearch` 的顺序，一项一个 PR；宿主端口的数据面（§4.8）是同一批的独立 PR。`workflowRuns` 已是数据面，只核对；`settingsService`、`modelHost` 不迁移。
 4. 每项都带现有 flow 测试；不新增适配层，不写第二份逻辑。

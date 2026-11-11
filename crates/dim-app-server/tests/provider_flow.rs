@@ -2025,8 +2025,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     assert!(seen.lock().unwrap().is_empty(), "the read made a request");
 
     let connection = modality
-        .0
-        .resolve_for_modality(modality_target("media", "image.generate"), cancel.clone())
+        .connection(modality_target("media", "image.generate"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(connection.model, "media");
@@ -2067,8 +2066,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     // operation of the same model carries none, and a declaration that does
     // not parse is refused rather than silently absent.
     let voice = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "realtime.voice"), cancel.clone())
+        .connection(modality_target("voice", "realtime.voice"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -2080,16 +2078,14 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     );
     assert!(!format!("{voice:?}").contains(KEY));
     let image = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "image.generate"), cancel.clone())
+        .connection(modality_target("voice", "image.generate"), cancel.clone())
         .await;
     assert_eq!(
         image.err().unwrap().to_string(),
         "Model does not declare the image.generate operation"
     );
     let broken = modality
-        .0
-        .resolve_for_modality(modality_target("broken", "realtime.voice"), cancel.clone())
+        .connection(modality_target("broken", "realtime.voice"), cancel.clone())
         .await
         .err()
         .unwrap();
@@ -2127,8 +2123,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         ),
     ] {
         let error = modality
-            .0
-            .resolve_for_modality(target, cancel.clone())
+            .connection(target, cancel.clone())
             .await
             .err()
             .unwrap();

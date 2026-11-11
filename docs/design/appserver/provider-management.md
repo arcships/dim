@@ -650,7 +650,7 @@ profile (`dim-agent-aimux`) provides it from the entries of its model file, so
 both deployments answer the same reads; that profile declares no modality
 operation, so its `selectableForModality` read answers none
 ([aimux](../../../crates/dim-agent-aimux/README.md)). The catalog registers the
-name shared ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)).
+name shared ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)).
 
 The owner implementations are `ProviderService::selectable_models` and
 `ProviderService::selectable_modality_models`; `ProductResolver` delegates to
@@ -663,22 +663,32 @@ A non-Rust consumer calls `selectableModelsHost` by name, with the operations §
 states; the face delegates to the same owner read, so a consumer of either language
 gets the models execution would.
 
-**Connection contract: `resolveModalityConnection`.** The same owner resolves the
-connection one non-conversational call uses, so an adapter holds no Provider
+**Connection contract: `resolveModalityConnection` and `modalityRequest`.** The
+same owner serves one non-conversational call, so an adapter holds no Provider
 credential and reads no Provider record. It is a second process host port beside
-`ProviderConnectionResolver`, not a management method: operation
-`resolveModalityConnection`, asynchronous, request `{target: {providerId,
-modelId}, operation: string}`, reply `{connection, protocol, model, realtime}`.
+`ProviderConnectionResolver`, not a management method, and it is data: the
+caller names the route and what to send, and the owner performs the call.
 
-`connection` is the existing `ResolvedModelConnection` a chat call to the same
-model would get — the connection facts, the failure policy and, on a managed
-account, the credential recovery — so an adapter runs the same one-recovery rule
-execution does. `protocol` is the route the catalog carries for the model, and
-`model` is the id a request sends. Both ports run one resolution: it resolves the
-static or managed record, builds the catalog, selects and leases the managed
-credential in one place, and only the selectability rule and the request facts
-differ. The chat path's temporary startup connection and adopted capability
-snapshot do not apply; the caller passes a catalog identity and an operation.
+- `resolveModalityConnection`, asynchronous, request `{target: {providerId,
+  modelId}, operation: string}`, reply `{protocol, model, baseUrl?, realtime?}`:
+  the route facts only. The reply carries no header value, bearer, api key or
+  Bedrock credential.
+- `modalityRequest`, asynchronous, request `{target, operation, method, url,
+  headers?, body?}` with `body` base64, reply `{status, headers, body?}`: the
+  owner resolves the connection again for that target, applies the connection's
+  own headers and credential when `url` is on the route's origin, and sends the
+  request. The caller's headers are applied last; they never replace the
+  credential. An answer is data, so a caller of any language completes the call
+  without ever holding the secret.
+
+Both operations run one resolution: it resolves the static or managed record,
+builds the catalog, selects and leases the managed credential in one place, and
+only the selectability rule and the request facts differ. The chat path's
+temporary startup connection and adopted capability snapshot do not apply; the
+caller passes a catalog identity and an operation. A realtime session, which
+performs its own WebSocket handshake, stays in this process: the Rust binding
+also hands an in-process adapter the resolved connection, and that handle is
+never served by name.
 
 **Rules.** It applies exactly the rules of the `selectableForModality` read —
 provider, account, model, route, credential and status — and additionally
@@ -719,18 +729,15 @@ into the `HostError` the recovery interprets, ask `rejection` with the current
 phase, then `recover` once and retry on a recoverable rejection, or
 `finish_rejected` on a terminal one.
 
-**Rust binding.** The port is `ResolveModalityConnection` and
-`ModalityConnectionHost` in `dim-agent-capabilities`, with `ModalityTarget`
-carrying the model identity and the operation. Provider provides it in
-`ProviderPlugin::apply`, and the configured model profile provides it from its
-model file, whose entries declare no operation and therefore answer every target
-with the declaration refusal. The catalog registers the Rust-only name
-`modalityConnectionHost` as `internal(secret)`: the reply reuses
-`ResolvedModelConnection` and `ModelProtocol` and carries a credential and a
-recovery callback, so it is not a data face
-([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)). It
-adds `RealtimeDeclaration`, the entry's declared transport, and no credential
-type.
+**Rust binding.** The face is `modalityConnectionHost` in
+`dim-agent-capabilities`: the port type holds the owner's `ModalityRequests`
+trait (endpoint, request, and the in-process resolved connection), its
+dispatcher serves `resolveModalityConnection` and `modalityRequest`, and a Rust
+adapter calls the same operations through the binding. Provider provides it with
+`provide_modality_connections` in `ProviderPlugin::apply`, and the configured
+model profile provides it from its model file, whose entries declare no
+operation and therefore answer every target with the declaration refusal. The
+catalog registers the name shared ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)).
 
 ### 3.7 Offline validation of a stored selection
 
@@ -1125,7 +1132,7 @@ disposable database; see [the storage contract](native-storage-format.md#329-格
 | §4.5 | Owned related selections/models/preferences/routes commit together; existing adoption remains atomic |
 | §4.6 | Management data does not enter model context; only existing adoption paths change configuration |
 | §4.7 | Accounts use public methods; Modality reads selectable models through §3.6's core host port; Migration uses §3.7's Provider-owned judgment; other owners' references are not rewritten |
-| §4.8 | §5 raises no mechanism requirement; existing metadata and v19 top-level JSON suffice; §3.6's read is a data face ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)), so a non-Rust consumer calls it by name; §3.7 adds no requirement |
+| §4.8 | §5 raises no mechanism requirement; existing metadata and v19 top-level JSON suffice; §3.6's read is a data face ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)), so a non-Rust consumer calls it by name; §3.7 adds no requirement |
 | §4.9 | No new Timeline event or pushed process notification |
 | §1 | Extend the existing process Provider; no Capability or wiring plugin |
 | ADR 002 D1 | Process records belong to Provider; adopted branch state to its owner; drafts to clients |

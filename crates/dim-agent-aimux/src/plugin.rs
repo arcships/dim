@@ -54,7 +54,10 @@ impl Plugin for ConfiguredModelsPlugin {
                 selection.resolve(explicit, cwd, cancel)
             })),
         )?;
-        ctx.provide(ModalityConnectionHost(resolver.clone()))?;
+        dim_agent_capabilities::host::provide_modality_connections(
+            ctx,
+            &ModalityConnectionHost(resolver.clone()),
+        )?;
         let selectable = ConfiguredSelectable {
             models: self.0.clone(),
         };
@@ -228,31 +231,57 @@ impl ResolveModelConnection for ConfiguredConnection {
     }
 }
 
-impl ResolveModalityConnection for ConfiguredConnection {
-    fn resolve_for_modality(
+impl ModalityRequests for ConfiguredConnection {
+    fn endpoint(
         &self,
         target: ModalityTarget,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, ModalityConnection> {
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModalityEndpoint> {
         Box::pin(async move {
-            if self.generation.is_cancelled() {
-                return Err(HostError::classified(
-                    HostErrorKind::OwnerClosed,
-                    "Model catalog owner is closed",
-                ));
-            }
-            if cancel.is_cancelled() {
-                return Err(HostError::Cancelled(
-                    "Connection resolution cancelled".into(),
-                ));
-            }
-            self.models
-                .get(&target.target.provider_id, &target.target.model_id)?;
+            self.checked(&target)?;
             // The model file declares no modality operation, so this profile's
             // `selectableForModality` read answers none and every target fails
             // the declaration rule before a connection is built.
             Err(undeclared_modality_operation(&target.operation))
         })
+    }
+
+    fn resolved(
+        &self,
+        target: ModalityTarget,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            self.checked(&target)?;
+            Err(undeclared_modality_operation(&target.operation))
+        })
+    }
+
+    fn request(
+        &self,
+        request: ModalityHttpRequest,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModalityHttpResponse> {
+        Box::pin(async move {
+            self.checked(&request.target)?;
+            Err(undeclared_modality_operation(&request.target.operation))
+        })
+    }
+}
+
+impl ConfiguredConnection {
+    /// The checks both non-conversational operations run before the
+    /// declaration rule refuses the target.
+    fn checked(&self, target: &ModalityTarget) -> Result<(), HostError> {
+        if self.generation.is_cancelled() {
+            return Err(HostError::classified(
+                HostErrorKind::OwnerClosed,
+                "Model catalog owner is closed",
+            ));
+        }
+        self.models
+            .get(&target.target.provider_id, &target.target.model_id)?;
+        Ok(())
     }
 }
 
