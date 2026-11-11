@@ -2696,8 +2696,12 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     assert!(
         matches!(&local[0].kind, EventKind::BranchStart(data) if data.create_event == Some(create.sequence))
     );
+    let prompt = local
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::InputMessage(_)))
+        .expect("the branch's first input");
     assert!(
-        matches!(&local[1].kind, EventKind::InputMessage(data) if matches!(
+        matches!(&prompt.kind, EventKind::InputMessage(data) if matches!(
             data.user.as_ref().map(|user| user.content.as_slice()),
             Some([ContentBlock::Text { text }]) if text == "final prompt"
         ))
@@ -2719,12 +2723,12 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     assert_eq!(
         applied
             .iter()
-            .filter(|id| **id == local[1].id.as_str())
+            .filter(|id| **id == prompt.id.as_str())
             .count(),
         1,
         "the opening input is applied once"
     );
-    for id in applied.iter().filter(|id| **id != local[1].id.as_str()) {
+    for id in applied.iter().filter(|id| **id != prompt.id.as_str()) {
         let input = local
             .iter()
             .find(|event| event.id == **id)
@@ -3391,9 +3395,8 @@ async fn until_branch(session: &Session, branch: &str) {
     }
     panic!("branch {branch} was not restored");
 }
-/// Waits for the line to be idle with a parent block held at the parent's
-/// current head; a block behind the head is consumed by running the line one
-/// turn. Returns the block's sequence, its text and the head it reports.
+/// Waits for a held parent block covering the parent's latest operator input
+/// or tool use. Returns its sequence, text and the parent's observed head.
 async fn settle_line(session: &Session, branch: &str) -> (u64, String, u64) {
     for _ in 0..400 {
         patient(session.idle("main")).await.unwrap();
@@ -3411,7 +3414,17 @@ async fn settle_line(session: &Session, branch: &str) -> (u64, String, u64) {
             continue;
         }
         let (block_head, _) = parent_block(&text);
-        if block_head != head {
+        let activity = local_events(session, "main")
+            .await
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_some())
+                    || matches!(event.kind, EventKind::ToolUse(_))
+            })
+            .map(|event| event.sequence)
+            .max()
+            .unwrap_or(0);
+        if block_head < activity {
             patient(session.submit("settle".into(), InputMode::Queue, branch))
                 .await
                 .unwrap();
@@ -4643,12 +4656,16 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         .await,
     );
     let sequences = page_sequences(&zero);
-    assert!(
-        zero.to_string().contains("check the parser"),
-        "after 0 starts at the line's first event: {zero}"
-    );
+    let prompt_on_first_page = zero.to_string().contains("check the parser");
+    if !prompt_on_first_page {
+        assert!(
+            sequences.is_empty(),
+            "the opening page contains only hidden facts: {zero}"
+        );
+        assert_eq!(zero["done"], false, "hidden facts do not finish the read");
+    }
     let cursor = zero["nextCursor"].as_u64().unwrap();
-    assert!(cursor >= *sequences.last().unwrap());
+    assert!(cursor > 0 && cursor >= sequences.last().copied().unwrap_or(0));
     let next = page_of(
         &tool_call(
             &session,
@@ -4658,6 +4675,12 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         .await,
     );
     let sequences = page_sequences(&next);
+    if !prompt_on_first_page {
+        assert!(
+            next.to_string().contains("check the parser"),
+            "the next page reaches the opening input: {next}"
+        );
+    }
     assert!(
         sequences.iter().all(|sequence| *sequence > cursor),
         "the next read continues after {cursor}: {next}"
@@ -4670,10 +4693,11 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         )
         .await,
     );
-    assert!(
-        again.to_string().contains("check the parser"),
-        "after 0 re-reads a line from its start: {again}"
+    assert_eq!(
+        again["items"], zero["items"],
+        "after 0 re-reads the opening page"
     );
+    assert_eq!(again["nextCursor"], zero["nextCursor"]);
     assert_eq!(page_sequences(&again), page_sequences(&zero));
     let cursor = again["nextCursor"].as_u64().unwrap();
     let next = page_of(

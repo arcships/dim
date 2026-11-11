@@ -241,10 +241,16 @@ impl Client {
                 break;
             }
         }
+        fn response_result<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Option<Value>, D::Error> {
+            Value::deserialize(deserializer).map(Some)
+        }
         #[derive(Deserialize)]
         struct Envelope {
             jsonrpc: String,
             id: Option<u64>,
+            #[serde(default, deserialize_with = "response_result")]
             result: Option<Value>,
             error: Option<RpcError>,
             method: Option<String>,

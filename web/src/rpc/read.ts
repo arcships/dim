@@ -266,6 +266,19 @@ export function readHistory(value: unknown): HistoryPage {
   }
 }
 
+export function readDisplayHistory(value: unknown): HistoryPage {
+  const at = "session.history.display"
+  const source = obj(value, at)
+  return {
+    events: arr(source.items, `${at}.items`).map((item, index) => readEvent(item, `${at}.items[${index}]`)),
+    through: num(source, "through", at),
+    nextAfter: num(source, "nextAfter", at),
+    done: bool(source, "done", at),
+    ...(source.nextBefore === undefined ? {} : { nextBefore: num(source, "nextBefore", at) }),
+    ...(source.turnStart === undefined ? {} : { turnStart: num(source, "turnStart", at) }),
+  }
+}
+
 export function readModelUpdate(value: unknown): ModelUpdateResult {
   const source = obj(value, "session.model.update")
   return { model: modelId(source.model, "session.model.update.model"), outcome: str(source, "outcome", "session.model.update") }
@@ -756,6 +769,13 @@ export function readNotification(method: string, value: unknown): Notification |
         sessionId: str(params, "sessionId", method),
         branchId: str(params, "branchId", method),
         event: readEvent(params.event, `${method}.event`),
+      }
+    case "session.display":
+      return {
+        method,
+        sessionId: str(params, "sessionId", method),
+        branchId: str(params, "branchId", method),
+        event: readEvent(params.item, `${method}.item`),
       }
     case "session.state":
       return {
