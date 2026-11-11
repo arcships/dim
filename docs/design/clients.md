@@ -231,7 +231,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | `/timeline` and message actions | done in the TUI; it also replaces `/history`'s paging | — | [Timeline UI §4.6](timeline-ui.md#46-timeline-jumping-to-a-message) |
 | Titles | automatic: done (optional SessionTitle package); manual rename: designed | — | [SessionTitle](plugins/SessionTitle.md) |
 | Fork | designed in the CLI (server `session.fork` done) | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
-| Deletion and cleanup | designed in the CLI (server `session.delete` done) | later phase | same |
+| Deletion and cleanup | done: `dimcode session delete`/`cleanup`, and one row at a time in `/resume` | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
 | File rollback, file and conversation rollback | out | out | [overview](overview.md) App. A |
 | Request snapshot export | done (`dimcode export`); filters: designed | — | [Timeline export](appserver/timeline-export.md) |
 

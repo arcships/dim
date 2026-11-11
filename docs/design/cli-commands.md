@@ -1441,7 +1441,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
-| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace. |
+| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace, and `Ctrl+X` deletes one row after a confirmation. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/export` in either terminal UI | Choose Markdown or JSON in a dialog for an opened Session; save a uniquely named file in the CLI current directory. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
@@ -1670,7 +1670,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1680,7 +1680,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1690,7 +1690,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - A scope change works like a new query: it cancels the pending read, drops the
@@ -1723,6 +1723,26 @@ the selection down.
   workspace, membership in the git set, or no filter.
 - `dimcode --resume ID` resumes a Session of any workspace, and cleanup selects
   across every workspace.
+- `Ctrl+X` removes the selected row after `Delete "{name}"? Enter confirm ·
+  Esc cancel`, where `{name}` is the row's label without its origin tag,
+  captured when the key was pressed — a page, a scope answer or a refresh
+  never retargets the question, and Enter never looks the row up again. The
+  question takes every key: Enter sends `session.delete {sessionId}` (no
+  `requireInactive`, so a Session a turn is running in is deleted too, its
+  close settling the run), every other key cancels it, and Esc does not close
+  the picker. While the daemon answers, the rows stay drawn and no key acts
+  but Esc, which closes the picker: the delete may wait on a slow close, and
+  the outcome is reported in the transcript wherever the operator is.
+  The row leaves on `{deleted:true}` with `Deleted {name}.`, a
+  `{deleted:false}` reply re-reads the first page and says `Nothing was
+  removed: no stored Session {name}.`, an error keeps the row and shows
+  `Delete failed · <daemon's sentence>`, and a daemon without `session.delete`
+  keeps the row and says it cannot delete Sessions. Deleting the shown Session
+  returns to Home as `/new` does and reports no disconnect, whether the delete
+  succeeded, the close ran and the removal failed (`-32603`), or another
+  caller closed the Session already: its queued `session.state` and
+  `session.closed` match no Session and are ignored. One row at a time;
+  `dimcode session cleanup` keeps the bulk selector.
 
 ### Session titles
 
@@ -1770,7 +1790,9 @@ and on `false` the command prints `Nothing was removed: no stored Session ID.` o
 and exits 1. An id the daemon holds no rows of is a successful delete that removed
 nothing; that is not a usage error, a malformed command line is. A reply without the
 field, from an App Server before it, reads as a delete: the rows are gone either way,
-which is the state asked for.
+which is the state asked for. The TUI's `/resume` calls the same method on one row
+with the same reply meanings ([the `/resume` picker](#the-resume-picker)) and never
+deletes in bulk.
 
 `dimcode session cleanup` composes deletion from the same two methods, as
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) requires. It

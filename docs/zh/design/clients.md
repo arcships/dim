@@ -82,7 +82,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | `/timeline` 与消息操作 | TUI 已实现；它同时取代了 `/history` 的翻页 | — | [Timeline UI §4.6](timeline-ui.md#46-timeline跳到某条消息) |
 | 标题 | 自动生成：已实现（可选的 SessionTitle 包）；手动重命名：已设计 | — | [SessionTitle](plugins/SessionTitle.md) |
 | Fork | CLI 中已设计（服务端 `session.fork` 已实现） | 后续阶段 | [Session 删除与 fork](appserver/session-deletion-and-fork.md) |
-| 删除与清理 | CLI 中已设计（服务端 `session.delete` 已实现） | 后续阶段 | 同上 |
+| 删除与清理 | 已实现：`dimcode session delete`/`cleanup`，以及 `/resume` 中一次一行的删除 | 后续阶段 | [Session 删除与 fork](appserver/session-deletion-and-fork.md) |
 | 文件回滚、文件与对话一起回滚 | 不做 | 不做 | [总体设计](overview.md)附录 A |
 | 请求快照导出 | 已实现（`dimcode export`）；过滤条件：已设计 | — | [Timeline 导出](appserver/timeline-export.md) |
 
