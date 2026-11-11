@@ -703,12 +703,17 @@ impl SessionState {
                 }
                 reply = call => reply,
             }
-            .map_err(|error| match error.code() {
-                Some("unavailable") => WebError::new(
-                    "search_unavailable",
-                    "No usable search service is configured.",
-                ),
-                _ => WebError::new("search_failed", "The search service failed."),
+            .map_err(|error| {
+                if cancel.is_cancelled() {
+                    return WebError::new("cancelled", "Call cancelled.");
+                }
+                match error.code() {
+                    Some("unavailable") => WebError::new(
+                        "search_unavailable",
+                        "No usable search service is configured.",
+                    ),
+                    _ => WebError::new("search_failed", "The search service failed."),
+                }
             })?;
             let mut hits = Vec::with_capacity(reply.results.len());
             for item in reply.results {
