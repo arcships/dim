@@ -127,10 +127,10 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 
 | 名字 | 现在的对象 | 目标操作 |
 | --- | --- | --- |
-| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 资源 leaf 的新数据面 `execHost`：`start`/`wait`/`kill`/`output`/`shell`/`write`/`resize`（[resource leaf data faces](resource-faces.md) §3，#1295） |
-| `fileStorage` | `FilePath`、根与代次 | 资源 leaf 的新数据面 `fsHost`：`facts`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`（[resource leaf data faces](resource-faces.md) §4，#1297）；`fileStorage` 本身留在节点内部 |
-| `sqliteStorage` | 连接与事务 | 不是 leaf 数据面：远程 PostgreSQL 由 #1298 交付（[resource leaf data faces](resource-faces.md) §5） |
-| `timelineStore` | 连接与批次 | 同上：不是 leaf 数据面，`append`/`query`/`ack` 只在进程内（#1298） |
+| `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`output`/`shell`/`write`/`resize`/`info`/`confined`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
+| `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：`facts`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
+| `sqliteStorage` | 连接与事务 | 数据面 `store` 的 Session 行部分（§5）；`sqliteStorage` 是提供方内部的 SQL 引擎（#1298） |
+| `timelineStore` | 连接与批次 | 同一 `store` 面的 Timeline 部分：`append`/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
 | `toolHost` | `ToolDriver` | `execute` 数据面 |
 | `mcpSession` | 会话对象 | 每 server 的 id 操作 |
 | `backgroundExec` | 任务对象 | task id 操作 |
@@ -139,9 +139,9 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `wait` | `WaitResult`、`CancellationToken` | `start`/`wait`/`result` 操作面 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 留宿主；`hot-path` |
 
-这些面即使有数据接口，实例核心仍默认留在宿主；它们列在这里是为了说明“对象形状”不是永久 internal，而是需要操作化；原因 `object`。
+这些行按“现在的对象形状”分组：拆成操作加 id 是迁移动作，不是永久分类，`object` 只说明今天的形状。前四行在本 PR 转成数据面（[resource and store data faces](resource-faces.md)），其余按 #1292 的批次逐个转。
 
-`hostPlatform`、`fileStorage` 的数据面是资源 leaf 上的新名字 `execHost`、`fsHost`，不把原服务变成 wire 对象：leaf 用节点自己的 HostPlatform 和 FileStorage 实现这些操作，原有名字继续留在节点内部，原因仍是 `object`。`sqliteStorage`、`timelineStore` 不做 leaf 面：存储接口是进程内的仓储操作，跨链会把提交和发布绑在网络往返上；远程 PostgreSQL 由 #1298 作为后端替换交付，不加 `dbHost` 之类的名字（[resource leaf data faces](resource-faces.md) §5）。
+`hostPlatform`、`fileStorage`、`sqliteStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
 
 ### 3.5 热路径与顺序：契约上 internal
 原因 `hot-path`：每回合/每条输入的状态机、严格本地顺序，或同步回调。跨了要重写顺序和失败语义，收益不成比例。
