@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 119 个名字：27 data、90 internal、2 shared-no-dispatcher。§3 表覆盖这 90 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 已在 #1292 加入 catalog 并成为数据面。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 119 个名字：27 data、90 internal、2 shared-no-dispatcher（这两个数还没算 #1396：`scheduleJobs`、`wakeups` 合入后是 29 data、88 internal）。§3 表覆盖这 90 个 internal 名字（#1396 后 88）；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 已在 #1292 加入 catalog 并成为数据面。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
