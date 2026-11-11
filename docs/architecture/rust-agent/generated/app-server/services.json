@@ -3278,6 +3278,18 @@
         "removing": false
       },
       {
+        "service": "dim_agent_scheduler::methods::ScheduleJobs",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_scheduler::wakeups::Wakeups",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::agents::AgentDirectory",
         "provider": 37,
         "generation": 1,
@@ -3500,12 +3512,6 @@
         "removing": false
       },
       {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
-        "provider": 70,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#sessionMetadata",
         "provider": 8,
         "generation": 1,
@@ -3526,12 +3532,6 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#settings",
         "provider": 18,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
-        "provider": 70,
         "generation": 1,
         "removing": false
       },
