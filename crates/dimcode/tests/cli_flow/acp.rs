@@ -2560,9 +2560,9 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
         wire.reply(&list, json!([{"sessionId":"saved","cwd":cwd}]));
         let attach = wire.read("session.attach");
         wire.reply(&attach, json!({"sequence":1000}));
-        for page in 0..4_u64 {
+        for page in 0..1_u64 {
             let read = wire.read("session.history");
-            assert_eq!(read["params"]["limit"], 256);
+            assert_eq!(read["params"]["limit"], 64);
             if page == 0 {
                 assert_eq!(read["params"]["latestTurn"], true);
                 wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(1001,"live","step","text",json!({"turn_id":"turn","request_id":"reply","delta":"live"}))}));
@@ -2586,7 +2586,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let loaded = peer.response(2);
     assert_eq!(
         loaded["result"]["_meta"]["dim/history"],
-        json!({"through":1000,"before":600,"complete":false}),
+        json!({"through":1000,"before":900,"complete":false}),
         "{loaded}"
     );
     let text: String = peer
@@ -2594,7 +2594,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
         .iter()
         .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
         .collect();
-    assert_eq!(text, "p3p2p1p0");
+    assert_eq!(text, "p0");
     let live = peer.frame();
     assert_eq!(live["params"]["update"]["content"]["text"], "live");
     peer.close();

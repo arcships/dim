@@ -9,7 +9,7 @@ use dim_agent_runtime::{
     BranchOptions, QueryComparison, QueryFilter, QueryOperand, QueryOrder, QueryOrderKey,
     QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, TimelineQuery,
 };
-use dim_agent_types::{BranchSource, InputBlock, InputMode};
+use dim_agent_types::{BranchSource, InputBlock, InputMode, TimelinePosition};
 
 impl Connection {
     /// Runs the Session's submit checks before writing operator input (Hooks
@@ -685,32 +685,21 @@ async fn turn_window(
         unreachable!("turn start has a sequence")
     };
     let turn_start = start.as_u64().expect("event sequence is unsigned");
+    let mut first_model = query(
+        QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec!["step/model-start".into()],
+        },
+        QueryPick::First,
+    );
+    first_model.from = Some(TimelinePosition {
+        branch_id: branch.into(),
+        sequence: turn_start + 1,
+    });
     let step = tree
-        .query(
-            branch.to_owned(),
-            query(
-                QueryFilter::And {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec!["step/model-start".into()],
-                        },
-                        QueryFilter::Compare {
-                            left: QueryOperand::Field {
-                                path: "position.sequence".into(),
-                            },
-                            comparison: QueryComparison::Gt,
-                            right: QueryOperand::Value {
-                                value: turn_start.into(),
-                            },
-                        },
-                    ],
-                },
-                QueryPick::First,
-            ),
-        )
+        .query(branch.to_owned(), first_model)
         .await
         .map_err(history_error)?;
     let QueryOutput::Rows { rows } = step.result else {
@@ -722,71 +711,71 @@ async fn turn_window(
         let [QueryValue::Value { value: first_step }] = row.values.as_slice() else {
             unreachable!("model start has a sequence")
         };
-        let inputs = tree
-            .query(
-                branch.to_owned(),
-                query(
-                    QueryFilter::And {
-                        conditions: vec![
-                            QueryFilter::In {
-                                value: QueryOperand::Field {
-                                    path: "kind".into(),
-                                },
-                                values: vec!["input/message".into()],
-                            },
-                            QueryFilter::Exists {
-                                condition: Box::new(QueryFilter::And {
-                                    conditions: vec![
-                                        QueryFilter::In {
-                                            value: QueryOperand::Field {
-                                                path: "kind".into(),
-                                            },
-                                            values: vec!["input/consumed".into()],
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "data.input_id".into(),
-                                            },
-                                            comparison: QueryComparison::Eq,
-                                            right: QueryOperand::Outer { path: "id".into() },
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "position.sequence".into(),
-                                            },
-                                            comparison: QueryComparison::Gt,
-                                            right: QueryOperand::Value {
-                                                value: turn_start.into(),
-                                            },
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "position.sequence".into(),
-                                            },
-                                            comparison: QueryComparison::Lt,
-                                            right: QueryOperand::Value {
-                                                value: first_step.clone(),
-                                            },
-                                        },
-                                    ],
-                                }),
-                            },
-                        ],
-                    },
-                    QueryPick::First,
-                ),
-            )
-            .await
-            .map_err(history_error)?;
-        let QueryOutput::Rows { rows } = inputs.result else {
-            unreachable!("field selection returns rows")
+        let mut adopted = query(
+            QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "kind".into(),
+                },
+                values: vec!["input/consumed".into()],
+            },
+            QueryPick::First,
+        );
+        adopted.from = Some(TimelinePosition {
+            branch_id: branch.into(),
+            sequence: turn_start + 1,
+        });
+        adopted.through = Some(first_step.as_u64().expect("model sequence is unsigned") - 1);
+        adopted.query.pick = None;
+        adopted.query.select = QuerySelect::Fields {
+            fields: vec!["data.input_id".into()],
         };
-        if let Some(row) = rows.first() {
-            let [QueryValue::Value { value: sequence }] = row.values.as_slice() else {
-                unreachable!("input has a sequence")
+        adopted.page.as_mut().unwrap().limit = std::num::NonZeroU64::new(128).unwrap();
+        loop {
+            let reply = tree
+                .query(branch.to_owned(), adopted.clone())
+                .await
+                .map_err(history_error)?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("consumed identities")
             };
-            window_start = window_start.min(sequence.as_u64().expect("event sequence is unsigned"));
-            consumed = true;
+            let ids = rows
+                .into_iter()
+                .map(|row| {
+                    let [QueryValue::Value { value }] = <[_; 1]>::try_from(row.values).unwrap()
+                    else {
+                        unreachable!("input identity")
+                    };
+                    value
+                })
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                let inputs = tree
+                    .query(
+                        branch.to_owned(),
+                        query(
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: "id".into() },
+                                values: ids,
+                            },
+                            QueryPick::First,
+                        ),
+                    )
+                    .await
+                    .map_err(history_error)?;
+                let QueryOutput::Rows { rows } = inputs.result else {
+                    unreachable!("input position")
+                };
+                if let Some(row) = rows.first() {
+                    let [QueryValue::Value { value: sequence }] = row.values.as_slice() else {
+                        unreachable!("input sequence")
+                    };
+                    window_start =
+                        window_start.min(sequence.as_u64().expect("input sequence is unsigned"));
+                    consumed = true;
+                }
+            }
+            let Some(next) = reply.next else { break };
+            adopted.page.as_mut().unwrap().after = Some(next);
         }
     }
     if !consumed {

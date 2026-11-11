@@ -157,7 +157,7 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
         "one oversized atomic page stays complete"
     );
     assert!(window.before.is_none());
-    let mut window = Window::default();
+    let mut window = Window::earlier(450, 449);
     let newest: HistoryWindow = serde_json::from_value(json!({"events":(351..=449).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":449,"nextBefore":301,"done":false})).unwrap();
     assert!(!window.push(newest).unwrap());
     let older: HistoryWindow = serde_json::from_value(json!({"events":(1..=300).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":300,"nextBefore":1,"done":true})).unwrap();
@@ -182,9 +182,11 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
     }))
     .unwrap();
     let mut display = Window::default();
+    assert_eq!(display.params("session", "main")["limit"], 64);
     assert!(display.push(page.into()).unwrap());
     let items = display.take();
     assert_eq!(items.len(), 2);
+    assert_eq!(display.params("session", "main")["limit"], 256);
     assert!(
         matches!(&items[1].content, EventContent::CompactionSummary(summary) if summary.strategy=="summary")
     );

@@ -295,6 +295,7 @@ fn run_terminal(
     );
     app.fullscreen = full.is_some();
     app.initial = surroundings.initial;
+    app.awaiting_window = surroundings.resume;
     app.terminal_clipboard =
         terminal.clipboard_protocol() && crate::clipboard::terminal::native_unreachable();
     app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
@@ -486,7 +487,12 @@ fn run_terminal(
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
-            _ if app.running() => FRAME_INTERVAL,
+            _ if app.running()
+                || terminal.writing()
+                || app.failure.is_none() && app.awaiting_window =>
+            {
+                FRAME_INTERVAL
+            }
             _ => SESSION_POLL,
         };
         // The first message waits for the first frame so it follows the

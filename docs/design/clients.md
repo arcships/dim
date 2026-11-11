@@ -103,13 +103,18 @@ the directory usable and reports the failure for that selection.
 
 ### Opening a conversation with a bounded window
 
-CLI main, line mode, branch side panels, member conversations, Web and ACP load/resume
-open with `session.history {latestTurn: true, limit: 256}`, then use
-`{before: nextBefore, through, limit: 256}` without `latestTurn`. The capability
-name is `session.history.latestTurn`; it is not a separate RPC method. Every page
-keeps the first reply's `through`. They stop after
-the page that reaches 100 transcript rows, after four pages, or at the branch
-start, whichever comes first. A transcript row is a user input, an assistant
+CLI main, line mode, branch side panels, member conversations and ACP load/resume
+open with `session.history {latestTurn: true, limit: 64}`. They show the first page
+containing transcript rows, keeping that whole atomic page and its fixed `through`.
+If a page has no visible transcript rows, they continue backwards at the same head,
+up to four pages total. They do not fetch older messages to fill a 100-message quota.
+The capability name is `session.history.latestTurn`; it is not a separate RPC method.
+The native TUI publishes the completed transcript window immediately. Owner inventories
+continue at that same head; their loading, errors and guarded actions keep their own readiness.
+A transcript ready for layout does not declare all controls ready.
+An explicit earlier read uses 256 positions per page and stops at 100 transcript rows
+or four pages. Web keeps its existing 256-position, 100-row, four-page window.
+A transcript row is a user input, an assistant
 response or a tool call that the client actually renders, not a text delta or a
 hidden runtime input. Counting uses the projection's rules and stable identities.
 After reading stops, the view applies a separate retention budget of 300 rows by
@@ -131,9 +136,9 @@ Earlier transcript is loaded only on user request. Export keeps its full fixed
 prefix. CLI/ACP reconnect catch-up starts from the last consumed cursor; Web replaces each opened transcript with a fresh bounded window.
 
 ```text
-attach -> latest page -> older page(s), at most 4 total -> draw -> live
-                         stop at 100 transcript rows
-user asks for earlier -> before(cursor) -> prepend older content
+attach -> latest 64-position page -> owner inventories -> draw -> editable
+          | no visible row: at most 4 pages total
+/earlier -> 256-position page(s), at most 4 -> prepend older content
 ```
 
 The client retains only the initial window, its oldest `nextBefore` and its fixed
@@ -189,8 +194,9 @@ The changes apply to every entry, not just the main TUI:
 | ACP `gateway.rs::read_history` | Load/resume returns only the window; model/configuration comes from attach and public current-state reads. A `forkAtTurn` lookup must resolve the requested terminal turn outside the window; full-history/export APIs keep their explicit full-prefix semantics. |
 
 Acceptance opens histories differing by at least ten times with the same visible
-tail. Reading stops after the page reaching 100 transcript rows, after four
-pages, or at the branch start, whichever comes first. After that stop, the
+tail. Native initial reading stops at the first page with visible transcript rows, after
+four empty pages, or at the branch start. Explicit earlier reads and the Web window
+retain the 100-row/four-page budget. After that stop, the
 300-row retention budget drops only older whole pages, subject to the required
 newest-page and visible-page exceptions above. It never causes another read.
 Include a turn longer than the page budget, an empty visible page,

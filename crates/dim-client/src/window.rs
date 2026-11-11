@@ -4,11 +4,22 @@ use std::collections::{HashSet, VecDeque};
 
 /// One bounded transcript load. The consumer takes and releases its raw pages
 /// after projecting them; this object is not a history cache.
-#[derive(Default)]
 pub struct Window {
     pub before: Option<u64>,
     pub through: Option<u64>,
     pages: VecDeque<(Option<u64>, Vec<Event>)>,
+    initial: bool,
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            before: None,
+            through: None,
+            pages: VecDeque::new(),
+            initial: true,
+        }
+    }
 }
 
 impl Window {
@@ -16,12 +27,14 @@ impl Window {
         Self {
             before: Some(before),
             through: Some(through),
+            initial: false,
             ..Self::default()
         }
     }
 
     pub fn params(&self, session: &str, branch: &str) -> Value {
-        let mut params = json!({"sessionId":session,"branchId":branch,"limit":256});
+        let mut params =
+            json!({"sessionId":session,"branchId":branch,"limit":if self.initial {64} else {256}});
         if let Some(before) = self.before {
             params["before"] = json!(before);
             params["through"] = json!(self.through);
@@ -49,7 +62,10 @@ impl Window {
                 rows.insert(row);
             });
         }
-        Ok(self.before.is_none() || self.pages.len() >= 4 || rows.len() >= 100)
+        Ok(self.before.is_none()
+            || self.pages.len() >= 4
+            || rows.len() >= 100
+            || (self.initial && !rows.is_empty()))
     }
 
     /// Releases whole wire pages in forward order under a 300-identity budget.
@@ -57,6 +73,7 @@ impl Window {
     /// remain whole even above that budget. This does not read more pages.
     /// The cursor remains at a server-provided batch boundary for earlier reads.
     pub fn take(&mut self) -> Vec<Event> {
+        self.initial = false;
         let mut rows = HashSet::new();
         let mut keep = 0;
         for (_, events) in self.pages.iter().rev() {

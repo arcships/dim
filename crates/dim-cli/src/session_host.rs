@@ -4423,7 +4423,7 @@ impl Worker {
         snapshot.history_complete = self
             .task_history
             .get(&self.focus)
-            .is_some_and(|branch| branch.done);
+            .is_some_and(|branch| branch.window_complete);
         snapshot.task_history_loading = self
             .task_history
             .values()

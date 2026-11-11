@@ -156,7 +156,6 @@ const START_LOCK_TIMEOUT: Duration =
     Duration::from_secs(DAEMON_SHUTDOWN_TIMEOUT.as_secs() + DAEMON_START_TIMEOUT.as_secs() + 10);
 /// The bypass note a starting daemon writes beside its store.
 const STARTUP_NOTE: &str = "dimcode.sqlite.startup";
-/// How long every startup wait sleeps between polls.
 const STARTUP_POLL: Duration = Duration::from_millis(50);
 
 /// The startup bound a spawned daemon is given.
@@ -847,6 +846,7 @@ pub async fn connect_inner(
     let mut waiting = another_daemon_starting(&startup_note);
     wait.rebind(daemon_start_timeout());
     let mut child: Option<std::process::Child> = None;
+    let mut poll = Duration::from_millis(5);
     loop {
         match Client::open(&connection, true).await {
             Ok(client) => match adopt(client, start, &server, &startup_note).await? {
@@ -883,7 +883,8 @@ pub async fn connect_inner(
             let _ = std::fs::remove_file(&startup_note);
             wait.rebind(daemon_start_timeout());
             child = Some(command.spawn()?);
-            tokio::time::sleep(STARTUP_POLL).await;
+            poll = Duration::from_millis(5);
+            tokio::time::sleep(poll).await;
             continue;
         }
         let child = child.as_mut().expect("the loop spawned a child");
@@ -914,7 +915,8 @@ pub async fn connect_inner(
             }
             .into());
         }
-        tokio::time::sleep(STARTUP_POLL).await;
+        poll = (poll * 2).min(STARTUP_POLL);
+        tokio::time::sleep(poll).await;
     }
 }
 

@@ -13,7 +13,7 @@ pub(super) struct BranchHistory {
     pub done: bool,
     pub error: Option<String>,
     live: Vec<Event>,
-    window_complete: bool,
+    pub(super) window_complete: bool,
     inventory_index: usize,
     inventory_cursor: Option<serde_json::Value>,
     goal_stale: bool,
@@ -482,6 +482,7 @@ impl Worker {
             .map_err(|error| format!("Invalid history reply: {error}"))?;
             history.window.push(page).map_err(|error| error.to_string())
         });
+        let window_ready = matches!(result, Ok(true));
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
@@ -525,6 +526,9 @@ impl Worker {
             }
         }
         self.changed();
+        if window_ready {
+            self.publish();
+        }
         Ok(())
     }
 
