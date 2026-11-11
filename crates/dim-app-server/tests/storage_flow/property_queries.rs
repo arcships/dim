@@ -175,61 +175,67 @@ async fn mixed_kind_identity_queries_seek_the_association_index() {
             .await
             .unwrap();
         let mut measured = Vec::new();
-        for (field, index, prefix) in [
-            ("data.request_id", "timeline_events_requests", "request"),
-            ("data.input_id", "timeline_events_inputs", "input"),
-        ] {
-            for present in [true, false] {
-                let mut query = fields(&["position.sequence"]);
-                query.filter = Some(QueryFilter::And {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
+        for single_kind in [true, false] {
+            for (field, index, prefix) in [
+                ("data.request_id", "timeline_events_requests", "request"),
+                ("data.input_id", "timeline_events_inputs", "input"),
+            ] {
+                for present in [true, false] {
+                    let mut query = fields(&["position.sequence"]);
+                    query.filter = Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: if single_kind {
+                                    vec![json!("owner/a")]
+                                } else {
+                                    vec![json!("owner/a"), json!("owner/b")]
+                                },
                             },
-                            values: vec![json!("owner/a"), json!("owner/b")],
-                        },
-                        QueryFilter::In {
-                            value: QueryOperand::Field { path: field.into() },
-                            values: vec![json!(format!(
-                                "{prefix}-{}",
-                                if present { 0 } else { size }
-                            ))],
-                        },
-                    ],
-                });
-                for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
-                    query.pick = pick;
-                    store.record_query_statistics();
-                    let reply = store
-                        .query(&scope(size * 2), &query, Some(&page(3)))
-                        .await
-                        .unwrap();
-                    let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
-                        panic!("selected identity positions")
-                    };
-                    assert_eq!(
-                        rows.len(),
-                        if present {
-                            if pick.is_some() { 1 } else { 2 }
-                        } else {
-                            0
-                        }
-                    );
-                    let stats = store.take_query_statistics();
-                    assert!(
-                        stats
-                            .iter()
-                            .flat_map(|stat| &stat.plan)
-                            .any(|line| line.contains(index) && line.contains("<expr>=?")),
-                        "identity constraints must select the association, not just kind: {stats:?}"
-                    );
-                    measured.push(
-                        stats
-                            .iter()
-                            .map(|stat| i64::from(stat.vm_steps))
-                            .sum::<i64>(),
-                    );
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: field.into() },
+                                values: vec![json!(format!(
+                                    "{prefix}-{}",
+                                    if present { 0 } else { size }
+                                ))],
+                            },
+                        ],
+                    });
+                    for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
+                        query.pick = pick;
+                        store.record_query_statistics();
+                        let reply = store
+                            .query(&scope(size * 2), &query, Some(&page(3)))
+                            .await
+                            .unwrap();
+                        let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
+                            panic!("selected identity positions")
+                        };
+                        assert_eq!(
+                            rows.len(),
+                            if present {
+                                if pick.is_some() || single_kind { 1 } else { 2 }
+                            } else {
+                                0
+                            }
+                        );
+                        let stats = store.take_query_statistics();
+                        assert!(
+                            stats
+                                .iter()
+                                .flat_map(|stat| &stat.plan)
+                                .any(|line| line.contains(index) && line.contains("<expr>=?")),
+                            "identity constraints must select the association, not just kind: {stats:?}"
+                        );
+                        measured.push(
+                            stats
+                                .iter()
+                                .map(|stat| i64::from(stat.vm_steps))
+                                .sum::<i64>(),
+                        );
+                    }
                 }
             }
         }

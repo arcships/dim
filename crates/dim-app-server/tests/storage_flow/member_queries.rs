@@ -283,6 +283,40 @@ async fn indexed_pending_sets_keep_old_pages_and_do_not_read_closed_or_other_gro
                 }
             }
             assert_eq!(total, 10);
+            if family == 2 {
+                let mut all_tools = query.clone();
+                let Some(QueryFilter::And { conditions }) = &mut all_tools.filter else {
+                    unreachable!()
+                };
+                conditions.retain(|condition| !matches!(condition, QueryFilter::Any { .. }));
+                let first = QueryPage {
+                    limit: NonZeroU64::new(4).unwrap(),
+                    after: None,
+                };
+                store.record_query_statistics();
+                let actual = store.query(&scope, &all_tools, Some(&first)).await.unwrap();
+                let statistics = store.take_query_statistics();
+                assert!(
+                    statistics
+                        .iter()
+                        .any(|statement| statement.stage == "member_group"),
+                    "all tools must seek the existing group roots"
+                );
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(
+                        memory
+                            .query(&scope, &all_tools, Some(&first))
+                            .await
+                            .unwrap()
+                    )
+                    .unwrap()
+                );
+                vm += statistics
+                    .iter()
+                    .map(|statement| i64::from(statement.vm_steps))
+                    .sum::<i64>();
+            }
             family_costs.push(vm);
             let old = read_scope("members", size);
             let first = QueryPage {

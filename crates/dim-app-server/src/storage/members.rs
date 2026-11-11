@@ -912,7 +912,7 @@ fn candidates_for<'a>(
             }
             residual = true;
         }
-        if !origin || (!matches!(profile.groups, Groups::None) && grouped.is_none()) {
+        if !origin || (matches!(profile.groups, Groups::Presence(..)) && grouped.is_none()) {
             continue;
         }
         let Some(terminal) = terminal else { continue };
@@ -941,17 +941,57 @@ fn candidates_for<'a>(
                 low = low.max(sequence.saturating_add(1));
             }
         }
-        let group = grouped.unwrap_or_else(|| vec![0]);
-        let root = root(
-            connection,
-            &scope.key.session_id,
-            &segment.branch_id,
-            profile,
-            &group,
-            through,
-            #[cfg(feature = "testing")]
-            Some(statistics),
-        )?;
+        let all_groups = grouped.is_none() && matches!(profile.groups, Groups::Elements(..));
+        let mut selected_groups = if all_groups {
+            Vec::new()
+        } else {
+            vec![grouped.unwrap_or_else(|| vec![0])]
+        };
+        if all_groups {
+            let mut previous = vec![2u8];
+            loop {
+                let sql = "SELECT group_key FROM timeline_member_roots WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND group_key>?4 AND group_key<?5 ORDER BY group_key LIMIT 1";
+                let mut statement = connection.prepare_cached(sql).map_err(error)?;
+                #[cfg(feature = "testing")]
+                for status in [
+                    rusqlite::StatementStatus::VmStep,
+                    rusqlite::StatementStatus::FullscanStep,
+                    rusqlite::StatementStatus::Sort,
+                    rusqlite::StatementStatus::AutoIndex,
+                ] {
+                    statement.reset_status(status);
+                }
+                let parameters = rusqlite::params![
+                    scope.key.session_id,
+                    segment.branch_id,
+                    profile.id,
+                    previous,
+                    &[3u8][..]
+                ];
+                let next: Option<Vec<u8>> = statement
+                    .query_row(parameters, |row| row.get(0))
+                    .optional()
+                    .map_err(error)?;
+                #[cfg(feature = "testing")]
+                super::query::record_statement(
+                    statistics,
+                    connection,
+                    &statement,
+                    sql,
+                    &[
+                        scope.key.session_id.clone().into(),
+                        segment.branch_id.clone().into(),
+                        profile.id.to_owned().into(),
+                        previous.clone().into(),
+                        vec![3u8].into(),
+                    ],
+                    "member_group",
+                )?;
+                let Some(next) = next else { break };
+                previous = next.clone();
+                selected_groups.push(next);
+            }
+        }
         let tree = Tree {
             connection,
             session: &scope.key.session_id,
@@ -982,7 +1022,10 @@ fn candidates_for<'a>(
                 }
             }
             if event.kind.key() == profile.origin
-                && groups(profile, &value)?.contains(&group)
+                && (all_groups
+                    || groups(profile, &value)?
+                        .iter()
+                        .any(|group| selected_groups.contains(group)))
                 && let Some(key) = key(profile.key, profile.tuple, &value)?
             {
                 opened.push((event.sequence, key));
@@ -990,32 +1033,46 @@ fn candidates_for<'a>(
         }
         let page_size = if residual { 128 } else { limit.max(1) };
         let mut positions = Vec::new();
-        while low <= high {
-            let members = tree.page(root, low, high, descending, page_size, cancel)?;
-            let Some(last) = members.last().copied() else {
-                break;
-            };
-            for sequence in &members {
-                if closed.is_empty()
-                    || stored_key(
-                        connection,
-                        &scope.key.session_id,
-                        &segment.branch_id,
-                        profile,
-                        *sequence,
-                    )?
-                    .is_none_or(|key| !closed.contains(&key))
-                {
-                    positions.push(*sequence as u64);
+        for group in &selected_groups {
+            let root = root(
+                connection,
+                &scope.key.session_id,
+                &segment.branch_id,
+                profile,
+                group,
+                through,
+                #[cfg(feature = "testing")]
+                Some(statistics),
+            )?;
+            let (mut low, mut high) = (low, high);
+            let before = positions.len();
+            while low <= high {
+                let members = tree.page(root, low, high, descending, page_size, cancel)?;
+                let Some(last) = members.last().copied() else {
+                    break;
+                };
+                for sequence in &members {
+                    if closed.is_empty()
+                        || stored_key(
+                            connection,
+                            &scope.key.session_id,
+                            &segment.branch_id,
+                            profile,
+                            *sequence,
+                        )?
+                        .is_none_or(|key| !closed.contains(&key))
+                    {
+                        positions.push(*sequence as u64);
+                    }
                 }
-            }
-            if members.len() < page_size || (!residual && positions.len() >= limit) {
-                break;
-            }
-            if descending {
-                high = last.saturating_sub(1);
-            } else {
-                low = last.saturating_add(1);
+                if members.len() < page_size || (!residual && positions.len() - before >= limit) {
+                    break;
+                }
+                if descending {
+                    high = last.saturating_sub(1);
+                } else {
+                    low = last.saturating_add(1);
+                }
             }
         }
         for (sequence, key) in opened {
