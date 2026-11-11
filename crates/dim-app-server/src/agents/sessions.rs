@@ -389,6 +389,7 @@ impl AgentIndex {
                                     message: format!("model resolution: {error}"),
                                 }
                             })?,
+                            self.stopping.clone(),
                         )
                         .await
                         .map_err(|error| SessionsError::Failed {

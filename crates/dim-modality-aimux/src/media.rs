@@ -67,7 +67,7 @@ pub fn provider(
     operation: Operation,
     transport: &Transport,
 ) -> Result<Arc<dyn Provider>, AdapterError> {
-    match &connection.connection {
+    match &connection.resolved.connection {
         ModelConnection::Http(http) => {
             let (base_url, fetch) =
                 transport.resolve(&http.network, &vendor.base_url(operation, &http.base_url));

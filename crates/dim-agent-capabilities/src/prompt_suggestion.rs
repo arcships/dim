@@ -34,6 +34,7 @@ use dim_agent_types::{
 use futures_util::StreamExt;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, Reply as BridgeReply, Value as BridgeValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -85,31 +86,76 @@ pub enum PromptSuggestionSettingsError {
 /// An owner's read of the document, bound as the face's one operation. The
 /// owner bounds it by its own lifetime; a caller ends it by dropping the call.
 pub type PromptSuggestionSettingsRead = Arc<
-    dyn Fn() -> BoxFuture<'static, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>>
+    dyn Fn(
+            CancellationToken,
+        )
+            -> BoxFuture<'static, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>>
         + Send
         + Sync,
 >;
 
-/// The `promptSuggestionSettingsHost` face: its owner provides it with the
-/// document's read, another language calls `read` by name, and the Session
-/// part calls the same method directly.
+/// The `promptSuggestionSettingsHost` face: `read` is the one operation,
+/// served under the name for any language and called directly by the Session
+/// part through the binding that holds it.
 #[derive(Clone)]
-pub struct PromptSuggestionSettingsHost(PromptSuggestionSettingsRead);
+pub struct PromptSuggestionSettingsHost(Arc<dyn HostDispatch>);
 
 impl PromptSuggestionSettingsHost {
     /// Binds an owner's read as the face's operation.
     pub fn new(read: PromptSuggestionSettingsRead) -> Self {
-        Self(read)
+        Self(Arc::new(SettingsFace(read)))
     }
-}
 
-#[rutis::service]
-impl PromptSuggestionSettingsHost {
     /// The `prompt-suggestion` document as its source holds it now.
     pub async fn read(
         &self,
+        cancel: CancellationToken,
     ) -> std::result::Result<PromptSuggestionSettings, PromptSuggestionSettingsError> {
-        (self.0)().await
+        crate::port_faces::call(
+            SETTINGS,
+            &self.0,
+            "read",
+            &crate::port_faces::Empty {},
+            &cancel,
+        )
+        .await
+        .map_err(|error| PromptSuggestionSettingsError::Failed {
+            message: error.to_string(),
+        })
+    }
+}
+
+/// Provides one owner's [`PromptSuggestionSettingsHost`]: the binding its Rust
+/// readers hold and the face any other language calls by name.
+pub fn provide_settings(ctx: &Ctx, host: &PromptSuggestionSettingsHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<PromptSuggestionSettingsHost>::of(),
+        Arc::new(PromptSuggestionSettingsHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        crate::port_faces::face_key::<PromptSuggestionSettingsHost>(),
+        host.0.clone(),
+    )?;
+    Ok(())
+}
+
+const SETTINGS: &str = "promptSuggestionSettingsHost";
+
+struct SettingsFace(PromptSuggestionSettingsRead);
+
+impl HostDispatch for SettingsFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({"read": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> BridgeReply {
+        if method != "read" {
+            return Err(crate::port_faces::unknown_method(SETTINGS, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(SETTINGS, args)?;
+        let cancel = CancellationToken::new();
+        let read = (self.0)(cancel.clone());
+        crate::port_faces::serving(SETTINGS, cancel, read)
     }
 }
 
@@ -688,7 +734,7 @@ impl Part {
     async fn settings_changed(self: Arc<Self>) {
         // A Session that closes while the read runs no longer makes the
         // change it reports matter.
-        let Ok(settings) = self.read_settings().await else {
+        let Ok(settings) = self.read_settings(self.stopping.child_token()).await else {
             return;
         };
         let mut state = self.state.lock().unwrap();
@@ -715,13 +761,15 @@ impl Part {
     }
 
     /// The `prompt-suggestion` document as the source holds it now; the
-    /// default document when the assembly binds no source. The owner bounds
-    /// the read by its own lifetime: a part that stops while it runs drops
-    /// the answer, not the read.
-    async fn read_settings(&self) -> Result<PromptSuggestionSettings, RpcError> {
+    /// default document when the assembly binds no source. Dropping this read
+    /// ends the owner's read with it.
+    async fn read_settings(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<PromptSuggestionSettings, RpcError> {
         match &self.hosts.settings {
             Some(host) => host
-                .read()
+                .read(cancel)
                 .await
                 .map_err(|error| RpcError::service("failed", error.to_string())),
             None => Ok(PromptSuggestionSettings::default()),
@@ -827,7 +875,7 @@ impl Part {
         // cancellation reaches it, and cancelled by every invalidation the
         // Session reports.
         let token = cancel.child_token();
-        let settings = self.read_settings().await?;
+        let settings = self.read_settings(token.clone()).await?;
         let max_chars = settings.max_chars.clamp(10, 200);
         // The state lock leaves the request either registered as this
         // turn's owner, or holding the flight it shares and waits on.
@@ -892,7 +940,7 @@ impl Part {
         // settings and the state as they are now, never the snapshot above.
         // The read does not depend on the request: a cancelled request still
         // reads and answers a reason rather than a service error.
-        let settings = match self.read_settings().await {
+        let settings = match self.read_settings(self.stopping.child_token()).await {
             Ok(settings) => settings,
             Err(error) => {
                 self.settle(invocation, Settled::Failed(error.clone()));
@@ -997,7 +1045,7 @@ impl Part {
     /// the reason the owner's own cancelled read would answer, from the state
     /// and the settings as they are now.
     async fn shared_refusal(&self, turn_id: &str, invocation: u64) -> Result<Value, RpcError> {
-        let settings = self.read_settings().await?;
+        let settings = self.read_settings(self.stopping.child_token()).await?;
         let state = self.state.lock().unwrap();
         Ok(refused(
             self.cancelled_reason(&state, turn_id, &settings, invocation),

@@ -1748,12 +1748,12 @@ impl DynPlugin for ToolchainSourcePlugin {
         Box::pin(async move {
             let port = ctx.clone();
             let service = self.service.clone();
-            ctx.provide(ToolchainSourceHost::new(Arc::new(move || {
-                Ok(port
-                    .get_at(&service)
+            let host = ToolchainSourceHost::new(Arc::new(move || {
+                port.get_at(&service)
                     .map(|service| service.toolchains())
-                    .unwrap_or_default())
-            })))?;
+                    .unwrap_or_default()
+            }));
+            dim_agent_capabilities::toolchain::provide(ctx, &host)?;
             Ok(Effect::Done)
         })
     }

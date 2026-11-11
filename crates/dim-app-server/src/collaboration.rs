@@ -272,6 +272,7 @@ impl Collaboration {
                             code: Refusal::MemberCreateFailed,
                             detail: Some(error.to_string()),
                         })?,
+                        self.stop.clone(),
                     )
                     .await
                     .map_err(|error| error.to_string()),
@@ -1168,14 +1169,14 @@ impl CollaborationSession {
     /// The models a new member can run, with their provider IDs. The
     /// deployment's model owner answers the read; without one, no `models`
     /// action is offered.
-    async fn models(&self, _cancel: &CancellationToken) -> Result<ToolResult, HostError> {
+    async fn models(&self, cancel: &CancellationToken) -> Result<ToolResult, HostError> {
         let Some(selectable) = &self.selectable else {
             return Ok(refusal(
                 Refusal::InvalidInput,
                 "this deployment does not describe selectable models",
             ));
         };
-        let models = match selectable.selectable_models().await {
+        let models = match selectable.selectable_models(cancel.clone()).await {
             Ok(reply) => reply.models,
             Err(ModelPortError::Cancelled { message }) => {
                 return Err(HostError::Cancelled(message));

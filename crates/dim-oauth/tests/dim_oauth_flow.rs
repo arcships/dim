@@ -1151,7 +1151,7 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
     let operations = root
         .get::<SelectableModelsHost>()
         .unwrap()
-        .selectable_for_modality()
+        .selectable_for_modality(cancel())
         .await
         .unwrap()
         .models
@@ -1164,17 +1164,22 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
     let connection = root
         .get::<ModalityConnectionHost>()
         .unwrap()
-        .resolve_modality_connection(ModalityTarget {
-            target: ModelId {
-                provider_id: PROVIDER.into(),
-                model_id: "fixture-image".into(),
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: PROVIDER.into(),
+                    model_id: "fixture-image".into(),
+                },
+                operation: "image.generate".into(),
             },
-            operation: "image.generate".into(),
-        })
+            cancel(),
+        )
         .await
         .unwrap();
     assert_eq!(connection.model, "fixture-image");
     assert_eq!(connection.protocol, ModelProtocol::OpenaiCompatible);
+    assert!(connection.resolved.recovery.is_some());
     let request = Arc::new(ModelRequest {
         capability_snapshot: Some(ModelCapabilitySnapshot {
             target: ModelId {
@@ -1248,7 +1253,7 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     let listed = root
         .get::<SelectableModelsHost>()
         .unwrap()
-        .selectable_for_modality()
+        .selectable_for_modality(cancel())
         .await
         .unwrap()
         .models;
@@ -1262,13 +1267,17 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     let refused = root
         .get::<ModalityConnectionHost>()
         .unwrap()
-        .resolve_modality_connection(ModalityTarget {
-            target: ModelId {
-                provider_id: PROVIDER.into(),
-                model_id: "fixture-image".into(),
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: PROVIDER.into(),
+                    model_id: "fixture-image".into(),
+                },
+                operation: "image.generate".into(),
             },
-            operation: "image.generate".into(),
-        })
+            cancel(),
+        )
         .await
         .err()
         .unwrap();

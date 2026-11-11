@@ -58,10 +58,8 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
                     user_only: Vec::new(),
                 },
             )?;
-            let stopping = ctx.cancellation_token();
-            let host = PromptSuggestionSettingsHost::new(Arc::new(move || {
+            let host = PromptSuggestionSettingsHost::new(Arc::new(move |cancel| {
                 let settings = settings.clone();
-                let cancel = stopping.child_token();
                 Box::pin(async move {
                     let snapshot = settings
                         .read_declared(SOURCE, SettingsScope::User, &cancel)
@@ -76,7 +74,7 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
                     })
                 })
             }));
-            ctx.provide(host)?;
+            dim_agent_capabilities::prompt_suggestion::provide_settings(ctx, &host)?;
             Ok(Effect::Done)
         })
     }

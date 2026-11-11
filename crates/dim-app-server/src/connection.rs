@@ -2277,7 +2277,7 @@ impl RpcService {
         self.index
             .model_selection()
             .ok_or_else(RpcError::reloading)?
-            .resolve(request)
+            .resolve(request, self.unloading.clone())
             .await
             .map_err(port_error)
     }

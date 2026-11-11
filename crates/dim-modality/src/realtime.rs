@@ -236,7 +236,7 @@ impl Realtime {
                 row.id(category.name)
             )));
         };
-        let connection = self.connection(&model, row).await?;
+        let connection = self.connection(&model, row, cancel).await?;
         // A `realtime.*` model whose entry declares no transport cannot be
         // opened; nothing has been sent to the provider yet.
         if connection.realtime.is_none() {
@@ -347,18 +347,23 @@ impl Realtime {
         &self,
         model: &ModelId,
         row: &crate::OperationRow,
+        cancel: &CancellationToken,
     ) -> Result<ModalityConnection, RpcError> {
         let Some(host) = self.shared.ctx.get::<ModalityConnectionHost>() else {
             return Err(unavailable(
                 "Provider does not serve a non-conversational connection",
             ));
         };
-        host.resolve_modality_connection(ModalityTarget {
-            target: model.clone(),
-            operation: row.id("realtime"),
-        })
-        .await
-        .map_err(crate::port_error)
+        host.0
+            .resolve_for_modality(
+                ModalityTarget {
+                    target: model.clone(),
+                    operation: row.id("realtime"),
+                },
+                cancel.child_token(),
+            )
+            .await
+            .map_err(crate::host_error)
     }
 
     /// Starts the supervisor of one session.

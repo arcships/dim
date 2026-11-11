@@ -39,7 +39,10 @@ pub use adapter::{
     RemoteCancel, Submitted,
 };
 use dim_agent_capabilities::{
-    host::{ModelPortError, ModelSelectionHost, ModelSelectionRequest, SelectableModelsHost},
+    host::{
+        HostError, HostErrorKind, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
+        SelectableModelsHost,
+    },
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
@@ -992,6 +995,17 @@ fn settings_error(error: SettingsError) -> RpcError {
     }
 }
 
+pub(crate) fn host_error(error: HostError) -> RpcError {
+    match error {
+        HostError::Cancelled(_) => RpcError::interrupted(),
+        HostError::Failed {
+            kind: HostErrorKind::OwnerClosed,
+            ..
+        } => RpcError::reloading(),
+        error => RpcError::app(-32000, "modality_failed", error.to_string()),
+    }
+}
+
 /// A process model port's failure as this plugin reports it: the two codes a
 /// caller acts on, and the owner's message for the rest.
 pub(crate) fn port_error(error: ModelPortError) -> RpcError {
@@ -1028,17 +1042,20 @@ pub(crate) async fn evaluate(
         .await
         .map_err(settings_error)?;
     let selectable_models = selectable
-        .selectable_models()
+        .selectable_models(cancel.clone())
         .await
         .map_err(port_error)?
         .models;
     let declared = selectable
-        .selectable_for_modality()
+        .selectable_for_modality(cancel.clone())
         .await
         .map_err(port_error)?
         .models;
     let global = selection
-        .resolve(ModelSelectionRequest::at(None, None).map_err(port_error)?)
+        .resolve(
+            ModelSelectionRequest::at(None, None).map_err(port_error)?,
+            cancel.clone(),
+        )
         .await
         .ok()
         .map(|selection| ModelId {

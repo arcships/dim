@@ -191,7 +191,7 @@ async fn the_configured_profile_resolves_no_modality_connection() {
     let selectable = host.root().get::<SelectableModelsHost>().unwrap();
     assert!(
         selectable
-            .selectable_for_modality()
+            .selectable_for_modality(CancellationToken::new())
             .await
             .unwrap()
             .models
@@ -199,29 +199,43 @@ async fn the_configured_profile_resolves_no_modality_connection() {
     );
     let modality = host.root().get::<ModalityConnectionHost>().unwrap();
     let refused = modality
-        .resolve_modality_connection(ModalityTarget {
-            target: ModelId {
-                provider_id: "local".into(),
-                model_id: "test-model".into(),
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: "local".into(),
+                    model_id: "test-model".into(),
+                },
+                operation: "image.generate".into(),
             },
-            operation: "image.generate".into(),
-        })
+            CancellationToken::new(),
+        )
         .await
         .err()
         .unwrap();
-    assert!(matches!(refused, ModelPortError::InvalidRequest { .. }));
+    assert!(matches!(
+        refused,
+        HostError::Failed {
+            kind: HostErrorKind::InvalidRequest,
+            ..
+        }
+    ));
     assert_eq!(
         refused.to_string(),
         "Model does not declare the image.generate operation"
     );
     let unknown = modality
-        .resolve_modality_connection(ModalityTarget {
-            target: ModelId {
-                provider_id: "local".into(),
-                model_id: "missing".into(),
+        .0
+        .resolve_for_modality(
+            ModalityTarget {
+                target: ModelId {
+                    provider_id: "local".into(),
+                    model_id: "missing".into(),
+                },
+                operation: "image.generate".into(),
             },
-            operation: "image.generate".into(),
-        })
+            CancellationToken::new(),
+        )
         .await
         .err()
         .unwrap();

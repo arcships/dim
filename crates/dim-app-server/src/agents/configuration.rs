@@ -138,7 +138,10 @@ async fn adopt_profile(
             index
                 .model_selection()
                 .ok_or_else(RpcError::reloading)?
-                .resolve(ModelSelectionRequest::at(Some(target), None).map_err(port_error)?)
+                .resolve(
+                    ModelSelectionRequest::at(Some(target), None).map_err(port_error)?,
+                    cancel.clone(),
+                )
                 .await
                 .map_err(port_error)?,
         ),

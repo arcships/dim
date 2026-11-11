@@ -1390,7 +1390,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     route.models = vec![no_route];
     provider.create(route, &cancel).await.unwrap();
 
-    let first = selectable.selectable_models().await.unwrap().models;
+    let first = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let mine: Vec<_> = first
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1579,7 +1583,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     // entries it omits keep the enablement they have, so naming `text` alone
     // disables the served model and nothing else.
     assert_eq!(enabled_text.disabled_model_ids, ["served"]);
-    let second = selectable.selectable_models().await.unwrap().models;
+    let second = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let second_ids: Vec<&str> = second
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1588,7 +1596,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     assert_eq!(second_ids, ["text"]);
     assert_eq!(ids, ["served"], "the earlier reply must not change");
     root.shutdown().await.unwrap();
-    let error = selectable.selectable_models().await.err().unwrap();
+    let error = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .err()
+        .unwrap();
     assert!(
         matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
@@ -1696,7 +1708,11 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         )
         .unwrap();
 
-    let modality = selectable.selectable_for_modality().await.unwrap().models;
+    let modality = selectable
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let listed: Vec<(String, Vec<String>)> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1746,23 +1762,37 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     );
     // The same two reads through the faces other languages call: the models
     // the Rust consumer sees, in its order.
-    let listed = face_call(&root, "selectableModelsHost", "selectableModels", vec![]).await;
+    let listed = face_call(
+        &root,
+        "selectableModelsHost",
+        "selectableModels",
+        vec![json!({}).into()],
+    )
+    .await;
     let chat_face: Vec<dim_agent_types::ModelCapabilitySnapshot> =
         serde_json::from_value(listed["models"].clone()).unwrap();
     let listed = face_call(
         &root,
         "selectableModelsHost",
         "selectableForModality",
-        vec![],
+        vec![json!({}).into()],
     )
     .await;
     let modality_face: Vec<dim_agent_types::ModalityModelSnapshot> =
         serde_json::from_value(listed["models"].clone()).unwrap();
-    let chat = selectable.selectable_models().await.unwrap().models;
+    let chat = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     assert_eq!(chat_face, chat, "the face lists what the port lists");
     assert_eq!(
         modality_face,
-        selectable.selectable_for_modality().await.unwrap().models
+        selectable
+            .selectable_for_modality(cancel.clone())
+            .await
+            .unwrap()
+            .models
     );
     let resolved = face_call(
         &root,
@@ -1805,7 +1835,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     );
     assert!(
         selectable
-            .selectable_for_modality()
+            .selectable_for_modality(CancellationToken::new())
             .await
             .unwrap()
             .models
@@ -1823,7 +1853,11 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         )
         .await
         .unwrap();
-    let modality = selectable.selectable_for_modality().await.unwrap().models;
+    let modality = selectable
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let listed: Vec<&str> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1835,7 +1869,11 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         "a disabled model leaves the modality options"
     );
     root.shutdown().await.unwrap();
-    let error = selectable.selectable_for_modality().await.err().unwrap();
+    let error = selectable
+        .selectable_for_modality(cancel.clone())
+        .await
+        .err()
+        .unwrap();
     assert!(
         matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
@@ -1973,7 +2011,11 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         },
         operation: operation.into(),
     };
-    let listed = selectable.selectable_for_modality().await.unwrap().models;
+    let listed = selectable
+        .selectable_for_modality(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     assert!(
         listed.iter().any(|model| model.target.provider_id == MINE
             && model.target.model_id == "media"
@@ -1983,14 +2025,15 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     assert!(seen.lock().unwrap().is_empty(), "the read made a request");
 
     let connection = modality
-        .resolve_modality_connection(modality_target("media", "image.generate"))
+        .0
+        .resolve_for_modality(modality_target("media", "image.generate"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(connection.model, "media");
     assert_eq!(connection.protocol, ModelProtocol::OpenaiCompatible);
     let debug = format!("{connection:?}");
     assert!(!debug.contains(KEY), "{debug}");
-    let (base_url, headers, bearer) = match &connection.connection {
+    let (base_url, headers, bearer) = match &connection.resolved.connection {
         ModelConnection::Http(http) => (
             http.base_url.clone(),
             http.headers.clone(),
@@ -2024,7 +2067,8 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     // operation of the same model carries none, and a declaration that does
     // not parse is refused rather than silently absent.
     let voice = modality
-        .resolve_modality_connection(modality_target("voice", "realtime.voice"))
+        .0
+        .resolve_for_modality(modality_target("voice", "realtime.voice"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -2036,14 +2080,16 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     );
     assert!(!format!("{voice:?}").contains(KEY));
     let image = modality
-        .resolve_modality_connection(modality_target("voice", "image.generate"))
+        .0
+        .resolve_for_modality(modality_target("voice", "image.generate"), cancel.clone())
         .await;
     assert_eq!(
         image.err().unwrap().to_string(),
         "Model does not declare the image.generate operation"
     );
     let broken = modality
-        .resolve_modality_connection(modality_target("broken", "realtime.voice"))
+        .0
+        .resolve_for_modality(modality_target("broken", "realtime.voice"), cancel.clone())
         .await
         .err()
         .unwrap();
@@ -2081,7 +2127,8 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         ),
     ] {
         let error = modality
-            .resolve_modality_connection(target)
+            .0
+            .resolve_for_modality(target, cancel.clone())
             .await
             .err()
             .unwrap();

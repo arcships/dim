@@ -712,7 +712,11 @@ impl Shared {
 
     /// Resolves one connection for one adapter call (§3.4, #799): never
     /// stored, logged or returned.
-    async fn connection(&self, record: &TaskRecord) -> Result<ModalityConnection, String> {
+    async fn connection(
+        &self,
+        record: &TaskRecord,
+        cancel: &CancellationToken,
+    ) -> Result<ModalityConnection, String> {
         let Some(host) = self.ctx.get::<ModalityConnectionHost>() else {
             return Err("Provider does not serve a non-conversational connection".into());
         };
@@ -724,7 +728,8 @@ impl Shared {
             target: provider,
             operation: format!("{}.{}", record.category, record.operation),
         };
-        host.resolve_modality_connection(target)
+        host.0
+            .resolve_for_modality(target, cancel.child_token())
             .await
             .map_err(|error| error.to_string())
     }
@@ -1294,7 +1299,7 @@ impl ModalityTasks {
         }
         let mut remote = None;
         if let Some(handle) = &record.remote_handle
-            && let Ok(connection) = self.shared.connection(&record).await
+            && let Ok(connection) = self.shared.connection(&record, cancel).await
             && let Some(adapter) = self.shared.ctx.get::<ModalityAdapterService>()
         {
             // A hung provider must not keep the client or an unload waiting.
@@ -1961,7 +1966,7 @@ impl Shared {
         };
         // A missing or refused connection before the task starts fails it
         // `unavailable` with the provider's reason (decision 5).
-        let connection = match self.connection(record).await {
+        let connection = match self.connection(record, &slot.cancel).await {
             Ok(connection) => connection,
             Err(error) => {
                 if !slot.cancel_requested() {
@@ -2032,7 +2037,7 @@ impl Shared {
             }
             return;
         }
-        let connection = match self.connection(&record).await {
+        let connection = match self.connection(&record, &slot.cancel).await {
             Ok(connection) => connection,
             Err(error) => {
                 if !slot.cancel_requested() {

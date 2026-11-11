@@ -1050,7 +1050,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             let listed = root.get::<SelectableModelsHost>().unwrap();
             assert!(
                 listed
-                    .selectable_for_modality()
+                    .selectable_for_modality(cancel.clone())
                     .await
                     .unwrap()
                     .models
@@ -1063,18 +1063,26 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             let image = root
                 .get::<ModalityConnectionHost>()
                 .unwrap()
-                .resolve_modality_connection(ModalityTarget {
-                    target: ModelId {
-                        provider_id: id.into(),
-                        model_id: "gpt-image-2".into(),
+                .0
+                .resolve_for_modality(
+                    ModalityTarget {
+                        target: ModelId {
+                            provider_id: id.into(),
+                            model_id: "gpt-image-2".into(),
+                        },
+                        operation: "image.generate".into(),
                     },
-                    operation: "image.generate".into(),
-                })
+                    cancel.clone(),
+                )
                 .await
                 .unwrap();
             assert_eq!(image.model, "gpt-image-2");
             assert_eq!(image.protocol, ModelProtocol::OpenaiResponses);
             let lease = codex.credential(None, &cancel).await.unwrap();
+            assert!(
+                image.resolved.recovery.is_some(),
+                "a managed connection keeps its recovery"
+            );
             assert!(
                 !format!("{image:?}").contains(lease.bearer()),
                 "the connection's Debug redacts the credential"

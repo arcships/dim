@@ -59,10 +59,8 @@ impl DynPlugin for ExecutionSettingsPlugin {
                     user_only: Vec::new(),
                 },
             )?;
-            let stopping = ctx.cancellation_token();
-            let host = ExecutionSettingsHost::new(Arc::new(move || {
+            let host = ExecutionSettingsHost::new(Arc::new(move |cancel| {
                 let settings = settings.clone();
-                let cancel = stopping.child_token();
                 Box::pin(async move {
                     let snapshot = settings
                         .read_declared(SOURCE, SettingsScope::User, &cancel)
@@ -77,7 +75,7 @@ impl DynPlugin for ExecutionSettingsPlugin {
                     })
                 })
             }));
-            ctx.provide(host)?;
+            dim_agent_capabilities::execution_settings::provide(ctx, &host)?;
             dim_agent_capabilities::execution_settings::prompt::register_parts(ctx, &parts)?;
             Ok(Effect::Done)
         })

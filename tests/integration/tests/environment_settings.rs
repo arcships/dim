@@ -27,7 +27,7 @@ impl Execution {
     /// The switches as the face's `read` answers them.
     fn host(&self) -> ExecutionSettingsHost {
         let settings = self.0.clone();
-        ExecutionSettingsHost::new(Arc::new(move || {
+        ExecutionSettingsHost::new(Arc::new(move |_| {
             let settings = *settings.lock().unwrap();
             Box::pin(async move { Ok(settings) })
         }))

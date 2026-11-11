@@ -3227,6 +3227,7 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
                         None,
                     )
                     .unwrap(),
+                    CancellationToken::new(),
                 )
                 .await
                     .unwrap()

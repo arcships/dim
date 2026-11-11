@@ -414,7 +414,7 @@ impl MediaAdapter {
             // The credential travels only to the connection's own origin, and
             // the client follows a redirect only as far as that credential
             // may go.
-            let credentialed = match &connection.connection {
+            let credentialed = match &connection.resolved.connection {
                 ModelConnection::Http(http) => same_origin(&link.url, &http.base_url),
                 _ => false,
             };
@@ -432,7 +432,7 @@ impl MediaAdapter {
 
 /// The network facts of one connection.
 fn network(connection: &ModalityConnection) -> Result<&ModelNetwork, AdapterError> {
-    match &connection.connection {
+    match &connection.resolved.connection {
         ModelConnection::Http(http) => Ok(&http.network),
         // Media::provider refuses both before a call reaches here; the fixed
         // sentences keep one reason for a connection no media row serves.
@@ -475,7 +475,7 @@ async fn download(
     cancel: &CancellationToken,
 ) -> Result<u64, AdapterError> {
     let mut request = client.get(url);
-    if let ModelConnection::Http(http) = &connection.connection
+    if let ModelConnection::Http(http) = &connection.resolved.connection
         && same_origin(url, &http.base_url)
     {
         for (name, value) in &http.headers {
@@ -540,7 +540,7 @@ struct Secrets(Vec<String>);
 impl Secrets {
     fn of(connection: &ModalityConnection) -> Self {
         let mut values = Vec::new();
-        if let ModelConnection::Http(http) = &connection.connection {
+        if let ModelConnection::Http(http) = &connection.resolved.connection {
             for value in [&http.bearer, &http.api_key].into_iter().flatten() {
                 if !value.is_empty() {
                     values.push(value.clone());

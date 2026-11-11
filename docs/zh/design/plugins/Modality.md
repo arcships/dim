@@ -300,7 +300,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 - **问题。** 图像生成与编辑适配器需要按调用取得模型的端点、协议与凭据材料。Provider 只为 `ModelRequest` 解析连接。
 - **现有机制。** `ProviderConnectionResolver` 绑定 `ModelRequest`；适配器不能拥有 Provider 凭据，Modality 也不能存储它们。
-- **需要的能力。** 由 Provider 拥有的、按调用解析模型非对话连接的能力，只用于该次调用，从不持久化，也不返回给客户端。Provider 在其自己的页面上定义该合同（[provider management §3.6](../appserver/provider-management.md#36-供进程-owner-读取的可选模型)）：输入、回复、可选性与凭据规则以及生命周期。端口是 `dim-agent-capabilities` 中的 `modalityConnectionHost` 面，`ModalityTarget` 携带模型标识与操作；Modality 按适配器调用（`submit`、`wait`、`cancel_remote`）调用 `resolveModalityConnection` 并把连接传给适配器。适配器调用它，不持有凭据。
+- **需要的能力。** 由 Provider 拥有的、按调用解析模型非对话连接的能力，只用于该次调用，从不持久化，也不返回给客户端。Provider 在其自己的页面上定义该合同（[provider management §3.6](../appserver/provider-management.md#36-供进程-owner-读取的可选模型)）：输入、回复、可选性与凭据规则以及生命周期。端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与 `ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作；Modality 按适配器调用（`submit`、`wait`、`cancel_remote`）解析它并把连接传给适配器。适配器调用它，不持有凭据。
 - **顺序影响。** 提交时解析；不重载；凭据从不进入任务记录、结果、诊断或错误。
 - **所有者/issue。** Provider，[#799](https://github.com/arcships/dim/issues/799)。
 

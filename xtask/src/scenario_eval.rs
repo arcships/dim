@@ -800,8 +800,8 @@ async fn pooled(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Resul
     let cancel = CancellationToken::new();
     let server = served(options, observe).await?;
     let resolved = async {
-        let model = selection(&server, &options.model, &options.out).await?;
-        let judge = selection(&server, &options.judge, &options.out).await?;
+        let model = selection(&server, &options.model, &options.out, &cancel).await?;
+        let judge = selection(&server, &options.judge, &options.out, &cancel).await?;
         let limits = judge_window(&judge, options.model_config.as_deref(), &cancel).await?;
         Ok::<_, Box<dyn std::error::Error>>((model, judge, limits))
     }
@@ -991,8 +991,8 @@ async fn rejudge_with(
     ) else {
         return Err("the served profile has no model host for the judge".into());
     };
-    let judge = selection(server, &options.judge, &options.out).await?;
-    let model = selection(server, &options.model, &options.out).await?;
+    let judge = selection(server, &options.judge, &options.out, cancel).await?;
+    let model = selection(server, &options.model, &options.out, cancel).await?;
     let limits = judge_window(&judge, options.model_config.as_deref(), cancel).await?;
     let (source, host, resolver, cancel) = (source, &host, &resolver, cancel);
     let judge = &judge;
@@ -2561,10 +2561,10 @@ async fn child_drive(
     if settings.defaults.is_some() {
         wait_for_plugins(&mut client).await?;
     }
-    let model = selection(server, &params.model, &params.workspace)
+    let model = selection(server, &params.model, &params.workspace, &cancel)
         .await
         .map_err(|error| error.to_string())?;
-    let judge = selection(server, &params.judge, &params.workspace)
+    let judge = selection(server, &params.judge, &params.workspace, &cancel)
         .await
         .map_err(|error| error.to_string())?;
     let limits = judge_window(&judge, Some(&params.model_config), &cancel)
@@ -4439,6 +4439,7 @@ pub(crate) async fn selection(
     server: &RunningServer,
     target: &ModelId,
     cwd: &Path,
+    cancel: &CancellationToken,
 ) -> Result<ModelSelection> {
     let host = server
         .service::<ModelSelectionHost>()
@@ -4446,6 +4447,7 @@ pub(crate) async fn selection(
     host.resolve(
         ModelSelectionRequest::at(Some(target.clone()), Some(cwd))
             .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id))?,
+        cancel.clone(),
     )
     .await
     .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id).into())

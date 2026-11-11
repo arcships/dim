@@ -441,10 +441,13 @@ impl HostPlatform {
                 "The host has no execution settings port, so the sandbox switches cannot be read"
                     .into(),
         })?;
-        source.read().await.map_err(|error| ProcessSpecError {
-            code: "isolation_config_invalid",
-            reason: error.to_string(),
-        })
+        source
+            .read(CancellationToken::new())
+            .await
+            .map_err(|error| ProcessSpecError {
+                code: "isolation_config_invalid",
+                reason: error.to_string(),
+            })
     }
 
     /// The sandbox backend a new process would use. Preparation reads the same

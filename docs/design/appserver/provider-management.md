@@ -642,29 +642,15 @@ non-chat rules. The read adds no state, cache, notification, crate or module.
 
 **Rust binding.** The port is `SelectableModelsHost` in
 `crates/dim-agent-capabilities/src/host.rs` beside `ModelSelectionHost`. Its two
-public methods are the operations §3.6 states, `#[rutis::service]` serves them
-by name, and a Rust reader calls the same methods. Provider provides it in
-`ProviderPlugin::apply`, and the configured model profile (`dim-agent-aimux`)
-provides it from the entries of its model file, so both deployments answer the
-same reads; that profile declares no modality operation, so its
-`selectableForModality` read answers none
+reads are the operations §3.6 states: the port type holds the owner's closures,
+its dispatcher writes the wire shape, and a Rust reader calls the same
+operations through the binding. Provider provides it with
+`provide_selectable_models` in `ProviderPlugin::apply`, and the configured model
+profile (`dim-agent-aimux`) provides it from the entries of its model file, so
+both deployments answer the same reads; that profile declares no modality
+operation, so its `selectableForModality` read answers none
 ([aimux](../../../crates/dim-agent-aimux/README.md)). The catalog registers the
-name shared, and `xtask types` generates its TypeScript declarations
-([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)):
-
-```rust
-pub trait SelectableModels: Send + Sync + 'static {
-    fn selectable(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
-    fn selectable_for_modality(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
-}
-pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
-```
+name shared ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)).
 
 The owner implementations are `ProviderService::selectable_models` and
 `ProviderService::selectable_modality_models`; `ProductResolver` delegates to
@@ -684,12 +670,10 @@ credential and reads no Provider record. It is a second process host port beside
 `resolveModalityConnection`, asynchronous, request `{target: {providerId,
 modelId}, operation: string}`, reply `{connection, protocol, model, realtime}`.
 
-`connection` is the connection facts a chat call to the same model would get —
-the route's protocol, base URL, network facts, headers and the credential or
-lease that call uses — handed to the adapter as that call's capability. The
-failure policy and a managed account's credential recovery stay with the chat
-path: no adapter applies them, so the face carries the facts and not the
-callbacks. `protocol` is the route the catalog carries for the model, and
+`connection` is the existing `ResolvedModelConnection` a chat call to the same
+model would get — the connection facts, the failure policy and, on a managed
+account, the credential recovery — so an adapter runs the same one-recovery rule
+execution does. `protocol` is the route the catalog carries for the model, and
 `model` is the id a request sends. Both ports run one resolution: it resolves the
 static or managed record, builds the catalog, selects and leases the managed
 credential in one place, and only the selectability rule and the request facts
@@ -727,26 +711,26 @@ never persists it, never returns it to a client and never writes it to a task
 record, result, diagnostic or error. Its `Debug` prints the model, the route, the
 base URL, header names and whether a credential is present, and never a header
 value, bearer or key; `ModelConnection` implements no `Debug`, so no other
-connection formats one. A managed account's connection carries the lease that
-call uses. The chat path's failure policy and credential recovery are not part of
-it: they are callbacks of the chat execution (`recovery::invoke` over
-`ModelHost`, a `ModelRequest` and a `ModelStream`), which an adapter cannot
-reuse, and no adapter applied them. An adapter that meets a rejected credential
-reports the provider's own error; the next call resolves again and leases the
-credential as it stands then.
+connection formats one. A managed account's connection carries the same
+`RecoverModelConnection` a chat call gets. `recovery::invoke` is the chat
+execution path over `ModelHost`, a `ModelRequest` and a `ModelStream`, so an
+adapter cannot reuse it as is; it runs the rule itself: map a provider rejection
+into the `HostError` the recovery interprets, ask `rejection` with the current
+phase, then `recover` once and retry on a recoverable rejection, or
+`finish_rejected` on a terminal one.
 
-**Rust binding.** The port is the `modalityConnectionHost` face in
-`dim-agent-capabilities`: `ModalityConnectionHost` holds the owner's resolution,
-`#[rutis::service]` serves `resolveModalityConnection` from it, and a Rust
-adapter calls the same method. `ModalityTarget` carries the model identity and
-the operation; the reply is `ModalityConnection` — the connection facts,
-`ModelProtocol`, the model id and the entry's declared `RealtimeDeclaration`. It
-adds no credential type: the connection's own facts carry the lease for that
-call. Provider provides it in `ProviderPlugin::apply`, and the configured model
-profile provides it from its model file, whose entries declare no operation and
-therefore answer every target with the declaration refusal. The catalog
-registers the name shared, and `xtask types` generates its TypeScript
-declarations ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)).
+**Rust binding.** The port is `ResolveModalityConnection` and
+`ModalityConnectionHost` in `dim-agent-capabilities`, with `ModalityTarget`
+carrying the model identity and the operation. Provider provides it in
+`ProviderPlugin::apply`, and the configured model profile provides it from its
+model file, whose entries declare no operation and therefore answer every target
+with the declaration refusal. The catalog registers the Rust-only name
+`modalityConnectionHost` as `internal(secret)`: the reply reuses
+`ResolvedModelConnection` and `ModelProtocol` and carries a credential and a
+recovery callback, so it is not a data face
+([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等五个)). It
+adds `RealtimeDeclaration`, the entry's declared transport, and no credential
+type.
 
 ### 3.7 Offline validation of a stored selection
 
