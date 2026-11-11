@@ -105,7 +105,7 @@ flowchart TB
   Cat --> TL
 ```
 
-Hooks owns no `StateCell`, declares no event and caches nothing. The catalog is recomputed from `HookSources` at each hook point (A6). The one thing Hooks keeps is what PluginManager registered: the Settings source `hooks-plugins`, as Mcp keeps `mcp-plugins` (A.2), so plugin documents survive Hooks' own reload. Everything else Hooks decides from is a branch fact it consumed through its Dispatcher subscription: approval requests, tool results, turns and interrupts. A blocked submission writes nothing, so it leaves no state. A reloaded `HooksBranch` has no open work to rebuild; commands are side effects and are never re-run.
+Hooks owns no `StateCell`, declares no event and caches nothing. The catalog is recomputed from `HookSources` at each hook point (A6). The one thing Hooks keeps is what PluginManager registered: the Settings source `hooks-plugins`, as Mcp keeps `mcp-plugins` (A.2), so plugin documents survive Hooks' own reload. Hooks receives new approval requests, tool results, turns and interrupts through Dispatcher; a triggered point reads the specific public facts it needs as specified in §3.5. A blocked submission writes nothing, so it leaves no state. A reloaded `HooksBranch` has no open work to rebuild; commands are side effects and are never re-run.
 
 ## 3. Flows
 
@@ -203,7 +203,34 @@ sequenceDiagram
   end
 ```
 
-`PostToolUse` runs per matching call of a `step/tool-result` batch whose result is not an error, `PostToolUseFailure` per matching call whose result has `is_error`; one batch writes one Append input. `Stop` runs on `turn/end` with status `completed`; a block writes a Queue follow-up carrying the reason, at most 3 consecutive (A8). `SessionStart` runs once on `main` when its history has no `turn/start` and no `hooks:session-start/*` keyed block; its Append input waits, as any idle Append does, for the first driving input. `SessionStart` output is also dropped once a turn has started on the branch, because its block must come before the first turn. `Notification` runs on `approval/request` and writes nothing. Handlers with `async: true` run on any of these points and nothing waits for or reads their output. `HooksBranch` resolves the migration alias of each tool event from the declaration in force on the branch (G.2).
+`PostToolUse` runs per matching call of a `step/tool-result` batch whose result is not an error, `PostToolUseFailure` per matching call whose result has `is_error`; one batch writes one Append input. `Stop` runs on `turn/end` with status `completed`; a block writes a Queue follow-up carrying the reason, at most 3 consecutive (A8). `SessionStart` runs on `main` when it has no `turn/start` and no current unconsumed, undeleted ordinary input carries a `hooks:session-start/*` keyed block; its Append input waits, as any idle Append does, for the first driving input. `SessionStart` output is also dropped once a turn has started on the branch, because its block must come before the first turn. `Notification` runs on `approval/request` and writes nothing. Handlers with `async: true` run on any of these points and nothing waits for or reads their output. `HooksBranch` resolves the migration alias of each tool event from the declaration in force on the branch (G.2).
+
+### 3.5 Loading and reads at hook points
+
+Hooks registers the Dispatcher handover at the current committed position without querying history. It does not rebuild commands, approvals, tool arguments, pending-input identities or continuation progress. Commands start only after branch activation. Historical trigger events never start commands; a tool result marked `settlement: capability_reloading` is recovery settlement and does not trigger `PostToolUseFailure`. Other results in the same batch retain their ordinary behavior.
+
+| Decision | Read and boundary |
+| --- | --- |
+| SessionStart | Read sources first. With a matching handler on main, test whether `turn/start` exists at the consumed cutoff. If it does, stop. Otherwise inspect only current, unconsumed and undeleted ordinary inputs for a `hooks:session-start/` key. A startup contribution has not been consumed before the first turn, so completed input history is unnecessary. This exceptional check can visit the current K inputs; the marker has no independent index. |
+| PostToolUse / PostToolUseFailure | With an enabled handler for a real result, locate its one `step/tool-call` by `call_event_id`, then match calls by `call_id`. An absent `call_event_id` means the calls were never dispatched and opens no post-tool point. No subscription retains call arguments. |
+| Tool matcher alias | At the hook point's fixed consumed position, read the last `context/configured` and project only tool names, risks and MCP alias metadata. With no adopted tool part, use ToolRegistry as in G.2. A queued result keeps its triggering position even when configuration changes before its commands run. The selected inline configuration may still require JSON parsing; projection does not promise zero body I/O. |
+| Output still valid | Keep only this generation's interruption and input-consumption positions. If inputs were consumed after the trigger, read `input/consumed.input_id` in that interval, then point-read those input identities with the operator predicate in §3.4. Do not return operator content. If more inputs were consumed during the read, check the new suffix before appending under the consumed-view lock. A queued but unconsumed input invalidates nothing. |
+| Stop continuation round | With a matching Stop handler, locate this turn's start and its first `step/model-start`. Read consumption identities only between those positions, then point-read matching follow-up inputs and their tags. A live `turn/start` supplies the lower position; a part mounted mid-turn obtains the last start before this turn's end. Do not search all turns by `turn_id` or replay prior turns. |
+
+A Stop follow-up keeps the existing unkeyed `<dim-hooks kind="follow-up">` block and carries exactly one private envelope tag, `hooks:stop-follow-up:1`, `hooks:stop-follow-up:2` or `hooks:stop-follow-up:3`. A turn consuming no follow-up has round zero; a turn consuming follow-ups uses their maximum round. A blocking Stop writes round plus one; at round three it starts no Stop commands and writes no further follow-up. These tags use the existing envelope and change neither the event type nor native storage format. They are not keyed context blocks and are not replayed as persistent prompt content.
+
+An already-queued legacy follow-up without a round tag remains accepted work: its queued turn runs, but ends that automatic continuation chain. No historical count is inferred. Part reload in a running turn uses the same current-turn read; Session resume does not restart an old script or automatically finish an old hook point.
+
+```text
+mount -> subscribe at committed cutoff -> ready (no historical query)
+activated -> configured SessionStart check, if any
+new trigger -> read matching configuration -> identity/current-turn reads
+            -> run commands -> check newly consumed inputs -> original input/message
+```
+
+Mount writes no event and performs no Timeline query. With SessionStart configured, an already-started main needs one existence query after activation. No enabled handler for the event kind means no tool-argument, alias or Stop-round query. Each actual follow-up remains one existing input event; its tag adds no event. No recovery snapshot, schema change, new service or query operation is required. All reads use Timeline's existing query contract (§5.4 of the [plugin contract](../plugin-contract.md#54-the-event-query)); the existing service faces and bindings remain those in Appendix H and [service faces](../service-faces.md).
+
+SQL acceptance checks the complete statement plans and instruction counts, not just `LIMIT 1` or an index name. Consumption windows use the kind/position range and original inputs use identity seeks in separate queries. The Stop start and first-request reads use kind/position bounds. A correlated existence query over the whole branch, or a first-by-turn query that scans earlier turns, does not satisfy this contract.
 
 ## 4. Timing and conflicts
 
@@ -273,7 +300,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 | §4.6 Context only from handed-off events | A blocked submission is never written; prompt context enters as part of the adopted operator input; deny reasons enter through ToolExecutor's result; other output enters as adopted Hooks inputs. |
 | §4.7 Public events and services only | Hooks reads public events and calls `Approval.respond` and `Branch::input`; Permission and the entries call the advisors and checks registered with them. No internal state is read. |
 | §4.8 Infrastructure unchanged | No change to Timeline, Dispatcher, envelope, assembly, lifecycle or facades. Needs from business owners are in A.6 in this rule's format. |
-| §4.9 Only decision facts in the Timeline | Hooks adds no event and no field; configuration lives in Settings, diagnostics in the catalog. |
+| §4.9 Only decision facts in the Timeline | Hooks adds no event type or snapshot. The necessary Stop input carries its continuation round in an existing envelope tag (§3.5); configuration lives in Settings, diagnostics in the catalog. |
 | §1 Capability and App Server boundary | `HooksSession` and `HooksBranch` are Capabilities in their own crate; `HooksSettings` lives in App Server next to Settings, like MCP's management, and binds `HookSources`. |
 | ADR 002 D1 Scope | Configuration and its methods are per host (process); catalog, runner and the submit check follow the Session; advice and observation follow the branch whose facts they use. |
 | ADR 002 D2 No wiring modules | Hooks attaches to owners through their own registrations and services; `HookSources` is the agent-side port of Hooks' own configuration owner, not an adapter for others. |
@@ -284,7 +311,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 
 ## 9. Requirements raised to mechanism owners
 
-None to the runtime or rutis: Hooks needs no infrastructure change and no event or persistence change. It needs three generic capabilities from their owners, stated in A.6 in the five items of §4 rule 8 and listed in [overview Appendix B.1](../overview.md#b1-session-and-branch-capabilities):
+None to the runtime or rutis: Hooks needs no infrastructure change, new event type, schema, query operation or service. It needs three generic capabilities from their owners, stated in A.6 in the five items of §4 rule 8 and listed in [overview Appendix B.1](../overview.md#b1-session-and-branch-capabilities):
 
 - Permission and Approval: advisors registered with the branch's Permission (`permission.registerAdvice`) and called during the admission decision, with Approval passing the call's `source` (A.6.1).
 - InputQueue (the Session table `submitChecks` and `InputMethods` for `session.input.withdraw {steer}`), Rpc (`session.submit`, `session.branch_create`) and the native CLI: checks registered with `submitChecks` and called before operator input is written, the `input_blocked` error, and its place among the `session.submit` errors that guarantee nothing was committed (A.6.2).
@@ -519,7 +546,7 @@ The project file is edited in the repository, not through these methods. `hooks-
 | Child branch | — | Its own `HooksBranch`; `session.submit {branchId}` to a child is checked like `main` | Hooks |
 | Compaction | — | Session-start keyed blocks replayed; others through the summary; no compaction hook runs | History projection |
 | Hooks or Settings reload | — | Hooks parts settle pending checks and reload; document edits never reload | Lifecycle, Hooks |
-| Session restore before the first turn | — | `SessionStart` runs again if no session-start block was written | Hooks |
+| Session restore before the first turn | — | `SessionStart` runs if no current startup contribution remains (§3.5) | Hooks |
 | Session fork | copied turns | No `SessionStart` | Hooks |
 | `cwd` outside any project | — | User source only | HooksSettings |
 | Project file edited after enabling | — | New content applies at the next hook point | Hooks |
@@ -534,6 +561,7 @@ The project file is edited in the repository, not through these methods. `hooks-
 | Invalid document or matcher | Listed `invalid`; none of its hooks run |
 | Unsupported event, handler type or handler field (`args`, `if`) | Listed `unsupported`; never runs |
 | Branch input rejected (branch closed) | Output dropped; diagnostic |
+| Timeline query fails | Observation or approval processing faults the Hooks consumer and writes no output; PreToolUse returns the read error through Permission. Hook command `onFailure` does not decide storage errors. |
 | `Approval.respond` returns `Unknown`, `Cancelled` or `Closed` | Ignored |
 | `HookSources` read fails | Every source `invalid`; the hook point runs no hooks |
 | Project file read through FileStorage fails or does not parse | The project source is listed `invalid`; the user source still runs |

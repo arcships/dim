@@ -123,22 +123,24 @@ The README of the local profile carries the process facts; the timeout,
 `Stop` writes a `<dim-hooks kind="follow-up">` input only when at least one
 handler blocks, carrying the block reasons and then the contexts in catalog
 order; a context alone contributes nothing. The input queues a new turn,
-bounded at three consecutive follow-ups, and a turn driven by an operator
-input resets the count. The follow-up is recognized from its own
-`dim-hooks kind="follow-up"` marker as the view folds the branch, so the
-identity and the count are rebuilt from the Timeline when the part or the
-Session restores, and another source's queued input is never counted.
-Recovery consumes property pages at one committed cutoff: input markers and
-consumption decisions, turn/interruption positions, and the fields used to derive
-tool matcher aliases. It excludes tool calls that already have a result before
-loading arguments, and never loads historical tool-result content or tool schemas.
-Only outstanding call arguments remain in the view for a later terminal event;
-recovery queues no historical hook command.
+bounded at three consecutive follow-ups; a turn consuming no follow-up starts
+a new chain. The follow-up keeps its existing marker and records its round in an envelope tag;
+only the current turn's first request inputs are inspected when a configured Stop
+point needs that round. See [Hooks §3.5](../../../design/plugins/Hooks.md#35-loading-and-reads-at-hook-points)
+for the tag and legacy queued-input contract.
 
-`SessionStart` is derived on `main` from the folded view: it runs only when no
-`turn/start` and no Session-start block was seen; it runs at most once per
-`main` because the block it writes is what the derivation checks for. The
-block is keyed `hooks:session-start/<n>`, which is what keeps it in the
+Mount registers the Dispatcher handover at the committed cutoff without a history
+read. It queues no historical command and rebuilds no runtime view. Tool arguments
+are located by call_event_id at actual post-tool points, and aliases come from the
+configuration at the triggering position. Recovery-settled results start no script.
+Output validation reads only inputs consumed after that output's trigger, followed
+by input-identity queries; no operator-input ID collection is retained.
+
+`SessionStart` is evaluated after activation when configured on `main`: an indexed
+existence query checks `turn/start`; before the first turn only current input keys
+are inspected for a Session-start contribution. It runs only when both are absent.
+The current contribution prevents another startup before the first turn, and
+`turn/start` prevents one afterwards. The block is keyed `hooks:session-start/<n>`, which is what keeps it in the
 compacted context baseline.
 
 ### Dependencies
@@ -151,7 +153,7 @@ compacted context baseline.
 | `B:BranchLifecycle` | Close the branch's jobs and settle its processes. |
 | `B:TimelineIdentity` | Name the branch in the payload and in the main-branch rule. |
 | `B:Dispatcher` | Follow the events that open each hook point. |
-| `B:Timeline` | Read the history for `SessionStart` and append output. |
+| `B:Timeline` | Query the specific facts each hook point needs and append output. |
 | `S:ToolRegistry` | Read a tool's declaration for its matcher alias when the branch adopted no tool part. |
 
 <!-- generated:plugin HooksBranch — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
@@ -237,17 +239,17 @@ reported by `hooks.catalog` rather than at the hook point.
 `runner.rs`'s `pre_tool_use_outcomes_follow_the_protocol` pins A.4's outcomes
 for the event, exit 2 and the `onFailure` mapping included, and that
 `updatedInput` never rewrites the call;
-`a_settled_tool_call_leaves_nothing_behind_in_the_view` pins
-that a settled call's input does not stay in the folded view;
+`a_queued_follow_up_keeps_its_round_after_session_restore` and
+`a_legacy_queued_follow_up_finishes_without_starting_another_hook` cover the
+continuation tag and legacy work contracts;
+`recovery_settlements_start_no_hook_but_new_tool_failures_do` covers recovery
+settlement without suppressing real failures;
+`a_live_reload_resolves_the_tool_that_started_before_hooks_mounted` covers
+identity lookup after a live reload;
+`a_new_consumed_operator_input_discards_a_running_hooks_output` covers
+current-window output validation;
 `a_json_array_on_stdout_is_prompt_context` pins that plain text, other JSON
 values included, is prompt context (A.3's exit-0 row);
-`the_follow_up_state_is_rebuilt_from_the_branch` pins that the follow-up's
-identity and consecutive count are rebuilt from the branch, not carried in
-memory; `a_deleted_operator_input_is_forgotten` pins that a withdrawn operator
-input leaves the record and moves nothing;
-`the_live_subscription_follows_exactly_the_kinds_the_folds_match` pins that the
-live subscription follows every event kind the two folds handle, `input/deleted`
-included;
 `a_live_request_registers_its_token_before_its_task_starts`,
 `an_answer_folded_before_the_task_starts_runs_no_permission_command` and
 `an_answer_folded_during_the_read_runs_no_permission_command` pin that an
