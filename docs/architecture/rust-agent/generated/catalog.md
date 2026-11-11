@@ -32,7 +32,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `loader` | process | rutis-loader | internal(owner-api) | — |
 | `loaderService` | process | rutis-loader | shared-no-dispatcher | — |
 | `localId` | process | root | data | `get` sync |
-| `managedProviders` | process | ManagedProviders | internal(secret) | — |
 | `managedSearch` | process | ManagedProviders | data | `search` async |
 | `managementMethods` | process | ManagementMethods | data | `register` async |
 | `mcpAuth` | process | Mcp | internal(secret) | — |

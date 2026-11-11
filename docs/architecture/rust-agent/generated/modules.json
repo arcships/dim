@@ -21358,11 +21358,10 @@
       "references": [
         "mod managed_provider",
         "path managed_provider::ManagedProvider",
-        "path managed_provider::ManagedProviderBinding::new",
-        "path managed_provider::ManagedProviderMethodsPlugin::new",
+        "path managed_provider::ManagedProviderBinding",
         "path managed_provider::ManagedProviderRow",
-        "path managed_provider::ManagedProviders",
-        "path managed_provider::ManagedProvidersPlugin"
+        "path managed_provider::ManagedProvidersPlugin::new",
+        "path managed_provider::owner_key"
       ]
     },
     {
@@ -25238,14 +25237,6 @@
     },
     {
       "from": "dim_app_server::managed_provider",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path Names",
-        "use dim_agent_runtime::Names"
-      ]
-    },
-    {
-      "from": "dim_app_server::managed_provider",
       "to": "dim_agent_types::model",
       "references": [
         "path ModelProtocol",
@@ -27994,6 +27985,7 @@
         "path ManagedModel",
         "path ManagedProviders",
         "path crate::managed_provider::ManagedProviderError",
+        "path crate::managed_provider::owner_key",
         "path reason_excludes_modality",
         "use crate::managed_provider::AccountSnapshot",
         "use crate::managed_provider::CredentialLease",
@@ -31721,13 +31713,10 @@
       "from": "dim_app_server::web",
       "to": "dim_app_server::managed_provider",
       "references": [
-        "path ManagedProviders",
-        "path ManagedSearchError::SearchFailed",
-        "path ManagedSearchError::Unavailable",
         "path WebSearchRequest",
-        "use crate::managed_provider::ManagedProviders",
-        "use crate::managed_provider::ManagedSearchError",
-        "use crate::managed_provider::WebSearchRequest"
+        "path WebSearchResponse",
+        "use crate::managed_provider::WebSearchRequest",
+        "use crate::managed_provider::WebSearchResponse"
       ]
     },
     {

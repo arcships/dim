@@ -2,7 +2,7 @@ mod content;
 mod network;
 
 use crate::{
-    managed_provider::{ManagedProviders, ManagedSearchError, WebSearchRequest},
+    managed_provider::{WebSearchRequest, WebSearchResponse},
     settings::{SettingsScope, SettingsService, SourceDeclaration},
 };
 use content::{convert, plain_text, redact};
@@ -17,6 +17,9 @@ use network::{
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Value as ServiceValue, arg, settle,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -155,7 +158,7 @@ fn now_ms() -> u64 {
 pub struct WebSessionPlugin {
     settings: Key<SettingsService>,
     tools: Key<ToolRegistry>,
-    managed: Key<ManagedProviders>,
+    search: Key<dyn HostDispatch>,
 }
 
 impl WebSessionPlugin {
@@ -163,7 +166,7 @@ impl WebSessionPlugin {
         Ok(Self {
             settings: names.key()?,
             tools: names.key()?,
-            managed: names.key()?,
+            search: names.named("managedSearch")?,
         })
     }
 }
@@ -177,7 +180,7 @@ impl DynPlugin for WebSessionPlugin {
         vec![
             self.settings.erase(),
             self.tools.erase(),
-            self.managed.erase(),
+            self.search.erase(),
         ]
     }
 
@@ -185,10 +188,10 @@ impl DynPlugin for WebSessionPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let tools = ctx.require_at(&self.tools)?;
-            let managed = ctx.require_at(&self.managed)?;
+            let search = ctx.require_at(&self.search)?;
             let state = Arc::new(SessionState {
                 settings,
-                managed,
+                search,
                 cache: Mutex::new(PageCache::default()),
                 closing: CancellationToken::new(),
                 inflight: TaskTracker::new(),
@@ -329,7 +332,7 @@ struct Hit {
 
 struct SessionState {
     settings: Arc<SettingsService>,
-    managed: Arc<ManagedProviders>,
+    search: Arc<dyn HostDispatch>,
     cache: Mutex<PageCache>,
     closing: CancellationToken,
     inflight: TaskTracker,
@@ -682,31 +685,31 @@ impl SessionState {
             } else {
                 effective_query
             };
-            let reply = self
-                .managed
-                .search(
-                    WebSearchRequest {
-                        query: relay_query,
-                        count: count as u32,
-                    },
-                    cancel,
-                )
-                .await
-                .map_err(|err| {
-                    if cancel.is_cancelled() {
-                        WebError::new("cancelled", "Call cancelled.")
-                    } else {
-                        match err {
-                            ManagedSearchError::Unavailable => WebError::new(
-                                "search_unavailable",
-                                "No usable search service is configured.",
-                            ),
-                            ManagedSearchError::SearchFailed => {
-                                WebError::new("search_failed", "The search service failed.")
-                            }
-                        }
-                    }
-                })?;
+            let request = WebSearchRequest {
+                query: relay_query,
+                count: count as u32,
+            };
+            let call = async {
+                let reply = self
+                    .search
+                    .invoke("search", ServiceValue::List(vec![arg(&request)?]))?;
+                let value = settle(reply).await?.json()?;
+                serde_json::from_value::<WebSearchResponse>(value)
+                    .map_err(|error| BridgeError::Value(error.to_string()))
+            };
+            let reply = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(WebError::new("cancelled", "Call cancelled."));
+                }
+                reply = call => reply,
+            }
+            .map_err(|error| match error.code() {
+                Some("unavailable") => WebError::new(
+                    "search_unavailable",
+                    "No usable search service is configured.",
+                ),
+                _ => WebError::new("search_failed", "The search service failed."),
+            })?;
             let mut hits = Vec::with_capacity(reply.results.len());
             for item in reply.results {
                 let url = parse_url(&item.url).map_err(|_| {

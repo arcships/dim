@@ -1,5 +1,4 @@
 use dim_agent_capabilities::host::ModelProtocol;
-use dim_agent_runtime::Names;
 use dim_app_server::managed_provider::{
     AccountSnapshot, AccountView, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError,
     ManagedFuture, ManagedProvider, ManagedProviderBinding, ManagedProviders,
@@ -8,8 +7,9 @@ use dim_app_server::managed_provider::{
         BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
         ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
     },
+    owner_key,
 };
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
 use rutis::{Ctx, Plugin};
 use rutis_bridge::session::{
     Error as BridgeError, HostDispatch, Value as RpcValue, host_key, settle,
@@ -196,32 +196,18 @@ impl Plugin for FixturePlugin {
         Ok(())
     }
 }
-struct Capture {
-    captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    owner: Key<ManagedProviders>,
-}
-impl Capture {
-    fn new(
-        names: &Names<'_>,
-        captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    ) -> rutis::Result<Self> {
-        Ok(Self {
-            captured,
-            owner: names.key()?,
-        })
-    }
-}
+struct Capture(Arc<OnceLock<Arc<ManagedProviders>>>);
 impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture-managed"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.owner.erase()]
+        vec![owner_key().erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let owner = ctx.require_at(&self.owner)?;
-            let _ = self.captured.set(owner);
+            let owner = ctx.require_at(&owner_key())?;
+            let _ = self.0.set(owner);
             Ok(Effect::Done)
         })
     }
@@ -247,16 +233,14 @@ async fn setup() -> (
 ) {
     let root = Ctx::root().unwrap();
     let catalog = dim_app_server::catalog();
-    let build = rutis_loader::resolve::Build::default();
-    let names = Names::copy(&catalog, &build);
     root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
     let fixture = Arc::new(Fixture::default());
     *fixture.recovered_generation.lock().unwrap() = 1;
     let captured = Arc::new(OnceLock::new());
-    let owner_plugin = root.plugin(ManagedProvidersPlugin);
+    let owner_plugin = root.plugin(ManagedProvidersPlugin::new(None));
     let fixture_plugin = root.plugin(FixturePlugin(fixture.clone()));
-    let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
-    let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());
+    let binding = root.plugin(ManagedProviderBinding);
+    let capture = root.plugin(Capture(captured.clone()));
     for view in [&owner_plugin, &fixture_plugin, &binding, &capture] {
         active(view).await;
     }
@@ -359,13 +343,11 @@ async fn a_lease_of_a_replaced_provider_never_reaches_its_replacement() {
         let (first, second) = (fixture(), fixture());
         let captured = Arc::new(OnceLock::new());
         let catalog = dim_app_server::catalog();
-        let build = rutis_loader::resolve::Build::default();
-        let names = Names::copy(&catalog, &build);
         root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
-        let owner_plugin = root.plugin(ManagedProvidersPlugin);
+        let owner_plugin = root.plugin(ManagedProvidersPlugin::new(None));
         let first_plugin = root.plugin(FixturePlugin(first.clone()));
-        let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
-        let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());
+        let binding = root.plugin(ManagedProviderBinding);
+        let capture = root.plugin(Capture(captured.clone()));
         for view in [&owner_plugin, &first_plugin, &binding, &capture] {
             active(view).await;
         }
@@ -495,7 +477,7 @@ async fn the_managed_search_face_answers_with_the_owner_hits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_managed_search_face_reports_an_unbound_provider() {
     let root = Ctx::root().unwrap();
-    let view = root.plugin(ManagedProvidersPlugin);
+    let view = root.plugin(ManagedProvidersPlugin::new(None));
     active(&view).await;
     let face = root
         .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
