@@ -264,6 +264,11 @@ pub enum Command {
     },
     /// Start a fresh session in the same directory.
     NewSession,
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// Switch to a stored session.
     Resume(String),
     /// Find the launch workspace's repository worktrees, once per picker open.
@@ -1135,6 +1140,47 @@ pub enum RenameReply {
     Failed(String),
 }
 
+/// A `session.delete` reply as `/resume` reports it: what became of the row
+/// the picker pinned when the key was pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteReply {
+    pub session_id: String,
+    /// The row's name: its stored title, else its first words, else its id,
+    /// without the origin tag the picker draws beside it.
+    pub name: String,
+    pub outcome: DeleteOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// This call removed the rows: the row leaves the picker.
+    Deleted,
+    /// The store held no rows of the id, so nothing was removed: the row
+    /// stays and the list is read again.
+    NothingRemoved,
+    /// The daemon offers no `session.delete`.
+    Unsupported,
+    /// Another caller closed the Session already: the daemon's sentence says
+    /// so, and this daemon neither lists nor loads the Session again.
+    AlreadyClosed(String),
+    /// The close ran but the removal failed: the rows stay, and this daemon
+    /// neither lists nor loads the Session again.
+    ClosedNotRemoved(String),
+    /// The call failed before any close: the row and the attachment stand.
+    Failed(String),
+}
+
+impl DeleteOutcome {
+    /// Whether the call ended the Session in this daemon, so a picker showing
+    /// that Session leaves for Home.
+    pub fn ends_session(&self) -> bool {
+        matches!(
+            self,
+            Self::Deleted | Self::AlreadyClosed(_) | Self::ClosedNotRemoved(_)
+        )
+    }
+}
+
 #[allow(dead_code)]
 pub enum Update {
     Reportable {
@@ -1303,6 +1349,8 @@ pub enum Update {
     Compacted(CompactReply),
     /// What a `/rename` came to, localized by the interface.
     Renamed(RenameReply),
+    /// What a `/resume` delete came to, localized by the interface.
+    Deleted(DeleteReply),
     /// Progress of the sign-in tagged `attempt`.
     Oauth {
         attempt: u64,

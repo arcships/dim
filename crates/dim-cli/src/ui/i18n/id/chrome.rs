@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Daemon ini tidak mendukung penggantian nama Sesi"
         }
         "Renaming failed" => "Penggantian nama gagal",
+        "Delete \"{name}\"?" => "Hapus \"{name}\"?",
+        "Deleted {name}." => "{name} dihapus.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Tidak ada yang dihapus: tidak ada Sesi tersimpan {name}."
+        }
+        "Delete failed" => "Penghapusan gagal",
+        "This daemon does not support deleting Sessions" => {
+            "Daemon ini tidak mendukung penghapusan Sesi"
+        }
         "Starting" => "Memulai",
         "Delegation result" => "Hasil delegasi",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -437,8 +446,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Belum ada sesi tersimpan di workspace ini. Ctrl+S menampilkan lebih banyak."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter buka · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter buka · Ctrl+X hapus · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
         }
         "Loading sessions..." => "Memuat sesi…",
         "No saved sessions yet." => "Belum ada sesi tersimpan.",

@@ -133,6 +133,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Dieser Daemon unterstützt das Umbenennen von Sitzungen nicht"
         }
         "Renaming failed" => "Umbenennen fehlgeschlagen",
+        "Delete \"{name}\"?" => "Sitzung „{name}“ löschen?",
+        "Deleted {name}." => "{name} gelöscht.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Es wurde nichts entfernt: keine gespeicherte Sitzung {name}."
+        }
+        "Delete failed" => "Löschen fehlgeschlagen",
+        "This daemon does not support deleting Sessions" => {
+            "Dieser Daemon unterstützt das Löschen von Sitzungen nicht"
+        }
         "Starting" => "Startet",
         "Delegation result" => "Delegationsergebnis",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -451,8 +460,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Noch keine gespeicherten Sessions in diesem Arbeitsbereich. Ctrl+S zeigt mehr."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter öffnen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter öffnen · Ctrl+X löschen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
         }
         "Loading sessions..." => "Lade Sessions…",
         "No saved sessions yet." => "Noch keine gespeicherten Sessions.",

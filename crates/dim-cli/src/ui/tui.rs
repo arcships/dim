@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use crate::management::{self, editor};
 use crate::model::session::{
-    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, ManagementAction,
-    ManagementRefusal, ManagementRequest, ManagementResult, PromptField, PromptSetting,
-    RenameReply, SessionPort, SubmitMode, SuggestionSetting, SwitchKind, Update,
+    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply,
+    DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult,
+    PromptField, PromptSetting, RenameReply, SessionPort, SubmitMode, SuggestionSetting,
+    SwitchKind, Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -2543,6 +2544,39 @@ impl App {
                 };
                 self.reports.push(Block::Status { text, tone });
             }
+            Update::Deleted(reply) => {
+                let DeleteReply {
+                    session_id,
+                    name,
+                    outcome,
+                } = reply;
+                let (text, tone) = match &outcome {
+                    DeleteOutcome::Deleted => {
+                        (tf("Deleted {name}.", &[("name", &name)]), Tone::Muted)
+                    }
+                    DeleteOutcome::NothingRemoved => (
+                        tf(
+                            "Nothing was removed: no stored Session {name}.",
+                            &[("name", &name)],
+                        ),
+                        Tone::Warning,
+                    ),
+                    DeleteOutcome::Unsupported => (
+                        t(crate::session_command::DELETE_UNSUPPORTED).to_owned(),
+                        Tone::Warning,
+                    ),
+                    DeleteOutcome::AlreadyClosed(message) => (message.clone(), Tone::Warning),
+                    DeleteOutcome::ClosedNotRemoved(message) | DeleteOutcome::Failed(message) => (
+                        [t("Delete failed"), " · ", message.as_str()].concat(),
+                        Tone::Warning,
+                    ),
+                };
+                if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
+                    panel.settled(&session_id, &outcome);
+                    self.sync_sessions();
+                }
+                self.reports.push(Block::Status { text, tone });
+            }
             Update::Oauth { attempt, event } => {
                 let effect = match &mut self.prompt {
                     Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
@@ -3646,6 +3680,9 @@ impl App {
                 self.prompt = None;
                 self.composer.clear();
                 self.host.send(Command::Resume(id));
+            }
+            Effect::DeleteSession { session_id, name } => {
+                self.host.send(Command::DeleteSession { session_id, name });
             }
             Effect::Refresh => match &mut self.prompt {
                 Some(Prompt::Providers(_)) => self.host.send(Command::ListProviders),

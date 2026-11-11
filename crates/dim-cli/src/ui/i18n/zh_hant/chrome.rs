@@ -101,6 +101,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "工作階段現在沒有標題。",
         "This daemon does not support renaming Sessions" => "此守護進程不支援重新命名工作階段",
         "Renaming failed" => "重新命名失敗",
+        "Delete \"{name}\"?" => "刪除「{name}」？",
+        "Deleted {name}." => "已刪除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "沒有刪除任何內容：沒有已儲存的工作階段 {name}。"
+        }
+        "Delete failed" => "刪除失敗",
+        "This daemon does not support deleting Sessions" => "此守護進程不支援刪除工作階段",
         "Starting" => "啟動中",
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -379,8 +386,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "目前工作區沒有已儲存的工作階段。Ctrl+S 顯示更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 開啟 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 開啟 · Ctrl+X 刪除 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
         }
         "Loading sessions..." => "正在載入工作階段…",
         "No saved sessions yet." => "尚無已儲存的工作階段。",

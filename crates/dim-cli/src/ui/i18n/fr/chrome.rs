@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ce démon ne prend pas en charge le renommage des sessions"
         }
         "Renaming failed" => "Échec du renommage",
+        "Delete \"{name}\"?" => "Supprimer « {name} » ?",
+        "Deleted {name}." => "{name} supprimée.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Rien n'a été supprimé : aucune session enregistrée {name}."
+        }
+        "Delete failed" => "Échec de la suppression",
+        "This daemon does not support deleting Sessions" => {
+            "Ce démon ne prend pas en charge la suppression des sessions"
+        }
         "Starting" => "Démarrage",
         "Delegation result" => "Résultat de délégation",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -441,8 +450,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Aucune session enregistrée dans cet espace de travail. Ctrl+S en affiche d'autres."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter ouvrir · Ctrl+S portée · Ctrl+R actualiser · Esc fermer"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter ouvrir · Ctrl+X supprimer · Ctrl+S portée · Ctrl+R actualiser · Esc fermer"
         }
         "Loading sessions..." => "Chargement…",
         "No saved sessions yet." => "Aucune session enregistrée.",

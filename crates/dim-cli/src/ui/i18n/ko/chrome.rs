@@ -111,6 +111,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "이 데몬은 세션 이름 바꾸기를 지원하지 않습니다"
         }
         "Renaming failed" => "이름 바꾸기에 실패했습니다",
+        "Delete \"{name}\"?" => "“{name}”을(를) 삭제할까요?",
+        "Deleted {name}." => "{name} 삭제했습니다.",
+        "Nothing was removed: no stored Session {name}." => {
+            "삭제된 항목이 없습니다: 저장된 세션 {name}이(가) 없습니다."
+        }
+        "Delete failed" => "삭제에 실패했습니다",
+        "This daemon does not support deleting Sessions" => {
+            "이 데몬은 세션 삭제를 지원하지 않습니다"
+        }
         "Starting" => "시작 중",
         "Delegation result" => "위임 결과",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -393,8 +402,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "이 워크스페이스에 저장된 세션 없음. Ctrl+S로 더 보기."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 열기 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 열기 · Ctrl+X 삭제 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
         }
         "Loading sessions..." => "세션 불러오는 중…",
         "No saved sessions yet." => "저장된 세션 없음",

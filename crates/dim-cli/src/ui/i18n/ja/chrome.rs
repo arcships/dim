@@ -117,6 +117,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "このデーモンはセッションの名前変更に対応していません"
         }
         "Renaming failed" => "名前の変更に失敗しました",
+        "Delete \"{name}\"?" => "「{name}」を削除しますか?",
+        "Deleted {name}." => "{name} を削除しました。",
+        "Nothing was removed: no stored Session {name}." => {
+            "何も削除されませんでした: 保存されたセッション {name} はありません。"
+        }
+        "Delete failed" => "削除に失敗しました",
+        "This daemon does not support deleting Sessions" => {
+            "このデーモンはセッションの削除に対応していません"
+        }
         "Starting" => "起動中",
         "Delegation result" => "委任結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -411,8 +420,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "このワークスペースに保存済みセッションはありません。Ctrl+S で他のワークスペースを表示します。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 開く · Ctrl+S 範囲 · Ctrl+R 更新 · Esc 閉じる"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 開く · Ctrl+X 削除 · Ctrl+S 範囲 · Ctrl+R 更新 · Esc 閉じる"
         }
         "Loading sessions..." => "セッションを読込中…",
         "No saved sessions yet." => "保存済みセッションなし。",

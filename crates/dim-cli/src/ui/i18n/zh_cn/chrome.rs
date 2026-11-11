@@ -100,6 +100,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "会话现在没有标题。",
         "This daemon does not support renaming Sessions" => "此守护进程不支持重命名会话",
         "Renaming failed" => "重命名失败",
+        "Delete \"{name}\"?" => "删除“{name}”？",
+        "Deleted {name}." => "已删除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "没有删除任何内容：没有已保存的会话 {name}。"
+        }
+        "Delete failed" => "删除失败",
+        "This daemon does not support deleting Sessions" => "此守护进程不支持删除会话",
         "Starting" => "启动中",
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -410,8 +417,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "当前工作区没有已保存的会话。Ctrl+S 查看更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 打开 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
         }
         "Loading sessions..." => "正在加载会话...",
         "No saved sessions yet." => "暂无已保存的会话。",
