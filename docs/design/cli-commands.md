@@ -43,7 +43,7 @@ for that group only. A member's summary row still opens its conversation.
 only expanded shows a compaction's summary body. Thinking details controls both streaming and completed thoughts,
 including the line side panel. Changing either setting updates its retained
 history and live content without changing the other setting. Scrollback already
-written to the terminal remains append-only; fullscreen redraws retained history. A hook context's body follows the same rule: collapsed and summary keep it closed, only expanded opens it, and a click on the row toggles that row alone.
+written to the terminal remains append-only; fullscreen redraws retained history. A runtime block a hook wrote follows the same rule: collapsed and summary keep a hook context's or a `Stop` follow-up's body closed, only expanded opens it, and a click on the row toggles that row alone.
 
 ## Command menu
 

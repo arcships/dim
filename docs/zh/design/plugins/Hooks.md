@@ -204,7 +204,7 @@ sequenceDiagram
   end
 ```
 
-`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。分支上已有回合开始时，`SessionStart` 的输出同样被丢弃，因为该块必须先于第一个回合。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 按分支上生效的声明解析每个工具事件的迁移别名（G.2）。
+`PostToolUse` 对 `step/tool-result` 批次中结果不是错误的每个匹配调用运行，`PostToolUseFailure` 对结果为 `is_error` 的每个匹配调用运行；一个批次写一个 Append 输入。`Stop` 在结果为 `completed` 的 `turn/end` 上运行；阻止会写一个携带原因的 Queue 续跑输入，连续最多 3 次（A8）。原生 CLI 把该输入画成写在它被写入处的一行静音状态行（`Stop 钩子后续输入 · N 行`），正文藏在工具详情设置的 `expanded` 之后、也可点击展开，与它画钩子上下文完全相同；其纯文本日志打印同一行、不带正文。`dimcode session export --format markdown` 把该 raw 块留在 `### Runtime input` 下，AcpGateway 不为它回放任何 chunk（§5）。模型在它驱动的那个 turn 开始时读到它。`SessionStart` 在 `main` 的历史中没有 `turn/start` 且没有 `hooks:session-start/*` 带键块时运行一次；其 Append 输入与任何空闲 Append 一样，等待第一个驱动输入。分支上已有回合开始时，`SessionStart` 的输出同样被丢弃，因为该块必须先于第一个回合。`Notification` 在 `approval/request` 上运行，不写任何东西。带 `async: true` 的处理器可在上述任何点运行，没有任何东西等待或读取它们的输出。`HooksBranch` 按分支上生效的声明解析每个工具事件的迁移别名（G.2）。
 
 ## 4. 时序与冲突
 
@@ -231,7 +231,7 @@ sequenceDiagram
 | `PreToolUse` 拒绝 | ToolExecutor `step/tool-result` 中的错误文本 `Hook <source>: <reason>` | 与调用配对 | 仅摘要 | 在切点之前则有 |
 | `PreToolUse` 允许、`PermissionRequest` | 除调用的普通结果外无 | — | — | — |
 | `PostToolUse(Failure)` 上下文或阻止原因 | Append 输入，标记 `kind="post-tool"`，带 `call_id` 与 `tool` | 本 turn 的下一次模型请求 | 仅摘要 | 同输入 |
-| `Stop` 阻止原因 | Queue 输入，标记 `kind="follow-up"` | 它驱动的 turn 开始处 | 仅摘要 | 同输入 |
+| `Stop` 阻止原因 | Queue 输入，标记 `kind="follow-up"` | 它驱动的 turn 开始处；客户端就在那里画那一行，排在它结束的那个 turn 之后 | 仅摘要 | 同输入 |
 | `Notification`、`async` 处理器 | 无 | — | — | — |
 
 模型从不看到 Hook 配置、命令、退出码、诊断或 `UserPromptSubmit` 的阻止原因。
