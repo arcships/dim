@@ -9,7 +9,7 @@ use crate::text::{self, Judge, Marker, OBJECTIVE_KEY, STATE_KEY, STATUS_KEY};
 use dim_agent_types::{
     AgentEvent, BranchSource, EventKind, InputBlock, InputMode, InterruptScope, TurnOutcome,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
@@ -42,6 +42,7 @@ pub enum Progress {
 pub const NO_PROGRESS_TURNS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 pub enum TurnStatus {
     Completed,
     Failed,
@@ -60,6 +61,7 @@ impl TurnStatus {
 
 /// The result a conclusion states, and the evaluator's report of a failed turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
 pub enum ConclusionKind {
     Done,
     Continue,
@@ -308,13 +310,15 @@ fn legacy_state(attrs: &Marker, text: &str) -> text::State {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ConclusionRecord {
     sequence: u64,
     answered: bool,
 }
 
 /// One branch's goal state: the fold of its consumed local events (§2).
-#[derive(Default)]
+#[derive(Clone, Default)]
+
 pub struct Fold {
     /// The objective the newest Goal block states.
     pub objective: Option<String>,
@@ -325,6 +329,7 @@ pub struct Fold {
     pub active: u64,
     pub last_operator: u64,
     pub turn_start: u64,
+
     pub turn_end: Option<TurnEnd>,
     /// How many local goal blocks the branch has: any means it has its own
     /// goal history.
@@ -348,8 +353,7 @@ pub struct Fold {
     /// The `continue` conclusions no input for their evaluation has answered
     /// yet: evaluation → (input sequence, conclusion). A continuation or pause
     /// for the evaluation, a newer turn end or an operator input drops the
-    /// entry. Settling a deferred turn end re-derives it here, so a reload
-    /// keeps it (Pursuit §5).
+    /// entry (Pursuit §5).
     pending_conclusions: BTreeMap<u64, (u64, Conclusion)>,
     /// Sequence of the latest Goal block that is not a continuation.
     pub last_block: u64,
@@ -375,11 +379,10 @@ pub struct Fold {
     /// `turn/end` that closes it keeps the answer.
     pub(crate) turn_continuation_driven: bool,
     pub(crate) decided: BTreeSet<String>,
-    pub(crate) driving: HashMap<String, u64>,
-    /// The sequences of the inputs `input/deleted` removed. A record whose
-    /// `after` names one of them states a change that never took effect and is
-    /// stepped as no statement at all (R2).
-    pub(crate) deleted_sequences: HashSet<u64>,
+
+    pub(crate) driving: HashSet<String>,
+
+    pub(crate) invalidated_after: HashSet<u64>,
     /// The highest `after` among the state records this fold has stepped,
     /// deleted changes included; `0` before the first (sequences start at
     /// one). A deletion asks whether a record naming the withdrawn change, or
@@ -393,6 +396,7 @@ pub struct Fold {
 
 /// A `goal:state` record with `trigger="<submission id>"`: the statement it
 /// carries waits for the trigger input it names, the next event (R5).
+#[derive(Clone)]
 struct HeldRecord {
     sequence: u64,
     trigger: String,
@@ -401,118 +405,180 @@ struct HeldRecord {
     retire: bool,
 }
 
+pub(crate) enum Source<'a> {
+    Opening {
+        forked: bool,
+    },
+    Input {
+        id: &'a str,
+        submission: Option<&'a str>,
+        driving: bool,
+        operator: bool,
+        blocks: &'a [InputBlock],
+    },
+    Evaluation {
+        evaluation: u64,
+        branch: &'a str,
+    },
+    BranchEnded {
+        branch: &'a str,
+        failed: bool,
+    },
+    Consumed {
+        input_id: &'a str,
+    },
+    TurnStart,
+    TurnEnd {
+        turn_id: &'a str,
+        status: TurnStatus,
+    },
+    Interrupt {
+        turn: bool,
+    },
+    Task {
+        task_id: &'a str,
+        started: bool,
+    },
+    Ignored,
+}
+
+impl<'a> Source<'a> {
+    fn of(event: &'a AgentEvent) -> Self {
+        match &event.kind {
+            EventKind::BranchStart(_) => Self::Opening { forked: false },
+            EventKind::SessionForked(_) => Self::Opening { forked: true },
+            EventKind::InputMessage(data) => Self::Input {
+                id: &event.id,
+                submission: data.submission_id.as_deref(),
+                driving: data.effective_mode() != InputMode::Append,
+                operator: data.user.is_some()
+                    && !data
+                        .blocks
+                        .first()
+                        .is_some_and(|block| block_text(block).starts_with("<dim-")),
+                blocks: &data.blocks,
+            },
+            EventKind::BranchCreate(data) => match &data.source {
+                BranchSource::Host { operation_id } => evaluation_of_operation(operation_id)
+                    .map_or(Self::Ignored, |evaluation| Self::Evaluation {
+                        evaluation,
+                        branch: &data.branch,
+                    }),
+                _ => Self::Ignored,
+            },
+            EventKind::BranchEnded(data) => Self::BranchEnded {
+                branch: &data.branch,
+                failed: false,
+            },
+            EventKind::BranchCreateFailed(data) => Self::BranchEnded {
+                branch: match data {
+                    dim_agent_types::BranchCreateFailedData::Failed { branch, .. }
+                    | dim_agent_types::BranchCreateFailedData::Cancelled { branch, .. } => branch,
+                },
+                failed: true,
+            },
+            EventKind::InputConsumed(data) => Self::Consumed {
+                input_id: &data.input_id,
+            },
+            EventKind::TurnStart(_) => Self::TurnStart,
+            EventKind::TurnEnd(data) => Self::TurnEnd {
+                turn_id: &data.turn_id,
+                status: TurnStatus::of(&data.outcome),
+            },
+            EventKind::StopInterrupt(data) => Self::Interrupt {
+                turn: data.scope == InterruptScope::Turn,
+            },
+            EventKind::ExecStarted(data) => Self::Task {
+                task_id: &data.task_id,
+                started: true,
+            },
+            EventKind::ExecEnded(data) => Self::Task {
+                task_id: &data.task_id,
+                started: false,
+            },
+            _ => Self::Ignored,
+        }
+    }
+}
+
 impl Fold {
     /// Applies one delivered event. Input deletion is rebuilt by the owning part.
     pub fn apply(&mut self, event: &AgentEvent) {
-        self.step(event);
+        self.apply_source(event.sequence, Source::of(event));
     }
 
-    /// Starts the fold of a branch whose own segment has no goal (D4): only the
-    /// keys a fork's copied prefix left live and, when the newest Goal block is
-    /// a retired state record, that record, which makes the branch's own
-    /// history and answers its opening.
-    pub fn start_without_goal(&mut self, copied_live: Option<text::Live>, newest: Option<u64>) {
-        *self = Self::default();
-        self.copied_live = copied_live;
-        if let Some(sequence) = newest {
-            self.local_blocks = 1;
-            self.last_block = sequence;
-        }
-    }
-
-    /// Restarts at the local opening, retaining the copied keys for a fork.
-    fn open(&mut self, event: &AgentEvent) {
-        let copied_live = matches!(event.kind, EventKind::SessionForked(_)).then_some(self.live);
-        *self = Self::default();
-        self.copied_live = copied_live;
-    }
-
-    fn step(&mut self, event: &AgentEvent) {
-        let sequence = event.sequence;
-        // A held record names its trigger, the next event (R5): only that
-        // input pairs with it; any other event lets it state nothing.
-        if !matches!(event.kind, EventKind::InputMessage(_)) {
+    pub(crate) fn apply_source(&mut self, sequence: u64, source: Source<'_>) {
+        if !matches!(source, Source::Input { .. }) {
             self.held_record = None;
         }
-        if is_opening(&event.kind) {
-            self.open(event);
-            return;
-        }
-        match &event.kind {
-            EventKind::InputMessage(data) => {
-                if data.effective_mode() != InputMode::Append {
-                    self.driving.insert(event.id.clone(), sequence);
+        match source {
+            Source::Opening { forked } => {
+                let copied_live = forked.then_some(self.live);
+                *self = Self::default();
+                self.copied_live = copied_live;
+            }
+            Source::Input {
+                id,
+                submission,
+                driving,
+                operator,
+                blocks,
+            } => {
+                if driving {
+                    self.driving.insert(id.to_owned());
                 }
-                let first_text = data.blocks.first().map(block_text);
-                if data.user.is_some() && !first_text.is_some_and(|text| text.starts_with("<dim-"))
-                {
+                if operator {
                     self.last_operator = sequence;
                     self.continuation_count = 0;
                     self.continuation_idle = 0;
                     self.pending_conclusions
                         .retain(|evaluation, _| *evaluation > sequence);
                 }
-                self.goal_input(
-                    sequence,
-                    &event.id,
-                    data.submission_id.as_deref(),
-                    &data.blocks,
-                );
+                self.goal_input(sequence, id, submission, blocks);
             }
-
-            EventKind::BranchCreate(data) => {
-                let BranchSource::Host { operation_id } = &data.source else {
-                    return;
-                };
-                let Some(evaluation) = evaluation_of_operation(operation_id) else {
-                    return;
-                };
-                self.evaluations.insert(evaluation, data.branch.clone());
+            Source::Evaluation { evaluation, branch } => {
+                self.evaluations.insert(evaluation, branch.to_owned());
                 self.decided.insert(evaluation.to_string());
             }
-            EventKind::BranchEnded(data) => {
-                self.ended.insert(data.branch.clone());
+            Source::BranchEnded { branch, failed } => {
+                if failed {
+                    self.failed.insert(branch.to_owned());
+                } else {
+                    self.ended.insert(branch.to_owned());
+                }
             }
-            EventKind::BranchCreateFailed(data) => {
-                let branch = match data {
-                    dim_agent_types::BranchCreateFailedData::Failed { branch, .. } => branch,
-                    dim_agent_types::BranchCreateFailedData::Cancelled { branch, .. } => branch,
-                };
-                self.failed.insert(branch.clone());
+            Source::Consumed { input_id } => {
+                self.driving.remove(input_id);
+                self.continuation_inputs.remove(input_id);
             }
-            EventKind::InputConsumed(data) => {
-                self.driving.remove(&data.input_id);
-                self.continuation_inputs.remove(&data.input_id);
-            }
-            EventKind::TurnStart(_) => {
+            Source::TurnStart => {
                 self.turn_start = sequence;
                 self.turn_continuation_driven = self
-                    .driving
-                    .keys()
-                    .any(|id| self.continuation_inputs.contains(id));
+                    .continuation_inputs
+                    .iter()
+                    .any(|id| self.driving.contains(id));
             }
-            EventKind::TurnEnd(data) => {
+            Source::TurnEnd { turn_id, status } => {
                 self.turn_end = Some(TurnEnd {
                     sequence,
-                    status: TurnStatus::of(&data.outcome),
-                    turn_id: data.turn_id.clone(),
+                    status,
+                    turn_id: turn_id.to_owned(),
                     turn_start: self.turn_start,
                     continuation_driven: self.turn_continuation_driven,
                 });
                 self.turn_ends += 1;
-                // A newer turn end supersedes a conclusion still waiting on a
-                // background task: the newer end decides from its own state.
                 self.pending_conclusions
                     .retain(|evaluation, _| *evaluation >= sequence);
             }
-            EventKind::StopInterrupt(data) if data.scope == InterruptScope::Turn => {
+            Source::Interrupt { turn: true } => {
                 self.last_interrupt = sequence;
             }
-            EventKind::ExecStarted(data) => {
-                self.open_tasks.insert(data.task_id.clone());
-            }
-            EventKind::ExecEnded(data) => {
-                self.open_tasks.remove(&data.task_id);
+            Source::Task { task_id, started } => {
+                if started {
+                    self.open_tasks.insert(task_id.to_owned());
+                } else {
+                    self.open_tasks.remove(task_id);
+                }
             }
             _ => {}
         }
@@ -535,6 +601,17 @@ impl Fold {
 
     pub(crate) fn held_next(&self) -> Option<u64> {
         self.held_record.as_ref()?.sequence.checked_add(1)
+    }
+
+    pub(crate) fn paired_record(
+        &self,
+        sequence: u64,
+        submission: Option<&str>,
+    ) -> Option<(&str, bool)> {
+        let held = self.held_record.as_ref()?;
+        (held.sequence.checked_add(1) == Some(sequence)
+            && submission == Some(held.trigger.as_str()))
+        .then_some((held.raw.as_str(), held.retire))
     }
 
     pub(crate) fn pair_next(&mut self, sequence: u64, submission: Option<&str>) {
@@ -587,7 +664,7 @@ impl Fold {
             .map(String::as_str)
             == Some("continuation")
         {
-            if self.driving.contains_key(id) {
+            if self.driving.contains(id) {
                 self.continuation_inputs.insert(id.to_owned());
             }
             if sequence > self.active.max(self.last_operator) {
@@ -720,7 +797,7 @@ impl Fold {
         if !restated {
             self.record_after = self.record_after.max(after);
         }
-        if self.deleted_sequences.contains(&after) {
+        if restated || self.invalidated_after.contains(&after) {
             return;
         }
         if after < self.last_change || after < self.state_after {
@@ -826,11 +903,6 @@ impl Fold {
             self.continuation_count = 0;
             self.continuation_idle = 0;
         }
-    }
-
-    pub(crate) fn finish_restore(&mut self, opening: Option<u64>) {
-        self.deleted_sequences.clear();
-        self.compact(opening);
     }
 
     pub(crate) fn compact(&mut self, opening: Option<u64>) {

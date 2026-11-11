@@ -483,7 +483,9 @@ fn normal_dimcode_is_the_leaf_until_it_leaves() {
         "resume must attach eagerly without creating another Session"
     );
     assert_raw(&resumed_pty);
-    resumed_pty.write(b"/exit\r");
+    resumed_pty.write(b"/exit");
+    resumed_pty.read_until("/exit");
+    resumed_pty.write(b"\r");
     let shown = wait_exit(&mut resumed, &resumed_pty);
     assert!(shown.contains("SHELL-RETURNED:0"), "{shown:?}");
     assert_restored(&resumed_pty);

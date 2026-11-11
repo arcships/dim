@@ -40,7 +40,7 @@ dependency is not necessarily a plugin with the same name.
 | [Attachments](Attachments.md) | — | Attachments | — |
 | [Questions](Questions.md) | — | Questions | — |
 | [BranchTool](BranchTool.md) | — | BranchTool, BranchLine | — |
-| [ContextPreparation](ContextPreparation.md) | — | — | ContextPreparation |
+| [ContextPreparation](ContextPreparation.md) | — | — | ContextPreparation, [ContextUsage](ContextUsage.md) |
 | [Prompt](Prompt.md) | — | — | Prompt |
 | [Loop](Loop.md) | — | [LoopMethods](LoopMethods.md) | Loop |
 | [ModelProvider](ModelProvider.md) | — | — | ModelProvider |

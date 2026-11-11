@@ -430,6 +430,32 @@ impl TasksPanel {
         }
     }
 
+    pub fn compaction_targets(&self) -> Vec<crate::model::view::CompactionTarget> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        let (
+            TaskKind::Member(MemberTarget::Session(session_id)),
+            DetailBody::Member { snapshot, .. },
+        ) = (&detail.task.kind, &detail.body)
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let detail = row.compaction.as_ref()?.detail.as_ref()?;
+                Some(crate::model::view::CompactionTarget {
+                    session_id: session_id.clone(),
+                    branch_id: "main".into(),
+                    event_id: detail.event_id.clone(),
+                    sequence: detail.sequence,
+                })
+            })
+            .collect()
+    }
+
     pub fn output(&mut self, target: &TaskTarget, text: Option<String>, state: TaskOutputState) {
         if let Some(Detail {
             task:

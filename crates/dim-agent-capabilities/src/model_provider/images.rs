@@ -19,22 +19,27 @@ pub(super) fn adapt(request: &Arc<ModelRequest>) -> Arc<ModelRequest> {
         .capability_snapshot
         .as_ref()
         .is_none_or(|snapshot| snapshot.capabilities.vision);
-    let replaced: Vec<_> = request
+    let replacements: Vec<_> = request
         .messages
         .iter()
-        .map(|message| replace_images(message, vision))
+        .enumerate()
+        .filter_map(|(index, message)| {
+            replace_images(message, vision).map(|message| (index, Arc::new(message)))
+        })
         .collect();
-    if replaced.iter().all(Option::is_none) {
+    if replacements.is_empty() {
         return request.clone();
     }
-    let mut adapted = (**request).clone();
-    adapted.messages = request
-        .messages
-        .iter()
-        .zip(replaced)
-        .map(|(message, replaced)| replaced.map_or_else(|| message.clone(), Arc::new))
-        .collect();
-    Arc::new(adapted)
+    Arc::new(ModelRequest {
+        provider_id: request.provider_id.clone(),
+        model_id: request.model_id.clone(),
+        capability_snapshot: request.capability_snapshot.clone(),
+        messages: replace_selected(&request.messages, replacements),
+        tools: request.tools.clone(),
+        system: request.system.clone(),
+        config: request.config.clone(),
+        metadata: request.metadata.clone(),
+    })
 }
 
 /// The message with its unsendable images replaced, or `None` if it has none.
@@ -42,63 +47,67 @@ fn replace_images(message: &Message, vision: bool) -> Option<Message> {
     let MessageContent::Parts(parts) = &message.content else {
         return None;
     };
-    let mut changed = false;
-    let parts = parts
+    let replacements: Vec<_> = parts
         .iter()
-        .map(|part| match part {
-            MessagePart::Image { source } => {
-                let Some(text) = placeholder(source, vision) else {
-                    return part.clone();
-                };
-                changed = true;
-                MessagePart::Text {
-                    provider_metadata: None,
-                    text: text.into(),
-                    start_time: None,
-                    end_time: None,
-                }
-            }
-            MessagePart::ToolResult {
-                tool_use_id,
-                content,
-                structured_content,
-                is_error,
-            } => {
-                let ToolContent::Blocks(blocks) = content else {
-                    return part.clone();
-                };
-                let mut replaced = false;
-                let blocks = blocks
-                    .iter()
-                    .map(|block| match block {
-                        ContentBlock::Image { source } => match placeholder(source, vision) {
-                            Some(text) => {
-                                replaced = true;
-                                ContentBlock::Text { text: text.into() }
-                            }
-                            None => block.clone(),
-                        },
-                        block => block.clone(),
+        .enumerate()
+        .filter_map(|(index, part)| {
+            let replacement = match part {
+                MessagePart::Image { source } => {
+                    placeholder(source, vision).map(|text| MessagePart::Text {
+                        provider_metadata: None,
+                        text: text.into(),
+                        start_time: None,
+                        end_time: None,
                     })
-                    .collect();
-                if !replaced {
-                    return part.clone();
                 }
-                changed = true;
                 MessagePart::ToolResult {
-                    tool_use_id: tool_use_id.clone(),
+                    tool_use_id,
                     content: ToolContent::Blocks(blocks),
-                    structured_content: structured_content.clone(),
-                    is_error: *is_error,
+                    structured_content,
+                    is_error,
+                } => {
+                    let replacements: Vec<_> = blocks
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, block)| {
+                            let ContentBlock::Image { source } = block else {
+                                return None;
+                            };
+                            placeholder(source, vision)
+                                .map(|text| (index, ContentBlock::Text { text: text.into() }))
+                        })
+                        .collect();
+                    (!replacements.is_empty()).then(|| MessagePart::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content: ToolContent::Blocks(replace_selected(blocks, replacements)),
+                        structured_content: structured_content.clone(),
+                        is_error: *is_error,
+                    })
                 }
-            }
-            _ => part.clone(),
+                _ => None,
+            };
+            replacement.map(|part| (index, part))
         })
         .collect();
-    changed.then(|| Message {
+    (!replacements.is_empty()).then(|| Message {
         role: message.role,
-        content: MessageContent::Parts(parts),
+        content: MessageContent::Parts(replace_selected(parts, replacements)),
     })
+}
+
+fn replace_selected<T: Clone>(values: &[T], replacements: Vec<(usize, T)>) -> Vec<T> {
+    let mut replacements = replacements.into_iter().peekable();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if replacements.peek().is_some_and(|(at, _)| *at == index) {
+                replacements.next().unwrap().1
+            } else {
+                value.clone()
+            }
+        })
+        .collect()
 }
 
 /// The placeholder an image becomes, or `None` when the image is sent as is.

@@ -237,6 +237,7 @@ struct Forward {
     connection: Weak<Connection>,
     session_id: String,
     generation: u64,
+    display: bool,
     /// `Closed` was seen: the subscription forwards no later notice, so
     /// `session.closed` stays its last Session notification.
     ended: AtomicBool,
@@ -279,9 +280,13 @@ impl Forward {
                     if version >= 2 && !self.watched.lock().expect("watched").contains(branch_id) {
                         let _ = self.signals.send(Signal::Branch(branch_id.clone()));
                     }
-                    if let Some(notice) =
-                        project(version, &self.session_id, branch_id, event.clone())
-                    {
+                    if let Some(notice) = project(
+                        version,
+                        self.display,
+                        &self.session_id,
+                        branch_id,
+                        event.clone(),
+                    ) {
                         connection.notify(&self.session_id, self.generation, notice);
                     }
                 }
@@ -317,10 +322,18 @@ impl Forward {
 /// v1 notifications. v2 carries every branch.
 fn project(
     version: u32,
+    display: bool,
     session_id: &str,
     branch_id: &str,
     event: Arc<AgentEvent>,
 ) -> Option<Notification> {
+    if display && let Some(item) = wire::CompactionItem::new(&event) {
+        return Some(Notification::Display(wire::DisplayNotice {
+            session_id: session_id.to_owned(),
+            branch_id: branch_id.to_owned(),
+            item,
+        }));
+    }
     match &event.kind {
         EventKind::ApprovalRequest(data) => Some(approval_request(
             version,
@@ -443,6 +456,9 @@ impl Connection {
             .session(&params.session_id)
             .ok_or_else(RpcError::closed)?;
         let version = self.protocol_version();
+        if params.display && version < 3 {
+            return Err(RpcError::invalid("display requires protocol v3"));
+        }
         let session_id = session.id().to_owned();
         let record = rpc
             .index
@@ -473,6 +489,7 @@ impl Connection {
             connection: Arc::downgrade(self),
             session_id: session_id.clone(),
             generation,
+            display: params.display,
             ended: AtomicBool::new(false),
             watched: watched.clone(),
             signals,
