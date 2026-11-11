@@ -598,6 +598,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server ainda é {server} porque outros clientes o estão usando; este cliente {client} também o usa. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
         }
+        "The App Server is still {server} because other clients are using it, and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server ainda é {server} porque outros clientes o estão usando, e este cliente {client} não pode usar essa compilação. Nenhuma sessão foi iniciada. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server ainda é {server} porque outros clientes o estão usando (conexões: {connections}, sessões anexadas: {attached}, turnos em execução: {running}), e este cliente {client} não pode usar essa compilação. Nenhuma sessão foi iniciada. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server ainda é {server} porque outros clientes o estão usando (conexões: {connections}, sessões anexadas: {attached}, turnos em execução: {running}); este cliente {client} também o usa. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
         }

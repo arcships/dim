@@ -594,6 +594,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya; klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
         }
+        "The App Server is still {server} because other clients are using it, and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya, dan klien {client} ini tidak dapat memakai build tersebut. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}), dan klien {client} ini tidak dapat memakai build tersebut. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}); klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
         }

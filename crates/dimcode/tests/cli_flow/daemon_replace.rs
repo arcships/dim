@@ -27,7 +27,7 @@ fn new_style_features() -> Value {
 
 /// Serves one connection that the CLI makes after a replacement: hello at
 /// this build, then the command's next call.
-fn serve_successor(successor: &UnixListener) {
+pub(super) fn serve_successor(successor: &UnixListener) {
     let deadline = Instant::now() + HANG_GUARD;
     loop {
         let stream = match successor.accept() {
