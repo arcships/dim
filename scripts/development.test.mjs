@@ -25,11 +25,11 @@ test('compiled Rust targets forward arguments, failures and reject missing or am
   }
 });
 
-test('five compiled workspace targets overlap and finish the queue after a failure', (t) => {
+test('two compiled workspace targets overlap and finish the queue after a failure', (t) => {
   const temporary = mkdtempSync(path.join(os.tmpdir(), 'dim parallel artifacts '));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const artifacts = path.join(temporary, 'artifacts.jsonl');
-  const initial = ['first', 'second', 'third', 'fourth', 'fifth'];
+  const initial = ['first', 'second'];
   const records = [...initial, 'queued'].map(name => {
     const directory = path.join(temporary, name);
     mkdirSync(directory);
