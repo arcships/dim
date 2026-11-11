@@ -411,6 +411,16 @@ prevents an older writer from opening the upgraded store. See the
 [storage owner's format decision](../appserver/native-storage-format.md#v39-conditional-queued-input-steer).
 Frozen event fixtures remain unchanged.
 
+Wire compatibility is independent of the store gate: v3 delivers the native
+`input/withdraw` event, including its optional `steer` member. A client built
+with the old strict command type rejects an event carrying that member; the
+store upgrade cannot protect an already connected old client. No protocol
+version, field-stripping adapter or fallback replacement is added. This follows
+the paired client/daemon policy in
+[Session boundary A.6](session-boundary.md#a6-tool-effects): clients decoding
+native events must be upgraded with the daemon. Plain withdrawals keep their
+previous wire shape, and the frozen v1 projection remains unchanged.
+
 ### A.5 Fixed-prefix read
 
 `sessions.history` acquires and holds the Session, restoring it when unloaded. With `atLeast` it fixes `through` as the published head at call time. It fails with `future_sequence` if that head is below `atLeast`, and otherwise returns the branch's own events through that head, paged by `after` and `limit`. It is composed from the existing facade: read the head with `Session::sequence(branch)`, then page with `AgentIndex::history_page`. A live line pages through its query; an ended line pages through `TimelineTree` at its fixed head and batch boundaries. This entry has no store-read fallback for a Session the process does not hold. A branch part that needs the ancestor prefix reads the chain with the same query (§9.2). Every event delivered by the branch Dispatcher or the Session broadcast is published, so `atLeast = event.sequence` succeeds while the branch exists.

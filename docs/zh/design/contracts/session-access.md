@@ -364,6 +364,8 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 
 原生存储写入 **v39**，并升级 v38 接受的格式，不改写历史事件。v39 读取带或不带 `steer` 的指令；v38 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v39 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v39-conditional-queued-input-steer)。冻结事件样本保持不变。
 
+线协议兼容性独立于存储门禁：v3 投递原生 `input/withdraw` 事件，包含其可选 `steer` 成员。使用旧版严格指令类型构建的客户端会拒绝带该成员的事件；存储升级无法保护已经连接的旧客户端。不增加协议版本、剥离字段的适配层或回退替代输入。这沿用 [Session 边界 A.6](../../../design/contracts/session-boundary.md#a6-tool-effects) 的客户端与 daemon 配套发布策略：解码原生事件的客户端必须与 daemon 一同升级。普通撤回保持原有线协议形状，冻结的 v1 投影不变。
+
 ### A.5 固定前缀读取
 
 `sessions.history` 取得并持有 Session；未装载时先恢复它。带 `atLeast` 时把 `through` 固定为调用时的已发布 head。若该 head 低于 `atLeast`，则以 `future_sequence` 失败，否则返回该分支自己截至该 head 的事件，按 `after` 与 `limit` 分页。它由现有门面组合实现：先用 `Session::sequence(branch)` 读 head，再用 `AgentIndex::history_page` 分页读取。活跃线经自身 query 分页；已结束的线经 `TimelineTree` 按固定 head 和批次边界分页。此入口不会为本进程未持有的 Session 回退到存储读取。需要祖先前缀的分支部分用同一个 query 读祖先链（§9.2）。分支 Dispatcher 或 Session 广播投递的每个事件都已发布，因此只要分支存在，`atLeast = event.sequence` 就会成功。

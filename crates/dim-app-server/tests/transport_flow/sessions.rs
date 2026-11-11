@@ -1058,7 +1058,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         ..
     } = serve_sessions(None).await;
     client_session(&mut client, &agent, host_policy()).await;
-    let session = launched(&sessions, &agent, json!({"preset":"workspace-write"})).await;
+    let session = launched(&sessions, &agent, json!({})).await;
     let at = |extra: Value| {
         let mut request = json!({"sessionId":session.id(),"branchId":"main"});
         request
@@ -1084,40 +1084,31 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     let first = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
-    sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:confirm",
-                json!([{"type":"text","text":"tool:confirm {}"}]),
-            ),
+    let batch = session
+        .inputs(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| InputMessageData {
+                    submission_id: Some(format!("test:batch:{id}")),
+                    ..InputMessageData::text(id, Some(dim_agent_types::InputMode::Append))
+                })
+                .collect(),
+            "main",
         )
-        .await;
-    event_written(&session, "approval/request").await;
-    let held = sessions
-        .ok(
-            "input",
-            input(
-                &session,
-                "test:held",
-                json!([{"type":"text","text":"queued"}]),
-            ),
-        )
-        .await;
-    let batch = client
-        .rpc(
-            "session.input.withdraw",
-            json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
-                "steer":{"content":[{"type":"text","text":"steer"}]}}),
-        )
-        .await;
-    assert_eq!(batch["result"]["status"], "deleted", "{batch}");
-    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap();
-    sessions.ok("stop", at(json!({}))).await;
+        .await
+        .unwrap();
+    let inside = batch[0].sequence;
     let head = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
+    let page = sessions
+        .ok("history", at(json!({"after":inside - 1,"limit":1})))
+        .await;
+    assert_eq!(
+        page["events"],
+        serde_json::to_value(&batch).unwrap(),
+        "a one-event page limit must not split the two-input batch"
+    );
 
     let mut after = 0;
     let mut events = vec![];
@@ -1148,6 +1139,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
 
     for (request, code) in [
         (at(json!({"after":inside})), "rejected"),
+        (at(json!({"through":inside})), "rejected"),
         (at(json!({"after":first,"through":first - 1})), "rejected"),
         (at(json!({"limit":0})), "rejected"),
         (at(json!({"limit":257})), "rejected"),
