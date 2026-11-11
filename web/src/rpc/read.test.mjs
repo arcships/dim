@@ -15,7 +15,7 @@ registerHooks({
   },
 })
 
-const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readMemberApproval, readNotification, readPermissionState, readProviderCatalog } = await import("./read.ts")
+const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readDisplayHistory, readMemberApproval, readNotification, readPermissionState, readProviderCatalog } = await import("./read.ts")
 
 test("permission replies ignore removed policy keys and still validate presets and tool lists", () => {
   const policy = { preset: "full-access", allowedTools: ["read"], disallowedTools: ["exec"] }
@@ -60,6 +60,13 @@ function event(type, name, data, sequence = 1) {
 }
 
 test("branch facts are decoded with their line and cut", () => {
+  const summary = event("display", "compaction", { strategy: "summary" }, 2)
+  const display = readDisplayHistory({ items: [summary], through: 2, nextAfter: 2, nextBefore: 2, done: true })
+  assert.deepEqual(display.events[0], { id: "e2", sequence: 2, createAt: 1002, content: { kind: "other" } })
+  assert.deepEqual(readNotification("session.display", { sessionId: "s", branchId: "main", item: summary }), {
+    method: "session.display", sessionId: "s", branchId: "main", event: display.events[0],
+  })
+  assert.throws(() => readDisplayHistory({ events: [summary], through: 2, nextAfter: 2, done: true }), ProtocolError)
   const created = page(event("branch", "create", {
     at: { kind: "sequence", sequence: 3 },
     source: { kind: "host", operation_id: "op-1" },

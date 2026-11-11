@@ -1142,6 +1142,10 @@ struct App {
     /// The output detail currently registered with the session worker.
     output_target: Option<(u64, TaskTarget)>,
     member_target: Option<(u64, String)>,
+    compaction_targets: Option<(
+        u64,
+        std::collections::BTreeSet<crate::model::view::CompactionTarget>,
+    )>,
     /// The update dialog while another prompt has the screen; it comes
     /// back once that one closes.
     upgrade: Option<UpgradeDialog>,
@@ -1485,6 +1489,7 @@ impl App {
             shell_runs: Vec::new(),
             output_target: None,
             member_target: None,
+            compaction_targets: None,
             upgrade: None,
             line_draft: None,
             fork_draft: None,
@@ -2070,6 +2075,7 @@ impl App {
                 }
                 self.runs.observe(&snapshot);
                 self.snapshot = Some(*snapshot);
+                self.refresh_compactions();
                 self.refresh_cards();
                 if self.running() && !was_running {
                     self.run_started = Some(Instant::now());
@@ -3977,6 +3983,127 @@ impl App {
         }
     }
 
+    fn sync_compaction_details(&mut self) {
+        use crate::model::view::CompactionTarget;
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut targets = std::collections::BTreeSet::new();
+        if !self.awaiting_window && snapshot.history_complete {
+            for block in &self.history {
+                if let Block::Compaction {
+                    expanded: true,
+                    target: Some(target),
+                    ..
+                } = block
+                {
+                    targets.insert(target.clone());
+                }
+            }
+            if self.tool_detail == Detail::Expanded
+                && let Some(side) = &snapshot.side
+            {
+                for row in &side.rows {
+                    if let Some(detail) = row
+                        .compaction
+                        .as_ref()
+                        .and_then(|view| view.detail.as_ref())
+                    {
+                        targets.insert(CompactionTarget {
+                            session_id: snapshot.session_id.clone(),
+                            branch_id: side.id.clone(),
+                            event_id: detail.event_id.clone(),
+                            sequence: detail.sequence,
+                        });
+                    }
+                }
+            }
+            if let Some(Prompt::Tasks(panel)) = &self.prompt {
+                targets.extend(panel.compaction_targets());
+            }
+        }
+        if targets.is_empty() && self.compaction_targets.is_none() {
+            return;
+        }
+        let next = (snapshot.projection_id, targets);
+        if self.compaction_targets.as_ref() != Some(&next) {
+            self.host.send(Command::CompactionDetails {
+                projection_id: next.0,
+                targets: next.1.clone(),
+            });
+            self.compaction_targets = (!next.1.is_empty()).then_some(next);
+        }
+    }
+
+    fn release_compaction_details(&mut self) {
+        if let Some((projection_id, _)) = self.compaction_targets.take() {
+            self.host.send(Command::CompactionDetails {
+                projection_id,
+                targets: Default::default(),
+            });
+        }
+        for block in &mut self.history {
+            if let Block::Compaction {
+                target,
+                detail: Some(detail),
+                text,
+                ..
+            } = block
+            {
+                *target = None;
+                *text = "".into();
+                detail.state = crate::model::view::CompactionDetailState::Failed(
+                    "This attachment is no longer open".into(),
+                );
+            }
+        }
+    }
+
+    fn refresh_compactions(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (index, block) in self.history.iter_mut().enumerate() {
+            let Block::Compaction {
+                target: Some(target),
+                text,
+                detail,
+                expanded,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            if target.session_id != snapshot.session_id || target.branch_id != snapshot.focus {
+                continue;
+            }
+            let view = snapshot
+                .rows
+                .iter()
+                .filter_map(|row| row.compaction.as_ref())
+                .find(|view| {
+                    view.detail.as_ref().is_some_and(|at| {
+                        at.event_id == target.event_id && at.sequence == target.sequence
+                    })
+                });
+            let Some(view) = view else { continue };
+            if *detail != view.detail || (*expanded && !std::sync::Arc::ptr_eq(text, &view.text)) {
+                *detail = view.detail.clone();
+                if *expanded {
+                    *text = view.text.clone();
+                }
+                changed.push(self.dropped + index);
+            }
+        }
+        if !changed.is_empty() {
+            for index in changed {
+                self.mark_rewritten(index);
+            }
+            self.request_reflow();
+        }
+    }
+
     /// The run needs the user: it just finished, or a permission or question
     /// request appeared (each request once).
     fn queue_notification(&mut self, was_running: bool) {
@@ -4240,14 +4367,24 @@ impl App {
         for block in &mut self.history {
             match block {
                 Block::ToolGroup(group) => group.detail = detail,
-                Block::Compaction { expanded, .. } | Block::HookContext { expanded, .. } => {
-                    *expanded = detail == Detail::Expanded
+                Block::Compaction {
+                    expanded,
+                    text,
+                    detail: lazy,
+                    ..
+                } => {
+                    *expanded = detail == Detail::Expanded;
+                    if !*expanded && lazy.is_some() {
+                        *text = "".into();
+                    }
                 }
+                Block::HookContext { expanded, .. } => *expanded = detail == Detail::Expanded,
                 Block::Error { expanded, .. } => *expanded = detail != Detail::Collapsed,
                 _ => {}
             }
         }
         self.request_reflow();
+        self.sync_compaction_details();
         if let Some(error) =
             crate::ui::config::write(&self.home, TOOL_DETAILS_KEY, detail.label().into())
         {
@@ -5598,6 +5735,7 @@ impl App {
             }),
         };
         frame.live = live;
+        self.sync_compaction_details();
         frame
     }
 
@@ -5933,6 +6071,7 @@ impl App {
     }
 
     fn switch_line(&mut self, line: String) {
+        self.release_compaction_details();
         self.planner.reset();
         self.commits = CommitState::default();
         self.answered.clear();
@@ -5983,6 +6122,7 @@ impl App {
 
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
         self.report_error = None;
+        self.release_compaction_details();
         let first = self.session_id.is_empty();
         // Home's first message started this Session: nothing shown to clear.
         if first
@@ -6161,7 +6301,21 @@ impl App {
     }
 
     /// Remembers a committed block (bounded, newest last).
-    fn record(&mut self, source: Block) {
+    fn record(&mut self, mut source: Block) {
+        if let Block::Compaction {
+            target,
+            detail: Some(detail),
+            ..
+        } = &mut source
+            && let Some(snapshot) = &self.snapshot
+        {
+            *target = Some(crate::model::view::CompactionTarget {
+                session_id: snapshot.session_id.clone(),
+                branch_id: snapshot.focus.clone(),
+                event_id: detail.event_id.clone(),
+                sequence: detail.sequence,
+            });
+        }
         self.history.push_back(source);
         if self.history.len() > HISTORY_MAX_BLOCKS {
             self.history.pop_front();
@@ -6193,15 +6347,26 @@ impl App {
         let index = id.checked_sub(self.dropped);
         match index.and_then(|index| self.history.get_mut(index)) {
             Some(Block::ToolGroup(group)) => group.detail = group.detail.next(),
+            Some(Block::Compaction {
+                expanded,
+                text,
+                detail,
+                ..
+            }) => {
+                *expanded = !*expanded;
+                if !*expanded && detail.is_some() {
+                    *text = "".into();
+                }
+            }
             Some(
                 Block::Thinking { expanded, .. }
-                | Block::Compaction { expanded, .. }
                 | Block::HookContext { expanded, .. }
                 | Block::Error { expanded, .. },
             ) => *expanded = !*expanded,
             _ => return false,
         }
         self.mark_rewritten(id);
+        self.sync_compaction_details();
         true
     }
 
@@ -14420,6 +14585,98 @@ mod tests {
             "the kept draft keeps the seed it was opened with, not the edited text"
         );
         assert_eq!(kept.path(), path.as_path());
+    }
+
+    #[test]
+    fn compaction_disclosure_shares_body_releases_it_and_keeps_attachment_identity() {
+        use crate::model::view::CompactionDetailState;
+        for fullscreen in [false, true] {
+            let commands = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 32), None, true);
+            drawn.app.host = Box::new(Recorder(commands.clone()));
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.tool_detail = Detail::Collapsed;
+            let mut projection = crate::projection::Projection::default();
+            let event = serde_json::from_value(serde_json::json!({"id":"compact-7","sequence":7,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}})).unwrap();
+            projection.apply("main", &event);
+            let mut snapshot = projection.snapshot();
+            snapshot.session_id = "source".into();
+            snapshot.focus = "main".into();
+            snapshot.history_complete = true;
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            drawn.draw();
+            assert!(commands.borrow().iter().all(|command| !matches!(command, Command::CompactionDetails { targets, .. } if !targets.is_empty())));
+            let block = drawn.app.dropped
+                + drawn
+                    .app
+                    .history
+                    .iter()
+                    .position(|block| matches!(block, Block::Compaction { .. }))
+                    .unwrap();
+            assert!(drawn.app.click(Some(block), 1));
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.len() == 1 && targets.first().unwrap().session_id == "source")
+            );
+            let body: std::sync::Arc<str> = "Loaded compaction body".into();
+            let weak = std::sync::Arc::downgrade(&body);
+            let mut loaded = snapshot.clone();
+            let view = std::sync::Arc::make_mut(&mut loaded.rows[0])
+                .compaction
+                .as_mut()
+                .unwrap();
+            view.text = body.clone();
+            view.detail.as_mut().unwrap().state = CompactionDetailState::Loaded;
+            drawn.app.apply(Update::Snapshot(Box::new(loaded)));
+            drawn.draw();
+            assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
+            assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
+            drop(body);
+            assert!(drawn.app.click(Some(block), 1));
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
+            );
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            drawn.draw();
+            assert!(
+                weak.upgrade().is_none(),
+                "closed detail has no retained shared body"
+            );
+            assert!(drawn.app.click(Some(block), 1));
+            drawn.app.switch_session("fork".into(), SwitchKind::Resumed);
+            snapshot.session_id = "fork".into();
+            snapshot.projection_id = 1;
+            drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+            drawn.draw();
+            drawn.app.toggle_tool_details();
+            drawn.app.toggle_tool_details();
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { projection_id: 1, targets }) if targets.len() == 1 && targets.first().unwrap().session_id == "fork")
+            );
+            drawn.app.tool_detail = Detail::Collapsed;
+            let mut task = background_task("member-task", "Member");
+            task.kind = crate::model::view::TaskKind::Member(
+                crate::model::view::MemberTarget::Session("member".into()),
+            );
+            let mut main = drawn.app.snapshot.as_ref().unwrap().clone();
+            main.tasks.push(task.clone());
+            drawn.app.apply(Update::Snapshot(Box::new(main.clone())));
+            let mut panel = TasksPanel::new(&main);
+            panel.open_card(task);
+            panel.member(
+                "member",
+                Box::new(projection.snapshot()),
+                crate::model::view::MemberConversationState::Live,
+                None,
+            );
+            drawn.app.prompt = Some(Prompt::Tasks(panel));
+            commands.borrow_mut().clear();
+            drawn.draw();
+            assert!(commands.borrow().iter().any(|command| matches!(command,Command::CompactionDetails {targets,..} if targets.iter().any(|target| target.session_id=="member"))), "an expanded member detail requests its body while global disclosure is collapsed");
+        }
     }
 
     fn drawn_text(drawn: &mut Drawn) -> String {

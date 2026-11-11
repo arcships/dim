@@ -1,6 +1,57 @@
 # Rust 会话存储格式
 
-The current native format is **v38**, with property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+## v41：合并 child tool-call 与 Timeline 索引格式
+
+main 已使用 v37 表示 child tool-call 事件信封、v38 表示 session_owners 允许协议4；本分支先前的 v37–v40 使用独立的成员/全文/数组/身份索引格式，不能只按编号判定两者兼容。
+
+合并后的目标格式为 v41：保持本分支 v40 的全部索引与编码，并采用 main 的 session_owners 协议约束 `(1,2,3,4)` 和 parent_call_id 事件合同。不复用 v40 写入不同约束的 schema，不改变业务事实或 Usage 私有版本。
+
+格式识别比较完整 SQL 结构和 marker。分别识别 main v37/v38 与本分支 v37–v40；只有 marker 和其完整结构均匹配才升级。main 路径从其已有 v36 索引集合补建成员、收窄全文、转换数组、建立输出身份/状态字段索引；本分支路径保留已建结构，只执行尚缺步骤。最后仅在 session_owners 仍是旧 `(1,2,3)` 约束时重建该表，原数据逐行复制。所有步骤仍在原准入事务内完成，最后写 v41 marker；失败整体回滚。
+
+只读导出识别上述两个来源的完整旧结构，保持原 marker，不升级。v40 与更老的程序拒读新 v41。验收覆盖 main v37/v38、分支 v40、协议4的 Session owner、回滚、只读旧库导出和 fork 配置/数组共同复制。
+
+## v39：大数组按元素引用
+
+v39 增加本文件末尾[数组元素方案](#提案状态读取索引与数组元素)定义的 locator 表及 array-element 内容编码；v38 的 FTS、关联及成员索引合同不变。公开事件、trace 与 query 回复不增加存储字段。旧程序必须拒读 v39，不能把数组引用当成原内容读取。
+
+大数组在写入事务内拆出；FTS 使用拆出之前的公开数据。已有数组版本按数组身份和长度复用，不重新保存它的元素。格式升级同事务建立元素存储并改写相应 wire，保留原事实身份、位置、批次和既有文本索引。失败回滚全部变化；普通打开不重复编码。只读旧格式导出仍按旧内联数组读取，不触发升级。
+
+## v38：收窄全文与关联索引的写入范围
+
+v38 保留 v37 的事件编码与 SQL 表，收窄索引的写入范围。`data` 全文索引覆盖核心保留域的事件，仍排除 context/prepare、model/call 和 context/compaction；不为不透明扩展事实建立全文倒排项。`data.delta` 的 step/text 索引不变。域集合复用事件信封合同，不在 Store 列出 Goal、InputQueue 或统计插件的类型。
+
+request、input 和 user 关联索引保留原列及排序，改为只保存对应索引表达式非 SQL NULL 的记录。没有这些字段的事实不再写入三个无用的 NULL 索引项。JSON null 的 user 仍有 `json_type='null'`，保留原 Present 语义；非字符串关联值仍按公开查询合同处理。等值、In 与 Present 查询继续使用原表达式定位；缺失字段的查询保留通用执行语义，不强制套用不覆盖它的部分索引。
+
+扩展事实仍完整持久化、导出和复制；TextCandidate 查询这些类型时保留候选，由调用方验证，不以索引缺失判定不匹配。混合核心与扩展类型的条件也必须保留未索引部分。普通结构化字段、身份、位置和关联查询不受影响。
+
+v37→v38 在同一升级事务中删除覆盖范围外的全文元数据，由既有删除触发器清理对应倒排项，并以部分索引替换上述三个关联索引；不重写事实正文、不重建成员集合、不改变流式尾部。失败连同格式标记回滚，普通打开不重复清理。旧程序认为扩展事实的 data 全部已索引，可能漏掉新写扩展事实的候选，因此必须以 v38 格式拒绝旧程序，不能复用 v37。
+
+数组元素内容编码仍采用后续独立格式；本步骤不引入数组表或新查询 API。
+
+## v37：未完成集合索引的格式决定
+
+本次格式采用 v37，不修改已提交的 v36。v37 增加 `timeline_member_nodes`、
+`timeline_member_roots`、`timeline_member_origins` 和 `timeline_member_terminals`。
+节点采用不可变 AVL 树：每节点保存一个成员、两个子节点身份与高度；更新复制并平衡受影响路径。
+这是成员索引设计允许的简化实现，须通过相同的历史增长、固定 through 与累计 I/O 验收。
+不同时引入叶块、内部节点两种编码或节点缓存。
+
+根主键为 `(session_id, branch_id, index_id, group_key, sequence)`；反向定位主键为
+`(session_id, branch_id, index_id, match_key, sequence, group_key)`；终态键主键为
+`(session_id, branch_id, index_id, match_key)`，保留最早终态位置。节点按整数身份点查，
+同时检查所属 Session。所有新增行与其原事实同事务提交；旧根不被后续提交修改。
+
+升级事务按分支和原序号建立输入、工具、执行和协作集合；重复终态与终态先于开始均保留原查询语义。
+失败回滚 schema、索引行和版本标记。Session 复制重建目标前缀索引，删除清理其全部索引行。
+只有完整分支、无 publishing tail、与静态描述逐项相同的反关联可使用成员根；其余范围保留通用查询。
+插件仍只调用 append/query，不读写这些表。
+
+本步骤不更改事件编码。数组元素内容编码属于后续格式步骤，不能在提交 v37 后复用其编号。
+v36 的文本索引和事件编码合同继续适用。
+
+后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
+
+The current native format is **v41**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -9,11 +60,11 @@ omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
-requires the exact v38 SQL schema and a single
-format marker of 38 before writable PRAGMAs, or the exact v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+requires the exact v41 SQL schema and a single
+format marker of 41 before writable PRAGMAs, or the exact v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v38 one step after
-another ([v38 session protocol](#v38-session-protocol), [v37 child tool-call parent](#v37-child-tool-call-parent), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
+which the same startup transaction upgrades in place to v41 one step after
+another ([v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
@@ -26,7 +77,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v38, and v16 request rows stay readable as written.
+valid in v41, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -36,7 +87,7 @@ valid in v38, and v16 request rows stay readable as written.
 读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
 `CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
 `timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v38）；其余任何多余对象仍按原规则拒绝。代价是早于
+精确结构比较忽略这些名字，格式标记不变（当前 v41）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
 索引的库（行不变，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
@@ -174,13 +225,13 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 
 删除 Session 只释放库内页，数据库文件本身不缩小。维护入口是 `dimcode daemon vacuum [--database PATH]`：守护进程未运行时它取同一把维护锁，校验当前格式的精确结构后执行 `VACUUM`，打印操作前后数据库与 WAL 的字节数之和。`VACUUM` 重写整个库，需要约等于库大小的临时空间；守护进程持锁时该命令拒绝执行，也不升级或创建库。
 
-## Current v38 tables
+## Current v41 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 38)`; exactly one row |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 41)`; exactly one row |
 | `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills`, `user/mcp-projects` or `user/mcp-plugins`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
@@ -405,7 +456,7 @@ ProjectionCheckpoint = {
 
 ### 读取校验
 
-读取时先解析 `Row` 和运行时事件，再按 `(session_id, hash)` 查请求引用的内容、复核 hash 与 kind，并重建 `Arc<ModelRequest>`；同一次读取中，内容行在加载时复核一次，此后复用解码结果，被缓存上限清出后重新加载并复核。`ListReferences` 从 `list` 向首个节点遍历：每个节点须是 `kind=node`、hash 匹配、正文可解析为 `{parent,message}`，遍历恰好经过 `length` 个节点，最后一个的 `parent` 为 `null`，其余都有父节点。同一次读取保留上一个由列表重建的事件请求及其各消息的节点地址，遍历遇到与它同位置的同一节点即停止，其余前缀取自该请求；共用节点已在重建该请求时复核。遍历每加载至多 256 个节点释放一次连接，下一次持有从中断处继续。随后校验序号、行 kind、批次、before 的 `event_id`、分支关系和所有 completed 事实的 through 边界。可选 snapshot state 不参与 Session 恢复校验。坏行保留原字节并归属该 Session；缺失或损坏的节点以 "missing request content"、"request content hash mismatch" 或 "request list length mismatch" 明确失败，不得通过默认值把损坏请求还原为空请求或部分请求。不使用请求正文的读取（历史分页、摘要、上下文投影、协作）不还原这两类记录中的请求，也不加载或校验其内容行，只校验记录种类与引用形状相符（[请求增量存储 §7.5](request-delta-storage.md#75-不使用请求正文的读取)）；因此损坏的节点不会让这些读取失败；导出与每个使用请求的读取仍会失败。恢复校验同样不加载请求正文：它按记录引用的 hash 校验内容行存在，并对每个 `node` 行只读出 `parent` 字段、校验父节点存在（只读 hash 与 parent，不读正文），引用或父节点缺失时以 "missing request content" 拒绝恢复；内容行存在但正文损坏时恢复通过，由加载它的读取失败。导出在写第一行前保留完整校验：重建并复核每个请求正文的 hash，正文损坏时以 "request content hash mismatch" 拒绝且不写出任何行（[恢复校验复用](restore-validation.md)）。
+读取事件时解析所选 `Row` 和运行时事件。需要请求正文的读取按 `(session_id, hash)` 加载其引用内容，复核 hash、kind、列表长度和父节点，再重建 `Arc<ModelRequest>`；同一次读取按既有预算复用解码结果。列表每加载至多256个节点释放一次连接。缺失或损坏内容明确报错并保留原字节，不把损坏请求填为空请求。历史分页、摘要、上下文投影等不使用请求正文的读取不加载请求内容，见[请求增量存储§7.5](request-delta-storage.md#75-reads-that-do-not-use-request-bodies)。Session恢复只读取配置和分支目录，不解码全部事件、不全查内容引用或派生索引、不维护校验缓存，见[恢复读取边界](restore-validation.md)。导出在它原本的事件遍历中加载所需正文，不预扫描；错误返回且不输出终止记录，CLI删除失败文件，stdout可留下不完整流。
 
 ## 格式版本
 
@@ -415,7 +466,7 @@ ProjectionCheckpoint = {
 
 ### #1002 格式决定
 
-[#1002](https://github.com/arcships/dim/issues/1002)（[ADR 020](../adr/020-timeline-read-convergence.md) D5）的格式决定：**不改格式**，v33 不变，不迁移；只升检查点解释器，并改 `ProjectionCheckpoint.resume` 的形状。
+[#1002](https://github.com/arcships/dim/issues/1002)（[ADR 020](../../adr/020-timeline-read-convergence.md) D5）的格式决定：**不改格式**，v33 不变，不迁移；只升检查点解释器，并改 `ProjectionCheckpoint.resume` 的形状。
 
 - **只改可丢弃快照的 payload**：`resume` 从 `{branch_id, sequence}` 变为 `{branch_id, sequence, event_id}`，`event_id` 是该 resume 点的 Timeline 事件 ID。读取按 `event_id`（`from_event`）定位该事件并从此处续读祖先链，记录的位置只在按 ID 查不到该事件时使用。SQL 结构、`timeline_snapshots` 的列、其余持久化 JSON、内容寻址与事实字节都不变。
 - **不改版本**：`timeline_snapshots.state` 对 SQLite 是不透明 `TEXT`，快照是可丢弃的派生缓存，标识它编码的是 `interpreter` 而不是存储版本。旧读取器不解析 `state`，旧写入器不重写已有快照行，存储不变量不变，因此保持版本的条件都成立。
@@ -844,14 +895,14 @@ ProjectionCheckpoint = {
 | `session_owners_by_agent` | `(agent_id, protocol_version, session_id)` | 按 Agent 和协议过滤目录 |
 | `timeline_events_by_id` | `(session_id, event_id) WHERE event_id IS NOT NULL`，非唯一 | 按事件 ID 查找跨页 ToolCall |
 | `timeline_input_submissions` | `(session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), sequence) WHERE kind = 'input/message'`，非唯一 | 按提交标识定位输入；属于 v35 精确 schema，不属于启动时补建的派生索引 |
-| `timeline_events_requests` | `(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence)` | 请求标识等值定位，兼容 inline 与 output 行 |
-| `timeline_events_inputs` | `(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence)` | 输入采纳、删除、应用和撤回关联 |
-| `timeline_events_users` | `(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence)` | 用户输入存在性筛选与计数 |
+| `timeline_events_requests` | `(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence)`；WHERE 为该 coalesce 表达式 IS NOT NULL | 请求标识等值定位，兼容 inline 与 output 行 |
+| `timeline_events_inputs` | `(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence)`；WHERE 为该 json_extract 表达式 IS NOT NULL | 输入采纳、删除、应用和撤回关联 |
+| `timeline_events_users` | `(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence)`；WHERE 为该 json_type 表达式 IS NOT NULL | 用户输入存在性筛选与计数 |
 | `timeline_tool_use_starts` | `(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start'` | 按请求与调用 ID 查找跨页 `step/tool-use-start`，为不带 `call_event_id` 的结果取调用名；查询须使用相同表达式与条件 |
 | `timeline_events_context` | `(session_id, branch_id, sequence) WHERE context_render = 1 OR context_state = 1` | 只取渲染器或 checkpoint 折叠消费的行（v32；v31 的两个部分索引各取其一） |
 | `timeline_events_positions` | `(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'context/compaction-start', 'context/compaction')` | 策略定位：轮次开始与压缩边界（v31） |
 
-正向页的 `after` 与 `through` 须为批次边界。事件查询的起点是事件序号，落在合并行内部时从覆盖它的物理行开始读、再按序号过滤，且页按事件数截断、不与原子批次对齐（[插件契约 §5.4](../plugin-contract.md#54-the-event-query)），见 [读取边界](context-read-and-compaction.md#4-读取边界)。区间查询先按主键定位起点之前或等于起点的最后一条物理行，以其 `sequence` 为下界、区间终点为上界，按 `sequence` 读取；没有前驱行时以下界起点读取，并以 `last_sequence >= 起点` 排除不相交的前驱行。合并行覆盖页起点时完整解码，再按内部 sequence 过滤；反向页须纳入 `sequence < before <= last_sequence` 的跨界行，并停在原子批次边界。正向读取按 256 个逻辑序号分段，恢复校验按 64 条物理行分段，每段结束释放读连接；请求列表的遍历每加载至多 256 个节点也释放一次，下一次持有从中断处继续。单条物理行完整解码，允许超过通常页大小。流程测试用 `EXPLAIN QUERY PLAN` 核对正向读取主键的上下界；`timeline_acceptance paged-reads` 测量长历史读/恢复与并发提交延迟；`restore_cost` 在一次性库上经 mock 模型轮次增长 Session，按历史规模测量恢复耗时，并拆分目录校验、事件读取与 `branch/resume` 写入，同时报告每条事件的存储字节数（`cargo run --release --locked -p dim-app-server --example restore_cost -- [plain|tools|product] [1001,3001,10001] [7]`；`product` 使用产品上下文窗口与摘要压缩）；`single-append` 与 `single-partial` 测量单个请求的冷读与重开后第一次写入（`-- [single-append|single-partial] [2000,20000] [7] [chain|last]`）。`timeline_acceptance crashes` 与 `powerloss` 的中断批次含一个请求，恢复后校验行可读、序号连续、每个列表的节点俱在，并核对重启后写入与未中断写入的行逐字节一致。反向历史接口仍为独立协议草案。
+正向页的 `after` 与 `through` 须为批次边界。事件查询的起点是事件序号，落在合并行内部时从覆盖它的物理行开始读、再按序号过滤，且页按事件数截断、不与原子批次对齐（[插件契约 §5.4](../plugin-contract.md#54-the-event-query)），见 [读取边界](../context-read-and-compaction.md#4-读取边界)。区间查询先按主键定位起点之前或等于起点的最后一条物理行，以其 `sequence` 为下界、区间终点为上界，按 `sequence` 读取；没有前驱行时以下界起点读取，并以 `last_sequence >= 起点` 排除不相交的前驱行。合并行覆盖页起点时完整解码，再按内部 sequence 过滤；反向页须纳入 `sequence < before <= last_sequence` 的跨界行，并停在原子批次边界。正向读取按 256 个逻辑序号分段，每段结束释放读连接；恢复不扫描历史；请求列表的遍历每加载至多 256 个节点也释放一次，下一次持有从中断处继续。单条物理行完整解码，允许超过通常页大小。流程测试用 `EXPLAIN QUERY PLAN` 核对正向读取主键的上下界；`timeline_acceptance paged-reads` 测量长历史读/恢复与并发提交延迟；`restore_cost` 在一次性库上经 mock 模型轮次增长 Session，按历史规模测量恢复耗时，并拆分目录校验、事件读取与 `branch/resume` 写入，同时报告每条事件的存储字节数（`cargo run --release --locked -p dim-app-server --example restore_cost -- [plain|tools|product] [1001,3001,10001] [7]`；`product` 使用产品上下文窗口与摘要压缩）；`single-append` 与 `single-partial` 测量单个请求的冷读与重开后第一次写入（`-- [single-append|single-partial] [2000,20000] [7] [chain|last]`）。`timeline_acceptance crashes` 与 `powerloss` 的中断批次含一个请求，恢复后校验行可读、序号连续、每个列表的节点俱在，并核对重启后写入与未中断写入的行逐字节一致。反向历史接口仍为独立协议草案。
 
 `session_owners.session_id` 与 `agents.agent_id` 两个 ID 列的 SQL 可空缺口见表结构。永久关闭字段与旧记录回填尚未设计。
 
@@ -1124,3 +1175,205 @@ prevent SQLite from using the expression key because of column affinity. The
 compiled join uses `json_extract(r.body,'$.record.event.data.input_id') = +(e.event_id)`
 to retain the event ID value without its column affinity. Plan acceptance requires
 `<expr>=?` in `timeline_events_inputs`; merely naming that index is insufficient.
+
+## 提案：v40 补齐逻辑事件身份与恢复成员
+
+本轮目标格式确定为 v40；该方案已获确认，目标格式为 v40。它支持[身份与恢复操作查询](timeline-identity-reads.md)，不改变公开 query、事件或请求内容编码。不能把新表或新成员描述写入 v39 数据库；本文保留“提案”标题的既有链接锚点，不表示还需选择格式。
+
+### 输出身份定位
+
+普通事件继续使用 timeline_events_by_id。新增表只覆盖合并输出的逻辑事件：
+
+```sql
+CREATE TABLE timeline_output_ids (
+  session_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  physical_sequence INTEGER NOT NULL CHECK(physical_sequence > 0),
+  logical_sequence INTEGER NOT NULL CHECK(logical_sequence >= physical_sequence),
+  PRIMARY KEY(session_id,event_id)
+);
+CREATE INDEX timeline_output_ids_by_position ON timeline_output_ids
+  (session_id,branch_id,physical_sequence,logical_sequence,event_id);
+```
+
+每条 step/text 或 step/thinking 逻辑事件恰有一条 locator，指向包含它的物理行；包括旧 encoding=event 的单条输出，其物理与逻辑序号相同。其它类型不登记。按位置索引用于有界验证、裁剪复制和删除，不用于扫描整条历史来实现 ID 查询。
+
+普通身份索引与此表分别按 session_id、event_id 定位；合并位置并去重后读取物理行。逻辑身份必须仍属于本次分支范围，才可进入后续字段投影。一个 ID 不存在时，两次索引未命中即结束，不补扫输出类型。输出合并只新增片段 locator，原物理行起点不变。ID查询强制使用(session_id,event_id)主键，不让SQLite改选只匹配session/branch的覆盖索引。合并行内records连续，所选下标为logical_sequence−physical_sequence；已选单位置字段读取也直接取该元素，不展开同行其它片段。仍需读取并解析所在物理JSON行；合并在既有4KiB阈值停止追加，大单片段的成本仍按实际字节计。
+
+### 恢复成员描述
+
+在原 member 表中增加五种版本描述，身份、关联字段及消费者仅在[执行设计 §3](timeline-identity-reads.md#3-恢复操作的成员集合)定义。复用原 AVL 节点、根和关闭键，不添加第二套索引表。已有四种描述的身份、键编码和旧根不变。
+
+新描述的关联键统一使用 tuple-v1：先写 4 字节无符号大端字段数量，每个字段依次写 8 字节无符号大端长度和 QueryValue.scalar_key 的字节。单字段的新描述也使用此编码；旧描述保持旧编码。字段顺序由描述固定，缺失字段不生成关联键，不能写成 null。不能用字符串拼接或原始 JSON 文本比较。
+
+### 原子升级与校验
+
+v39 到 v40 在原准入事务内建表、回填并检查，再更新 marker；任何阶段失败全部回滚。旧程序按原机制拒读 v40。不得先写 marker，再把回填留到后台。
+
+输出 locator 回填只读取 step/text、step/thinking 的物理行，解析 encoding=output 的 records 或 encoding=event 的单条事件。缺失/无效身份、重复身份、错误逻辑位置均报错。新成员只回放涉及新描述的逻辑事实；不重建已有成员索引，不加载模型请求的 messages/tools/system。
+
+普通写入、输出合并、Session 创建/复制/删除都在事实原事务内更新对应结构。fork 内部切点按逻辑序号裁剪，不能照抄父行全部 locator。升级、写入失败和复制失败均不得遗留半套索引。
+
+升级和写入在事实事务内维护输出与locator对应；格式升级失败回滚。普通恢复不全查locator，所选数据沿实际读取边界解码；未读取的索引损坏不阻止目录恢复或真实事件导出。
+
+验收覆盖旧格式逐级升级、回滚、旧程序拒读、合并输出命中/未命中、批次内部 through、祖先切点、fork/复制/删除及成员终态乱序；性能与写入量按执行设计计入同一份累计结果。无证据前不承诺恢复耗时或写入收益。
+
+## 提案：状态读取索引与数组元素
+
+本节固定 v39 的数组编码，并由 v40 原样沿用；不能把它加入已提交的 v38。基础 member 结构沿用本文件开头的 v37 决定，不重新建立第二套成员树。查询使用既有 Fields 数字下标，不新增元素行语言。
+
+### 范围
+
+支持[未完成成员索引](timeline-member-index.md)、[数组元素读取](../timeline-array-rows.md)和[状态结果协议](../owner-state-indexed-reads.md)。Store 不解释 Goal、队列或 token；原事件格式和公开完整事件结果不变。
+
+### 沿用与新增结构
+
+| 逻辑对象 | 主键/索引与内容 |
+| --- | --- |
+| member_roots | 主键 session、branch、index_id、group_key、sequence；值为 root_id。支持最后版本与旧 through。 |
+| member_nodes | 沿用 v37 的不可变 AVL 节点及主键；引用位置和左右节点，不复制事件正文。 |
+| member_origins | session、branch、index_id、关联键、原位置的反向定位，含成员分组。 |
+| member_terminals | session、branch、index_id、关闭键的定位，保留最早终态位置。 |
+| timeline_array_elements | 主键 session_id、array_id、element_index；值为 content_ref。下标 0 另存正整数 array_length，其余行该列为 NULL；不另建根表。事件及 trace 各自在自己的 wire 中保存数组身份和长度。 |
+
+按提交位置读取最后结果复用既有 `timeline_events_by_kind(session_id, branch_id, kind, sequence, event_id)`，不新建 result_positions 表。schema 在选中结果后由 owner 检查；Usage 按源位置查询累计前驱使用下文v40标量索引。
+
+index_id 是规范化的、由 Store 明确支持的查询描述身份；不是插件名或可执行回调。group_key 编码已声明的标量分组，未分组也有固定编码。member 表和节点编码沿用 v37，不在本节重新选择。唯一数组表固定为：
+
+```sql
+CREATE TABLE timeline_array_elements (
+  session_id TEXT NOT NULL,
+  array_id TEXT NOT NULL,
+  element_index INTEGER NOT NULL CHECK(element_index >= 0),
+  content_ref TEXT NOT NULL,
+  array_length INTEGER,
+  PRIMARY KEY(session_id, array_id, element_index),
+  CHECK((element_index = 0 AND array_length IS NOT NULL AND array_length > 0)
+     OR (element_index > 0 AND array_length IS NULL))
+);
+```
+
+内容引用和数组身份在存储读取/校验边界验证，不新增另一套外键或根表；普通 query 不创建持久结构。
+
+普通成员描述覆盖 input、tool-call、exec 和 collaboration 的反关联，见成员索引合同。owner 的保存与恢复方式由各自设计决定，不统一保存source_through。Usage读取已保存数字之后的未完成源，Queue直接读当前输入，Prompt读有效引用和指定scope边界；不新增源确认成员树。Store不执行业务初始化。
+
+### 查询定位
+
+以下是 Store 内部定位步骤，不是插件可调用的 SQL 接口。数组表使用上节已固定的名称和主键。
+
+最后结果首先定位身份与版本，再投影所选字段：
+
+```sql
+SELECT sequence, event_id
+FROM timeline_events
+WHERE session_id = :session AND branch_id = :branch
+  AND kind = :result_kind AND sequence > :opening AND sequence <= :head
+ORDER BY sequence DESC
+LIMIT 1;
+```
+
+该查询利用既有按类型索引倒序定位；再按所选位置投影 schema、source_through 与 state。缺少或不支持的 schema 都交给 owner 报错，不在 SQL 中排除后冒用更旧结果。当前公开读取不提供任意历史版本；Usage的压缩累计前驱按v40的epoch/源位置范围定位，不能将结果提交位置视为源位置。
+
+新源的单类型定位使用相同索引和显式位置范围：
+
+```sql
+SELECT sequence, event_id
+FROM timeline_events
+WHERE session_id = :session AND branch_id = :branch AND kind = :source_kind
+  AND sequence > :source_through AND sequence <= :source_cutoff
+ORDER BY sequence
+LIMIT :page_size;
+```
+
+多个源类型分别定位后按原位置合并，附加属性只在这个范围求值；SQL 页游标继续约束位置下界。已完成前缀不进入候选。捕获的 publishing tail 只合并范围内、尚未落盘的源，不能有尾部就扫描历史。普通 pending 仍先按指定 through 取得成员根，再遍历当前成员。
+
+已知事件身份使用既有 `timeline_events_by_id(session_id, event_id)` 定位：
+
+```sql
+SELECT branch_id, sequence
+FROM timeline_events
+WHERE session_id = :session AND event_id IN (:id_1, :id_2);
+```
+
+这里的两个 ID 只是批量参数示例，本改造的 owner 每批至多提交 128 个，不为通用 query 增加新的 ID 数量限制。定位后先核对每个逻辑位置属于运行时传入的固定读取范围，再投影必要属性；不先读取正文再判断祖先可见性。未命中的 ID 不触发类型历史查询。合并输出中的逻辑事件沿其既有逻辑身份定位合同处理，不能把物理行起点当成所查询事件的位置。owner 以私有事实保存的数字/状态节点也使用同一身份路径，不新增节点专用读取接口；Store 内部的 pending 成员节点仍按成员索引合同读取。
+
+Prompt 已有引用转成成对的定位键，例如：
+
+```sql
+WITH wanted(array_id, element_index) AS (VALUES (:a_array, 2), (:b_array, 7))
+SELECT w.array_id, w.element_index, a.content_ref
+FROM wanted w
+LEFT JOIN timeline_array_elements a
+  ON a.session_id = :session AND a.array_id = w.array_id
+ AND a.element_index = w.element_index;
+```
+
+事件 ID 先通过既有身份索引取得逻辑位置及小体积的 wire 数组引用，并核对固定查询范围；之后只加载所选 content_ref。原下标在长度内但 locator 或内容缺失时返回损坏错误；长度外仍是原查询的缺失值。这条路径不展开未选中元素，也不读取整份原数组。所有辅助定位与内容加载都计入查询成本，不能仅统计最终 SELECT 的行数。
+
+### 数组编码
+
+首版对公开字段 data.changes 提供元素寻址，编码机制只处理 JSON 数组，不解释 Set/Revoke。序列化后不超过 4 KiB 的数组继续内联，避免小变更新增内容行；更大数组移出 event.data.changes。WireEvent 和 WireDraft 各增加可选 changes 引用，保存 id、length；无引用时省略该字段，旧 wire 仍可读。
+
+array_id 是原数组 JSON 序列化的内容哈希，使用 array 内容域。每个 array-element 内容节点保存 array、index、value，并对这个完整对象计算内容哈希；locator 表登记该节点引用。单元素读取检查节点哈希及其数组身份、原下标，不能把其它数组或位置的合法节点冒作本元素。完整读取还校验数量、顺序和原数组哈希。正文只在元素节点保存一次，不另存一份完整数组。
+
+数组身份代替来源 sequence 作为 locator 键，是为了同时覆盖 before trace 的不同草稿；这些草稿共用事件身份，却可能有不同的 changes。相同内容可共享同一个数组版本。分支位置和 property 由原事件 wire 解析，不再增加 trace 路径列或另一套草稿索引。插件仍只保存事件 ID 和原下标，不接触这些内部身份。
+
+完整事件读取按原顺序还原数组；Fields 的数字下标路径只取选中节点。新编码下的 Any、Fields、Count、关联和完整 Events 保持原事件行语义，不新增数组元素行。不能让 inline JSON 路径把引用标记看作公共值或缺失字段。
+
+节点的序列化、哈希、共享与损坏错误沿用内容存储的验证边界。读取某个数组引用时按主键核对下标0的长度；不在Session首开扫描所有数组的locator。所选正文在读取时解码和验哈希；导出完整重建。查询游标只含公开位置与元素身份，不含内容哈希。FTS 在写入时消费移出数组前的公开数据；升级保留已有倒排项，复制时使用原数组内容，不索引引用标记。
+
+已知下标的 Fields 先以事件 ID 定位数组引用，再按 locator 主键逐个取本次字段所需元素。相同事件 wire 在本 query 内复用，不展开未选元素。Count/Exists 仍统计或判断事件，不被重新解释为数组长度；不增加元素分页、分组或排序执行器。
+
+### 事务与升级
+
+```text
+接收原子事实批次
+ -> 编码数组元素/已有内容节点
+ -> 按逻辑顺序更新所有受影响成员根
+ -> 保存事件、节点和根，维护既有事件索引
+ -> 同事务提交，再执行原发布回调
+```
+
+从 v38 升级时逐批读取所需逻辑属性，保留已有普通成员与事件索引，建立新增数组编码；同一升级事务最后更新格式标记。更旧受支持格式先按既有升级合同到达 v38。owner 状态的业务初始化不由 Store 执行：缺结果的 owner 在其明确初始化流程产生第一份状态。升级失败整体回滚，报告既有升级进度，不在下次普通 query 补建。
+
+Session 复制保留逻辑位置、身份关系和原数组顺序，在目标范围重建索引；复制节点引用必须连同节点验证，不留下跨 Session 悬挂引用。删除 Session 同事务删除其根、关系和仅属于它的内容。旧版本程序按新格式拒读，不修改旧格式标记来伪装兼容。
+
+### 进入实现前的验收清单
+
+一次性 v38→新格式数据库验证升级、回滚、重复打开、只读导出、Session 复制/删除及各提交阶段崩溃。query 的祖先、批次内部 through、合并输出、数组与 publishing tail 做语义对照。固定 10 个成员或 1 个数组元素，扩大历史及原数组体积，记录真实扫描、节点加载、VM、SQLite/Rust 内存和 WAL。不能只通过表结构检查就宣布性能满足。
+
+
+## v40 状态字段定位补充
+
+本节是v40格式细化，与输出locator/五种恢复描述共同升级；不适用于已提交v39。查询匹配、真实范围和缺口见[状态索引设计](timeline-state-read-indexes.md)，业务判断归各owner。
+
+```sql
+CREATE INDEX timeline_events_turns ON timeline_events(
+  session_id,branch_id,kind,
+  coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')),sequence
+) WHERE coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')) IS NOT NULL;
+CREATE INDEX timeline_events_scopes ON timeline_events(
+  session_id,branch_id,kind,
+  json_extract(body,'$.record.event.data.scope.kind'),
+  json_extract(body,'$.record.event.data.scope.timeline'),
+  json_extract(body,'$.record.event.data.scope.id'),
+  json_extract(body,'$.record.event.data.status'),sequence
+) WHERE kind='context/scope';
+CREATE INDEX timeline_events_source_positions ON timeline_events(
+  session_id,branch_id,kind,
+  json_extract(body,'$.record.event.data.epoch'),
+  json_extract(body,'$.record.event.data.current.at.branch'),
+  json_extract(body,'$.record.event.data.current.at.sequence'),sequence
+) WHERE kind='context-usage/recovered';
+```
+
+三个索引只服务实际等值/范围查询，不索引Prompt body或token语义。最后numeric读取仍使用kind/提交位置索引，不在SQL中跳过未知schema。源位置前驱显式固定epoch和逻辑可见范围，额外visible_head筛选成本单独报告。
+
+原input成员的presence分组在v40同时登记handover缺失和存在两种互斥值；缺失组编码与旧根保持不变，存在组使用独立的input-handover/v1描述及presence=true分组，复用相同表/节点；这样可回填新组而不改写旧普通输入根。每个输入只进入一组，不复制为第三个全集；consumed/deleted按原input_id移除其所属组。Store matcher分别识别Not(Present(data.handover))与Present(data.handover)。
+
+v39→v40事务内建立表达式索引并从handover输入与其终态回填存在组，保留已有普通组与旧cutoff根。所有新结构成功、格式校验通过后才写v40 marker；失败回滚。正常写入/导入/复制在原事实事务中维护，删除沿Session原事务。不得为这些字段增加plugin SQL接口或替代业务原事实。
+
+### ContextUsage private numeric version
+
+ContextUsage v5 changes only its private extension data: optional legacy_result and explicit unknown legacy counting metadata. Existing v4 and v1–v3 results are interpreted by ContextUsage. Native v41 is unchanged by Usage's private version: SQL schema, event envelope, content encodings and the indexed epoch/current.at properties are unchanged; no native migration or Store-side token calculation is added. The owner rejects an unsupported numeric schema explicitly. See [ContextUsage §6](../plugins/ContextUsage.md#61-统计版本与旧数据).

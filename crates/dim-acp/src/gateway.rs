@@ -8,8 +8,9 @@ use agent_client_protocol::{Client, ConnectionTo, Error, UntypedMessage, schema:
 use dim_agent_types::TurnOutcome;
 use dim_client::window::Window;
 use dim_client::wire::{
-    Attached, Configuration, Event, EventContent, History, HistoryWindow, PendingDelegations,
-    PendingInputs, PendingQuestions, PendingTasks, Progress, TurnRead,
+    Attached, Configuration, DisplayNotice, DisplayPage, Event, EventContent, EventNotice, History,
+    HistoryWindow, PendingDelegations, PendingInputs, PendingQuestions, PendingTasks, Progress,
+    TurnRead,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -110,14 +111,6 @@ pub(crate) struct SessionInfo {
     title: Option<String>,
     updated_at: Option<u64>,
     title_revision: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventNotice {
-    session_id: String,
-    branch_id: String,
-    event: Event,
 }
 
 pub(crate) struct Prepared {
@@ -925,8 +918,17 @@ impl Gateway {
                                 })
                             }
                             Some("configuration_superseded") => async {
-                                let attached: Attached =
-                                    rpc.typed("session.attach", json!({"sessionId":id})).await?;
+                                let attached: Attached = rpc
+                                    .typed("session.attach", {
+                                        let mut params = json!({"sessionId":id});
+                                        if rpc.supports("session.history.display")
+                                            && rpc.supports("session.history.detail")
+                                        {
+                                            params["display"] = json!(true);
+                                        }
+                                        params
+                                    })
+                                    .await?;
                                 let model = attached.model.map(|model| Configuration {
                                     provider_id: model.provider_id,
                                     model_id: model.model_id,
@@ -1837,6 +1839,9 @@ impl Gateway {
         }
         match method.as_str() {
             "session.event" => self.event_notice(decode_native(params)?)?,
+            "session.display" => {
+                self.event_notice(decode_native::<DisplayNotice>(params)?.into())?
+            }
             "session.model.progress" => {
                 let progress: Progress = decode_native(params)?;
                 if progress.branch_id != "main" {
@@ -2462,7 +2467,15 @@ async fn read_history(
     } else {
         None
     };
-    let attached: Attached = rpc.typed("session.attach", json!({"sessionId":id})).await?;
+    let attached: Attached = rpc
+        .typed("session.attach", {
+            let mut params = json!({"sessionId":id});
+            if rpc.supports("session.history.display") && rpc.supports("session.history.detail") {
+                params["display"] = json!(true);
+            }
+            params
+        })
+        .await?;
     let model = attached.model.map(|model| Configuration {
         provider_id: model.provider_id,
         model_id: model.model_id,
@@ -2478,7 +2491,15 @@ async fn read_history(
             if let Some(through) = through {
                 args["through"] = json!(through);
             }
-            let page: History = rpc.typed("session.history", args).await?;
+            let page: History = if rpc.supports("session.history.display")
+                && rpc.supports("session.history.detail")
+            {
+                rpc.typed::<DisplayPage>("session.history.display", args)
+                    .await?
+                    .into()
+            } else {
+                rpc.typed("session.history", args).await?
+            };
             let next = page.next(after, through).map_err(|_| {
                 Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
             })?;
@@ -2498,9 +2519,16 @@ async fn read_history(
         }
         let mut window = Window::default();
         loop {
-            let page: HistoryWindow = rpc
-                .typed("session.history", window.params(id, "main"))
-                .await?;
+            let args = window.params(id, "main");
+            let page: HistoryWindow = if rpc.supports("session.history.display")
+                && rpc.supports("session.history.detail")
+            {
+                rpc.typed::<DisplayPage>("session.history.display", args)
+                    .await?
+                    .into()
+            } else {
+                rpc.typed("session.history", args).await?
+            };
             if window.push(page).map_err(|error| {
                 Error::internal_error()
                     .data(json!({"code":"invalid_history_cursor","detail":error.to_string()}))

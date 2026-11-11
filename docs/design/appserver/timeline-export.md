@@ -60,7 +60,7 @@ the reader always come from one build. `dimcode export` is the command name that
    │  exact schema check: the current format or one this build upgrades from
    ▼
  storage::export
-   │  validate_session(S): the branch directory, validated as a restore validates it
+   │  read_directory(S): parse Session and branch metadata, without scanning history
    │  read_range per branch, 1..=head, in pages: events with before traces
    ▼
  stdout: header, branch lines, event lines, end line   ──►  F or the CLI's stdout
@@ -160,7 +160,7 @@ the export to the Timeline.
 - With `--output PATH`, the CLI creates the file with create-new semantics and mode 0600 on Unix, as
   `dimcode session export` does, and never overwrites. Relative paths use the CLI's current directory. On success it
   prints `Exported Timeline (sensitive): PATH` to stderr. If the export fails, the CLI removes the file it created.
-- Without `--output`, the JSONL goes to stdout; the user chooses where it lands.
+- Without `--output`, the JSONL goes to stdout; a read failure can leave a partial stream. A complete export requires its terminal `end` record and successful process exit. There is no full-history preflight before the header.
 - The help text and the CLI README state that the export holds prompts, code and tool output, and that API keys are
   not read but may appear in the Timeline if a user or tool wrote them there.
 
@@ -181,7 +181,7 @@ an owner is in `daemon.log` as the D4 spans.
 | No database at the path | `No dimcode database at PATH`; exit 1 |
 | Unsupported format | `unsupported Timeline storage format at PATH; the database was not changed`; exit 1 |
 | No such Session | `Session S is not in PATH`; exit 1 |
-| The stored Timeline fails validation | The reader's error, as a restore would report it; exit 1 |
+| A selected event or required request body cannot be read | The reader's error; exit 1; no terminal end record |
 | A read-only directory without the `-wal` and `-shm` files | SQLite's error; copy the database to a writable directory; exit 1 |
 | Write failure (disk full, closed pipe) | Exit 1; a partial file is removed |
 | `--output` names an existing path | Refused before the export starts; exit 1 |
@@ -257,3 +257,7 @@ in the App Server's `transport_flow`, and `export_writes_the_timeline_without_st
 | D4 | One line per branch and per event, with an end line | One JSON document; no end line | Large Sessions stream without holding everything; the end line detects a truncated file |
 | D5 | Snake_case envelope | camelCase as in the protocol | The carried serializations (`create_at`, `branch_point`, `event_id`) are snake_case; one casing per file |
 | D6 | No Session configuration in the header | Configuration in the header | D3 limits the export to the Timeline; the model of each call is in its request |
+
+### Streaming completeness
+
+The single export traversal carries the next expected sequence and the current atomic batch end across pages. Every decoded record must have that sequence and agree with its batch; the batch cannot end before the record or beyond the directory head. Before writing `end`, each branch must reach its advertised head at a batch end. Missing middle/tail rows and inconsistent cross-page batch ends fail the export without `end`. This adds no preflight and no Session admission scan.

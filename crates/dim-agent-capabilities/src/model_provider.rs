@@ -480,11 +480,11 @@ impl ModelProvider {
             (Err(HostError::Cancelled(reason)), None)
         } else {
             let result = AssertUnwindSafe(async {
-                self.context
-                    .validate(call.request.clone(), cancel.clone())
-                    .await?;
                 crate::context_policy::check_cancel(&cancel)?;
                 let request = images::adapt(&call.request);
+                self.context
+                    .validate(&call.request_id, request.clone(), cancel.clone())
+                    .await?;
                 let resolved = match &self.resolver {
                     Some(resolver) => resolver.0.resolve(request.clone(), cancel.clone()).await?,
                     None => ResolvedModelConnection {

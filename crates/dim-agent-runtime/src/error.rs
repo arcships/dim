@@ -15,6 +15,10 @@ pub enum AgentError {
     BranchEnded(String),
     #[error("storage: {0}")]
     Storage(String),
+    /// A write was accepted, but its publication or required outcome was not
+    /// confirmed. Callers must reconcile committed state before retrying.
+    #[error("{0}")]
+    PublicationUnknown(String),
     #[error("initialization failed: {0}")]
     Build(String),
     #[error("operation cancelled: {0}")]
