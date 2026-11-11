@@ -468,6 +468,53 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::context_usage",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities",
+      "file": "crates/dim-agent-capabilities/src/context_usage.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "tokio::select",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::context_usage::legacy",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::context_usage",
+      "file": "crates/dim-agent-capabilities/src/context_usage/legacy.rs",
+      "unexpandedMacros": [
+        "matches",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::context_usage::numeric",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::context_usage",
+      "file": "crates/dim-agent-capabilities/src/context_usage/numeric.rs",
+      "unexpandedMacros": [
+        "matches",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::context_usage::sources",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::context_usage",
+      "file": "crates/dim-agent-capabilities/src/context_usage/sources.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::defaults",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -605,6 +652,16 @@
       "unexpandedMacros": [
         "format",
         "matches",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::history::settled_output",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::history",
+      "file": "crates/dim-agent-capabilities/src/history/settled_output.rs",
+      "unexpandedMacros": [
         "unreachable",
         "vec"
       ]
@@ -772,11 +829,11 @@
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/input_queue.rs",
       "unexpandedMacros": [
+        "format",
         "matches",
         "serde_json::json",
         "tokio::select",
         "tracing::warn",
-        "unreachable",
         "vec"
       ]
     },
@@ -785,6 +842,18 @@
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities::input_queue",
       "file": "crates/dim-agent-capabilities/src/input_queue/pending.rs",
+      "unexpandedMacros": [
+        "json",
+        "tokio::select",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::input_queue::recovery",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::input_queue",
+      "file": "crates/dim-agent-capabilities/src/input_queue/recovery.rs",
       "unexpandedMacros": [
         "json",
         "tokio::select",
@@ -919,6 +988,20 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::prompt::recovery",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::prompt",
+      "file": "crates/dim-agent-capabilities/src/prompt/recovery.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "matches",
+        "tokio::select",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::prompt_guide",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -969,10 +1052,7 @@
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/prompt_state.rs",
-      "unexpandedMacros": [
-        "unreachable",
-        "vec"
-      ]
+      "unexpandedMacros": []
     },
     {
       "id": "dim_agent_capabilities::prompt_suggestion",
@@ -3269,6 +3349,16 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_app_server::storage::arrays",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::storage",
+      "file": "crates/dim-app-server/src/storage/arrays.rs",
+      "unexpandedMacros": [
+        "format",
+        "params"
+      ]
+    },
+    {
       "id": "dim_app_server::storage::catalog",
       "crate": "dim_app_server",
       "parent": "dim_app_server::storage",
@@ -3344,6 +3434,36 @@
       ]
     },
     {
+      "id": "dim_app_server::storage::identities",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::storage",
+      "file": "crates/dim-app-server/src/storage/identities.rs",
+      "unexpandedMacros": [
+        "params"
+      ]
+    },
+    {
+      "id": "dim_app_server::storage::members",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::storage",
+      "file": "crates/dim-app-server/src/storage/members.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "params",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::storage::members::tree",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::storage::members",
+      "file": "crates/dim-app-server/src/storage/members/tree.rs",
+      "unexpandedMacros": [
+        "params"
+      ]
+    },
+    {
       "id": "dim_app_server::storage::metadata",
       "crate": "dim_app_server",
       "parent": "dim_app_server::storage",
@@ -3371,6 +3491,7 @@
         "format",
         "matches",
         "params",
+        "serde_json::json",
         "tracing::error",
         "unreachable",
         "vec"
@@ -3384,6 +3505,7 @@
       "unexpandedMacros": [
         "eprintln",
         "format",
+        "matches",
         "tokio::pin",
         "tracing::error",
         "vec"
@@ -3446,6 +3568,7 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/tree_protocol.rs",
       "unexpandedMacros": [
+        "matches",
         "serde_json::json"
       ]
     },
@@ -4540,6 +4663,17 @@
         "tokio::select",
         "unreachable",
         "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::session_host::compaction",
+      "crate": "dim_cli",
+      "parent": "dim_cli::session_host",
+      "file": "crates/dim-cli/src/session_host/compaction.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "matches"
       ]
     },
     {
@@ -6515,13 +6649,22 @@
       ]
     },
     {
+      "id": "dim_goal::branch::recovery",
+      "crate": "dim_goal",
+      "parent": "dim_goal::branch",
+      "file": "crates/dim-goal/src/branch/recovery.rs",
+      "unexpandedMacros": [
+        "json",
+        "matches",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_goal::branch::restore",
       "crate": "dim_goal",
       "parent": "dim_goal::branch",
       "file": "crates/dim-goal/src/branch/restore.rs",
       "unexpandedMacros": [
-        "format",
-        "matches",
         "tokio::select",
         "tracing::warn",
         "unreachable",
@@ -7320,6 +7463,8 @@
       "references": [
         "path Attached",
         "path Configuration",
+        "path DisplayNotice",
+        "path DisplayPage",
         "path Event",
         "path EventContent::Input",
         "path EventContent::InputConsumed",
@@ -7331,6 +7476,7 @@
         "path EventContent::ToolResult",
         "path EventContent::ToolUse",
         "path EventContent::TurnEnd",
+        "path EventNotice",
         "path History",
         "path HistoryWindow",
         "path PendingDelegations",
@@ -7341,8 +7487,11 @@
         "path TurnRead",
         "use dim_client::wire::Attached",
         "use dim_client::wire::Configuration",
+        "use dim_client::wire::DisplayNotice",
+        "use dim_client::wire::DisplayPage",
         "use dim_client::wire::Event",
         "use dim_client::wire::EventContent",
+        "use dim_client::wire::EventNotice",
         "use dim_client::wire::History",
         "use dim_client::wire::HistoryWindow",
         "use dim_client::wire::PendingDelegations",
@@ -7526,6 +7675,15 @@
     },
     {
       "from": "dim_acp::projection",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path markup::runtime_context",
+        "path markup::runtime_element",
+        "use dim_agent_types::markup"
+      ]
+    },
+    {
+      "from": "dim_acp::projection",
       "to": "dim_agent_types::model",
       "references": [
         "use dim_agent_types::CompactionTrigger"
@@ -7538,6 +7696,7 @@
         "path Event",
         "path EventContent::Compaction",
         "path EventContent::CompactionStart",
+        "path EventContent::CompactionSummary",
         "path EventContent::ExecEnded",
         "path EventContent::ExecStarted",
         "path EventContent::Input",
@@ -8594,6 +8753,14 @@
     },
     {
       "from": "dim_agent_capabilities",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "mod context_usage",
+        "path context_usage::ContextUsage"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::defaults",
       "references": [
         "mod defaults"
@@ -9136,10 +9303,10 @@
         "path CompactionStep",
         "path ContextPolicy",
         "path ContextPolicy::bind",
+        "path ContextPolicy::local_estimate",
         "path configured_request",
         "path crate::context_policy::PolicyContext::from_context",
         "path crate::context_policy::PolicyContext::from_stream",
-        "path crate::context_policy::estimate_events_in",
         "use crate::context_policy::CompactionStep",
         "use crate::context_policy::ContextPolicy",
         "use crate::context_policy::configured_request"
@@ -9818,6 +9985,9 @@
       "from": "dim_agent_capabilities::context_model",
       "to": "dim_agent_capabilities::host",
       "references": [
+        "path ContextContribution",
+        "path ContextContribution::default",
+        "path ContextCounter",
         "path ContextModel",
         "path HostError::classified",
         "path HostErrorKind::InvalidRequest",
@@ -9830,6 +10000,7 @@
       "to": "dim_agent_types::content",
       "references": [
         "path ContentBlock::Image",
+        "path Message",
         "path MessageContent::Parts",
         "path MessageContent::Text",
         "path MessagePart::Image",
@@ -9843,7 +10014,15 @@
       "references": [
         "path ModelCapabilitySnapshot",
         "path ModelConfig",
-        "path ModelRequest"
+        "path ModelRequest",
+        "path SystemPrompt"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_model",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path ToolDefinition"
       ]
     },
     {
@@ -9851,6 +10030,17 @@
       "to": "dim_agent_capabilities::context_model",
       "references": [
         "path crate::context_model::adopted_config"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_policy",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path Estimate",
+        "path crate::context_usage::ContextUsage",
+        "path crate::context_usage::PreparedEstimate",
+        "path crate::context_usage::PreparedEstimate::new",
+        "use crate::context_usage::Estimate"
       ]
     },
     {
@@ -9863,7 +10053,6 @@
         "path context_compaction",
         "path context_configuration",
         "path crate::history::StreamedContext",
-        "path crate::history::projected_message_refs",
         "path crate::history::projected_messages",
         "path crate::history::projected_messages_len",
         "path digest_message",
@@ -9911,13 +10100,6 @@
         "path Timeline",
         "use dim_agent_runtime::ContextHistory",
         "use dim_agent_runtime::Timeline"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::context_policy",
-      "to": "dim_agent_runtime::error",
-      "references": [
-        "path dim_agent_runtime::Result"
       ]
     },
     {
@@ -9998,12 +10180,9 @@
         "path EventKind::ContextCompactionStart",
         "path EventKind::InputConsumed",
         "path EventKind::InputMessage",
-        "path EventKind::ModelCall",
-        "path EventKind::ModelUsage",
         "path EventKind::ToolResult",
         "path InputBlock::Raw",
         "path InputMessageData",
-        "path ModelUsageData",
         "path ReplacementParts",
         "path events"
       ]
@@ -10019,9 +10198,7 @@
       "from": "dim_agent_capabilities::context_policy",
       "to": "dim_agent_types::model",
       "references": [
-        "path BaselineSource",
         "path BaselineSource::FullEstimate",
-        "path BaselineSource::ProviderBaseline",
         "path CompactionDiagnosticsRecord",
         "path CompactionReason::Auto",
         "path CompactionReason::Manual",
@@ -10065,16 +10242,17 @@
       "references": [
         "path ContextPolicy",
         "path ContextPolicy::bind",
-        "path EstimateEvent",
-        "path PolicyContext::from_stream",
-        "path configured_request",
+        "path crate::context_policy::PreparedRequest",
         "path crate::context_policy::check_cancel",
-        "path estimate_events",
-        "use crate::context_policy::ContextPolicy",
-        "use crate::context_policy::EstimateEvent",
-        "use crate::context_policy::PolicyContext",
-        "use crate::context_policy::configured_request",
-        "use crate::context_policy::estimate_events"
+        "use crate::context_policy::ContextPolicy"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_preparation",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path crate::context_usage::ContextUsage",
+        "path crate::context_usage::PreparedEstimate"
       ]
     },
     {
@@ -10082,11 +10260,7 @@
       "to": "dim_agent_capabilities::history",
       "references": [
         "path HistoryRenderer",
-        "path chain_by_id",
-        "path crate::history::FoldRead::timeline",
-        "path crate::history::project_batch",
-        "use crate::history::HistoryRenderer",
-        "use crate::history::chain_by_id"
+        "use crate::history::HistoryRenderer"
       ]
     },
     {
@@ -10102,8 +10276,7 @@
         "path HostError::classified",
         "path HostError::failed",
         "path HostErrorKind::InvalidRequest",
-        "path PrepareContextHost",
-        "path crate::host::ContextModel"
+        "path PrepareContextHost"
       ]
     },
     {
@@ -10123,7 +10296,6 @@
       "to": "dim_agent_capabilities::prompt_state",
       "references": [
         "path PromptSnapshot",
-        "path PromptSnapshot::read",
         "path scope_is_visible",
         "use crate::prompt_state::PromptSnapshot",
         "use crate::prompt_state::scope_is_visible"
@@ -10218,11 +10390,9 @@
         "path QueryOperand::Field",
         "path QueryOperand::Outer",
         "path QueryOperand::Value",
-        "path QueryOutput::Events",
         "path QueryOutput::Rows",
         "path QueryPage",
         "path QueryPick::Last",
-        "path QuerySelect::Events",
         "path QuerySelect::Fields",
         "path QuerySpec",
         "path QueryValue::Missing",
@@ -10263,20 +10433,7 @@
         "path ModelCallData",
         "path ModelOutputEndData",
         "path ModelOutputOutcome::Cancelled",
-        "path ModelOutputOutcome::Failed",
-        "path dim_agent_types::AgentEvent",
-        "path dim_agent_types::EventKind::InputConsumed",
-        "path dim_agent_types::EventKind::ModelCall",
-        "path dim_agent_types::EventKind::ModelUsage",
-        "path dim_agent_types::ModelUsageData",
-        "path events"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::context_preparation",
-      "to": "dim_agent_types::input",
-      "references": [
-        "path input"
+        "path ModelOutputOutcome::Failed"
       ]
     },
     {
@@ -10284,9 +10441,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path BaselineSource",
-        "path BaselineSource::ProviderBaseline",
         "path ModelRequest",
-        "path ModelRequest::new",
         "path SystemPrompt",
         "path SystemPrompt::Text",
         "path model"
@@ -10314,6 +10469,542 @@
       "to": "dim_agent_types::tool",
       "references": [
         "path ToolDefinition",
+        "path kind"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::context_preparation",
+      "references": [
+        "path ContextOpError",
+        "path ContextOpError::Model",
+        "path ContextOpError::NotConfigured",
+        "path ContextOpError::Read",
+        "path UsageRead",
+        "use crate::context_preparation::ContextOpError",
+        "use crate::context_preparation::ContextUsage"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::context_usage::legacy",
+      "references": [
+        "mod legacy"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::context_usage::numeric",
+      "references": [
+        "mod numeric",
+        "path Numeric",
+        "path Numeric::new",
+        "path NumericResult",
+        "path Summary",
+        "path Summary::default",
+        "path numeric",
+        "use numeric::Entry",
+        "use numeric::Numeric",
+        "use numeric::NumericResult",
+        "use numeric::Summary"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::context_usage::sources",
+      "references": [
+        "mod sources",
+        "path sources",
+        "path sources::RequestBase",
+        "path sources::optional"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path ContextModel",
+        "path ContextModelHost",
+        "path Contribution",
+        "path HostError",
+        "path HostError::failed",
+        "use crate::host::ContextContribution",
+        "use crate::host::ContextModel",
+        "use crate::host::ContextModelHost",
+        "use crate::host::HostError"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::tool_registry",
+      "references": [
+        "path ToolRegistry",
+        "use crate::tool_registry::ToolRegistry"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path BranchLifecycle",
+        "path dim_agent_runtime::BranchPhase::Closing",
+        "use dim_agent_runtime::BranchLifecycle"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::core::dispatcher",
+      "references": [
+        "path Dispatcher",
+        "use dim_agent_runtime::Dispatcher"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline",
+        "use dim_agent_runtime::Timeline"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::InvalidInput",
+        "path AgentError::aggregate",
+        "path AgentError::fault",
+        "path Result",
+        "use dim_agent_runtime::AgentError",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope",
+        "path TimelineQueryScope::Branch",
+        "use dim_agent_runtime::TimelineQueryScope"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryFilter::And",
+        "path QueryFilter::In",
+        "path QueryOperand::Field",
+        "path QueryOutput::Exists",
+        "path QueryPage",
+        "path QuerySelect::Exists",
+        "path QuerySelect::Fields",
+        "path QuerySpec",
+        "path TimelineQuery",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QueryPick",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QuerySpec",
+        "use dim_agent_runtime::QueryValue",
+        "use dim_agent_runtime::TimelineQuery"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path AgentEvent",
+        "path ContextCompactionData",
+        "path ContextCompactionResult::Completed",
+        "path ContextPrepareData",
+        "path EventDraft::new",
+        "path EventKind::ContextCompaction",
+        "path EventKind::ContextConfigured",
+        "path EventKind::ContextPrepare",
+        "path EventKind::Extension",
+        "path EventKind::ModelCall",
+        "path EventKind::ModelUsage",
+        "path ExtensionEvent::new"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path BaselineSource",
+        "path BaselineSource::FullEstimate",
+        "path BaselineSource::ProviderBaseline",
+        "path ModelRequest",
+        "path SystemPrompt",
+        "path model"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::prompt",
+      "references": [
+        "path PromptReference"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path kind"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path Key",
+        "path Recovered",
+        "path State",
+        "path fault",
+        "path super::SCHEMA",
+        "use super::Key",
+        "use super::Recovered",
+        "use super::State",
+        "use super::fault"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_capabilities::context_usage::numeric",
+      "references": [
+        "path NumericResult",
+        "path Summary",
+        "path Summary::default",
+        "use super::NumericResult",
+        "use super::Summary"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_capabilities::history",
+      "references": [
+        "path crate::history::chain_by_id"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline",
+        "use dim_agent_runtime::Timeline"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::legacy",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryOutput::Rows",
+        "path QuerySelect::Fields",
+        "path QueryValue::Value",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QueryValue"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path Calibration",
+        "path Compression",
+        "path Configuration",
+        "path Key",
+        "path LastEntry",
+        "path RESULT",
+        "path add",
+        "path fault",
+        "path request",
+        "path super::total",
+        "use super::Calibration",
+        "use super::Compression",
+        "use super::Configuration",
+        "use super::Key",
+        "use super::LastEntry",
+        "use super::RESULT",
+        "use super::add",
+        "use super::fault",
+        "use super::request"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_capabilities::context_usage::legacy",
+      "references": [
+        "path super::legacy::prefix"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path Contribution",
+        "path Contribution::default",
+        "use super::Contribution"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline",
+        "use dim_agent_runtime::Timeline"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope::Chain",
+        "use dim_agent_runtime::TimelineQueryDirection",
+        "use dim_agent_runtime::TimelineQueryScope"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::numeric",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryComparison::Le",
+        "path QueryComparison::Lt",
+        "path QueryFilter::And",
+        "path QueryFilter::Compare",
+        "path QueryOperand::Field",
+        "path QueryOperand::Value",
+        "path QueryOutput::Rows",
+        "path QueryValue::Value",
+        "use dim_agent_runtime::QueryComparison",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOrder",
+        "use dim_agent_runtime::QueryOrderKey",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QueryValue"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::context_model",
+      "references": [
+        "path crate::context_model::adopted_config"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path COVERED",
+        "path Calibration",
+        "path Compression",
+        "path Configuration",
+        "path Configuration::Ready",
+        "path Configuration::Unavailable",
+        "path Configuration::Unsupported",
+        "path ContextUsage",
+        "path CounterConfiguration",
+        "path Covered",
+        "path Key",
+        "path LastEntry",
+        "path Limits",
+        "path Machine",
+        "path RESULT",
+        "path Recovered",
+        "path SOURCES",
+        "path State",
+        "path add",
+        "path control_identity",
+        "path fault",
+        "path request",
+        "path request_identity",
+        "path total"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::context_usage::legacy",
+      "references": [
+        "path legacy::restore"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::context_usage::numeric",
+      "references": [
+        "path Entry",
+        "path Numeric::new",
+        "path NumericResult",
+        "path Summary",
+        "path Summary::default",
+        "path numeric"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::history",
+      "references": [
+        "path chain_by_id",
+        "path crate::history::FoldRead::timeline",
+        "path crate::history::project_batch",
+        "path render_input",
+        "path tool_result_message",
+        "use crate::history::chain_by_id",
+        "use crate::history::render_input",
+        "use crate::history::tool_result_message"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::history::settled_output",
+      "references": [
+        "path settled_request_output",
+        "use crate::history::settled_request_output"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path Contribution",
+        "path Contribution::default",
+        "path ModelSettings",
+        "path crate::host::ContextCounter",
+        "use crate::host::ModelSettings"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope::Branch",
+        "path TimelineQueryScope::Chain",
+        "use dim_agent_runtime::TimelineQueryDirection"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryFilter::And",
+        "path QueryOutput::Exists",
+        "path QueryOutput::Rows",
+        "path QueryPick::Last",
+        "path QuerySelect::Exists",
+        "path QuerySelect::Fields",
+        "path QueryValue",
+        "path QueryValue::Elements",
+        "path QueryValue::Missing",
+        "path QueryValue::Value",
+        "path TimelineQuery",
+        "use dim_agent_runtime::QueryOrder",
+        "use dim_agent_runtime::QueryOrderKey"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path Message",
+        "path ToolContent",
+        "path content"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path InputMessageData"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelRequest",
+        "path ModelRequest::new",
+        "path Usage",
+        "path model"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::prompt",
+      "references": [
+        "path ContextBaselineEntry",
+        "path ModelConfiguration",
+        "path prompt"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage::sources",
+      "to": "dim_agent_types::tool",
+      "references": [
         "path kind"
       ]
     },
@@ -10370,6 +11061,13 @@
       "references": [
         "path ContextPreparationPlugin::new",
         "use crate::context_preparation::ContextPreparationPlugin"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::defaults",
+      "to": "dim_agent_capabilities::context_usage",
+      "references": [
+        "path crate::context_usage::ContextUsagePlugin::new"
       ]
     },
     {
@@ -11149,6 +11847,14 @@
     },
     {
       "from": "dim_agent_capabilities::history",
+      "to": "dim_agent_capabilities::history::settled_output",
+      "references": [
+        "mod settled_output",
+        "use settled_output::settled_request_output"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history",
       "to": "dim_agent_capabilities::prompt_state",
       "references": [
         "path PromptSnapshot::from_checkpoint",
@@ -11262,7 +11968,8 @@
         "path MessagePart::ToolUse",
         "path Role::Assistant",
         "path Role::ToolResult",
-        "path Role::User"
+        "path Role::User",
+        "path ToolContent"
       ]
     },
     {
@@ -11316,6 +12023,92 @@
         "path ToolEffect",
         "path ToolEffect::CommandRun",
         "path ToolEffect::FileWritten",
+        "path kind"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_capabilities::history",
+      "references": [
+        "path boundary",
+        "path chain_by_id",
+        "path fold_output_parts",
+        "path segments",
+        "path settled_output_message"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path Timeline"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError::fault",
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope::Chain"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryFilter",
+        "path QueryFilter::And",
+        "path QueryFilter::Compare",
+        "path QueryFilter::In",
+        "path QueryOperand::Field",
+        "path QueryOperand::Value",
+        "path QueryOutput::Events",
+        "path QueryOutput::Rows",
+        "path QueryPage",
+        "path QueryPick::Last",
+        "path QuerySelect::Events",
+        "path QuerySelect::Fields",
+        "path QuerySpec",
+        "path QueryValue::Value",
+        "path TimelineQuery",
+        "path dim_agent_runtime::QueryComparison::Lt",
+        "use dim_agent_runtime::QueryPick"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path Message",
+        "path content"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history::settled_output",
+      "to": "dim_agent_types::tool",
+      "references": [
         "path kind"
       ]
     },
@@ -12284,7 +13077,15 @@
       "to": "dim_agent_capabilities::input_queue::pending",
       "references": [
         "mod pending",
+        "path pending",
         "path pending::read"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue",
+      "to": "dim_agent_capabilities::input_queue::recovery",
+      "references": [
+        "mod recovery"
       ]
     },
     {
@@ -12352,7 +13153,7 @@
       "to": "dim_agent_runtime::error",
       "references": [
         "path AgentError::InvalidInput",
-        "path AgentError::fault",
+        "path AgentError::PublicationUnknown",
         "path Result",
         "use dim_agent_runtime::AgentError",
         "use dim_agent_runtime::Result"
@@ -12385,38 +13186,6 @@
     },
     {
       "from": "dim_agent_capabilities::input_queue",
-      "to": "dim_agent_runtime::timeline_query",
-      "references": [
-        "path TimelineQueryScope::Branch",
-        "use dim_agent_runtime::TimelineQueryScope"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::input_queue",
-      "to": "dim_agent_runtime::timeline_query::properties",
-      "references": [
-        "path QueryFilter::In",
-        "path QueryOperand::Field",
-        "path QueryOutput::Rows",
-        "path QueryPage",
-        "path QuerySelect::Fields",
-        "path QuerySpec",
-        "path QueryValue::Elements",
-        "path QueryValue::Missing",
-        "path QueryValue::Value",
-        "path TimelineQuery",
-        "use dim_agent_runtime::QueryFilter",
-        "use dim_agent_runtime::QueryOperand",
-        "use dim_agent_runtime::QueryOutput",
-        "use dim_agent_runtime::QueryPage",
-        "use dim_agent_runtime::QuerySelect",
-        "use dim_agent_runtime::QuerySpec",
-        "use dim_agent_runtime::QueryValue",
-        "use dim_agent_runtime::TimelineQuery"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::input_queue",
       "to": "dim_agent_types::content",
       "references": [
         "path ContentBlock::Text"
@@ -12427,16 +13196,12 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
-        "path EventKind::InputApplied",
         "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
         "path EventKind::InputMessage",
         "path EventKind::InputWithdraw",
         "path EventKind::StopInterrupt",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
-        "path InputAppliedData",
-        "path InputDeletedData",
         "path InputMessageData",
         "path InputMode",
         "path InputMode::Append",
@@ -12462,13 +13227,6 @@
       ]
     },
     {
-      "from": "dim_agent_capabilities::input_queue",
-      "to": "dim_agent_types::tool",
-      "references": [
-        "path kind"
-      ]
-    },
-    {
       "from": "dim_agent_capabilities::input_queue::pending",
       "to": "dim_agent_capabilities::methods",
       "references": [
@@ -12487,7 +13245,8 @@
       "from": "dim_agent_capabilities::input_queue::pending",
       "to": "dim_agent_runtime::timeline_query",
       "references": [
-        "path TimelineQueryScope::Branch"
+        "path TimelineQueryScope::Branch",
+        "use dim_agent_runtime::TimelineQueryScope"
       ]
     },
     {
@@ -12503,7 +13262,15 @@
         "path QueryValue::Value",
         "path TimelineQuery",
         "use dim_agent_runtime::QueryComparison",
-        "use dim_agent_runtime::QueryCursor"
+        "use dim_agent_runtime::QueryCursor",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QuerySpec",
+        "use dim_agent_runtime::QueryValue",
+        "use dim_agent_runtime::TimelineQuery"
       ]
     },
     {
@@ -12521,6 +13288,102 @@
       "references": [
         "path PendingInput",
         "path input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_capabilities::input_queue",
+      "references": [
+        "path Decision",
+        "path Decision::Apply",
+        "path Decision::Delete",
+        "path Entry",
+        "path EntryKind::Handover",
+        "path EntryKind::Input",
+        "path InputQueue",
+        "path QueueState::default"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_capabilities::methods",
+      "references": [
+        "path reply"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_runtime::assembly",
+      "references": [
+        "path dim_agent_runtime::opening_advanced"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError::fault",
+        "path Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope::Branch",
+        "use dim_agent_runtime::TimelineQueryScope"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryFilter",
+        "path QueryFilter::And",
+        "path QueryFilter::In",
+        "path QueryFilter::Present",
+        "path QueryOperand::Field",
+        "path QueryOutput::Exists",
+        "path QueryOutput::Rows",
+        "path QueryPage",
+        "path QueryPick::Last",
+        "path QuerySelect::Exists",
+        "path QuerySelect::Fields",
+        "path QuerySpec",
+        "path QueryValue",
+        "path QueryValue::Missing",
+        "path QueryValue::Value",
+        "path TimelineQuery",
+        "use dim_agent_runtime::QueryComparison",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QueryPick",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QuerySpec",
+        "use dim_agent_runtime::QueryValue",
+        "use dim_agent_runtime::TimelineQuery"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path EventKind::InputApplied",
+        "path EventKind::InputDeleted",
+        "path InputAppliedData",
+        "path InputDeletedData",
+        "path InputMode::Append",
+        "path InputMode::Queue",
+        "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path kind"
       ]
     },
     {
@@ -12577,6 +13440,7 @@
         "path AgentError::Build",
         "path AgentError::Closed",
         "path AgentError::InvalidInput",
+        "path AgentError::PublicationUnknown",
         "path AgentError::Reloading",
         "path AgentError::UnknownBranch",
         "use dim_agent_runtime::AgentError"
@@ -12852,8 +13716,7 @@
         "path MessagePart::Image",
         "path MessagePart::Text",
         "path MessagePart::ToolResult",
-        "path ToolContent::Blocks",
-        "path content"
+        "path ToolContent::Blocks"
       ]
     },
     {
@@ -13272,14 +14135,6 @@
     },
     {
       "from": "dim_agent_capabilities::prompt",
-      "to": "dim_agent_capabilities::branch_input",
-      "references": [
-        "path append_own",
-        "use crate::branch_input::append_own"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::prompt",
       "to": "dim_agent_capabilities::context_block",
       "references": [
         "path context_block::element",
@@ -13311,6 +14166,18 @@
     },
     {
       "from": "dim_agent_capabilities::prompt",
+      "to": "dim_agent_capabilities::prompt::recovery",
+      "references": [
+        "mod recovery",
+        "path recovery::KEY",
+        "path recovery::Projection",
+        "path recovery::Projection::default",
+        "path recovery::Projection::restore",
+        "path recovery::SCHEMA"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt",
       "to": "dim_agent_capabilities::prompt_guide",
       "references": [
         "path GuideEntries",
@@ -13323,7 +14190,6 @@
       "references": [
         "path PromptSnapshot",
         "path PromptSnapshot::default",
-        "path PromptSnapshot::read",
         "use crate::prompt_state::PromptSnapshot"
       ]
     },
@@ -13420,13 +14286,13 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
+        "path EventKind::BranchStart",
+        "path EventKind::ContextScope",
+        "path EventKind::Extension",
         "path EventKind::PromptConfigureRequest",
         "path EventKind::PromptConfigureResult",
-        "path EventKind::StopInterrupt",
+        "path EventKind::TurnEnd",
         "path InputBlock",
-        "path InputMessageData",
-        "path InputMode::Append",
-        "path InterruptScope::Branch",
         "path PromptConfigureControlData",
         "path events"
       ]
@@ -13442,7 +14308,9 @@
       "from": "dim_agent_capabilities::prompt",
       "to": "dim_agent_types::prompt",
       "references": [
+        "path ContextScopeStatus::Ended",
         "path ModelSelection",
+        "path PromptChange",
         "path PromptChange::Revoke",
         "path PromptChange::Set",
         "path PromptDelivery::State",
@@ -13453,6 +14321,171 @@
         "path PromptScope::Task",
         "path PromptScope::Turn",
         "path prompt"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_capabilities::prompt",
+      "references": [
+        "path Key",
+        "path Prompt",
+        "path context_input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_capabilities::prompt_state",
+      "references": [
+        "path PromptSnapshot"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::assembly",
+      "references": [
+        "path row",
+        "path rows"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::branch",
+      "references": [
+        "path branch"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path BranchPhase::Active"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::InvalidInput",
+        "path AgentError::fault",
+        "path Result",
+        "path error"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::memory_timeline_store::query",
+      "references": [
+        "path query"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::scope",
+      "references": [
+        "path scope"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::state",
+      "references": [
+        "path state"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryScope",
+        "path TimelineQueryScope::Branch",
+        "path TimelineQueryScope::Chain",
+        "use dim_agent_runtime::TimelineQueryScope"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryFilter",
+        "path QueryFilter::And",
+        "path QueryFilter::Compare",
+        "path QueryFilter::In",
+        "path QueryOperand::Field",
+        "path QueryOperand::Value",
+        "path QueryOutput::Rows",
+        "path QueryPage",
+        "path QueryPick::Last",
+        "path QuerySelect::Fields",
+        "path QuerySpec",
+        "path QueryValue",
+        "path QueryValue::Value",
+        "path TimelineQuery",
+        "use dim_agent_runtime::QueryComparison",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOutput",
+        "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QueryPick",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QuerySpec",
+        "use dim_agent_runtime::QueryValue",
+        "use dim_agent_runtime::TimelineQuery"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path EventDraft",
+        "path EventKind",
+        "path EventKind::BranchResume",
+        "path EventKind::BranchStart",
+        "path EventKind::ContextConfigured",
+        "path EventKind::ContextScope",
+        "path EventKind::Extension",
+        "path EventKind::InputMessage",
+        "path EventKind::PromptChanged",
+        "path EventKind::TurnEnd",
+        "path EventKind::TurnStart",
+        "path ExtensionEvent::new",
+        "path InputBlock",
+        "path InputMessageData",
+        "path InputMode::Append",
+        "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_types::prompt",
+      "references": [
+        "path ContextConfiguredData",
+        "path ContextScopeStatus::Ended",
+        "path ContextScopeStatus::Started",
+        "path PromptChange::Revoke",
+        "path PromptChange::Set",
+        "path PromptDelivery::System",
+        "path PromptEntry",
+        "path PromptReference",
+        "path PromptScope",
+        "path PromptScope::Branch",
+        "path PromptScope::Task",
+        "path PromptScope::Turn"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path kind"
       ]
     },
     {
@@ -13730,48 +14763,7 @@
       "from": "dim_agent_capabilities::prompt_state",
       "to": "dim_agent_runtime::core::timeline",
       "references": [
-        "path Timeline",
-        "path dim_agent_runtime::ContextHistory",
-        "use dim_agent_runtime::Timeline"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::prompt_state",
-      "to": "dim_agent_runtime::error",
-      "references": [
-        "path dim_agent_runtime::Result"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::prompt_state",
-      "to": "dim_agent_runtime::timeline_query",
-      "references": [
-        "path TimelineQueryScope::Chain",
-        "use dim_agent_runtime::TimelineQueryScope"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::prompt_state",
-      "to": "dim_agent_runtime::timeline_query::properties",
-      "references": [
-        "path QueryFilter::In",
-        "path QueryOperand::Field",
-        "path QueryOutput::Rows",
-        "path QueryPage",
-        "path QueryPick::Last",
-        "path QuerySelect::Fields",
-        "path QuerySpec",
-        "path QueryValue::Value",
-        "path TimelineQuery",
-        "use dim_agent_runtime::QueryFilter",
-        "use dim_agent_runtime::QueryOperand",
-        "use dim_agent_runtime::QueryOutput",
-        "use dim_agent_runtime::QueryPage",
-        "use dim_agent_runtime::QueryPick",
-        "use dim_agent_runtime::QuerySelect",
-        "use dim_agent_runtime::QuerySpec",
-        "use dim_agent_runtime::QueryValue",
-        "use dim_agent_runtime::TimelineQuery"
+        "path dim_agent_runtime::ContextHistory"
       ]
     },
     {
@@ -13787,6 +14779,7 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
+        "path EventKind",
         "path EventKind::BranchStart",
         "path EventKind::ContextConfigured",
         "path EventKind::ContextScope",
@@ -13800,8 +14793,6 @@
       "from": "dim_agent_capabilities::prompt_state",
       "to": "dim_agent_types::prompt",
       "references": [
-        "path ContextConfiguredData",
-        "path ContextScopeStatus",
         "path ContextScopeStatus::Ended",
         "path ContextScopeStatus::Started",
         "path ModelConfiguration",
@@ -20968,7 +21959,8 @@
       "to": "dim_agent_types::markup",
       "references": [
         "use super::escaped",
-        "use super::runtime_context"
+        "use super::runtime_context",
+        "use super::runtime_element"
       ]
     },
     {
@@ -20992,6 +21984,13 @@
       "to": "dim_agent_types::content",
       "references": [
         "path Message"
+      ]
+    },
+    {
+      "from": "dim_agent_types::model",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path ContextCompactionData"
       ]
     },
     {
@@ -22266,6 +23265,7 @@
         "path AgentError::BranchEnded",
         "path AgentError::Closed",
         "path AgentError::InvalidInput",
+        "path AgentError::PublicationUnknown",
         "path AgentError::Reloading",
         "path AgentError::UnknownBranch",
         "use dim_agent_runtime::AgentError"
@@ -24264,6 +25264,8 @@
         "path Call::Fork",
         "path Call::Hello",
         "path Call::History",
+        "path Call::HistoryDetail",
+        "path Call::HistoryDisplay",
         "path Call::Idle",
         "path Call::InputLookup",
         "path Call::Keys",
@@ -24479,6 +25481,7 @@
         "path RpcError::app",
         "path RpcError::closed",
         "path RpcError::from",
+        "path RpcError::invalid",
         "path RpcError::wire",
         "path params"
       ]
@@ -24628,6 +25631,8 @@
         "path wire::ApprovalRequest",
         "path wire::ApprovalResolved",
         "path wire::BranchState::new",
+        "path wire::CompactionItem::new",
+        "path wire::DisplayNotice",
         "path wire::EventNotice",
         "path wire::ForwardedNotice",
         "path wire::ModelProgressNotice::new",
@@ -24719,6 +25724,7 @@
       "from": "dim_app_server::connection::tree",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryFilter",
         "path QueryFilter::And",
         "path QueryFilter::In",
         "path QueryOperand::Field",
@@ -24730,6 +25736,7 @@
         "path QuerySelect::Events",
         "path QuerySelect::Fields",
         "path QuerySpec",
+        "path QueryValue::Missing",
         "path QueryValue::Value",
         "path TimelineQuery",
         "path dim_agent_runtime::TimelineQueryReply",
@@ -24773,6 +25780,14 @@
     },
     {
       "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path dim_agent_types::CompactionDetail",
+        "path dim_agent_types::CompactionSummary"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
       "to": "dim_app_server::connection",
       "references": [
         "path Connection",
@@ -24797,6 +25812,7 @@
         "path BranchRequest",
         "path Branches",
         "path History",
+        "path HistoryDetail",
         "path InputLookup",
         "path InputLookupResult::Accepted",
         "path InputLookupResult::Unknown",
@@ -24806,6 +25822,8 @@
         "path Reply::BranchGet",
         "path Reply::Branches",
         "path Reply::History",
+        "path Reply::HistoryDetail",
+        "path Reply::HistoryDisplay",
         "path Reply::InputLookup",
         "path Reply::Keys",
         "path Reply::Submit",
@@ -24827,11 +25845,13 @@
       "references": [
         "path wire::BranchDirectoryView::from",
         "path wire::BranchesResult",
+        "path wire::CompactionItem",
         "path wire::CreateResult",
         "path wire::HistoryResult",
         "path wire::KeyEntry",
         "path wire::KeysResult",
         "path wire::ProductEvent::new",
+        "path wire::ProductEvent::query_filter",
         "use crate::tree_protocol"
       ]
     },
@@ -27930,6 +28950,7 @@
         "path crate::tree_protocol::BranchDirectoryView",
         "path crate::tree_protocol::BranchesResult",
         "path crate::tree_protocol::CreateResult",
+        "path crate::tree_protocol::DisplayResult",
         "path crate::tree_protocol::HistoryResult",
         "path crate::tree_protocol::KeysResult"
       ]
@@ -30123,6 +31144,13 @@
     },
     {
       "from": "dim_app_server::storage",
+      "to": "dim_app_server::storage::arrays",
+      "references": [
+        "mod arrays"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage",
       "to": "dim_app_server::storage::catalog",
       "references": [
         "mod catalog",
@@ -30152,6 +31180,22 @@
       "to": "dim_app_server::storage::files",
       "references": [
         "mod files"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage",
+      "to": "dim_app_server::storage::identities",
+      "references": [
+        "mod identities",
+        "use identities::initialize_session_output_id_index"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage",
+      "to": "dim_app_server::storage::members",
+      "references": [
+        "mod members",
+        "use members::initialize_session_member_index"
       ]
     },
     {
@@ -30213,6 +31257,37 @@
         "use timeline::SqliteTimelineStore",
         "use timeline::TurnWindow",
         "use timeline::WorktreeUsage"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::arrays",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::arrays",
+      "to": "dim_app_server::storage::codec",
+      "references": [
+        "path hash",
+        "use super::codec::hash"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::arrays",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path error",
+        "use super::sqlite::error"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::arrays",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path super::timeline::Row"
       ]
     },
     {
@@ -30461,6 +31536,19 @@
     },
     {
       "from": "dim_app_server::storage::codec",
+      "to": "dim_app_server::storage::arrays",
+      "references": [
+        "path arrays::Element",
+        "path arrays::Reference",
+        "path arrays::check",
+        "path arrays::content_ref",
+        "path arrays::encode",
+        "path arrays::fingerprint",
+        "use super::arrays"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::codec",
       "to": "dim_app_server::storage::sqlite",
       "references": [
         "path error",
@@ -30534,10 +31622,8 @@
       "references": [
         "path read_directory",
         "path read_range",
-        "path validate_session",
         "use super::timeline::read_directory",
-        "use super::timeline::read_range",
-        "use super::timeline::validate_session"
+        "use super::timeline::read_range"
       ]
     },
     {
@@ -30695,6 +31781,165 @@
       ]
     },
     {
+      "from": "dim_app_server::storage::identities",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::identities",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path error",
+        "use super::sqlite::error"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::identities",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path super::timeline::Row",
+        "path super::timeline::read_sequence"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_runtime::event_property",
+      "references": [
+        "path event_property",
+        "path project_property",
+        "use dim_agent_runtime::event_property",
+        "use dim_agent_runtime::project_property"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_runtime::timeline_query",
+      "references": [
+        "path TimelineQueryDirection::Descending",
+        "use dim_agent_runtime::TimelineQueryDirection"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryFilter",
+        "path QueryFilter::And",
+        "path QueryFilter::Any",
+        "path QueryFilter::Compare",
+        "path QueryFilter::Exists",
+        "path QueryFilter::In",
+        "path QueryFilter::Not",
+        "path QueryFilter::Or",
+        "path QueryFilter::Present",
+        "path QueryOperand::Element",
+        "path QueryOperand::Field",
+        "path QueryOperand::Outer",
+        "path QueryOperand::Value",
+        "path QueryOrderKey::Position",
+        "path QuerySpec",
+        "path QueryValue",
+        "path QueryValue::Elements",
+        "path QueryValue::Missing",
+        "path QueryValue::Value",
+        "path dim_agent_runtime::QueryPick::First",
+        "path dim_agent_runtime::QueryPick::Last",
+        "use dim_agent_runtime::QueryComparison",
+        "use dim_agent_runtime::QueryFilter",
+        "use dim_agent_runtime::QueryOperand",
+        "use dim_agent_runtime::QueryOrderKey",
+        "use dim_agent_runtime::QuerySelect",
+        "use dim_agent_runtime::QuerySpec",
+        "use dim_agent_runtime::QueryValue"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path TimelineReadScope",
+        "use dim_agent_runtime::TimelineReadScope"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path AgentEvent",
+        "use dim_agent_types::AgentEvent"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_app_server::storage::members::tree",
+      "references": [
+        "mod tree",
+        "path Tree",
+        "path tree",
+        "use tree::Tree"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_app_server::storage::query",
+      "references": [
+        "path super::query::Statistics",
+        "path super::query::record_statement"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path error",
+        "use super::sqlite::error"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path super::timeline::Row::Event"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members::tree",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path Result",
+        "use dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members::tree",
+      "to": "dim_app_server::storage::query",
+      "references": [
+        "path super::super::query::Statistics",
+        "path super::super::query::cancelled",
+        "path super::super::query::record_statement"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::members::tree",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path error",
+        "use super::super::sqlite::error"
+      ]
+    },
+    {
       "from": "dim_app_server::storage::metadata",
       "to": "dim_agent_capabilities::session_broadcast",
       "references": [
@@ -30837,6 +32082,7 @@
       "to": "dim_agent_runtime::timeline_store",
       "references": [
         "path TimelineReadScope",
+        "path dim_agent_runtime::TimelineReadSegment",
         "use dim_agent_runtime::TimelineReadScope"
       ]
     },
@@ -30856,6 +32102,13 @@
         "path WireEvent",
         "use super::codec::Reader",
         "use super::codec::WireEvent"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::query",
+      "to": "dim_app_server::storage::members",
+      "references": [
+        "path super::members::candidates"
       ]
     },
     {
@@ -30904,9 +32157,34 @@
     },
     {
       "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::arrays",
+      "references": [
+        "path super::arrays::SCHEMA",
+        "path super::arrays::backfill"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
       "to": "dim_app_server::storage::catalog",
       "references": [
         "path super::catalog::backfill"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::identities",
+      "references": [
+        "path super::identities::SCHEMA",
+        "path super::identities::backfill"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::members",
+      "references": [
+        "path super::members::SCHEMA",
+        "path super::members::backfill",
+        "path super::members::backfill_v40"
       ]
     },
     {
@@ -30921,7 +32199,8 @@
       "to": "dim_app_server::storage::text",
       "references": [
         "path super::text::SCHEMA",
-        "path super::text::backfill"
+        "path super::text::backfill",
+        "path super::text::restrict_coverage"
       ]
     },
     {
@@ -30934,10 +32213,31 @@
     },
     {
       "from": "dim_app_server::storage::text",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path dim_agent_runtime::QueryValue::Value"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::text",
       "to": "dim_agent_runtime::timeline_store",
       "references": [
         "path TimelineReadScope",
         "use dim_agent_runtime::TimelineReadScope"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::text",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path dim_agent_types::RESERVED_DOMAINS"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::text",
+      "to": "dim_app_server::storage::codec",
+      "references": [
+        "path super::codec::Reader::new"
       ]
     },
     {
@@ -30952,6 +32252,9 @@
       "from": "dim_app_server::storage::text",
       "to": "dim_app_server::storage::timeline",
       "references": [
+        "path super::timeline::Row",
+        "path super::timeline::Row::Event",
+        "path super::timeline::Row::Output",
         "path super::timeline::read_sequence"
       ]
     },
@@ -31070,7 +32373,6 @@
         "path BranchCreateAt::Create",
         "path BranchCreateAt::Sequence",
         "path EventKind::BranchCreate",
-        "path EventKind::ContextCompaction",
         "path EventKind::InputMessage",
         "path EventKind::SessionForked",
         "path EventKind::Text",
@@ -31079,7 +32381,6 @@
         "path dim_agent_types::InputMessageData::text",
         "use dim_agent_types::AgentEvent",
         "use dim_agent_types::BranchCreateAt",
-        "use dim_agent_types::ContextCompactionResult",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::SessionForkedData"
       ]
@@ -31120,6 +32421,14 @@
     },
     {
       "from": "dim_app_server::storage::timeline",
+      "to": "dim_app_server::storage::arrays",
+      "references": [
+        "path super::arrays::Reference",
+        "path super::arrays::check"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::timeline",
       "to": "dim_app_server::storage::catalog",
       "references": [
         "path super::catalog::activity",
@@ -31148,6 +32457,7 @@
         "path codec::drafts",
         "path codec::encode",
         "path codec::encode_list",
+        "path codec::matches_list",
         "path codec::prefix",
         "path codec::request",
         "use super::codec",
@@ -31173,6 +32483,23 @@
         "path files::share_output",
         "use super::files",
         "use super::files::SessionFiles"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::timeline",
+      "to": "dim_app_server::storage::identities",
+      "references": [
+        "path super::identities::insert",
+        "path super::identities::row"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::timeline",
+      "to": "dim_app_server::storage::members",
+      "references": [
+        "path super::members::branch",
+        "path super::members::event",
+        "path super::members::row"
       ]
     },
     {
@@ -31401,72 +32728,38 @@
     },
     {
       "from": "dim_app_server::tree_protocol",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path dim_agent_runtime::QueryFilter"
+      ]
+    },
+    {
+      "from": "dim_app_server::tree_protocol",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
         "path ApprovalCallData",
         "path ApprovalDecision",
         "path BranchSource",
-        "path EventKind::ApprovalCancelled",
-        "path EventKind::ApprovalRequest",
-        "path EventKind::ApprovalRespond",
-        "path EventKind::BranchCreate",
-        "path EventKind::BranchCreateFailed",
-        "path EventKind::BranchEnd",
-        "path EventKind::BranchEnded",
-        "path EventKind::BranchResume",
-        "path EventKind::BranchStart",
-        "path EventKind::CollaborationCancel",
-        "path EventKind::CollaborationClose",
-        "path EventKind::CollaborationDelivered",
-        "path EventKind::CollaborationMessage",
-        "path EventKind::CollaborationRequest",
-        "path EventKind::CollaborationResult",
-        "path EventKind::ContextBudget",
-        "path EventKind::ContextCompact",
         "path EventKind::ContextCompaction",
-        "path EventKind::ContextCompactionStart",
         "path EventKind::ContextConfigured",
-        "path EventKind::ContextPrepare",
-        "path EventKind::ContextScope",
-        "path EventKind::ExecEnded",
-        "path EventKind::ExecStarted",
-        "path EventKind::Extension",
-        "path EventKind::InputApplied",
-        "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
-        "path EventKind::InputMessage",
-        "path EventKind::InputWithdraw",
-        "path EventKind::ModelCall",
-        "path EventKind::ModelContent",
-        "path EventKind::ModelOutputEnd",
-        "path EventKind::ModelStart",
-        "path EventKind::ModelUsage",
-        "path EventKind::PermissionChanged",
-        "path EventKind::PromptChanged",
-        "path EventKind::PromptConfigureRequest",
-        "path EventKind::PromptConfigureResult",
-        "path EventKind::SessionForked",
-        "path EventKind::StopInterrupt",
-        "path EventKind::Text",
-        "path EventKind::Thinking",
-        "path EventKind::ToolCall",
-        "path EventKind::ToolCompleted",
-        "path EventKind::ToolResult",
-        "path EventKind::ToolStart",
-        "path EventKind::ToolUse",
-        "path EventKind::ToolUseStart",
-        "path EventKind::TurnEnd",
-        "path EventKind::TurnStart",
         "path ModelFailureKind",
         "path dim_agent_types::BranchEndData",
         "path dim_agent_types::BranchSource",
+        "path dim_agent_types::ContextCompactionResult::Completed",
         "use dim_agent_types::AgentEvent",
         "use dim_agent_types::ApprovalCallData",
         "use dim_agent_types::ApprovalDecision",
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::ModelFailureKind"
+      ]
+    },
+    {
+      "from": "dim_app_server::tree_protocol",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path dim_agent_types::CompactionSummary"
       ]
     },
     {
@@ -33127,13 +34420,6 @@
     },
     {
       "from": "dim_cli::display",
-      "to": "dim_agent_types::content",
-      "references": [
-        "path ContentBlock::Text"
-      ]
-    },
-    {
-      "from": "dim_cli::display",
       "to": "dim_agent_types::events",
       "references": [
         "path ModelOutputOutcome::Failed",
@@ -33153,8 +34439,10 @@
       "from": "dim_cli::display",
       "to": "dim_cli::projection",
       "references": [
+        "path crate::projection::context_lines",
         "path crate::projection::failure_phrase",
-        "path crate::projection::retry_seconds"
+        "path crate::projection::retry_seconds",
+        "path crate::projection::user_text"
       ]
     },
     {
@@ -33225,6 +34513,14 @@
     },
     {
       "from": "dim_cli::export",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path markup::runtime_element",
+        "use dim_agent_types::markup"
+      ]
+    },
+    {
+      "from": "dim_cli::export",
       "to": "dim_cli",
       "references": [
         "path Result",
@@ -33248,6 +34544,13 @@
         "path client",
         "path client::server",
         "use crate::client"
+      ]
+    },
+    {
+      "from": "dim_cli::export",
+      "to": "dim_cli::projection",
+      "references": [
+        "path crate::projection::hook_contexts"
       ]
     },
     {
@@ -35302,6 +36605,7 @@
         "path TaskOutputState",
         "path TaskTarget",
         "path ViewSnapshot",
+        "path crate::model::view::CompactionTarget",
         "use crate::model::view::MemberConversationState",
         "use crate::model::view::TaskOutputState",
         "use crate::model::view::TaskTarget",
@@ -35790,6 +37094,7 @@
         "path UserInput",
         "path dim_agent_types::CollaborationDeliveredData",
         "path dim_agent_types::CollaborationRequestData",
+        "path dim_agent_types::ContextCompactionData",
         "path dim_agent_types::ExecStartedData",
         "path dim_agent_types::InputBlock::Raw",
         "path dim_agent_types::ProviderPresentation",
@@ -35827,6 +37132,15 @@
     },
     {
       "from": "dim_cli::projection",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path markup::runtime_context",
+        "path markup::runtime_element",
+        "use dim_agent_types::markup"
+      ]
+    },
+    {
+      "from": "dim_cli::projection",
       "to": "dim_agent_types::member_approval",
       "references": [
         "path dim_agent_types::MemberApprovalDescriptor"
@@ -35844,6 +37158,7 @@
         "path InsufficientSpacePartName::Summary",
         "path InsufficientSpacePartName::SystemPrompt",
         "path InsufficientSpacePartName::Tools",
+        "path dim_agent_types::InsufficientSpace",
         "use dim_agent_types::InsufficientSpacePartName"
       ]
     },
@@ -35882,6 +37197,9 @@
       "to": "dim_cli::model::view",
       "references": [
         "path ApprovalView",
+        "path CompactionDetail",
+        "path CompactionDetailState",
+        "path CompactionDetailState::Unloaded",
         "path CompactionPart",
         "path CompactionPart::AppendedMessages",
         "path CompactionPart::Digest",
@@ -35917,6 +37235,7 @@
         "path RowKind::AssistantMessage",
         "path RowKind::Compaction",
         "path RowKind::Error",
+        "path RowKind::HookContext",
         "path RowKind::Shell",
         "path RowKind::Status",
         "path RowKind::StreamingAssistant",
@@ -35944,6 +37263,8 @@
         "path WorkflowView",
         "path crate::model::view::INTERRUPT_REASON",
         "use crate::model::view::ApprovalView",
+        "use crate::model::view::CompactionDetail",
+        "use crate::model::view::CompactionDetailState",
         "use crate::model::view::CompactionPart",
         "use crate::model::view::CompactionPartSize",
         "use crate::model::view::CompactionState",
@@ -36024,6 +37345,7 @@
         "path EventContent::CollaborationResult",
         "path EventContent::Compaction",
         "path EventContent::CompactionStart",
+        "path EventContent::CompactionSummary",
         "path EventContent::Configuration",
         "path EventContent::ExecEnded",
         "path EventContent::ExecStarted",
@@ -36629,12 +37951,15 @@
       "to": "dim_client::wire",
       "references": [
         "path Attached",
-        "path Event",
+        "path DisplayNotice",
+        "path EventNotice",
         "path History",
         "path Progress",
         "path crate::wire::Configuration",
+        "path crate::wire::DisplayPage",
         "use crate::wire::Attached",
-        "use crate::wire::Event",
+        "use crate::wire::DisplayNotice",
+        "use crate::wire::EventNotice",
         "use crate::wire::Progress",
         "use dim_client::wire::History"
       ]
@@ -36677,8 +38002,10 @@
       "from": "dim_cli::session::window",
       "to": "dim_client::wire",
       "references": [
+        "path DisplayPage",
         "path HistoryWindow",
-        "use crate::wire::HistoryWindow"
+        "use crate::wire::HistoryWindow",
+        "use dim_client::wire::DisplayPage"
       ]
     },
     {
@@ -36931,6 +38258,7 @@
         "path Command::CloseSessions",
         "path Command::CloseSide",
         "path Command::Compact",
+        "path Command::CompactionDetails",
         "path Command::Configure",
         "path Command::Earlier",
         "path Command::EndLine",
@@ -37239,6 +38567,14 @@
     },
     {
       "from": "dim_cli::session_host",
+      "to": "dim_cli::session_host::compaction",
+      "references": [
+        "mod compaction",
+        "path compaction::CompactionReads"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
       "to": "dim_cli::session_host::inventory",
       "references": [
         "mod inventory"
@@ -37360,21 +38696,77 @@
       "references": [
         "path Attached",
         "path Configuration",
+        "path DisplayNotice",
         "path Event",
         "path EventContent::Configuration",
         "path EventContent::ExecEnded",
         "path EventContent::ModelUsage",
         "path EventContent::PermissionChanged",
         "path EventContent::TurnEnd",
+        "path EventNotice",
         "path Progress",
         "path dim_client::wire::BranchDirectory",
         "path dim_client::wire::BranchEntry",
         "path dim_client::wire::MethodTable",
         "use crate::wire::Attached",
         "use crate::wire::Configuration",
+        "use crate::wire::DisplayNotice",
         "use crate::wire::Event",
         "use crate::wire::EventContent",
+        "use crate::wire::EventNotice",
         "use crate::wire::Progress"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path ContextCompactionData",
+        "use dim_agent_types::ContextCompactionData",
+        "use dim_agent_types::ContextCompactionResult"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path CompactionDetail",
+        "use dim_agent_types::CompactionDetail"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_cli::model::view",
+      "references": [
+        "path CompactionDetailState",
+        "path CompactionDetailState::Failed",
+        "path CompactionDetailState::Loaded",
+        "path CompactionDetailState::Loading",
+        "path CompactionDetailState::Unloaded",
+        "path CompactionTarget",
+        "use crate::model::view::CompactionDetailState",
+        "use crate::model::view::CompactionTarget"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_cli::projection",
+      "references": [
+        "path Projection"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_cli::session_host",
+      "references": [
+        "path Worker"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::compaction",
+      "to": "dim_client",
+      "references": [
+        "path client::RpcError"
       ]
     },
     {
@@ -37507,6 +38899,7 @@
         "path EventContent::Configuration",
         "path Progress",
         "path crate::wire::TurnRead",
+        "path dim_client::wire::DisplayPage",
         "path dim_client::wire::MethodTable"
       ]
     },
@@ -37749,7 +39142,8 @@
         "path EventContent::BranchCreate",
         "path EventContent::BranchCreateFailed",
         "path EventContent::BranchStart",
-        "path crate::wire::TurnRead"
+        "path crate::wire::TurnRead",
+        "path dim_client::wire::DisplayPage"
       ]
     },
     {
@@ -42866,6 +44260,7 @@
         "path WorkflowInventory::Loading",
         "path WorkflowInventory::Ready",
         "path WorkflowView",
+        "path crate::model::view::CompactionTarget",
         "use crate::model::view::MemberConversationState",
         "use crate::model::view::MemberTarget",
         "use crate::model::view::RowKind",
@@ -43882,6 +45277,7 @@
         "path RowKind::AssistantMessage",
         "path RowKind::Compaction",
         "path RowKind::Error",
+        "path RowKind::HookContext",
         "path RowKind::Other",
         "path RowKind::Shell",
         "path RowKind::Status",
@@ -43892,6 +45288,8 @@
         "path RowTone::Danger",
         "path RowTone::Warning",
         "path ViewRow",
+        "path crate::model::view::CompactionDetail",
+        "path crate::model::view::CompactionTarget",
         "path crate::model::view::FailureDetail",
         "path crate::model::view::INTERRUPT_REASON",
         "use crate::model::view::CompactionPartSize",
@@ -44060,6 +45458,13 @@
     },
     {
       "from": "dim_cli::ui::transcript::blocks",
+      "to": "dim_cli::projection",
+      "references": [
+        "path crate::projection::hook_context_label"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::transcript::blocks",
       "to": "dim_cli::report",
       "references": [
         "path crate::report::HINT"
@@ -44171,6 +45576,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
+        "path Block::HookContext",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
@@ -44492,6 +45898,7 @@
         "path Command::CloseSessions",
         "path Command::CloseSide",
         "path Command::Compact",
+        "path Command::CompactionDetails",
         "path Command::Configure",
         "path Command::Earlier",
         "path Command::EndLine",
@@ -44684,6 +46091,7 @@
         "path LineView",
         "path RowKind::AssistantMessage",
         "path RowKind::Compaction",
+        "path RowKind::HookContext",
         "path RowKind::StreamingAssistant",
         "path RowKind::Thinking",
         "path RowKind::ToolCall",
@@ -44694,6 +46102,8 @@
         "path TaskTarget",
         "path ViewRow",
         "path ViewSnapshot",
+        "path crate::model::view::CompactionDetailState::Failed",
+        "path crate::model::view::CompactionTarget",
         "path crate::model::view::TaskView",
         "use crate::model::view::CompactionState",
         "use crate::model::view::LineState",
@@ -45381,6 +46791,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
+        "path Block::HookContext",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
@@ -45671,6 +47082,7 @@
         "path LineState::Working",
         "path RowKind::AssistantMessage",
         "path RowKind::Error",
+        "path RowKind::HookContext",
         "path RowKind::Status",
         "path RowKind::Thinking",
         "path RowKind::ToolCall",
@@ -45684,10 +47096,13 @@
         "path ViewRow",
         "path ViewSnapshot",
         "path ViewSnapshot::default",
+        "path crate::model::view::MemberConversationState::Live",
+        "path crate::model::view::MemberTarget::Session",
         "path crate::model::view::QueuedInput",
         "path crate::model::view::RowTone::Danger",
         "path crate::model::view::TaskFinish",
         "path crate::model::view::TaskKind::Command",
+        "path crate::model::view::TaskKind::Member",
         "path crate::model::view::TaskView",
         "path crate::model::view::TurnEnd::Completed"
       ]
@@ -45840,6 +47255,13 @@
     },
     {
       "from": "dim_cli::ui::tui::tests",
+      "to": "dim_cli::ui::tasks_panel",
+      "references": [
+        "path TasksPanel::new"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::terminal::input",
       "references": [
         "path InputEvent::Key",
@@ -45931,6 +47353,7 @@
         "path Prompt::Report",
         "path Prompt::Runtime",
         "path Prompt::Sessions",
+        "path Prompt::Tasks",
         "path QUEUE_HINT",
         "path QUEUE_HINT_MORE",
         "path TASK_FADE",
@@ -46313,6 +47736,7 @@
       "from": "dim_client::wire",
       "to": "dim_agent_types::model",
       "references": [
+        "path CompactionSummary",
         "path ModelCapabilitySnapshot",
         "path dim_agent_types::ModelCapabilitySnapshot",
         "path dim_agent_types::ModelPreferences"
@@ -46455,6 +47879,7 @@
         "path BranchLifecycle",
         "path SessionLifecycle",
         "path TimelineIdentity",
+        "path dim_agent_runtime::SessionPhase::Closing",
         "use dim_agent_runtime::BranchLifecycle",
         "use dim_agent_runtime::SessionLifecycle",
         "use dim_agent_runtime::TimelineIdentity"
@@ -46490,6 +47915,9 @@
       "references": [
         "path AgentError",
         "path AgentError::BranchEnded",
+        "path AgentError::Cancelled",
+        "path AgentError::Closed",
+        "path AgentError::InvalidInput",
         "path AgentError::Reloading",
         "use dim_agent_runtime::AgentError"
       ]
@@ -46544,6 +47972,14 @@
     },
     {
       "from": "dim_goal::branch",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path TimelineKey",
+        "use dim_agent_runtime::TimelineKey"
+      ]
+    },
+    {
+      "from": "dim_goal::branch",
       "to": "dim_agent_types::checkpoint",
       "references": [
         "path dim_agent_types::TimelinePosition"
@@ -46555,10 +47991,13 @@
       "references": [
         "path AgentEvent",
         "path BranchSource::Host",
+        "path EventDraft::new",
         "path EventKind::BranchCreate",
         "path EventKind::BranchCreateFailed",
         "path EventKind::BranchEnded",
         "path EventKind::ExecEnded",
+        "path EventKind::Extension",
+        "path EventKind::InputDeleted",
         "path EventKind::InputMessage",
         "path EventKind::StopInterrupt",
         "path EventKind::TurnEnd",
@@ -46572,6 +48011,7 @@
         "path dim_agent_types::BranchCreateFailedData::Failed",
         "use dim_agent_types::AgentEvent",
         "use dim_agent_types::BranchSource",
+        "use dim_agent_types::EventDraft",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::ExecStatus",
         "use dim_agent_types::InputBlock",
@@ -46583,10 +48023,29 @@
     },
     {
       "from": "dim_goal::branch",
+      "to": "dim_agent_types::goal",
+      "references": [
+        "path GoalRead",
+        "use dim_agent_types::GoalRead"
+      ]
+    },
+    {
+      "from": "dim_goal::branch",
       "to": "dim_app_server::settings",
       "references": [
         "path SettingsService",
         "use dim_app_server::settings::SettingsService"
+      ]
+    },
+    {
+      "from": "dim_goal::branch",
+      "to": "dim_goal::branch::recovery",
+      "references": [
+        "mod recovery",
+        "path recovery::BusinessState",
+        "path recovery::BusinessState::decode",
+        "path recovery::BusinessState::new",
+        "path recovery::KEY"
       ]
     },
     {
@@ -46608,7 +48067,6 @@
         "path Decision::Continuation",
         "path Decision::Pause",
         "path Fold",
-        "path Fold::default",
         "path TurnEnd",
         "path fold",
         "path fold::ConclusionKind",
@@ -46629,7 +48087,6 @@
         "path fold::evaluation_operation",
         "path fold::is_opening",
         "path fold::reply_conclusion",
-        "path fold::sequence_of",
         "path fold::truncate",
         "use crate::fold",
         "use crate::fold::Conclusion",
@@ -46641,16 +48098,25 @@
     },
     {
       "from": "dim_goal::branch",
+      "to": "dim_goal::read",
+      "references": [
+        "path crate::read::load",
+        "path crate::read::pause_reloaded",
+        "path crate::read::view"
+      ]
+    },
+    {
+      "from": "dim_goal::branch",
       "to": "dim_goal::text",
       "references": [
         "path GoalTexts",
         "path Live",
         "path Live::default",
         "path text",
-        "path text::Answered::Restated",
         "path text::Answered::Sequence",
         "path text::Answered::Trigger",
         "path text::Judge",
+        "path text::Judge::Evaluator",
         "path text::Judge::Model",
         "path text::Judge::of",
         "path text::OBJECTIVE_KEY",
@@ -46683,49 +48149,34 @@
       ]
     },
     {
-      "from": "dim_goal::branch::restore",
+      "from": "dim_goal::branch::recovery",
       "to": "dim_agent_runtime::error",
       "references": [
         "path AgentError",
-        "path AgentError::Reloading"
+        "path AgentError::fault"
       ]
     },
     {
-      "from": "dim_goal::branch::restore",
+      "from": "dim_goal::branch::recovery",
       "to": "dim_agent_runtime::timeline_query",
       "references": [
         "path TimelineQueryScope::Branch"
       ]
     },
     {
-      "from": "dim_goal::branch::restore",
+      "from": "dim_goal::branch::recovery",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
-        "path QueryComparison::Lt",
-        "path QueryFilter",
-        "path QueryFilter::And",
-        "path QueryFilter::Compare",
-        "path QueryFilter::Exists",
         "path QueryFilter::In",
-        "path QueryFilter::Not",
-        "path QueryFilter::Prefix",
-        "path QueryFilter::TextCandidate",
         "path QueryOperand::Field",
-        "path QueryOperand::Value",
-        "path QueryOutput::Count",
-        "path QueryOutput::Rows",
         "path QueryPage",
-        "path QueryPick::Last",
-        "path QuerySelect::Count",
         "path QuerySelect::Fields",
         "path QuerySpec",
-        "path QueryValue::Missing",
-        "path QueryValue::Value",
         "path TimelineQuery"
       ]
     },
     {
-      "from": "dim_goal::branch::restore",
+      "from": "dim_goal::branch::recovery",
       "to": "dim_agent_types::checkpoint",
       "references": [
         "path TimelinePosition",
@@ -46733,45 +48184,77 @@
       ]
     },
     {
-      "from": "dim_goal::branch::restore",
+      "from": "dim_goal::branch::recovery",
       "to": "dim_agent_types::events",
       "references": [
-        "path InputBlock",
-        "path InputBlock::Raw"
+        "path EventKind::Extension",
+        "path ExtensionEvent::new",
+        "path dim_agent_types::EventDraft",
+        "use dim_agent_types::ExtensionEvent"
+      ]
+    },
+    {
+      "from": "dim_goal::branch::recovery",
+      "to": "dim_goal::fold",
+      "references": [
+        "path Fold",
+        "path fold"
+      ]
+    },
+    {
+      "from": "dim_goal::branch::recovery",
+      "to": "dim_goal::text",
+      "references": [
+        "path text::Judge",
+        "path text::State",
+        "path text::State::Active"
+      ]
+    },
+    {
+      "from": "dim_goal::branch::restore",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::fault"
+      ]
+    },
+    {
+      "from": "dim_goal::branch::restore",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryFilter::And",
+        "path QueryFilter::Compare",
+        "path QueryFilter::Not",
+        "path QueryFilter::Or",
+        "path QueryFilter::Present",
+        "path QueryOperand::Field",
+        "path QueryOperand::Value",
+        "path QueryOutput::Rows",
+        "path QueryValue::Value"
       ]
     },
     {
       "from": "dim_goal::branch::restore",
       "to": "dim_goal::branch",
       "references": [
-        "path KEYS",
         "path Owner",
-        "path SCAN_PAGE",
-        "path goal_inputs",
-        "path live_inputs"
+        "path statement_of_fold"
       ]
     },
     {
       "from": "dim_goal::branch::restore",
-      "to": "dim_goal::fold",
+      "to": "dim_goal::branch::recovery",
       "references": [
-        "path Fold",
-        "path Fold::default",
-        "path TurnEnd",
-        "path fold",
-        "path fold::TurnStatus::Cancelled",
-        "path fold::TurnStatus::Completed",
-        "path fold::TurnStatus::Failed",
-        "path fold::change_of",
-        "path fold::evaluation_of_operation"
+        "path recovery::request"
       ]
     },
     {
       "from": "dim_goal::branch::restore",
-      "to": "dim_goal::text",
+      "to": "dim_goal::read",
       "references": [
-        "path text",
-        "path text::marker"
+        "path crate::read::load",
+        "path crate::read::pause_reloaded"
       ]
     },
     {
@@ -46784,10 +48267,12 @@
         "path EventKind::BranchCreate",
         "path EventKind::BranchCreateFailed",
         "path EventKind::BranchEnded",
+        "path EventKind::BranchStart",
         "path EventKind::ExecEnded",
         "path EventKind::ExecStarted",
         "path EventKind::InputConsumed",
         "path EventKind::InputMessage",
+        "path EventKind::SessionForked",
         "path EventKind::StopInterrupt",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
@@ -46900,15 +48385,8 @@
       "references": [
         "path AgentError",
         "path AgentError::Cancelled",
+        "path AgentError::fault",
         "use dim_agent_runtime::AgentError"
-      ]
-    },
-    {
-      "from": "dim_goal::read",
-      "to": "dim_agent_runtime::timeline_query",
-      "references": [
-        "path TimelineQueryScope::Branch",
-        "use dim_agent_runtime::TimelineQueryScope"
       ]
     },
     {
@@ -46918,15 +48396,19 @@
         "path QueryFilter",
         "path QueryFilter::And",
         "path QueryFilter::In",
+        "path QueryFilter::Or",
         "path QueryOperand::Field",
+        "path QueryOutput::Exists",
         "path QueryOutput::Rows",
         "path QueryPage",
+        "path QueryPick::First",
         "path QueryPick::Last",
+        "path QuerySelect::Exists",
         "path QuerySelect::Fields",
-        "path QuerySpec",
         "path QueryValue::Missing",
         "path QueryValue::Value",
         "path TimelineQuery",
+        "path TimelineQueryReply",
         "use dim_agent_runtime::QueryComparison",
         "use dim_agent_runtime::QueryFilter",
         "use dim_agent_runtime::QueryOperand",
@@ -46934,9 +48416,9 @@
         "use dim_agent_runtime::QueryPage",
         "use dim_agent_runtime::QueryPick",
         "use dim_agent_runtime::QuerySelect",
-        "use dim_agent_runtime::QuerySpec",
         "use dim_agent_runtime::QueryValue",
-        "use dim_agent_runtime::TimelineQuery"
+        "use dim_agent_runtime::TimelineQuery",
+        "use dim_agent_runtime::TimelineQueryReply"
       ]
     },
     {
@@ -46975,10 +48457,23 @@
       "from": "dim_goal::read",
       "to": "dim_goal::branch",
       "references": [
+        "path crate::branch::key_block",
+        "path crate::branch::model_state_agrees",
         "path goal_inputs",
         "path live_inputs",
         "use crate::branch::goal_inputs",
         "use crate::branch::live_inputs"
+      ]
+    },
+    {
+      "from": "dim_goal::read",
+      "to": "dim_goal::branch::recovery",
+      "references": [
+        "path BusinessState::decode",
+        "path recovery::KEY",
+        "path recovery::request",
+        "use crate::branch::recovery",
+        "use crate::branch::recovery::BusinessState"
       ]
     },
     {
@@ -46994,7 +48489,10 @@
       "from": "dim_goal::read",
       "to": "dim_goal::text",
       "references": [
+        "path text::Judge",
         "path text::Judge::Evaluator",
+        "path text::STATE_KEY",
+        "path text::State",
         "path text::State::Active",
         "path text::State::Blocked",
         "path text::State::Completed",
@@ -47067,10 +48565,26 @@
     },
     {
       "from": "dim_goal::session",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path SessionIdentity",
+        "use dim_agent_runtime::SessionIdentity"
+      ]
+    },
+    {
+      "from": "dim_goal::session",
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
         "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_goal::session",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path TimelineKey",
+        "use dim_agent_runtime::TimelineKey"
       ]
     },
     {
@@ -47718,6 +49232,20 @@
       "to": "dim_app_server::storage::catalog",
       "references": [
         "path dim_app_server::storage::initialize_session_catalog"
+      ]
+    },
+    {
+      "from": "dim_migration::native",
+      "to": "dim_app_server::storage::identities",
+      "references": [
+        "path dim_app_server::storage::initialize_session_output_id_index"
+      ]
+    },
+    {
+      "from": "dim_migration::native",
+      "to": "dim_app_server::storage::members",
+      "references": [
+        "path dim_app_server::storage::initialize_session_member_index"
       ]
     },
     {
@@ -49979,6 +51507,10 @@
     },
     {
       "module": "dim_app_server::connection::subscription",
+      "path": "Notification::Display"
+    },
+    {
+      "module": "dim_app_server::connection::subscription",
       "path": "Notification::Event"
     },
     {
@@ -50435,6 +51967,14 @@
     },
     {
       "module": "dim_app_server::tree_protocol",
+      "path": "QueryFilter::In"
+    },
+    {
+      "module": "dim_app_server::tree_protocol",
+      "path": "QueryOperand::Field"
+    },
+    {
+      "module": "dim_app_server::tree_protocol",
       "path": "S::Error"
     },
     {
@@ -50859,6 +52399,18 @@
     },
     {
       "module": "dim_cli::ui::transcript::blocks",
+      "path": "CompactionDetailState::Failed"
+    },
+    {
+      "module": "dim_cli::ui::transcript::blocks",
+      "path": "CompactionDetailState::Loading"
+    },
+    {
+      "module": "dim_cli::ui::transcript::blocks",
+      "path": "CompactionDetailState::Unloaded"
+    },
+    {
+      "module": "dim_cli::ui::transcript::blocks",
       "path": "char::is_whitespace"
     },
     {
@@ -51007,6 +52559,10 @@
     },
     {
       "module": "dim_cli::ui::tui::tests",
+      "path": "CompactionDetailState::Loaded"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
       "path": "ManagementView::default"
     },
     {
@@ -51112,6 +52668,10 @@
     {
       "module": "dim_cli::wire",
       "path": "Reply::Start"
+    },
+    {
+      "module": "dim_client",
+      "path": "D::Error"
     },
     {
       "module": "dim_client::wire",

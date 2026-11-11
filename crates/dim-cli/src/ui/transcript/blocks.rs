@@ -205,6 +205,31 @@ fn thinking_row(text: &str, width: usize, p: &Palette) -> String {
     format!("{}{}", fg(&bar, &p.border), fg(text, &p.muted))
 }
 
+/// A hook's context: one muted status row naming how many lines it holds, and
+/// with the detail setting expanded, those lines under a blank gutter. The body
+/// is the hook's own words for the model, so it is drawn as text, not Markdown.
+fn hook_context(body: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
+    let label = crate::projection::hook_context_label(body.trim().lines().count().max(1));
+    let summary = if expanded {
+        format!("{label} ▾")
+    } else {
+        format!("{label} ▸")
+    };
+    let mut rows = gutter_text(STATUS_MARK, &summary, width, &p.muted);
+    if expanded {
+        let gutter = gutter_width(width);
+        let content = width.saturating_sub(gutter).max(1);
+        for line in body.trim().lines() {
+            rows.extend(
+                wrap_cells(&crate::sanitize::safe(line), content)
+                    .into_iter()
+                    .map(|row| format!("{}{}", " ".repeat(gutter), fg(&row, &p.muted))),
+            );
+        }
+    }
+    rows
+}
+
 /// Reasoning text as plain prose wrapped to the content width, its
 /// paragraphs kept: runs of blank lines fold into one, the edges are trimmed
 /// and bold markers dropped.
@@ -505,6 +530,7 @@ pub(crate) fn render_block(
             },
         ),
         Block::Assistant(text) => markdown.render(&crate::sanitize::safe(text), width, 0),
+        Block::HookContext { body, expanded } => hook_context(body, *expanded, width, p),
         Block::Thinking {
             text,
             elapsed_ms,
@@ -520,16 +546,29 @@ pub(crate) fn render_block(
         Block::Compaction {
             state,
             text,
+            detail,
             insufficient,
             expanded,
-        } => render_compaction(
-            *state,
-            &crate::sanitize::safe(text),
-            insufficient,
-            *expanded,
-            width,
-            p,
-        ),
+            ..
+        } => {
+            use crate::model::view::CompactionDetailState;
+            let shown = if *state == CompactionState::Completed && !expanded {
+                String::new()
+            } else {
+                match detail.as_ref().map(|detail| &detail.state) {
+                    Some(CompactionDetailState::Unloaded | CompactionDetailState::Loading) => {
+                        t("Loading...").to_owned()
+                    }
+                    Some(CompactionDetailState::Failed(error)) => format!(
+                        "{}: {}",
+                        t("Details unavailable; collapse and expand to retry"),
+                        crate::sanitize::safe(error)
+                    ),
+                    _ => crate::sanitize::safe(text),
+                }
+            };
+            render_compaction(*state, &shown, insufficient, *expanded, width, p)
+        }
         Block::Shell(run) => {
             let shown = run.output.len().saturating_sub(SHELL_PREVIEW_LINES);
             let mut notes = Vec::new();

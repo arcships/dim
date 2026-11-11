@@ -1478,10 +1478,11 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         rusqlite::Connection::open(store.database())
             .unwrap()
             .execute_batch(&format!(
-                "CREATE TRIGGER \"fail-{kind}\" BEFORE INSERT ON timeline_events \
+                "CREATE TRIGGER \"fail-{kind}-{session_id}\" BEFORE INSERT ON timeline_events \
                  WHEN NEW.session_id = '{}' AND NEW.kind = '{kind}' \
                  BEGIN SELECT RAISE(ABORT, 'injected write failure'); END",
-                session.id()
+                session.id(),
+                session_id = session.id()
             ))
             .unwrap();
     };
@@ -1514,6 +1515,36 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
                 json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
             )
             .await,
+        "publication_unknown"
+    );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:wire-held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    assert_eq!(
+        client
+            .rpc(
+                "session.input.withdraw",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+            )
+            .await["error"]["data"]["appError"],
         "publication_unknown"
     );
     server.shutdown();

@@ -402,17 +402,12 @@ impl AgentLoop {
         ) else {
             return failed("Context is not configured; adopt a model first".into());
         };
-        let events: Vec<Arc<AgentEvent>> = crate::context_policy::estimate_events_in(&context)
-            .into_iter()
-            .map(|(_, event)| event)
-            .collect();
         let view = policy
             .view(
                 request,
                 crate::context_policy::PolicyContext::from_context(context),
                 history,
                 through,
-                events,
                 Vec::new(),
             )
             .await
@@ -430,9 +425,7 @@ impl AgentLoop {
             Ok(model) => model,
             Err(error) => return failed(error.to_string()),
         };
-        let estimate = policy
-            .estimate(&view.prepared, model.as_ref(), view.events())
-            .map_err(|error| AgentError::fault("Loop", error.to_string()))?;
+        let estimate = ContextPolicy::local_estimate(&view.prepared, model.as_ref());
         policy
             .compact_step(
                 CompactionStep {

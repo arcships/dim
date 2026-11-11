@@ -1,8 +1,6 @@
 use crate::{
-    context_policy::{
-        ContextPolicy, EstimateEvent, PolicyContext, configured_request, estimate_events,
-    },
-    history::{HistoryRenderer, chain_by_id},
+    context_policy::ContextPolicy,
+    history::HistoryRenderer,
     host::*,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::{PromptSnapshot, scope_is_visible},
@@ -55,16 +53,40 @@ impl ConfigurationPublisher {
     /// text, and a model- or tool-only update re-renders the guide over the
     /// previously adopted source text, so an entry a loading writer
     /// registered is in force at the adoption that loads it.
-    pub(crate) async fn publish(
+    /// `adopted` comes from one consumed prefix of Prompt's owner state.
+    pub(crate) fn publish(
         &self,
+        adopted: (&PromptSnapshot, Option<&ContextConfiguredData>),
         changes: Vec<PromptChange>,
         model: Option<ModelSelection>,
         tools: Option<ToolSetAdoption>,
-        inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot) -> Vec<InputBlock> + Send,
+        inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> + Send,
     ) -> dim_agent_runtime::Result<Option<u64>> {
-        let (before, previous_configuration) =
-            PromptSnapshot::read(&self.timeline, self.timeline.sequence()).await?;
+        let (before, previous_configuration) = adopted;
+        if changes.is_empty() {
+            let same_model = model.as_ref().is_none_or(|model| {
+                previous_configuration.is_some_and(|previous| {
+                    let settings = &previous.settings;
+                    settings.provider_id == model.provider_id
+                        && settings.model_id == model.model_id
+                        && settings.capability_snapshot == model.capability_snapshot
+                        && settings.config == model.config
+                        && settings.metadata == model.metadata
+                })
+            });
+            let same_tools = tools.as_ref().is_none_or(|tools| {
+                previous_configuration.is_some_and(|previous| {
+                    previous.settings.tools.as_ref() == Some(&tools.tools)
+                        && previous.settings.tool_sources == tools.tool_sources
+                })
+            });
+            if same_model && same_tools {
+                register(&[])?;
+                return Ok(None);
+            }
+        }
+
         let ancestry: Vec<_> = self
             .timeline
             .ancestors()
@@ -94,9 +116,7 @@ impl ConfigurationPublisher {
                 ));
             }
         }
-        let base = previous_configuration
-            .as_ref()
-            .map(|data| (*data.settings).clone());
+        let base = previous_configuration.map(|data| (*data.settings).clone());
         let configuration = match (model, tools) {
             (None, None) => None,
             (model, tools) => {
@@ -124,11 +144,9 @@ impl ConfigurationPublisher {
                 Some(settings)
             }
         };
-        let effective_configuration = configuration.clone().or_else(|| {
-            previous_configuration
-                .as_ref()
-                .map(|data| (*data.settings).clone())
-        });
+        let effective_configuration = configuration
+            .clone()
+            .or_else(|| previous_configuration.map(|data| (*data.settings).clone()));
         let mut drafts: Vec<EventDraft> = Vec::new();
         if !changes.is_empty() {
             let revision = Uuid::new_v4().to_string();
@@ -145,7 +163,7 @@ impl ConfigurationPublisher {
             };
             let mut after = before.clone();
             after.changed(&data.timeline, &data.revision, &data.changes);
-            let blocks = inputs(&before, &after);
+            let blocks = inputs(before, &after, &data.changes);
             drafts.push(EventKind::PromptChanged(data).into());
             drafts.extend(blocks.into_iter().map(|block| {
                 EventKind::InputMessage(InputMessageData {
@@ -163,7 +181,7 @@ impl ConfigurationPublisher {
                     EventKind::ContextConfigured(ContextConfiguredData {
                         timeline: self.identity.branch_id.clone(),
                         revision: Uuid::new_v4().to_string(),
-                        previous: previous_configuration.as_ref().map(|data| PromptReference {
+                        previous: previous_configuration.map(|data| PromptReference {
                             timeline: data.timeline.clone(),
                             revision: data.revision.clone(),
                         }),
@@ -180,15 +198,12 @@ impl ConfigurationPublisher {
             }
         }
         if let Some(settings) = configuration
-            && previous_configuration
-                .as_ref()
-                .is_none_or(|previous| *previous.settings != settings)
+            && previous_configuration.is_none_or(|previous| *previous.settings != settings)
             && !drafts
                 .iter()
                 .any(|draft| matches!(draft.kind, EventKind::ContextConfigured(_)))
         {
-            let data =
-                self.rerendered_configuration(&before, previous_configuration.as_ref(), settings);
+            let data = self.rerendered_configuration(before, previous_configuration, settings);
             drafts.push(EventKind::ContextConfigured(data).into());
         }
         if drafts.is_empty() {
@@ -200,7 +215,7 @@ impl ConfigurationPublisher {
             .last()
             .expect("non-empty publication batch")
             .sequence;
-        self.await_published(sequence).await.map(Some)
+        Ok(Some(sequence))
     }
 
     /// Publishes the System over the entries in force now when it differs
@@ -210,17 +225,19 @@ impl ConfigurationPublisher {
     /// did not move. Nothing is recorded on a branch that is closing: its
     /// writers are withdrawing because it is shutting down, and the System
     /// they leave behind is not one the branch ever ran with.
-    pub(crate) async fn adopt_guide(&self) -> dim_agent_runtime::Result<()> {
+    pub(crate) async fn adopt_guide(
+        &self,
+        before: &PromptSnapshot,
+        previous: Option<&ContextConfiguredData>,
+    ) -> dim_agent_runtime::Result<()> {
         if self.closing() {
             return Ok(());
         }
-        let (before, previous) =
-            PromptSnapshot::read(&self.timeline, self.timeline.sequence()).await?;
         let Some(previous) = previous else {
             return Ok(());
         };
         let data =
-            self.rerendered_configuration(&before, Some(&previous), (*previous.settings).clone());
+            self.rerendered_configuration(before, Some(previous), (*previous.settings).clone());
         if data.system == previous.system {
             return Ok(());
         }
@@ -279,7 +296,7 @@ impl ConfigurationPublisher {
 
     /// Waits until the batch ending at `sequence` is published, so a commit
     /// failure reaches the caller before the next adoption runs.
-    async fn await_published(&self, sequence: u64) -> dim_agent_runtime::Result<u64> {
+    pub(crate) async fn await_published(&self, sequence: u64) -> dim_agent_runtime::Result<u64> {
         let mut publication = self.timeline.watch();
         while publication.borrow().0 < sequence {
             if let Some(error) = self.timeline.failure() {
@@ -367,7 +384,16 @@ pub struct ContextPreparation {
     errors: Mutex<Vec<AgentError>>,
     host: Arc<PrepareContextHost>,
     policy: Option<ContextPolicy>,
-    history: Arc<HistoryRenderer>,
+    usage: Arc<crate::context_usage::ContextUsage>,
+    references: Mutex<
+        std::collections::HashMap<
+            String,
+            (
+                std::sync::Weak<ModelRequest>,
+                crate::context_usage::PreparedEstimate,
+            ),
+        >,
+    >,
     timeline: Arc<Timeline>,
     identity: Arc<TimelineIdentity>,
 }
@@ -637,6 +663,9 @@ impl ContextPreparation {
         source: ContextPrepareData,
         result: std::result::Result<Arc<ModelRequest>, HostError>,
     ) -> dim_agent_runtime::Result<()> {
+        if result.is_err() {
+            self.references.lock().unwrap().remove(&source.request_id);
+        }
         let kind = match result {
             Ok(request) => EventKind::ModelCall(ModelCallData {
                 turn_id: source.turn_id,
@@ -736,175 +765,37 @@ impl ContextPreparation {
         );
         AgentError::aggregate(submitted.err().into_iter().chain(fault).collect())
     }
+    /// Checks the actual final request. Its preparation estimate is reused only
+    /// for the same request object and compatible model counter and limits.
     pub async fn validate(
         &self,
+        request_id: &str,
         request: Arc<ModelRequest>,
         cancel: CancellationToken,
     ) -> std::result::Result<(), HostError> {
         validate_capability_snapshot(&request)?;
         match &self.policy {
-            Some(policy) => policy.validate(request, cancel).await,
+            Some(policy) => {
+                let reference = self.references.lock().unwrap().get(request_id).and_then(
+                    |(expected, evidence)| {
+                        expected
+                            .upgrade()
+                            .filter(|expected| Arc::ptr_eq(expected, &request))
+                            .map(|_| evidence.clone())
+                    },
+                );
+                policy.validate(request, reference.as_ref(), cancel).await
+            }
             None => Ok(()),
         }
     }
+
     /// The current head's budget; writes nothing.
     pub async fn usage(
         &self,
         cancel: CancellationToken,
     ) -> std::result::Result<ContextUsage, ContextOpError> {
-        let policy = self.policy.as_ref().ok_or_else(|| {
-            ContextOpError::Model(HostError::failed("Context compaction is not available"))
-        })?;
-        let through = self.timeline.sequence();
-        let events = estimate_events(&self.timeline)
-            .await
-            .map_err(ContextOpError::Read)?;
-        if let Some(request) = canary_request(&events) {
-            let model = policy
-                .resolver
-                .resolve(request.clone(), cancel.clone())
-                .await
-                .map_err(ContextOpError::Model)?;
-            if let Some(input) = self
-                .incremental_usage(&events, through, &request, model.as_ref())
-                .await?
-            {
-                return Ok(ContextUsage {
-                    through,
-                    context_window: model.context_window(),
-                    output_tokens: model.output_tokens(),
-                    threshold_tokens: model.threshold_tokens(),
-                    estimated_input_tokens: input,
-                    baseline_source: BaselineSource::ProviderBaseline,
-                });
-            }
-        }
-        let streamed = self
-            .history
-            .rendered_stream(&self.timeline, through, 256)
-            .await
-            .map_err(ContextOpError::Read)?;
-        let request = configured_request(&PolicyContext::from_stream(&streamed), &streamed.history)
-            .ok_or(ContextOpError::NotConfigured)?;
-        let model = policy
-            .resolver
-            .resolve(request.clone(), cancel)
-            .await
-            .map_err(ContextOpError::Model)?;
-        let estimate = policy
-            .estimate(&request, model.as_ref(), &[])
-            .map_err(ContextOpError::Model)?;
-        Ok(ContextUsage {
-            through,
-            context_window: model.context_window(),
-            output_tokens: model.output_tokens(),
-            threshold_tokens: model.threshold_tokens(),
-            estimated_input_tokens: estimate.input,
-            baseline_source: estimate.source,
-        })
-    }
-    /// The last provider measurement plus the messages written after it, when
-    /// the request's system and tools are unchanged since that call.
-    async fn incremental_usage(
-        &self,
-        events: &[EstimateEvent],
-        through: u64,
-        request: &Arc<ModelRequest>,
-        model: &dyn crate::host::ContextModel,
-    ) -> std::result::Result<Option<f64>, ContextOpError> {
-        let Some(usage) = last_usage(events) else {
-            return Ok(None);
-        };
-        let Some(call) = last_call(events, &usage.request_id) else {
-            return Ok(None);
-        };
-        let segments = self
-            .timeline
-            .segments(through)
-            .map_err(ContextOpError::Read)?;
-        let rank = |branch: &str| segments.iter().position(|(name, _)| name == branch);
-        let Some(call_rank) = rank(&call.0.branch_id) else {
-            return Ok(None);
-        };
-        let at = (Some(call_rank), call.0.sequence);
-        if events.iter().any(|(position, event)| {
-            (rank(&position.branch_id), position.sequence) > at
-                && matches!(
-                    &event.kind,
-                    dim_agent_types::EventKind::ContextConfigured(_)
-                        | dim_agent_types::EventKind::ContextCompaction(
-                            dim_agent_types::ContextCompactionData {
-                                outcome: dim_agent_types::ContextCompactionResult::Completed { .. },
-                                ..
-                            }
-                        )
-                )
-        }) {
-            return Ok(None);
-        }
-        let mut tail: Vec<(String, Vec<Arc<dim_agent_types::AgentEvent>>)> = Vec::new();
-        let mut read =
-            crate::history::FoldRead::timeline(&self.timeline, Some(call.1.id.clone()), through);
-        loop {
-            let Some(page) = read.next(256).await.map_err(ContextOpError::Read)? else {
-                break;
-            };
-            let read = page.events.len() as u64;
-            for (event, position) in page.events.into_iter().zip(page.positions) {
-                let same = tail
-                    .last()
-                    .is_some_and(|(branch, _)| *branch == position.branch_id);
-                match tail.last_mut() {
-                    Some((_, events)) if same => events.push(event),
-                    _ => tail.push((position.branch_id, vec![event])),
-                }
-            }
-            if read < 256 {
-                break;
-            }
-        }
-        let mut history = Vec::new();
-        let mut state = None;
-        for (branch, events) in &tail {
-            let mut supplied: Vec<Arc<dim_agent_types::AgentEvent>> = Vec::new();
-            for event in events {
-                if let dim_agent_types::EventKind::InputConsumed(data) = &event.kind
-                    && !events.iter().any(|seen| {
-                        seen.id == data.input_id
-                            && matches!(seen.kind, dim_agent_types::EventKind::InputMessage(_))
-                    })
-                    && !supplied.iter().any(|seen| seen.id == data.input_id)
-                {
-                    let reply = self
-                        .timeline
-                        .query(chain_by_id(&data.input_id, through, QuerySelect::Events))
-                        .await
-                        .map_err(ContextOpError::Read)?;
-                    let QueryOutput::Events { events } = reply.result else {
-                        unreachable!("event selection returns events")
-                    };
-                    if let Some(row) = events.into_iter().next() {
-                        supplied.push(row.event);
-                    }
-                }
-            }
-            supplied.sort_by_key(|event| event.sequence);
-            let mut all = supplied;
-            all.extend(events.iter().cloned());
-            let projected = crate::history::project_batch(&all, state.as_ref(), branch)
-                .map_err(|error| ContextOpError::Model(HostError::failed(error)))?;
-            history.extend(projected.history);
-            state = Some(projected.state);
-        }
-        let messages = history
-            .into_iter()
-            .map(|entry| entry.message.clone())
-            .collect();
-        let count = model.count_tokens(&ModelRequest {
-            messages,
-            ..ModelRequest::new(&request.provider_id, &request.model_id, Vec::new())
-        });
-        Ok(Some(usage.usage.prompt_tokens + count))
+        self.usage.read(None, cancel).await
     }
 
     async fn prepare(
@@ -928,24 +819,20 @@ impl ContextPreparation {
             )
             .await?;
         validate_capability_snapshot(&request)?;
-        let streamed = self
-            .history
-            .rendered_stream(&self.timeline, source.through, 256)
-            .await
-            .map_err(|error| HostError::failed(error.to_string()))?;
-        let context = PolicyContext::from_stream(&streamed);
-        let history = streamed.history;
         crate::context_policy::check_cancel(&cancel)?;
-        if request.messages.len() < context.messages_len(&history)
-            || !context
-                .message_refs(&history)
+        if request.messages.len() < source.request.messages.len()
+            || !source
+                .request
+                .messages
+                .iter()
                 .zip(&request.messages)
-                .all(|(entry, message)| entry == message.as_ref())
+                .all(|(entry, message)| Arc::ptr_eq(entry, message) || entry == message)
         {
             return Err(HostError::failed(
                 "Context preparation must preserve the timeline history prefix; additional messages may be appended.",
             ));
         }
+        let exact_prefix = request.messages.len() == source.request.messages.len();
         let cancelled = || {
             let state = self.state.lock().unwrap();
             if generation.is_cancelled() || state.closed {
@@ -962,22 +849,30 @@ impl ContextPreparation {
                 })
                 .unwrap_or_else(|| "Operation cancelled".to_owned())
         };
-        match &self.policy {
+        let prepared = match &self.policy {
             Some(policy) => {
-                let events = estimate_events(&self.timeline)
-                    .await
-                    .map_err(|error| HostError::failed(error.to_string()))?
-                    .into_iter()
-                    .map(|(_, event)| event)
-                    .collect();
                 policy
                     .prepare(
-                        request, &source, context, history, events, cancel, &cancelled,
+                        request,
+                        &source,
+                        exact_prefix.then_some(self.usage.as_ref()),
+                        cancel.clone(),
+                        &cancelled,
                     )
                     .await
             }
-            None => Ok(request),
+            None => Ok(crate::context_policy::PreparedRequest {
+                request,
+                estimate: None,
+            }),
+        }?;
+        if let Some(estimate) = prepared.estimate {
+            self.references.lock().unwrap().insert(
+                source.request_id,
+                (Arc::downgrade(&prepared.request), estimate),
+            );
         }
+        Ok(prepared.request)
     }
 }
 
@@ -998,6 +893,7 @@ const DIGEST_ENTRY: &str = r#"<dim-digest>: the runtime's account of what tools 
 pub struct ContextPreparationPlugin {
     publisher: Key<ConfigurationPublisher>,
     context: Key<ContextPreparation>,
+    usage: Key<crate::context_usage::ContextUsage>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     host: Key<PrepareContextHost>,
@@ -1013,6 +909,7 @@ impl ContextPreparationPlugin {
         Ok(Self {
             publisher: names.key()?,
             context: names.key()?,
+            usage: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
             host: names.key()?,
@@ -1031,6 +928,7 @@ impl DynPlugin for ContextPreparationPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.usage.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.host.erase(),
@@ -1073,13 +971,14 @@ impl DynPlugin for ContextPreparationPlugin {
             ctx.provide_at(self.publisher.clone(), publisher)?;
             let service = Arc::new(ContextPreparation {
                 state: Mutex::new(PreparationState::default()),
+                usage: ctx.require_at(&self.usage)?,
+                references: Mutex::new(std::collections::HashMap::new()),
                 tasks: TaskTracker::new(),
                 errors: Mutex::new(Vec::new()),
                 host,
                 policy: ContextPolicy::bind(&timeline, &context, &strategy, &history)
                     .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?,
                 timeline,
-                history,
                 identity,
             });
             let owner = service.clone();
@@ -1093,6 +992,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 }
                 owner.tasks.close();
                 owner.tasks.wait().await;
+                owner.references.lock().unwrap().clear();
                 AgentError::aggregate(owner.errors.lock().unwrap().clone()).map_err(Into::into)
             })?;
             let owner = service.clone();
@@ -1112,6 +1012,7 @@ impl DynPlugin for ContextPreparationPlugin {
                         "input/applied",
                         "turn/start",
                         "turn/end",
+                        "step/model-output-end",
                     ]
                     .map(String::from)
                     .to_vec(),
@@ -1124,6 +1025,10 @@ impl DynPlugin for ContextPreparationPlugin {
                         let failures = failures.clone();
                         let lifecycle = lifecycle.clone();
                         Box::pin(async move {
+                            if let EventKind::ModelOutputEnd(data) = &event.kind {
+                                owner.references.lock().unwrap().remove(&data.request_id);
+                                return Ok(());
+                            }
                             if matches!(event.kind, EventKind::ContextCompactionStart(_)) {
                                 owner.state.lock().unwrap().compaction = Some(event.sequence);
                                 return Ok(());
@@ -1219,27 +1124,4 @@ impl DynPlugin for ContextPreparationPlugin {
             Ok(Effect::Done)
         })
     }
-}
-
-fn last_usage(facts: &[EstimateEvent]) -> Option<&dim_agent_types::ModelUsageData> {
-    facts.iter().rev().find_map(|(_, event)| match &event.kind {
-        dim_agent_types::EventKind::ModelUsage(data) => Some(data),
-        _ => None,
-    })
-}
-
-fn last_call<'a>(facts: &'a [EstimateEvent], request_id: &str) -> Option<&'a EstimateEvent> {
-    facts.iter().find(|(_, event)| {
-        matches!(&event.kind, dim_agent_types::EventKind::ModelCall(data) if data.request_id == request_id)
-    })
-}
-
-fn canary_request(facts: &[EstimateEvent]) -> Option<Arc<ModelRequest>> {
-    let usage = last_usage(facts)?;
-    facts.iter().rev().find_map(|(_, event)| match &event.kind {
-        dim_agent_types::EventKind::ModelCall(data) if data.request_id == usage.request_id => {
-            Some(data.request.clone())
-        }
-        _ => None,
-    })
 }

@@ -1142,6 +1142,10 @@ struct App {
     /// The output detail currently registered with the session worker.
     output_target: Option<(u64, TaskTarget)>,
     member_target: Option<(u64, String)>,
+    compaction_targets: Option<(
+        u64,
+        std::collections::BTreeSet<crate::model::view::CompactionTarget>,
+    )>,
     /// The update dialog while another prompt has the screen; it comes
     /// back once that one closes.
     upgrade: Option<UpgradeDialog>,
@@ -1485,6 +1489,7 @@ impl App {
             shell_runs: Vec::new(),
             output_target: None,
             member_target: None,
+            compaction_targets: None,
             upgrade: None,
             line_draft: None,
             fork_draft: None,
@@ -2070,6 +2075,7 @@ impl App {
                 }
                 self.runs.observe(&snapshot);
                 self.snapshot = Some(*snapshot);
+                self.refresh_compactions();
                 self.refresh_cards();
                 if self.running() && !was_running {
                     self.run_started = Some(Instant::now());
@@ -3977,6 +3983,127 @@ impl App {
         }
     }
 
+    fn sync_compaction_details(&mut self) {
+        use crate::model::view::CompactionTarget;
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut targets = std::collections::BTreeSet::new();
+        if !self.awaiting_window && snapshot.history_complete {
+            for block in &self.history {
+                if let Block::Compaction {
+                    expanded: true,
+                    target: Some(target),
+                    ..
+                } = block
+                {
+                    targets.insert(target.clone());
+                }
+            }
+            if self.tool_detail == Detail::Expanded
+                && let Some(side) = &snapshot.side
+            {
+                for row in &side.rows {
+                    if let Some(detail) = row
+                        .compaction
+                        .as_ref()
+                        .and_then(|view| view.detail.as_ref())
+                    {
+                        targets.insert(CompactionTarget {
+                            session_id: snapshot.session_id.clone(),
+                            branch_id: side.id.clone(),
+                            event_id: detail.event_id.clone(),
+                            sequence: detail.sequence,
+                        });
+                    }
+                }
+            }
+            if let Some(Prompt::Tasks(panel)) = &self.prompt {
+                targets.extend(panel.compaction_targets());
+            }
+        }
+        if targets.is_empty() && self.compaction_targets.is_none() {
+            return;
+        }
+        let next = (snapshot.projection_id, targets);
+        if self.compaction_targets.as_ref() != Some(&next) {
+            self.host.send(Command::CompactionDetails {
+                projection_id: next.0,
+                targets: next.1.clone(),
+            });
+            self.compaction_targets = (!next.1.is_empty()).then_some(next);
+        }
+    }
+
+    fn release_compaction_details(&mut self) {
+        if let Some((projection_id, _)) = self.compaction_targets.take() {
+            self.host.send(Command::CompactionDetails {
+                projection_id,
+                targets: Default::default(),
+            });
+        }
+        for block in &mut self.history {
+            if let Block::Compaction {
+                target,
+                detail: Some(detail),
+                text,
+                ..
+            } = block
+            {
+                *target = None;
+                *text = "".into();
+                detail.state = crate::model::view::CompactionDetailState::Failed(
+                    "This attachment is no longer open".into(),
+                );
+            }
+        }
+    }
+
+    fn refresh_compactions(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (index, block) in self.history.iter_mut().enumerate() {
+            let Block::Compaction {
+                target: Some(target),
+                text,
+                detail,
+                expanded,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            if target.session_id != snapshot.session_id || target.branch_id != snapshot.focus {
+                continue;
+            }
+            let view = snapshot
+                .rows
+                .iter()
+                .filter_map(|row| row.compaction.as_ref())
+                .find(|view| {
+                    view.detail.as_ref().is_some_and(|at| {
+                        at.event_id == target.event_id && at.sequence == target.sequence
+                    })
+                });
+            let Some(view) = view else { continue };
+            if *detail != view.detail || (*expanded && !std::sync::Arc::ptr_eq(text, &view.text)) {
+                *detail = view.detail.clone();
+                if *expanded {
+                    *text = view.text.clone();
+                }
+                changed.push(self.dropped + index);
+            }
+        }
+        if !changed.is_empty() {
+            for index in changed {
+                self.mark_rewritten(index);
+            }
+            self.request_reflow();
+        }
+    }
+
     /// The run needs the user: it just finished, or a permission or question
     /// request appeared (each request once).
     fn queue_notification(&mut self, was_running: bool) {
@@ -4240,12 +4367,24 @@ impl App {
         for block in &mut self.history {
             match block {
                 Block::ToolGroup(group) => group.detail = detail,
-                Block::Compaction { expanded, .. } => *expanded = detail == Detail::Expanded,
+                Block::Compaction {
+                    expanded,
+                    text,
+                    detail: lazy,
+                    ..
+                } => {
+                    *expanded = detail == Detail::Expanded;
+                    if !*expanded && lazy.is_some() {
+                        *text = "".into();
+                    }
+                }
+                Block::HookContext { expanded, .. } => *expanded = detail == Detail::Expanded,
                 Block::Error { expanded, .. } => *expanded = detail != Detail::Collapsed,
                 _ => {}
             }
         }
         self.request_reflow();
+        self.sync_compaction_details();
         if let Some(error) =
             crate::ui::config::write(&self.home, TOOL_DETAILS_KEY, detail.label().into())
         {
@@ -5596,6 +5735,7 @@ impl App {
             }),
         };
         frame.live = live;
+        self.sync_compaction_details();
         frame
     }
 
@@ -5651,6 +5791,11 @@ impl App {
         let mut settled_assistant: Vec<TextBlock> = Vec::new();
         let mut settled: Vec<(usize, String)> = Vec::new();
         let mut pending_messages: Vec<(usize, String)> = Vec::new();
+        // The hook rows that ride in the tail after the message they belong
+        // to, as `(row, id, parent id)`.
+        let mut tail_hooks: Vec<(usize, String, String)> = Vec::new();
+        // The messages this pass put in the tail, which their hook rows follow.
+        let mut tail_messages: HashSet<String> = HashSet::new();
         let mut held = false;
         for (index, row) in snapshot.rows.iter().enumerate() {
             if index < floor || held {
@@ -5688,7 +5833,24 @@ impl App {
                 }
                 RowKind::UserMessage if row.pending && !self.fullscreen => {
                     live_items.push(LiveItem::Row(index));
+                    tail_messages.insert(row.row_id.clone());
                     pending_messages.push((index, row.row_id.clone()));
+                }
+                // A hook's context belongs to its message's group: while the
+                // message waits in the tail, so does its context, directly
+                // after it. It is never a settlement barrier of its own.
+                RowKind::HookContext
+                    if row
+                        .parent_row
+                        .as_deref()
+                        .is_some_and(|parent| tail_messages.contains(parent)) =>
+                {
+                    live_items.push(LiveItem::Row(index));
+                    tail_hooks.push((
+                        index,
+                        row.row_id.clone(),
+                        row.parent_row.clone().expect("a hook row names its parent"),
+                    ));
                 }
                 RowKind::AssistantMessage => match self.revealed.get(&row.row_id) {
                     Some(&(_, shown)) if shown < text.len() => {
@@ -5714,15 +5876,24 @@ impl App {
         // The live tail is drawn after everything committed, so it can hold
         // only the newest rows. A pending message with a settled row after it
         // is committed in Timeline order instead, in its final colour: a
-        // committed row cannot take the hint back (timeline UI §4.8).
-        let mut forced: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // committed row cannot take the hint back (timeline UI §4.8). Its
+        // hook rows commit with it, in content order, and never without it.
+        let mut forced: HashSet<usize> = HashSet::new();
+        let mut forced_rows: HashSet<String> = HashSet::new();
         if let Some(last) = settled.last().map(|(index, _)| *index) {
             for (index, id) in pending_messages.iter().filter(|(index, _)| *index < last) {
-                live_items.retain(|item| !matches!(item, LiveItem::Row(at) if at == index));
                 settled.push((*index, id.clone()));
                 forced.insert(*index);
+                forced_rows.insert(id.clone());
+            }
+            for (index, id, parent) in &tail_hooks {
+                if forced_rows.contains(parent) {
+                    settled.push((*index, id.clone()));
+                    forced.insert(*index);
+                }
             }
         }
+        live_items.retain(|item| !matches!(item, LiveItem::Row(at) if forced.contains(at)));
         settled.sort_by_key(|(index, _)| *index);
         let settled_ids: Vec<String> = settled.into_iter().map(|(_, id)| id).collect();
 
@@ -5900,6 +6071,7 @@ impl App {
     }
 
     fn switch_line(&mut self, line: String) {
+        self.release_compaction_details();
         self.planner.reset();
         self.commits = CommitState::default();
         self.answered.clear();
@@ -5950,6 +6122,7 @@ impl App {
 
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
         self.report_error = None;
+        self.release_compaction_details();
         let first = self.session_id.is_empty();
         // Home's first message started this Session: nothing shown to clear.
         if first
@@ -6128,7 +6301,21 @@ impl App {
     }
 
     /// Remembers a committed block (bounded, newest last).
-    fn record(&mut self, source: Block) {
+    fn record(&mut self, mut source: Block) {
+        if let Block::Compaction {
+            target,
+            detail: Some(detail),
+            ..
+        } = &mut source
+            && let Some(snapshot) = &self.snapshot
+        {
+            *target = Some(crate::model::view::CompactionTarget {
+                session_id: snapshot.session_id.clone(),
+                branch_id: snapshot.focus.clone(),
+                event_id: detail.event_id.clone(),
+                sequence: detail.sequence,
+            });
+        }
         self.history.push_back(source);
         if self.history.len() > HISTORY_MAX_BLOCKS {
             self.history.pop_front();
@@ -6160,14 +6347,26 @@ impl App {
         let index = id.checked_sub(self.dropped);
         match index.and_then(|index| self.history.get_mut(index)) {
             Some(Block::ToolGroup(group)) => group.detail = group.detail.next(),
+            Some(Block::Compaction {
+                expanded,
+                text,
+                detail,
+                ..
+            }) => {
+                *expanded = !*expanded;
+                if !*expanded && detail.is_some() {
+                    *text = "".into();
+                }
+            }
             Some(
                 Block::Thinking { expanded, .. }
-                | Block::Compaction { expanded, .. }
+                | Block::HookContext { expanded, .. }
                 | Block::Error { expanded, .. },
             ) => *expanded = !*expanded,
             _ => return false,
         }
         self.mark_rewritten(id);
+        self.sync_compaction_details();
         true
     }
 
@@ -10400,6 +10599,7 @@ mod tests {
                 member: None,
                 cut: None,
                 line: None,
+                parent_row: None,
                 compaction: None,
             })
         };
@@ -10790,6 +10990,7 @@ mod tests {
                         member: None,
                         cut: None,
                         line: None,
+                        parent_row: None,
                         compaction: None,
                     })
                 })
@@ -11361,6 +11562,7 @@ mod tests {
                 member: None,
                 cut: None,
                 line: None,
+                parent_row: None,
                 compaction: None,
             })],
             focus: "b-7c".into(),
@@ -11489,6 +11691,7 @@ mod tests {
                     member: None,
                     cut: Some(n as u64),
                     line: None,
+                    parent_row: None,
                     compaction: None,
                 })
             })
@@ -11531,6 +11734,7 @@ mod tests {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
         })
     }
@@ -11562,8 +11766,22 @@ mod tests {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
         })
+    }
+
+    /// The `dim-hooks` row a message carrying hook context appends after
+    /// itself, naming `u1` as its parent.
+    fn hook() -> std::sync::Arc<ViewRow> {
+        let mut row = (*message(false)).clone();
+        row.row_id = "hook-1".into();
+        row.kind = RowKind::HookContext;
+        row.text = "read src/parser.rs".into();
+        row.pending = false;
+        row.cut = None;
+        row.parent_row = Some("u1".into());
+        std::sync::Arc::new(row)
     }
 
     fn show(drawn: &mut Drawn, rows: Vec<std::sync::Arc<ViewRow>>) {
@@ -11720,27 +11938,70 @@ mod tests {
     #[test]
     fn a_message_waits_in_the_live_tail_until_the_model_consumes_it() {
         let mut drawn = attached();
-        show(&mut drawn, vec![message(true)]);
+        show(&mut drawn, vec![message(true), hook()]);
+        let text = drawn.transcript();
+        assert!(text.contains("find the leak"), "a pending message is drawn");
         assert!(
-            drawn.transcript().contains("find the leak"),
-            "a pending message is drawn"
+            text.find("find the leak") < text.find("Hook context · 1 line"),
+            "its hook's context follows it in the tail: {text}"
         );
         assert!(
             !drawn
                 .app
                 .history
                 .iter()
-                .any(|block| matches!(block, Block::User { .. })),
-            "scrollback prints a message only once it has settled"
+                .any(|block| matches!(block, Block::User { .. } | Block::HookContext { .. })),
+            "neither the message nor its hook context is committed while unread"
         );
-        show(&mut drawn, vec![message(false)]);
+        show(&mut drawn, vec![message(false), hook()]);
+        let user = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::User { text, .. } if text == "find the leak"))
+            .expect("a consumed message settles into scrollback");
+        let hook = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::HookContext { .. }))
+            .expect("its hook context commits with it");
         assert!(
-            drawn
-                .app
-                .history
-                .iter()
-                .any(|block| matches!(block, Block::User { text, .. } if text == "find the leak")),
-            "a consumed message settles into scrollback"
+            user < hook,
+            "the message commits first and its hook row right after it"
+        );
+    }
+
+    #[test]
+    fn scrollback_settles_a_message_and_its_hook_context_together() {
+        let mut drawn = attached();
+        show(&mut drawn, vec![message(true), hook(), stopped()]);
+        let user = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::User { .. }))
+            .expect("the message is committed");
+        let hook = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::HookContext { .. }))
+            .expect("its hook context is committed with it");
+        let stop = drawn
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::Status { text, .. } if text == "stopped"))
+            .expect("the stop is committed");
+        assert!(
+            user < hook && hook < stop,
+            "a later settled row commits the message, then its hook row, then itself"
+        );
+        let text = drawn.transcript();
+        assert!(
+            text.find("find the leak") < text.find("Hook context · 1 line"),
+            "{text}"
         );
     }
 
@@ -14324,6 +14585,98 @@ mod tests {
             "the kept draft keeps the seed it was opened with, not the edited text"
         );
         assert_eq!(kept.path(), path.as_path());
+    }
+
+    #[test]
+    fn compaction_disclosure_shares_body_releases_it_and_keeps_attachment_identity() {
+        use crate::model::view::CompactionDetailState;
+        for fullscreen in [false, true] {
+            let commands = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut drawn = Drawn::new((100, 32), None, true);
+            drawn.app.host = Box::new(Recorder(commands.clone()));
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.tool_detail = Detail::Collapsed;
+            let mut projection = crate::projection::Projection::default();
+            let event = serde_json::from_value(serde_json::json!({"id":"compact-7","sequence":7,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}})).unwrap();
+            projection.apply("main", &event);
+            let mut snapshot = projection.snapshot();
+            snapshot.session_id = "source".into();
+            snapshot.focus = "main".into();
+            snapshot.history_complete = true;
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            drawn.draw();
+            assert!(commands.borrow().iter().all(|command| !matches!(command, Command::CompactionDetails { targets, .. } if !targets.is_empty())));
+            let block = drawn.app.dropped
+                + drawn
+                    .app
+                    .history
+                    .iter()
+                    .position(|block| matches!(block, Block::Compaction { .. }))
+                    .unwrap();
+            assert!(drawn.app.click(Some(block), 1));
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.len() == 1 && targets.first().unwrap().session_id == "source")
+            );
+            let body: std::sync::Arc<str> = "Loaded compaction body".into();
+            let weak = std::sync::Arc::downgrade(&body);
+            let mut loaded = snapshot.clone();
+            let view = std::sync::Arc::make_mut(&mut loaded.rows[0])
+                .compaction
+                .as_mut()
+                .unwrap();
+            view.text = body.clone();
+            view.detail.as_mut().unwrap().state = CompactionDetailState::Loaded;
+            drawn.app.apply(Update::Snapshot(Box::new(loaded)));
+            drawn.draw();
+            assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
+            assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
+            drop(body);
+            assert!(drawn.app.click(Some(block), 1));
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
+            );
+            drawn
+                .app
+                .apply(Update::Snapshot(Box::new(snapshot.clone())));
+            drawn.draw();
+            assert!(
+                weak.upgrade().is_none(),
+                "closed detail has no retained shared body"
+            );
+            assert!(drawn.app.click(Some(block), 1));
+            drawn.app.switch_session("fork".into(), SwitchKind::Resumed);
+            snapshot.session_id = "fork".into();
+            snapshot.projection_id = 1;
+            drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+            drawn.draw();
+            drawn.app.toggle_tool_details();
+            drawn.app.toggle_tool_details();
+            assert!(
+                matches!(commands.borrow().last(), Some(Command::CompactionDetails { projection_id: 1, targets }) if targets.len() == 1 && targets.first().unwrap().session_id == "fork")
+            );
+            drawn.app.tool_detail = Detail::Collapsed;
+            let mut task = background_task("member-task", "Member");
+            task.kind = crate::model::view::TaskKind::Member(
+                crate::model::view::MemberTarget::Session("member".into()),
+            );
+            let mut main = drawn.app.snapshot.as_ref().unwrap().clone();
+            main.tasks.push(task.clone());
+            drawn.app.apply(Update::Snapshot(Box::new(main.clone())));
+            let mut panel = TasksPanel::new(&main);
+            panel.open_card(task);
+            panel.member(
+                "member",
+                Box::new(projection.snapshot()),
+                crate::model::view::MemberConversationState::Live,
+                None,
+            );
+            drawn.app.prompt = Some(Prompt::Tasks(panel));
+            commands.borrow_mut().clear();
+            drawn.draw();
+            assert!(commands.borrow().iter().any(|command| matches!(command,Command::CompactionDetails {targets,..} if targets.iter().any(|target| target.session_id=="member"))), "an expanded member detail requests its body while global disclosure is collapsed");
+        }
     }
 
     fn drawn_text(drawn: &mut Drawn) -> String {

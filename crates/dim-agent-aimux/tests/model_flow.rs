@@ -346,7 +346,7 @@ async fn native_http_text_usage_tools_and_continuation_follow_agent_events() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|e| matches!(&e.kind, EventKind::ToolResult(data) if data.results[0].result.content == ToolContent::Text("result text".into()))));
         assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta == "tool completed")));
-        assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+        assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
         let requests = server.endpoint.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3);
         for request in &requests {
@@ -1178,7 +1178,11 @@ async fn a_same_origin_307_or_308_redirect_completes_the_turn_at_its_target() {
             );
             assert!(
                 matches!(
-                    events.last().unwrap().kind,
+                    events
+                        .iter()
+                        .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                        .unwrap()
+                        .kind,
                     EventKind::TurnEnd(TurnEndData {
                         outcome: TurnOutcome::Completed { .. },
                         ..

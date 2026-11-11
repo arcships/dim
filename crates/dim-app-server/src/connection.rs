@@ -637,6 +637,8 @@ impl Connection {
                 call,
                 Call::InputLookup(_)
                     | Call::History(_)
+                    | Call::HistoryDisplay(_)
+                    | Call::HistoryDetail(_)
                     | Call::Branches(_)
                     | Call::BranchGet(_)
                     | Call::Keys(_)
@@ -679,7 +681,8 @@ impl Connection {
                 (Some(&p.session_id), Some(&p.branch_id))
             }
             Call::InputLookup(p) => (Some(&p.session_id), Some(&p.branch_id)),
-            Call::History(p) => (Some(&p.session_id), Some(&p.branch_id)),
+            Call::History(p) | Call::HistoryDisplay(p) => (Some(&p.session_id), Some(&p.branch_id)),
+            Call::HistoryDetail(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Keys(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Stop(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Idle(p) => (Some(&p.session_id), Some(&p.branch_id)),
@@ -859,7 +862,8 @@ impl Connection {
         let session_id = match &call {
             Call::Submit(p) => Some(&p.session_id),
             Call::InputLookup(p) => Some(&p.session_id),
-            Call::History(p) => Some(&p.session_id),
+            Call::History(p) | Call::HistoryDisplay(p) => Some(&p.session_id),
+            Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
             Call::Keys(p) => Some(&p.session_id),
@@ -1148,7 +1152,14 @@ impl Connection {
             }
             Call::Submit(params) => self.submit(rpc, params).await,
             Call::InputLookup(params) => self.input_lookup(rpc, params).await,
-            Call::History(params) => self.history(rpc, params).await,
+            Call::History(params) => self.history(rpc, params, false).await,
+            Call::HistoryDisplay(params) => self.history(rpc, params, true).await,
+            Call::HistoryDetail(params) => tokio::select! {
+                biased;
+                _ = self.closed.cancelled() => return None,
+                _ = rpc.unloading.cancelled() => Err(RpcError::reloading()),
+                result = self.history_detail(rpc, params) => result,
+            },
             Call::Branches(params) => self.branches(rpc, params).await,
             Call::BranchGet(params) => self.branch_get(rpc, params).await,
             Call::Keys(params) => self.keys(rpc, params).await,

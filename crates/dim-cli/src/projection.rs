@@ -12,16 +12,16 @@ use dim_agent_types::{
     CollaborationOutcome, CollaborationTarget, ContentBlock, ContextCompactionResult, ExecStatus,
     InputMode, InsufficientSpacePartName, JsonObject, Message, MessageContent, MessagePart,
     ModelFailure, ModelFailureKind, ModelOutputOutcome, ReplacementParts, ToolContent, ToolResult,
-    TurnOutcome, UserInput,
+    TurnOutcome, UserInput, markup,
 };
 use serde_json::Value;
 
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    ApprovalView, CompactionPart, CompactionPartSize, CompactionState, CompactionView,
-    FailureDetail, LineCut, LineState, LineView, MemberCard, MemberConversationState, MemberTarget,
-    QueuedInput, RetryView, RowKind, RowTone, TaskFinish, TaskKind, TaskOutcome, TaskTarget,
-    TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
+    ApprovalView, CompactionDetail, CompactionDetailState, CompactionPart, CompactionPartSize,
+    CompactionState, CompactionView, FailureDetail, LineCut, LineState, LineView, MemberCard,
+    MemberConversationState, MemberTarget, QueuedInput, RetryView, RowKind, RowTone, TaskFinish,
+    TaskKind, TaskOutcome, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -534,25 +534,31 @@ impl Projection {
                     String::new(),
                 );
                 self.row(index).compaction = Some(CompactionView {
+                    detail: None,
                     state: CompactionState::Running,
-                    text: String::new(),
+                    text: String::new().into(),
                     insufficient: Vec::new(),
                 });
                 self.compaction_rows.insert(sequence, index);
             }
             EventContent::Compaction(data) => {
-                let index = match data
-                    .start
-                    .and_then(|start| self.compaction_rows.remove(&start))
-                {
-                    Some(index) => index,
-                    None => self.push(
-                        format!("compaction-{sequence}"),
-                        RowKind::Compaction,
-                        String::new(),
-                    ),
-                };
-                self.row(index).compaction = Some(compaction_view(&data.outcome));
+                self.finish_compaction(sequence, data.start, compaction_view(&data.outcome));
+            }
+            EventContent::CompactionSummary(data) => {
+                self.finish_compaction(
+                    sequence,
+                    data.start,
+                    CompactionView {
+                        state: CompactionState::Completed,
+                        detail: Some(CompactionDetail {
+                            event_id: event.id.clone(),
+                            sequence,
+                            state: CompactionDetailState::Unloaded,
+                        }),
+                        text: String::new().into(),
+                        insufficient: compaction_sizes(data.insufficient_space.as_ref()),
+                    },
+                );
             }
             EventContent::ModelEnd(data) => {
                 self.thinking_characters.remove(&data.request_id);
@@ -667,20 +673,31 @@ impl Projection {
     /// It cuts just before `submitted`, where its input was written, even
     /// when it enters the transcript later (timeline UI §4.1), and a message
     /// stays pending until the model consumes it (§4.8).
+    ///
+    /// The row carries the operator's words. Context a capability appended
+    /// after them is not theirs, so each `dim-hooks` block becomes its own row
+    /// right after this one (`crates/dim-agent-types/src/markup.rs`). Each
+    /// names this row as its parent, so whatever settles the message settles
+    /// them and they never commit it on their own.
     fn push_user(&mut self, input_id: &str, sequence: u64, submitted: u64, user: &UserInput) {
-        let text = text_of(&user.content);
+        let text = user_text(&user.content);
         let kind = if ShellRun::parse(&text).is_some() {
             RowKind::Shell
         } else {
             RowKind::UserMessage
         };
         let index = self.push(format!("user-{sequence}"), kind, text);
+        let row_id = self.rows[index].row_id.clone();
         let row = self.row(index);
         row.cut = Some(submitted.saturating_sub(1));
         row.display = user_display(&user.content);
         row.pending = kind == RowKind::UserMessage;
         if row.pending {
             self.input_rows.insert(input_id.to_owned(), index);
+        }
+        for (at, body) in hook_contexts(&user.content).into_iter().enumerate() {
+            let hook = self.push(format!("hook-{sequence}-{at}"), RowKind::HookContext, body);
+            self.row(hook).parent_row = Some(row_id.clone());
         }
     }
 
@@ -767,11 +784,10 @@ impl Projection {
                 let user = input.user.as_ref()?;
                 Some(QueuedInput {
                     id: input.input_id.clone(),
-                    text: text_of(&user.content),
+                    text: user_text(&user.content),
                     display: user_display(&user.content),
                     held: !input.applied,
-                    recallable: !input.applied
-                        && matches!(user.content.as_slice(), [ContentBlock::Text { .. }]),
+                    recallable: !input.applied && recallable(&user.content),
                 })
             })
             .collect();
@@ -951,6 +967,13 @@ impl Projection {
     }
 
     pub fn pending_exec(&mut self, branch: &str, task: &dim_agent_types::PendingExec) {
+        if self
+            .tasks
+            .iter()
+            .any(|known| known.branch_id == branch && known.id == task.event_id)
+        {
+            return;
+        }
         let target = TaskTarget {
             branch_id: branch.into(),
             task_id: task.task_id.clone(),
@@ -1455,6 +1478,7 @@ impl Projection {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
             failure: None,
             reportable: false,
@@ -1569,6 +1593,44 @@ impl Projection {
         }
     }
 
+    fn finish_compaction(&mut self, sequence: u64, start: Option<u64>, view: CompactionView) {
+        let index = match start.and_then(|start| self.compaction_rows.remove(&start)) {
+            Some(index) => index,
+            None => self.push(
+                format!("compaction-{sequence}"),
+                RowKind::Compaction,
+                String::new(),
+            ),
+        };
+        self.row(index).compaction = Some(view);
+    }
+
+    pub fn compaction_detail(
+        &mut self,
+        event_id: &str,
+        sequence: u64,
+        state: CompactionDetailState,
+        data: Option<&dim_agent_types::ContextCompactionData>,
+    ) -> bool {
+        let Some(index) = self.rows.iter().position(|row| {
+            row.compaction
+                .as_ref()
+                .and_then(|view| view.detail.as_ref())
+                .is_some_and(|detail| detail.event_id == event_id && detail.sequence == sequence)
+        }) else {
+            return false;
+        };
+        let view = self.row(index).compaction.as_mut().expect("compaction row");
+        if let Some(data) = data {
+            let loaded = compaction_view(&data.outcome);
+            view.text = loaded.text;
+        } else {
+            view.text = "".into();
+        }
+        view.detail.as_mut().expect("detail identity").state = state;
+        true
+    }
+
     fn complete_tool(
         &mut self,
         request_id: &str,
@@ -1624,20 +1686,7 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
             ..
         } => {
             let text = replacement_text(replacement, *replacement_parts);
-            let insufficient = diagnostics
-                .insufficient_space
-                .as_ref()
-                .map(|space| {
-                    space
-                        .parts
-                        .iter()
-                        .map(|part| CompactionPartSize {
-                            part: compaction_part(part.part),
-                            tokens: part.tokens,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let insufficient = compaction_sizes(diagnostics.insufficient_space.as_ref());
             (CompactionState::Completed, text, insufficient)
         }
         ContextCompactionResult::Skipped { reason, .. } => {
@@ -1651,10 +1700,22 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
         }
     };
     CompactionView {
+        detail: None,
         state,
-        text,
+        text: text.into(),
         insufficient,
     }
+}
+
+fn compaction_sizes(space: Option<&dim_agent_types::InsufficientSpace>) -> Vec<CompactionPartSize> {
+    space
+        .into_iter()
+        .flat_map(|space| &space.parts)
+        .map(|part| CompactionPartSize {
+            part: compaction_part(part.part),
+            tokens: part.tokens,
+        })
+        .collect()
 }
 
 /// A part of the insufficient-space mark, as this client names it.
@@ -1757,11 +1818,33 @@ fn one_line(text: &str) -> String {
 /// The marker a loaded Skill block starts with (Skills §9).
 const SKILL_BLOCK: &str = "<dim-skill name=\"";
 
+/// The text of `blocks` verbatim, one block per line. For the model's own
+/// text — a tool result, a provider message — where a marker is part of what
+/// it said (`<dim-hooks …>` in a tool result stays as written).
 fn text_of(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Image { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The operator's own words of a message: its text blocks, without the runtime
+/// context a capability appended after them
+/// (`crates/dim-agent-types/src/markup.rs`). The first block is always theirs.
+/// A later block that opens any of the vocabulary's names is not theirs; only
+/// `dim-hooks` and `dim-skill` have a row of their own.
+pub(crate) fn user_text(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
         .enumerate()
-        .filter(|(index, block)| loaded_skill(*index, block).is_none())
+        .filter(|(index, block)| match block {
+            ContentBlock::Text { text } => !markup::runtime_context(*index, text),
+            ContentBlock::Image { .. } => true,
+        })
         .filter_map(|(_, block)| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
             ContentBlock::Image { .. } => None,
@@ -1770,16 +1853,84 @@ fn text_of(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-/// The Skill a loaded block names: a text block after the first that starts
-/// with the marker carries a Skill's instructions, which are shown as one
-/// line instead.
-fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
-    if index == 0 {
-        return None;
+/// The body of each hook context a message carries, in order.
+pub(crate) fn hook_contexts(blocks: &[ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let ContentBlock::Text { text } = block else {
+                return None;
+            };
+            (markup::runtime_element(index, text) == Some("dim-hooks"))
+                .then(|| element_body(text, "</dim-hooks>"))
+        })
+        .collect()
+}
+
+/// The one line that names a loaded Skill, in the interface language: the
+/// message's presentation and the plain log both say it.
+pub(crate) fn skill_loaded_label(name: &str) -> String {
+    crate::ui::i18n::tf("Skill loaded: {name}", &[("name", name)])
+}
+
+/// The text of each message block the log prints after the operator's words, in
+/// the order the content has them: one line per loaded Skill, then a hook's
+/// context as the row names it. `None` for the words, which the `> ` record has.
+pub(crate) fn context_lines(blocks: &[ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| match block {
+            ContentBlock::Text { text } => {
+                if let Some(name) = loaded_skill(index, block) {
+                    Some(skill_loaded_label(&name))
+                } else if markup::runtime_element(index, text) == Some("dim-hooks") {
+                    let body = element_body(text, "</dim-hooks>");
+                    Some(hook_context_label(body.trim().lines().count().max(1)))
+                } else {
+                    None
+                }
+            }
+            ContentBlock::Image { .. } => None,
+        })
+        .collect()
+}
+
+/// The one line that names a hook's context, in the interface language: the
+/// TUI row and the plain log both say it. `lines` is the stored line count of
+/// the body, which is one for a paragraph the terminal will wrap.
+pub(crate) fn hook_context_label(lines: usize) -> String {
+    match lines {
+        1 => crate::ui::i18n::tf("Hook context · {count} line", &[("count", "1")]),
+        count => crate::ui::i18n::tf(
+            "Hook context · {count} lines",
+            &[("count", &count.to_string())],
+        ),
     }
+}
+
+/// Whether a queued message can go back into the draft by Shift+Left: its own
+/// words first, then only context the runtime appended for the model. An input
+/// with an image or with a second operator text block stays queued, as it did
+/// when the rule was "exactly one text block" — the notice about attachments
+/// depends on that, not on appended context.
+fn recallable(blocks: &[ContentBlock]) -> bool {
+    blocks.iter().enumerate().all(|(index, block)| match block {
+        ContentBlock::Text { text } => index == 0 || markup::runtime_context(index, text),
+        ContentBlock::Image { .. } => false,
+    })
+}
+
+/// The Skill a loaded block names: a text block after the first that opens the
+/// Skill element names it, and its instructions are shown as one line instead.
+fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
     let ContentBlock::Text { text } = block else {
         return None;
     };
+    if markup::runtime_element(index, text) != Some("dim-skill") {
+        return None;
+    }
     let rest = text.strip_prefix(SKILL_BLOCK)?;
     let name = rest.split('"').next()?;
     (!name.is_empty()).then(|| {
@@ -1790,8 +1941,8 @@ fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
     })
 }
 
-/// The presentation of an operator message: its text with an image marker per
-/// image and one line per loaded Skill; `None` when its text is the message.
+/// The presentation of an operator message: its words with an image marker per
+/// image and one line per loaded Skill; `None` when its words are the message.
 fn user_display(blocks: &[ContentBlock]) -> Option<String> {
     let mut images = 0;
     let mut skills = Vec::new();
@@ -1800,6 +1951,7 @@ fn user_display(blocks: &[ContentBlock]) -> Option<String> {
         match block {
             ContentBlock::Text { text } => match loaded_skill(index, block) {
                 Some(name) => skills.push(name),
+                None if markup::runtime_context(index, text) => {}
                 None => lines.push(text.clone()),
             },
             ContentBlock::Image { .. } => {
@@ -1813,7 +1965,7 @@ fn user_display(blocks: &[ContentBlock]) -> Option<String> {
     }
     let mut display = lines.join("\n");
     for skill in skills {
-        let line = crate::ui::i18n::tf("Skill loaded: {name}", &[("name", &skill)]);
+        let line = skill_loaded_label(&skill);
         if !display.is_empty() {
             display.push('\n');
         }
@@ -2587,6 +2739,100 @@ mod tests {
         crate::ui::i18n::set(previous);
     }
 
+    /// #1380: a prompt hook's context is not the operator's words. The row
+    /// carries what they sent, the hook's block becomes its own row, and the
+    /// queued form of the same input does not repeat the body.
+    #[test]
+    fn a_hooks_context_is_its_own_row_and_never_the_operators_words() {
+        let hook =
+            "<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\nkeep it short\n</dim-hooks>";
+        let input = serde_json::json!({
+            "id": "hooked", "sequence": 9, "create_at": 1,
+            "type": "input", "name": "message",
+            "data": {"user": {"content": [
+                {"type": "text", "text": "why does the parser stall?"},
+                {"type": "text", "text": hook},
+            ]}, "mode": "queue"},
+        });
+        let applied = serde_json::json!({
+            "id": "hooked-applied", "sequence": 10, "create_at": 1,
+            "type": "input", "name": "applied", "data": {"input_id": "hooked"},
+        });
+        let mut projection = Projection::default();
+        apply(&mut projection, &[input]);
+
+        // While it waits, the queue shows the operator's words only.
+        let queued = projection.snapshot().queued;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "why does the parser stall?");
+        assert_eq!(
+            queued[0].display, None,
+            "the hook's body is not part of the message's presentation"
+        );
+        assert!(
+            queued[0].recallable,
+            "a message a hook added context to can still go back to the draft"
+        );
+
+        apply(&mut projection, &[applied]);
+        let rows = projection.snapshot().rows;
+        assert_eq!(rows[0].kind, RowKind::UserMessage);
+        assert_eq!(rows[0].text, "why does the parser stall?");
+        assert_eq!(rows[1].kind, RowKind::HookContext);
+        assert_eq!(rows[1].text, "read src/parser.rs\nkeep it short");
+        assert_eq!(
+            rows.len(),
+            2,
+            "one hook block is one row, and the message is the other"
+        );
+    }
+
+    /// The first block is the operator's even when it opens a hook marker, and
+    /// an input carrying their own second text block stays out of the draft as
+    /// it did before, so the attachments notice keeps its meaning.
+    #[test]
+    fn an_operators_own_marker_is_their_words_and_two_blocks_stay_queued() {
+        let input = |id: &str, sequence: u64, content: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "sequence": sequence, "create_at": 1,
+                "type": "input", "name": "message",
+                "data": {"user": {"content": content}, "mode": "queue"},
+            })
+        };
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                input(
+                    "typed",
+                    1,
+                    serde_json::json!([{"type": "text", "text": "<dim-hooks kind=\"prompt-submit\">mine</dim-hooks>"}]),
+                ),
+                input(
+                    "two",
+                    2,
+                    serde_json::json!([
+                        {"type": "text", "text": "first paragraph"},
+                        {"type": "text", "text": "second paragraph"},
+                    ]),
+                ),
+            ],
+        );
+        let queued = projection.snapshot().queued;
+        let typed = queued.iter().find(|input| input.id == "typed").unwrap();
+        assert_eq!(
+            typed.text,
+            "<dim-hooks kind=\"prompt-submit\">mine</dim-hooks>"
+        );
+        assert!(typed.recallable);
+        let two = queued.iter().find(|input| input.id == "two").unwrap();
+        assert_eq!(two.text, "first paragraph\nsecond paragraph");
+        assert!(
+            !two.recallable,
+            "two operator blocks are not what Shift+Left scrolls back"
+        );
+    }
+
     #[test]
     fn a_queued_message_cuts_at_its_submission_and_a_withdrawn_one_is_not_counted() {
         let input = |sequence: u64, id: &str, text: &str, mode: &str| {
@@ -2794,9 +3040,32 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Running,
-                text: String::new(),
+                text: String::new().into(),
                 insufficient: Vec::new(),
+            })
+        );
+        let mut lazy = Projection::default();
+        apply(
+            &mut lazy,
+            &[
+                compaction_start(3),
+                serde_json::json!({"id":"event-4","sequence":4,"create_at":4,
+                "type":"display","name":"compaction","data":{"start":3,"strategy":"summary"}}),
+            ],
+        );
+        let rows = lazy.snapshot().rows;
+        assert_eq!(rows.len(), 1, "the summary settles the same running row");
+        let view = rows[0].compaction.as_ref().unwrap();
+        assert_eq!(view.state, CompactionState::Completed);
+        assert!(view.text.is_empty(), "the body has not been requested");
+        assert_eq!(
+            view.detail,
+            Some(CompactionDetail {
+                event_id: "event-4".into(),
+                state: CompactionDetailState::Unloaded,
+                sequence: 4
             })
         );
 
@@ -2819,6 +3088,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Completed,
                 text: "<dim-summary>\nThe parser is half done.\n</dim-summary>".into(),
                 insufficient: Vec::new(),
@@ -2872,7 +3142,7 @@ mod tests {
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
                 assert_eq!(compaction.state, CompactionState::Completed);
-                compaction.text.as_str()
+                compaction.text.as_ref()
             })
             .collect();
         assert_eq!(summaries, [summary, summary]);
@@ -2919,7 +3189,7 @@ mod tests {
             .iter()
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
-                (compaction.state, compaction.text.as_str())
+                (compaction.state, compaction.text.as_ref())
             })
             .collect();
         assert_eq!(
@@ -2951,6 +3221,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Failed,
                 text: "context is not configured".into(),
                 insufficient: Vec::new(),

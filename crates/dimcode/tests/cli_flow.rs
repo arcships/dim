@@ -2456,6 +2456,163 @@ fn exec_json_interrupt_drains_the_stop_barrier_without_human_stdout() {
 }
 
 #[test]
+fn session_export_keeps_a_hooks_context_under_its_own_heading() {
+    let home = Home::new();
+    let cli_dir = home.0.join("client");
+    let workspace = home.0.join("workspace");
+    fs::create_dir(&cli_dir).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    let path = cli_dir.join("hooked.md");
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"sequence":2,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[
+                    {"type":"text","text":"why does the parser stall?"},
+                    {"type":"text","text":"<dim-skill name=\"checkin\">\nSkill: checkin\nInstructions:\nBODY\n</dim-skill>"},
+                    {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs `first`\n</dim-hooks>"}
+                ]}}}],
+                "through":8,"nextAfter":8,"done":true}),
+        );
+    });
+    let mut command = home.command();
+    command.current_dir(&cli_dir).args([
+        "session",
+        "export",
+        "session",
+        "--format",
+        "markdown",
+        "--cwd",
+        workspace.to_str().unwrap(),
+        "--output",
+        "hooked.md",
+    ]);
+    let output = command.output().unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let markdown = fs::read_to_string(&path).unwrap();
+    // A loaded Skill's block stays under `### User` as written — adjacent text
+    // blocks have always run together here — and only a hook's context leaves
+    // it, under a heading of its own.
+    let expected = r#"# Session session
+
+Branch: main
+
+
+### User
+
+why does the parser stall?<dim-skill name="checkin">
+Skill: checkin
+Instructions:
+BODY
+</dim-skill>
+
+### Hook context
+
+```text
+read src/parser.rs `first`
+```
+
+"#;
+    assert_eq!(markdown, expected);
+}
+
+/// #1380: the line client's history says what the TUI says. A message it
+/// replays prints the operator's words, one `Skill loaded` line per loaded
+/// Skill, and one `Hook context · N lines` line per hook context — and never a
+/// marker. The order is the content's: the Skill was loaded before the hook ran.
+#[test]
+fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"hooked","sequence":7,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":"why does the parser stall?"},
+                     {"type":"text","text":"<dim-skill name=\"checkin\">\nSkill: checkin\nInstructions:\nBODY\n</dim-skill>"},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nSEARCH-MEMORY-FIRST\nis required here\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"hooked-consumed","sequence":8,"create_at":1,"type":"input","name":"consumed",
+                 "data":{"input_id":"hooked"}}],
+                "through":8,"nextAfter":8,"done":true}),
+        );
+        // The client settles the queue and reads the context gauge in either
+        // order, so answer by method until it leaves.
+        for _ in 0..8 {
+            let mut line = String::new();
+            match wire.0.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    match request["method"].as_str().unwrap_or_default() {
+                        "session.idle" => wire.reply(&request, json!({"sequence":8})),
+                        "session.question.pending" => wire.reply(
+                            &request,
+                            json!({"branchId":"main","through":8,"batches":[],"next":null}),
+                        ),
+                        "session.context.usage" => wire.send(json!({
+                            "jsonrpc":"2.0","id":request["id"],
+                            "error":{"code":-32601,
+                                     "message":"Unknown method: session.context.usage",
+                                     "data":{"appError":"unknown_method"}}})),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch(command);
+    // Wait for the prompt after the replayed history: it appears whatever the
+    // history held, so a missing context line fails at its own assertion
+    // rather than at a wait.
+    terminal.until("> why does the parser stall?");
+    terminal.until("\n> ");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    let plain = terminal.transcript.clone();
+    assert!(
+        plain.contains("> why does the parser stall?"),
+        "the log prints the operator's words:\n{plain}"
+    );
+    assert!(
+        plain.contains("Skill loaded: checkin"),
+        "a loaded Skill keeps its one line, as the TUI shows it:\n{plain}"
+    );
+    assert!(
+        plain.contains("Hook context · 2 lines"),
+        "the log prints the same line the TUI row shows:\n{plain}"
+    );
+    assert!(
+        !plain.contains("<dim-"),
+        "no marker reaches the log:\n{plain}"
+    );
+    let words = plain.find("> why does the parser stall?").unwrap();
+    let skill = plain.find("Skill loaded: checkin").unwrap();
+    let hook = plain.find("Hook context · 2 lines").unwrap();
+    assert!(
+        words < skill && skill < hook,
+        "the lines keep the order the content has:\n{plain}"
+    );
+}
+
+#[test]
 fn session_export_preserves_the_fixed_main_prefix_and_does_not_replace_files() {
     for mode in ["stdout-json", "markdown", "existing", "history-error"] {
         let home = Home::new();
@@ -10491,6 +10648,150 @@ fn tui_rebuilds_compaction_rows_from_history_on_resume() {
             .contains("Background from earlier parts")
     );
     assert!(!terminal.transcript.contains("End of recorded background."));
+}
+
+/// #1380: context a prompt hook appended to the operator's message is not
+/// their words. The row carries what they sent, and the hook's block becomes
+/// one muted row naming its size, `▸` closed; its body opens with the detail
+/// setting, `/tools`, exactly as a compaction body does.
+#[test]
+fn tui_draws_a_prompt_hooks_context_as_a_status_row() {
+    let home = Home::new();
+    let operator = "why does the parser stall?";
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"hooked","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":operator},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nSEARCH-MEMORY-FIRST\nis required here\n(third line)\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"hooked-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"hooked","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until(operator);
+    terminal.until("Hook context · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("<dim-hooks"),
+        "the marker is the model's, not the transcript's:\n{}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal.transcript.contains("SEARCH-MEMORY-FIRST"),
+        "a closed hook context keeps its body out of the transcript:\n{}",
+        terminal.transcript
+    );
+    // The detail setting opens the body, as it does for a compaction's summary.
+    terminal.write(b"/tools\r");
+    terminal.until("Hook context · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("SEARCH-MEMORY-FIRST"),
+        "the summary form keeps the hook body closed:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/tools\r");
+    terminal.until("Hook context · 3 lines ▾");
+    terminal.until("SEARCH-MEMORY-FIRST");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1380: one stored line reads in the singular, so the row never says
+/// `1 lines`.
+#[test]
+fn tui_names_a_one_line_hook_context_in_the_singular() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"one","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":"translate this"},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nONE-LINE-BODY\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"one-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"one","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("Hook context · 1 line ▸");
+    assert!(
+        !terminal.transcript.contains("1 lines"),
+        "a one-line body is named in the singular:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1380: the first block is always the operator's. A message that opens a
+/// hook marker themselves is drawn as they typed it, and gets no status row.
+#[test]
+fn tui_draws_an_operators_own_hook_marker_verbatim() {
+    let home = Home::new();
+    let typed = "<dim-hooks kind=\"prompt-submit\">typed by hand</dim-hooks>";
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"typed","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[{"type":"text","text":typed}]},"mode":"queue"}},
+                {"id":"typed-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"typed","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("typed by hand");
+    assert!(
+        !terminal.transcript.contains("Hook context"),
+        "a first block is the operator's, so no hook row names it:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
 }
 
 /// `dimcode export` (Timeline export design §7, §13 item 6): the sibling

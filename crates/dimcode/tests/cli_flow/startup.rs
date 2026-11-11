@@ -896,6 +896,19 @@ fn startup_environment_is_not_read_by_help_version_or_management() {
             }
             assert!(text.contains("--autocompact"));
             assert!(text.contains("--model"));
+            let (_, entries) = text.split_once("\nCommands:\n").unwrap();
+            let (entries, _) = entries.split_once("\nModel startup:\n").unwrap();
+            for line in entries.lines().filter(|line| !line.is_empty()) {
+                assert!(
+                    line == "Options:" || line.starts_with("  "),
+                    "help entries and descriptions must be indented: {line:?}"
+                );
+            }
+            assert!(text.contains("\n                                  -p sends TEXT"));
+            assert!(text.contains("\n  dimcode exec --model model-id --effort high"));
+            for line in text.lines() {
+                assert!(line.len() <= 80, "help exceeds 80 columns: {line:?}");
+            }
         }
         assert!(!text.contains("invalid-secret"));
     }

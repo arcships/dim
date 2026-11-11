@@ -535,6 +535,44 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | `threshold_tokens` | `B − reserve`, where `B = context_window − output_tokens` (the input budget) and `reserve = min(max(0.10 × B, 16,000), 0.20 × B)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
 | `count_tokens` | UTF-8 bytes of the serialized system prompt, messages and tool declarations divided by 4; each image part counts a fixed 1,600 tokens. Provisional (#128). Used for deltas over the provider's `prompt_tokens`, the first request, `validate` and the reduction check |
 
+**Composable counting.** Window facts may expose an optional contribution counter;
+complete-request counting remains available regardless. The counter has these synchronous
+operations, with no Timeline reads or retained request content:
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| algorithm | none | Stable identity of all counting and serialization rules. |
+| fixed | Optional SystemPrompt and optional ToolDefinition array | Contribution of the fixed request content, counted once. |
+| message | One Message | Contribution of that message, with no fixed-content charge. |
+| estimate | One accumulated contribution | Estimated input tokens. |
+
+A contribution is `{serialized_bytes: u64, images: u64}`. Only contributions from the same
+algorithm can be added component by component. Estimating `fixed + sum(message)` must equal
+`count_tokens` for the complete request. A model without this capability returns no counter;
+callers cannot assume its arbitrary token-count function is additive.
+
+The product algorithm is `dim/window-facts/v1`. Its exact serialization ranges preserve the
+existing estimator:
+
+| Content | Counted bytes and images |
+| --- | --- |
+| fixed | Serialize the optional system and tools separately, including JSON `null` for either absent value. Two absent values therefore contribute eight bytes. |
+| Message with Text content | Serialize the entire Message, including role and content. |
+| Ordinary MessagePart, including ToolResult with Text content | Serialize that part, including its defined metadata. Do not add the enclosing Message or parts-array wrapper. |
+| Image part | One image; no serialized bytes from its payload or wrapper. |
+| ToolResult with Blocks content | Count each non-image ContentBlock's serialized bytes and each image block as one image. Do not count the ToolResult wrapper or structuredContent in this branch. |
+
+The product estimate divides accumulated bytes by four and adds 1,600 per image. Complete
+requests and contributions use the same counting implementation. Counting streams JSON into
+a byte counter instead of allocating a second serialized copy of each object. UTF-8,
+escaping and each serialization range remain observable parts of the algorithm version.
+Changing any of them requires a new algorithm identity before reusing persisted statistics.
+
+The Rust binding is `ContextModel::contribution_counter() -> Option<&dyn ContextCounter>`;
+its default is `None`. `ContextContribution` is the only contribution type. This is an
+optional counting port on the existing model object, not a new runtime service. Persisted
+statistics and their lifecycle belong to [ContextUsage](ContextUsage.md).
+
 The `--models` profile resolves the same facts from its model file: `AimuxModels` reads the entry
 the request names, by provider and model id, derives the allowance from the file's declared pair
 when it loads the entry, and the request's capability snapshot stays unset, so images are sent
