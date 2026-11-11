@@ -215,11 +215,17 @@ impl HooksRuntime {
             return Err(interrupted());
         }
         let Some(snapshot) = self.snapshot().await else {
-            return Ok(SubmitCheckReply::Proceed { blocks: Vec::new() });
+            return Ok(SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            });
         };
         let matching = handlers(&snapshot, HookEvent::UserPromptSubmit, None, None);
         if matching.is_empty() {
-            return Ok(SubmitCheckReply::Proceed { blocks: Vec::new() });
+            return Ok(SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            });
         }
         let mut payload = self.payload(HookEvent::UserPromptSubmit, &request.branch_id);
         payload.insert(
@@ -242,6 +248,7 @@ impl HooksRuntime {
             return Err(interrupted());
         }
         let mut blocks = Vec::new();
+        let mut warnings = Vec::new();
         for decision in decisions {
             match decision {
                 PromptDecision::Blocked { message } => {
@@ -252,10 +259,11 @@ impl HooksRuntime {
                     &[("kind", "prompt-submit")],
                     &escaped(&[context]),
                 )),
+                PromptDecision::Unfinished(warning) => warnings.push(warning),
                 PromptDecision::None => {}
             }
         }
-        Ok(SubmitCheckReply::Proceed { blocks })
+        Ok(SubmitCheckReply::Proceed { blocks, warnings })
     }
 
     /// Runs the handlers concurrently and returns their decisions in catalog
@@ -687,22 +695,41 @@ fn mode_name(mode: InputMode) -> &'static str {
 }
 
 /// What an unload answers for the handlers that were running (A.5): each one
-/// did not finish, so the first `onFailure: block` in catalog order blocks.
+/// did not finish, so the first `onFailure: block` in catalog order blocks and
+/// every other one is reported to the caller.
 fn unfinished_prompt(handlers: &[HookHandler]) -> SubmitCheckReply {
+    let mut warnings = Vec::new();
     for handler in handlers.iter().filter(|handler| !handler.asynchronous) {
         if handler.on_failure == OnFailure::Block {
             return SubmitCheckReply::Block {
                 message: format!("Hook {} did not finish", handler.source),
             };
         }
+        warnings.push(unfinished(&handler.source, UNLOADED));
     }
-    SubmitCheckReply::Proceed { blocks: Vec::new() }
+    SubmitCheckReply::Proceed {
+        blocks: Vec::new(),
+        warnings,
+    }
+}
+
+/// The reason an unload gives for the handlers it terminated (§1, A.5).
+const UNLOADED: &str = "Hooks was unloaded";
+
+/// The sentence a caller shows for one run that did not finish (A.6.2).
+fn unfinished(source: &HookSourceId, reason: &str) -> String {
+    format!("Hook {source} did not finish: {reason}")
 }
 
 /// What one `UserPromptSubmit` run does to the entry's input (A.4, A.5).
 enum PromptDecision {
-    Blocked { message: String },
+    Blocked {
+        message: String,
+    },
     Context(String),
+    /// The run failed and its `onFailure` is `continue`: the input proceeds
+    /// without it, and the caller is told why.
+    Unfinished(String),
     None,
 }
 
@@ -719,7 +746,9 @@ fn prompt_decision(handler: &HookHandler, run: &HookRun) -> PromptDecision {
                 message: format!("Hook {} did not finish", handler.source),
             }
         }
-        HookResult::Failed { .. } => PromptDecision::None,
+        HookResult::Failed { reason, .. } => {
+            PromptDecision::Unfinished(unfinished(&handler.source, reason))
+        }
         HookResult::Success { stdout } => {
             let trimmed = stdout.trim();
             if trimmed.is_empty() {

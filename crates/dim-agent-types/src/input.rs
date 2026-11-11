@@ -11,3 +11,13 @@ pub struct PendingInput {
     pub user: Option<UserInput>,
     pub applied: bool,
 }
+
+/// One piece of work a submit check did not do, attributed to the check that
+/// raised it (Hooks A.6.2). A caller shows it; the model never reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SubmitWarning {
+    /// The name the raising check was registered under.
+    pub check: String,
+    /// What it did not do, as one sentence.
+    pub message: String,
+}

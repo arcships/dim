@@ -1,8 +1,7 @@
 use super::*;
 use crate::tree_protocol as wire;
 use dim_agent_capabilities::input_queue::{
-    CheckInterrupted, SubmitCheckReply, SubmitCheckRequest, SubmitChecks, SubmitEntry,
-    append_blocks,
+    CheckInterrupted, SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry, append_blocks,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
@@ -19,7 +18,7 @@ impl Connection {
         rpc: &RpcService,
         session: &Session,
         request: SubmitCheckRequest,
-    ) -> Result<SubmitCheckReply, RpcError> {
+    ) -> Result<SubmitDecision, RpcError> {
         let checks = session
             .session_service::<SubmitChecks>()
             .map_err(RpcError::from)?;
@@ -53,7 +52,7 @@ impl Connection {
         // it made valid would be written and titled after all.
         data.validate()
             .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
-        match self
+        let checked = self
             .submit_check(
                 rpc,
                 &session,
@@ -64,13 +63,22 @@ impl Connection {
                     mode: data.effective_mode(),
                 },
             )
-            .await?
-        {
-            SubmitCheckReply::Block { message } => {
+            .await?;
+        // A warning is the caller's, never the model's: it names work the
+        // checks did not do, and the input is written without it. Version 1
+        // and 2 encodings are frozen, so they carry no warnings.
+        let warnings = match checked {
+            SubmitDecision::Block { message } => {
                 return Err(RpcError::app(-32000, "input_blocked", message));
             }
-            SubmitCheckReply::Proceed { blocks } => append_blocks(&mut data.user, blocks),
+            SubmitDecision::Proceed { blocks, warnings } => {
+                append_blocks(&mut data.user, blocks);
+                warnings
+            }
         }
+        .into_iter()
+        .filter(|_| self.protocol_version() >= 3)
+        .collect();
         let event = session.input(data, branch).await.map_err(RpcError::from)?;
         if self.protocol_version() >= 3 {
             let mut published = publication.watch();
@@ -94,7 +102,7 @@ impl Connection {
                 ));
             }
         }
-        Ok(Reply::Submit(SubmitResult { event }))
+        Ok(Reply::Submit(SubmitResult { event, warnings }))
     }
 
     pub(super) async fn input_lookup(
@@ -441,8 +449,8 @@ impl Connection {
         boundary.map_err(RpcError::invalid)?;
         // A blocked prompt creates no branch (Hooks A.6.2). A branch's first
         // input is built from the prompt alone, so the checks' contexts are
-        // dropped.
-        match self
+        // dropped and their warnings ride on the reply.
+        let checked = self
             .submit_check(
                 rpc,
                 &session,
@@ -457,19 +465,27 @@ impl Connection {
                     mode: InputMode::Queue,
                 },
             )
-            .await?
-        {
-            SubmitCheckReply::Block { message } => {
+            .await?;
+        let warnings = match checked {
+            SubmitDecision::Block { message } => {
                 return Err(RpcError::app(-32000, "input_blocked", message));
             }
-            SubmitCheckReply::Proceed { blocks } if !blocks.is_empty() => {
-                tracing::warn!(
-                    contexts = blocks.len(),
-                    "submit check contexts dropped: a branch's first input is its prompt"
-                );
+            SubmitDecision::Proceed { blocks, warnings } => {
+                if !blocks.is_empty() {
+                    tracing::warn!(
+                        contexts = blocks.len(),
+                        "submit check contexts dropped: a branch's first input is its prompt"
+                    );
+                }
+                // `session.branch_create` is served from protocol v2 on
+                // (`connection.rs`'s `validate_call`), and the v2 encoding is
+                // frozen, so only v3 and later carry the warnings.
+                warnings
+                    .into_iter()
+                    .filter(|_| self.protocol_version() >= 3)
+                    .collect()
             }
-            SubmitCheckReply::Proceed { .. } => {}
-        }
+        };
         let id = session
             .branch(
                 params.parent_branch_id,
@@ -490,6 +506,7 @@ impl Connection {
             .expect("successful creation is published");
         Ok(Reply::BranchCreate(wire::CreateResult {
             branch: branch.into(),
+            warnings,
         }))
     }
 }

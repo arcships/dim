@@ -1252,6 +1252,11 @@ pub struct AgentInfo {
 #[derive(Debug, Serialize)]
 pub struct SubmitResult {
     pub event: Arc<AgentEvent>,
+    /// Work the submit checks did not do, for the caller to show: each warning
+    /// names the check that raised it (Hooks A.6.2). Absent when empty, and
+    /// never filled for protocol v1 or v2.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]

@@ -3006,6 +3006,134 @@ async fn a_failure_finishing_after_a_later_result_blocks_by_its_own_handler() {
     env.close().await;
 }
 
+/// A.5 and A.6.2: a prompt hook that fails with the default `onFailure`
+/// proceeds, and the steer's reply names the hook and its reason while the
+/// input is written without either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_prompt_hook_reports_a_warning_on_a_steer() {
+    let env = Env::new().await;
+    env.sources.set(document(serde_json::json!({
+        "UserPromptSubmit": [command(serde_json::json!({
+            "type": "command", "command": "printf 'boom' >&2; exit 3",
+        }))],
+    })));
+    let session = env.session().await;
+    let reply = withdraw(
+        &session,
+        serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(
+        reply["warnings"],
+        serde_json::json!([{
+            "check": "hooks",
+            "message": "Hook user did not finish: exited with exit status: 3",
+        }]),
+        "the reply names the hook and its reason"
+    );
+    let steer = reply["steer"]["inputId"].as_str().unwrap();
+    let event = branch_events(&session, "main", ..)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.id == steer)
+        .expect("the steer input was written");
+    let EventKind::InputMessage(data) = &event.kind else {
+        panic!("the steer input is an input message");
+    };
+    let user = data
+        .user
+        .as_ref()
+        .expect("the steer keeps its user content");
+    assert_eq!(
+        user.content,
+        vec![ContentBlock::Text { text: "new".into() }],
+        "the failure is not model context"
+    );
+    env.close().await;
+}
+
+/// A.6.2: a withdrawal with no `steer` runs no submit check, so it carries no
+/// warnings even when a prompt hook would fail: there is no input they could
+/// name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_withdrawal_without_a_steer_carries_no_warnings() {
+    let env = Env::new().await;
+    env.sources.set(document(serde_json::json!({
+        "UserPromptSubmit": [command(serde_json::json!({
+            "type": "command", "command": "printf 'boom' >&2; exit 3",
+        }))],
+    })));
+    let session = env.session().await;
+    let reply = withdraw(
+        &session,
+        serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": "unknown"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert!(
+        reply.get("warnings").is_none(),
+        "a withdrawal that wrote no steer names no work: {reply}"
+    );
+    env.close().await;
+}
+
+/// A.5 and A.6.2: the same for a timeout, bounded by the handler's own short
+/// `timeout` rather than the 30 s default.// A.5 and A.6.2: the same for a timeout, bounded by the handler's own short
+/// `timeout` rather than the 30 s default.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timed_out_prompt_hook_proceeds_and_is_reported() {
+    let env = Env::new().await;
+    env.sources.set(document(serde_json::json!({
+        "UserPromptSubmit": [command(serde_json::json!({
+            "type": "command", "command": "sleep 5", "timeout": 1,
+        }))],
+    })));
+    let session = env.session().await;
+    let started = std::time::Instant::now();
+    let reply = withdraw(
+        &session,
+        serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the check waited past its timeout"
+    );
+    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(
+        reply["warnings"],
+        serde_json::json!([{
+            "check": "hooks",
+            "message": "Hook user did not finish: timed out after 1s",
+        }]),
+        "the reply names the hook and the timeout"
+    );
+    let steer = reply["steer"]["inputId"].as_str().unwrap();
+    let event = branch_events(&session, "main", ..)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.id == steer)
+        .expect("the steer input was written");
+    let EventKind::InputMessage(data) = &event.kind else {
+        panic!("the steer input is an input message");
+    };
+    assert_eq!(
+        data.user.as_ref().expect("user content").content,
+        vec![ContentBlock::Text { text: "new".into() }],
+        "the timeout is not model context"
+    );
+    env.close().await;
+}
+
 /// Runs `command` and waits until it has written `started` and its pid; the
 /// handler then blocks until the test ends or the part unloads.
 fn blocking_prompt(started: &Path, pid_file: &Path, on_failure: Option<&str>) -> serde_json::Value {
@@ -3155,6 +3283,14 @@ async fn an_unload_with_the_default_on_failure_writes_the_input() {
         .expect("an unloaded check with the default onFailure proceeds");
     assert_eq!(reply["status"], "deleted", "{reply}");
     assert!(reply["steer"]["inputId"].is_string(), "{reply}");
+    assert_eq!(
+        reply["warnings"],
+        serde_json::json!([{
+            "check": "hooks",
+            "message": "Hook user did not finish: Hooks was unloaded",
+        }]),
+        "the unloaded handler is reported to the caller"
+    );
     let local = branch_events(&session, "main", ..).await.unwrap();
     assert!(
         local.iter().any(|event| matches!(

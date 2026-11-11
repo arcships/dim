@@ -122,7 +122,9 @@ export type PermissionState = { version: number; policy: PermissionPolicy }
 export type QueuedInput = { id: string; text: string; skills?: string[]; user: UserInput }
 
 /** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
-export type WithdrawResult = { status: "deleted" } | { status: "notHeld" }
+export type WithdrawResult =
+  | { status: "deleted"; warnings?: SubmitWarning[] }
+  | { status: "notHeld"; warnings?: SubmitWarning[] }
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
@@ -189,6 +191,8 @@ export type BranchCreateResult = {
   parentBranchId?: string
   branchPoint?: number
   createEvent?: number
+  /** Work a submit check did not do; absent when it raised none. */
+  warnings?: SubmitWarning[]
 }
 
 
@@ -294,7 +298,10 @@ export interface AgentEvent {
   context_state?: boolean;
 }
 export type TimelinePage = Omit<HistoryPage, "events"> & { events: AgentEvent[] }
-export type SubmitResult = { event: AgentEvent }
+/** Work a submit check did not do, for the caller to show (Hooks A.6.2). */
+export type SubmitWarning = { check: string; message: string }
+/** `warnings` is absent when no check raised one, and on protocol v1 and v2. */
+export type SubmitResult = { event: AgentEvent; warnings?: SubmitWarning[] }
 export type InterruptResult = { sequence: number }
 
 export type Notification =
