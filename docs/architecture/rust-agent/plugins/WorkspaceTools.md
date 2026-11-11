@@ -291,9 +291,17 @@ replacement, folding CRLF to LF and excluding the BOM. It begins with
 `--- /dev/null\n+++ <path>\n` for creation, or
 `--- <path>\n+++ <path>\n` for overwrite, including empty files and unchanged
 text. Its hunks use the same three context lines as `edit`; `edit` retains its
-existing hunk-only format. These display diffs are not byte patches and have no
-output-size cap. Consumers use the recorded diff rather than rereading the
-current file; older results without it do not provide a comparison.
+existing hunk-only format. These display diffs are not byte patches.
+
+Write comparisons have a 64 KiB budget: an old file larger than that is not
+decoded for display, the combined decoded old and replacement text must fit
+before diff generation, and the complete resulting diff, including headers,
+must fit before it enters the result. Exceeding any budget does not limit the
+write: `diff` is null and the text result explicitly says the comparison was
+omitted because of the size limit. `path`, `bytesWritten` and `revision` remain
+available. No partial diff or misleading complete change count is returned.
+Consumers use the recorded diff rather than rereading the current file; null
+or missing diffs do not provide a comparison.
 
 ### Rule check
 

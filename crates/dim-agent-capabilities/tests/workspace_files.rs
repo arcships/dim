@@ -320,6 +320,62 @@ fn definitions_match_the_ts_tool_contracts() {
 }
 
 #[tokio::test]
+async fn write_comparisons_stay_bounded_without_limiting_the_mutation() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put(
+        "large.txt",
+        format!("{}\n", "a".repeat(17 * 1024 * 1024)).as_bytes(),
+    );
+    ok(&workspace
+        .call(&reads, "read", json!({ "path": "large.txt", "limit": 1 }))
+        .await);
+    let result = workspace
+        .call(
+            &reads,
+            "write",
+            json!({ "path": "large.txt", "content": "small\n" }),
+        )
+        .await;
+    ok(&result);
+    assert_eq!(workspace.bytes("large.txt"), b"small\n");
+    assert!(
+        structured(&result)["diff"].is_null(),
+        "Oversized comparisons must not enter durable results"
+    );
+    assert!(text(&result).contains("comparison omitted"));
+    assert!(serde_json::to_vec(&result).unwrap().len() < 1024);
+    assert_eq!(structured(&result)["bytesWritten"], 6);
+    assert!(structured(&result)["revision"].is_string());
+
+    let prefix = "--- /dev/null\n+++ new.txt\n@@ -0,0 +1,1 @@\n+";
+    for (length, recorded) in [
+        (64 * 1024 - prefix.len(), true),
+        (64 * 1024 - prefix.len() + 1, false),
+        (64 * 1024 + 1, false),
+    ] {
+        let content = "é".repeat(length / 2) + if length % 2 == 1 { "a" } else { "" };
+        let result = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "new.txt", "content": content }),
+            )
+            .await;
+        ok(&result);
+        assert_eq!(workspace.bytes("new.txt"), content.as_bytes());
+        if recorded {
+            assert_eq!(structured(&result)["diff"], format!("{prefix}{content}"));
+        } else {
+            assert!(structured(&result)["diff"].is_null());
+            assert!(text(&result).contains("comparison omitted"));
+        }
+        assert!(serde_json::to_vec(&result).unwrap().len() < 512 * 1024);
+        fs::remove_file(workspace.path("new.txt")).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn edits_and_writes_preserve_bom_and_line_endings() {
     let workspace = Workspace::new();
     let reads = branch();

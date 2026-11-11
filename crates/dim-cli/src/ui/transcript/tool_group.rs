@@ -592,9 +592,8 @@ fn append_interactive(
                 }
             }
             Item::Command { command, .. } => {
-                append_command(&mut content, call, command);
+                append_command(&mut content, call, &first_line(Some(command)));
                 if let Some(header) = content.first_mut() {
-                    header.spans = highlight_command(&first_line(Some(command)));
                     header.overflow = Overflow::Truncate;
                 }
                 if command.lines().count() > 1 {

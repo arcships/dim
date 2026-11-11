@@ -18,6 +18,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+const WRITE_DIFF_MAX_BYTES: usize = 64 * 1024;
+
 pub(super) fn definition() -> Value {
     json!({
         "name": "write",
@@ -174,9 +176,13 @@ fn write_locked(
             Err(conflict) => return done(conflict),
         };
         Cancelled::check(cancel)?;
-        let before = match codec::decode_text(&bytes, &binding) {
-            Ok(text) => text,
-            Err(error) => return done(error.into_result()),
+        let before = if bytes.len() <= WRITE_DIFF_MAX_BYTES {
+            match codec::decode_text(&bytes, &binding) {
+                Ok(text) => Some(text),
+                Err(error) => return done(error.into_result()),
+            }
+        } else {
+            None
         };
         let text = codec::normalize_eol(content, binding.eol);
         (binding, before, text)
@@ -188,18 +194,23 @@ fn write_locked(
             bom: Bom::None,
             eol: codec::detect_eol(content),
         };
-        (binding, String::new(), content.to_owned())
+        (binding, Some(String::new()), content.to_owned())
     };
     let bytes = match codec::encode_text(&text, &binding) {
         Ok(bytes) => bytes,
         Err(error) => return done(error.into_result()),
     };
     Cancelled::check(cancel)?;
-    let diff = format!(
-        "--- {}\n+++ {display}\n{}",
-        if exists { display } else { "/dev/null" },
-        unified_diff(&before.replace("\r\n", "\n"), &text.replace("\r\n", "\n")),
-    );
+    let diff = before
+        .filter(|before| before.len().saturating_add(text.len()) <= WRITE_DIFF_MAX_BYTES)
+        .map(|before| {
+            format!(
+                "--- {}\n+++ {display}\n{}",
+                if exists { display } else { "/dev/null" },
+                unified_diff(&before.replace("\r\n", "\n"), &text.replace("\r\n", "\n")),
+            )
+        })
+        .filter(|diff| diff.len() <= WRITE_DIFF_MAX_BYTES);
     Cancelled::check(cancel)?;
     // Path-based writes create missing parents here, as they always did; the
     // bounded target created them during its walk, relative to the handles.
@@ -228,7 +239,11 @@ fn write_locked(
     }
     let raw_revision = revision(&bytes);
     let result = wrote(
-        format!("Wrote {display}"),
+        if diff.is_some() {
+            format!("Wrote {display}")
+        } else {
+            format!("Wrote {display}\nBefore/after comparison omitted: size limit exceeded.")
+        },
         json!({ "path": display, "bytesWritten": bytes.len(), "revision": hex(&raw_revision), "diff": diff }),
         display,
     );

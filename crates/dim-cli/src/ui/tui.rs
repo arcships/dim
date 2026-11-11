@@ -6232,14 +6232,18 @@ impl App {
             return;
         };
         let choices = self.tool_choices.get(&self.tool_scope());
+        let mut openings = HashMap::new();
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if opens_group(&snapshot.rows, index) {
+                openings.entry(group_id(row)).or_insert(index);
+            }
+        }
         let mut changed = Vec::new();
         for (at, block) in self.history.iter().enumerate() {
             let Block::ToolGroup(group) = block else {
                 continue;
             };
-            let Some(index) = snapshot.rows.iter().enumerate().find_map(|(index, row)| {
-                (opens_group(&snapshot.rows, index) && group_id(row) == group.id).then_some(index)
-            }) else {
+            let Some(&index) = openings.get(&group.id) else {
                 continue;
             };
             let rows = group_rows(&snapshot.rows, index);
@@ -11833,6 +11837,52 @@ mod tests {
         toggle(&mut drawn.app, "Ran code · 2 tool calls", 80);
         assert!(text(&mut drawn.app, 80).contains("deep output"));
         assert!(!text(&mut drawn.app, 80).contains("second child"));
+    }
+
+    #[test]
+    fn fullscreen_command_previews_preserve_background_handoff_status() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for background in [false, true] {
+            for command in ["server --listen", "server --listen\necho ready"] {
+                let mut drawn = attached();
+                drawn.app.set_fullscreen(true);
+                drawn.app.tool_detail = Detail::Expanded;
+                let mut row = (*message(false)).clone();
+                row.kind = RowKind::ToolCall;
+                row.row_id = "command".into();
+                row.call_id = Some("exec-call".into());
+                row.batch = Some("exec-request".into());
+                row.tool_name = Some("exec".into());
+                row.tool_input = Some(serde_json::json!({
+                    "command": command,
+                    "runInBackground": background,
+                }));
+                row.result_text = Some("Execution completed".into());
+                show(&mut drawn, vec![row.into()]);
+                let frame = drawn.app.frame((96, 40));
+                let rows: Vec<_> = (0..drawn.app.len())
+                    .flat_map(|index| drawn.app.rows(index, 96))
+                    .chain(frame.live)
+                    .collect();
+                let rendered = strip_escapes(&rows.join("\n"));
+                let header = rendered
+                    .lines()
+                    .find(|line| line.contains("$ server"))
+                    .unwrap();
+                assert_eq!(header.contains("(detached)"), background, "{rendered}");
+                assert!(!header.contains("echo ready"), "{rendered}");
+                assert!(rendered.contains("Ran 1 command"), "{rendered}");
+                assert_eq!(
+                    rendered.contains("Execution completed"),
+                    !background,
+                    "{rendered}"
+                );
+                if command.contains('\n') {
+                    assert!(rendered.contains("echo ready"), "{rendered}");
+                }
+            }
+        }
     }
 
     #[test]
