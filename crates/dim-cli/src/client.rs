@@ -596,12 +596,12 @@ async fn daemon_in_use(client: &mut Client) -> bool {
     })
 }
 
-/// Uses the daemon behind `client` when it is this build, stops it when it is
-/// another build and idle, and keeps it with a notice when it is in use.
-/// `None` means the daemon stopped and the caller may start its own. Every
-/// client that reaches a serving daemon goes through here, whether the first
-/// attempt found it or a startup wait connected to it, and it has already
-/// greeted the daemon.
+/// Uses the daemon behind `client` when it is this build at this protocol,
+/// stops it when it is another build or a lower protocol and idle, and keeps
+/// it with a notice when it is in use. `None` means the daemon stopped and the
+/// caller may start its own. Every client that reaches a serving daemon goes
+/// through here, whether the first attempt found it or a startup wait
+/// connected to it, and it has already greeted the daemon.
 async fn adopt(
     mut client: Client,
     start: bool,
@@ -611,18 +611,19 @@ async fn adopt(
     locale: crate::locale::Locale,
 ) -> Result<Option<Link>> {
     let version = client.server_version().to_owned();
-    if !(start && server.embedded && version != env!("CARGO_PKG_VERSION")) {
+    let protocol = client.connection_config().protocol_version;
+    if !(start && server.embedded && (version != env!("CARGO_PKG_VERSION") || protocol < desired)) {
         let _ = std::fs::remove_file(startup_note);
         return Ok(Some(Link {
             client,
             notice: None,
         }));
     }
-    // A daemon of another build is replaced only while it is idle: one that
-    // serves other clients is kept, and the client says so. `hello` already
-    // proved the protocol and the required methods, so a daemon of this
-    // protocol is usable; the restart happens on a later start that finds it
-    // idle.
+    // A daemon of another build or of a lower protocol is replaced only while
+    // it is idle: one that serves other clients is kept, and the client says
+    // so. `hello` proved that this negotiated version is usable and offered
+    // the required methods, which is not the same as the daemon being ours;
+    // the restart happens on a later start that finds it idle.
     let counts = if client.offers("daemon.shutdown.ifIdle") {
         match shutdown_if_idle(&mut client).await? {
             IdleShutdown::Busy(counts) => counts,
@@ -645,8 +646,8 @@ async fn adopt(
     // be asked as well as this client needs. A Session created over it would
     // be stored at its protocol and hidden from builds of this one, so a start
     // that agreed on a lower protocol ends here instead.
-    if client.connection_config().protocol_version < desired {
-        return Err(crate::daemon_too_old(locale, &notice).into());
+    if protocol < desired {
+        return Err(crate::daemon_too_old(locale, &notice, protocol).into());
     }
     Ok(Some(Link {
         client,

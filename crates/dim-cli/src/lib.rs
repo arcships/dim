@@ -287,12 +287,12 @@ fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
 pub(crate) const DAEMON_BUSY: &str = "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 /// [`DAEMON_BUSY`] with the counts a `daemon_busy` refusal carried.
 pub(crate) const DAEMON_BUSY_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
-/// The line a start prints when the daemon it reached is a build this client
-/// cannot use for a Session: the daemon's protocol is older than this
-/// client's, and it could not be replaced because other clients use it.
-pub(crate) const DAEMON_TOO_OLD: &str = "The App Server is still {server} because other clients are using it, and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// The line a start prints when the daemon it reached cannot serve a Session:
+/// its protocol is older than this client's, and it could not be replaced
+/// because other clients use it.
+pub(crate) const DAEMON_TOO_OLD: &str = "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 /// [`DAEMON_TOO_OLD`] with the counts a `daemon_busy` refusal carried.
-pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and this {client} client cannot use that build. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 
 /// The line a client prints once when a daemon reports a store upgrade while
 /// it starts; both waits then follow the daemon's progress instead of a fixed
@@ -334,12 +334,17 @@ pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
     }
 }
 
-/// The line a start fails with when the kept daemon of another build speaks
-/// an older protocol, in `locale`, with the refusal's counts when it sent
-/// them.
-pub(crate) fn daemon_too_old(locale: locale::Locale, notice: &client::DaemonNotice) -> String {
+/// The line a start fails with when the kept daemon of another build or of a
+/// lower protocol cannot serve a Session, in `locale`, naming the protocol it
+/// speaks and with the refusal's counts when it sent them.
+pub(crate) fn daemon_too_old(
+    locale: locale::Locale,
+    notice: &client::DaemonNotice,
+    protocol: u32,
+) -> String {
     let server = sanitize::safe(&notice.server);
     let client_version = env!("CARGO_PKG_VERSION");
+    let protocol = protocol.to_string();
     match &notice.counts {
         Some(counts) => {
             let connections = counts.connections.to_string();
@@ -351,6 +356,7 @@ pub(crate) fn daemon_too_old(locale: locale::Locale, notice: &client::DaemonNoti
                 &[
                     ("server", &server),
                     ("client", client_version),
+                    ("protocol", &protocol),
                     ("connections", &connections),
                     ("attached", &attached),
                     ("running", &running),
@@ -360,7 +366,11 @@ pub(crate) fn daemon_too_old(locale: locale::Locale, notice: &client::DaemonNoti
         None => crate::ui::i18n::tf_in(
             locale,
             DAEMON_TOO_OLD,
-            &[("server", &server), ("client", client_version)],
+            &[
+                ("server", &server),
+                ("client", client_version),
+                ("protocol", &protocol),
+            ],
         ),
     }
 }

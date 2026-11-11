@@ -60,17 +60,21 @@ fn refuse(wire: &mut Wire) {
         .unwrap();
 }
 
-/// What alpha.21 answers a `hello` it admits, with `features`.
-fn v3_hello(wire: &mut Wire, features: &[&str]) {
+/// The build of `alpha.21`, the daemon older than this client.
+const ALPHA_21: &str = "0.1.0-alpha.21";
+
+/// What a v3 daemon of `version` answers a `hello` it admits, with
+/// `features`.
+fn v3_hello(wire: &mut Wire, version: &str, features: &[&str]) {
     let hello = wire.read("hello");
     assert_eq!(hello["params"]["protocolVersion"], 3);
     wire.reply(
         &hello,
-        json!({"instanceId":"alpha.21","serverVersion":"0.1.0-alpha.21","protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features}),
+        json!({"instanceId":"alpha.21","serverVersion":version,"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features}),
     );
 }
 
-/// The features alpha.21 advertises that this client needs.
+/// The features a v3 daemon advertises that this client needs.
 const V3_FEATURES: [&str; 5] = [
     "session.create",
     "session.history",
@@ -91,7 +95,7 @@ fn an_idle_v3_daemon_is_replaced_after_negotiating() {
         refuse(&mut wire);
         drop(wire);
         let mut wire = accept(&listener);
-        v3_hello(&mut wire, &V3_FEATURES);
+        v3_hello(&mut wire, ALPHA_21, &V3_FEATURES);
         let shutdown = wire.read("daemon.shutdown");
         assert_eq!(
             shutdown["params"],
@@ -134,7 +138,7 @@ fn a_busy_v3_daemon_gets_one_notice_and_no_session() {
         refuse(&mut wire);
         drop(wire);
         let mut wire = accept(&listener);
-        v3_hello(&mut wire, &V3_FEATURES);
+        v3_hello(&mut wire, ALPHA_21, &V3_FEATURES);
         let shutdown = wire.read("daemon.shutdown");
         assert_eq!(shutdown["params"], json!({"ifIdle": true}));
         wire.send(json!({"jsonrpc":"2.0","id":shutdown["id"],"error":{
@@ -151,14 +155,93 @@ fn a_busy_v3_daemon_gets_one_notice_and_no_session() {
     assert_eq!(output.status.code(), Some(1));
     let expected = format!(
         "Error: The App Server is still 0.1.0-alpha.21 because other clients are using it \
-         (connections: 2, attached Sessions: 1, running turns: 1), and this {} client cannot \
-         use that build. No Session was started. Run `dimcode daemon stop` when they are done, \
-         and the next start runs {}.",
+         (connections: 2, attached Sessions: 1, running turns: 1), and it speaks protocol v3, \
+         which this {} client cannot use. No Session was started. Run `dimcode daemon stop` when \
+         they are done, and the next start runs {}.",
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_VERSION")
     );
     assert_eq!(String::from_utf8_lossy(&output.stderr).trim_end(), expected);
     assert!(output.stdout.is_empty());
+}
+
+/// A daemon built from this version can still be older in protocol: the
+/// version string alone does not make it this client's daemon.
+#[test]
+fn a_v3_daemon_of_this_version_is_not_reused() {
+    let home = Home::new();
+    let listener = listen(&home);
+    let daemon = thread::spawn(move || {
+        let mut wire = accept(&listener);
+        refuse(&mut wire);
+        drop(wire);
+        let mut wire = accept(&listener);
+        v3_hello(&mut wire, env!("CARGO_PKG_VERSION"), &V3_FEATURES);
+        let shutdown = wire.read("daemon.shutdown");
+        assert_eq!(shutdown["params"], json!({"ifIdle": true}));
+        wire.send(json!({"jsonrpc":"2.0","id":shutdown["id"],"error":{
+            "code":-32000,"message":"The App Server is in use",
+            "data":{"appError":"daemon_busy","connections":2,"attachedSessions":1,"running":1}}}));
+        assert_eq!(
+            wire.trailing_request(),
+            None,
+            "a daemon of this version at an older protocol must not serve a Session"
+        );
+    });
+    let output = home.command().args(["models", "fixture"]).output().unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let expected = format!(
+        "Error: The App Server is still {} because other clients are using it \
+         (connections: 2, attached Sessions: 1, running turns: 1), and it speaks protocol v3, \
+         which this {} client cannot use. No Session was started. Run `dimcode daemon stop` when \
+         they are done, and the next start runs {}.",
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim_end(), expected);
+    assert!(output.stdout.is_empty());
+}
+
+/// An idle daemon of this version at an older protocol is shut down and
+/// replaced too: the successor speaks v4 and serves the command silently.
+#[test]
+fn an_idle_v3_daemon_of_this_version_is_replaced() {
+    let home = Home::new();
+    let listener = listen(&home);
+    let socket = endpoint(&home);
+    let daemon = thread::spawn(move || {
+        let mut wire = accept(&listener);
+        refuse(&mut wire);
+        drop(wire);
+        let mut wire = accept(&listener);
+        v3_hello(&mut wire, env!("CARGO_PKG_VERSION"), &V3_FEATURES);
+        let shutdown = wire.read("daemon.shutdown");
+        assert_eq!(shutdown["params"], json!({"ifIdle": true}));
+        fs::remove_file(&socket).unwrap();
+        let successor = UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        successor.set_nonblocking(true).unwrap();
+        wire.reply(&shutdown, json!({}));
+        wire.0
+            .get_mut()
+            .shutdown(std::net::Shutdown::Write)
+            .unwrap();
+        serve_successor(&successor);
+    });
+    let output = home.command().args(["models", "fixture"]).output().unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("The App Server is still"),
+        "a replaced daemon says nothing: {stderr}"
+    );
 }
 
 /// Serves a v3 daemon that refuses v4, admits v3, answers one plain
@@ -171,7 +254,7 @@ fn stop_a_v3_daemon(home: &Home, arguments: &[&str]) {
         refuse(&mut wire);
         drop(wire);
         let mut wire = accept(&listener);
-        v3_hello(&mut wire, &V3_FEATURES);
+        v3_hello(&mut wire, ALPHA_21, &V3_FEATURES);
         let shutdown = wire.read("daemon.shutdown");
         assert_eq!(
             shutdown["params"],

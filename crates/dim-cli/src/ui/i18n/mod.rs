@@ -264,13 +264,18 @@ mod tests {
                 ),
                 (
                     TOO_OLD,
-                    vec![("server", "9.9.9-old"), ("client", "9.9.9-new")],
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
+                    ],
                 ),
                 (
                     TOO_OLD_COUNTS,
                     vec![
                         ("server", "9.9.9-old"),
                         ("client", "9.9.9-new"),
+                        ("protocol", "3"),
                         ("connections", "2"),
                         ("attached", "1"),
                         ("running", "1"),
