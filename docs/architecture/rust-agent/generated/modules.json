@@ -632,6 +632,7 @@
         "format",
         "json",
         "matches",
+        "std::pin::pin",
         "tokio::select",
         "tracing::info",
         "tracing::warn",
@@ -18312,6 +18313,7 @@
       "references": [
         "path Branch",
         "path BranchStatus",
+        "path InputCommit",
         "path Publication",
         "path branch"
       ]
@@ -19478,7 +19480,10 @@
       "references": [
         "path Branch",
         "path BranchStatus",
-        "path BranchStatus::default"
+        "path BranchStatus::default",
+        "path InputCommit",
+        "path InputCommit::Existing",
+        "path InputCommit::Written"
       ]
     },
     {
@@ -24558,6 +24563,15 @@
       "to": "dim_agent_runtime::agent",
       "references": [
         "path Session"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_runtime::branch",
+      "references": [
+        "path InputCommit::Existing",
+        "path InputCommit::Written",
+        "use dim_agent_runtime::InputCommit"
       ]
     },
     {

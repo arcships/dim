@@ -5,8 +5,9 @@ use dim_agent_capabilities::input_queue::{
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    BranchOptions, QueryComparison, QueryFilter, QueryOperand, QueryOrder, QueryOrderKey,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, TimelineQuery,
+    BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
+    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
+    TimelineQuery,
 };
 use dim_agent_types::{BranchSource, InputBlock, InputMode};
 
@@ -67,7 +68,7 @@ impl Connection {
         // A warning is the caller's, never the model's: it names work the
         // checks did not do, and the input is written without it. Version 1
         // and 2 encodings are frozen, so they carry no warnings.
-        let warnings = match checked {
+        let checked = match checked {
             SubmitDecision::Block { message } => {
                 return Err(RpcError::app(-32000, "input_blocked", message));
             }
@@ -75,11 +76,21 @@ impl Connection {
                 append_blocks(&mut data.user, blocks);
                 warnings
             }
+        };
+        let (event, commit) = session
+            .input_commit(data, branch)
+            .await
+            .map_err(RpcError::from)?;
+        // A warning describes the write of this call. A resubmission of a
+        // `submissionId` the branch already holds wrote nothing, so it answers
+        // the first input's receipt with none of this attempt's warnings.
+        let warnings = match commit {
+            InputCommit::Written => checked,
+            InputCommit::Existing => Vec::new(),
         }
         .into_iter()
         .filter(|_| self.protocol_version() >= 3)
         .collect();
-        let event = session.input(data, branch).await.map_err(RpcError::from)?;
         if self.protocol_version() >= 3 {
             let mut published = publication.watch();
             tokio::select! {
