@@ -142,6 +142,21 @@ pub(super) fn register(connection: &Connection) -> Result<()> {
         })
         .map_err(error)?;
     connection
+        .create_scalar_function("query_concat", -1, flags, |ctx| {
+            let mut text = String::new();
+            for index in 0..ctx.len() {
+                let QueryValue::Value {
+                    value: Value::String(value),
+                } = property(ctx.get(index)?)?
+                else {
+                    return Ok(None::<String>);
+                };
+                text.push_str(&value);
+            }
+            Ok(Some(serde_json::to_string(&text).expect("string JSON")))
+        })
+        .map_err(error)?;
+    connection
         .create_scalar_function("query_compare", 3, flags, |ctx| {
             let comparison = match ctx.get::<i64>(2)? {
                 0 => QueryComparison::Eq,
@@ -427,11 +442,20 @@ impl<'a> Compiler<'a> {
         &mut self,
         value: &QueryOperand,
         row: &str,
+        root: &str,
         outer: Option<&str>,
         element: Option<&str>,
     ) -> String {
         match value {
             QueryOperand::Field { path } => self.column(row, path),
+            QueryOperand::Root { path } => self.column(root, path),
+            QueryOperand::Concat { parts } => {
+                let parts = parts
+                    .iter()
+                    .map(|part| self.operand(part, row, root, outer, element))
+                    .collect::<Vec<_>>();
+                format!("query_concat({})", parts.join(","))
+            }
             QueryOperand::Outer { path } => {
                 self.column(outer.expect("validated outer reference"), path)
             }
@@ -447,6 +471,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         filter: &QueryFilter,
         row: &str,
+        root: &str,
         outer: Option<&str>,
         element: Option<&str>,
     ) -> String {
@@ -474,8 +499,8 @@ impl<'a> Compiler<'a> {
                         .replace(".p", ".k");
                     return format!("{inner}={other}");
                 }
-                let left = self.operand(left, row, outer, element);
-                let right = self.operand(right, row, outer, element);
+                let left = self.operand(left, row, root, outer, element);
+                let right = self.operand(right, row, root, outer, element);
                 let op = match comparison {
                     QueryComparison::Eq => 0,
                     QueryComparison::Ne => 1,
@@ -487,7 +512,7 @@ impl<'a> Compiler<'a> {
                 format!("query_compare({left},{right},{op})")
             }
             QueryFilter::In { value, values } => {
-                let value = self.operand(value, row, outer, element);
+                let value = self.operand(value, row, root, outer, element);
                 let comparisons: Vec<_> = values
                     .iter()
                     .map(|candidate| {
@@ -502,7 +527,10 @@ impl<'a> Compiler<'a> {
                 }
             }
             QueryFilter::Present { value } => {
-                format!("({} IS NOT NULL)", self.operand(value, row, outer, element))
+                format!(
+                    "({} IS NOT NULL)",
+                    self.operand(value, row, root, outer, element)
+                )
             }
             QueryFilter::Prefix { .. } if self.prefixes.contains(&filter) => format!(
                 "{row}.t{}",
@@ -512,13 +540,13 @@ impl<'a> Compiler<'a> {
                     .unwrap()
             ),
             QueryFilter::Prefix { value, prefix } => {
-                let value = self.operand(value, row, outer, element);
+                let value = self.operand(value, row, root, outer, element);
                 let text = self.bind(prefix.clone());
                 format!("query_prefix({value},{text})")
             }
             QueryFilter::TextCandidate { .. } => self.text_candidate(filter, row, false, false),
             QueryFilter::Contains { value, text } => {
-                let value = self.operand(value, row, outer, element);
+                let value = self.operand(value, row, root, outer, element);
                 let text = self.bind(text.clone());
                 format!("query_contains({value},{text})")
             }
@@ -529,12 +557,15 @@ impl<'a> Compiler<'a> {
                 }
                 let conditions: Vec<_> = conditions
                     .iter()
-                    .map(|f| self.filter(f, row, outer, element))
+                    .map(|f| self.filter(f, row, root, outer, element))
                     .collect();
                 format!("({})", conditions.join(if and { " AND " } else { " OR " }))
             }
             QueryFilter::Not { condition } => {
-                format!("NOT ({})", self.filter(condition, row, outer, element))
+                format!(
+                    "NOT ({})",
+                    self.filter(condition, row, root, outer, element)
+                )
             }
             QueryFilter::Exists { condition } => {
                 if let Some((_, expression)) = self
@@ -574,7 +605,7 @@ impl<'a> Compiler<'a> {
                 }
                 self.alias += 1;
                 let inner = format!("related{}", self.alias);
-                let filter = self.filter(condition, &inner, Some(row), None);
+                let filter = self.filter(condition, &inner, root, Some(row), None);
                 format!("EXISTS (SELECT 1 FROM events {inner} WHERE {filter})")
             }
             QueryFilter::Any { field, condition } => {
@@ -582,7 +613,7 @@ impl<'a> Compiler<'a> {
                 let alias = format!("element{}", self.alias);
                 let array = self.column(row, field);
                 let element = format!("({array} -> ('$[' || {alias}.key || ']'))");
-                let condition = self.filter(condition, row, outer, Some(&element));
+                let condition = self.filter(condition, row, root, outer, Some(&element));
                 format!(
                     "CASE WHEN json_type({array})='array' THEN EXISTS (SELECT 1 FROM json_each({array}) {alias} WHERE {condition}) ELSE 0 END"
                 )
@@ -1485,11 +1516,24 @@ fn json_path(path: &str) -> String {
 }
 
 fn required_filter<'a>(filter: &'a QueryFilter, fields: &mut BTreeMap<&'a str, Requirement>) {
-    let mut operand = |operand: &'a QueryOperand, value: bool| {
-        if let QueryOperand::Field { path } | QueryOperand::Outer { path } = operand {
+    fn operand_fields<'a>(
+        operand: &'a QueryOperand,
+        value: bool,
+        fields: &mut BTreeMap<&'a str, Requirement>,
+    ) {
+        if let QueryOperand::Concat { parts } = operand {
+            for part in parts {
+                operand_fields(part, value, fields);
+            }
+        }
+        if let QueryOperand::Field { path }
+        | QueryOperand::Outer { path }
+        | QueryOperand::Root { path } = operand
+        {
             fields.entry(path).or_default().value |= value;
         }
-    };
+    }
+    let mut operand = |value, required| operand_fields(value, required, fields);
     match filter {
         QueryFilter::TextCandidate { .. } => {
             fields.entry("kind").or_default().value = true;
@@ -1648,11 +1692,14 @@ fn wire_at(
 }
 
 fn safe_filter(filter: &QueryFilter) -> Option<QueryFilter> {
-    let safe = |operand: &QueryOperand| match operand {
-        QueryOperand::Field { path } => !references(path),
-        QueryOperand::Outer { .. } => false,
-        _ => true,
-    };
+    fn safe(operand: &QueryOperand) -> bool {
+        match operand {
+            QueryOperand::Field { path } => !references(path),
+            QueryOperand::Outer { .. } | QueryOperand::Root { .. } => false,
+            QueryOperand::Concat { parts } => parts.iter().all(safe),
+            _ => true,
+        }
+    }
     match filter {
         QueryFilter::TextCandidate { .. } => Some(filter.clone()),
         QueryFilter::Compare { left, right, .. } if safe(left) && safe(right) => {
@@ -1692,15 +1739,28 @@ fn safe_exact(filter: &QueryFilter) -> bool {
     }
 }
 
-fn related_filters<'a>(filter: &'a QueryFilter, result: &mut Vec<&'a QueryFilter>) {
+fn related_filters<'a>(
+    filter: &'a QueryFilter,
+    result: &mut Vec<&'a QueryFilter>,
+    resolved: &[(&QueryFilter, String)],
+) {
     match filter {
-        QueryFilter::Exists { condition } => result.push(condition),
+        QueryFilter::Exists { condition } => {
+            if resolved
+                .iter()
+                .any(|(known, _)| *known == condition.as_ref())
+            {
+                return;
+            }
+            result.push(condition);
+            related_filters(condition, result, resolved);
+        }
         QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
             for condition in conditions {
-                related_filters(condition, result);
+                related_filters(condition, result, resolved);
             }
         }
-        QueryFilter::Not { condition } => related_filters(condition, result),
+        QueryFilter::Not { condition } => related_filters(condition, result, resolved),
         _ => (),
     }
 }
@@ -1849,7 +1909,10 @@ fn sources<'a>(
             .text_candidates
             .push((filter, supported.then_some(table)));
     }
-    if let Some((limit, _)) = compiler.candidate_limit
+    if let Some(limit) = compiler
+        .candidate_limit
+        .map(|(limit, _)| limit)
+        .or_else(|| query.pick.map(|_| 1))
         && let Some(members) = super::members::candidates(
             &*temporary.connection,
             scope,
@@ -1909,7 +1972,7 @@ fn sources<'a>(
     }
     let mut relations = Vec::new();
     if let Some(filter) = &query.filter {
-        related_filters(filter, &mut relations);
+        related_filters(filter, &mut relations, &compiler.resolved_relations);
     }
     let unresolved = relations.iter().any(|relation| {
         !compiler
@@ -1928,7 +1991,7 @@ fn sources<'a>(
     let mut roles = Vec::new();
     if let Some(filter) = &query.filter {
         roles.push(filter);
-        related_filters(filter, &mut roles);
+        related_filters(filter, &mut roles, &compiler.resolved_relations);
         roles.retain(|role| {
             *role == filter
                 || !compiler
@@ -2098,7 +2161,7 @@ fn sources<'a>(
                 .into_iter()
                 .map(|filter| {
                     safe_filter(filter).map_or("1".into(), |filter| {
-                        compiler.filter(&filter, "i", None, None)
+                        compiler.filter(&filter, "i", "i", None, None)
                     })
                 })
                 .collect::<Vec<_>>()
@@ -2497,7 +2560,7 @@ pub(super) fn execute(
     let mut compiler = Compiler::new(query);
     let mut related = Vec::new();
     if let Some(filter) = &query.filter {
-        related_filters(filter, &mut related);
+        related_filters(filter, &mut related, &compiler.resolved_relations);
     }
     compiler.direct_relations = scope.segments.iter().all(|segment| {
         segment.tail.iter().all(|event| {
@@ -2662,7 +2725,7 @@ pub(super) fn execute(
     let connection = &*temporary.connection;
     let filter = query.filter.as_ref().map_or_else(
         || "1".to_owned(),
-        |filter| compiler.filter(filter, "a", None, None),
+        |filter| compiler.filter(filter, "a", "a", None, None),
     );
     let filtered = format!("{source}, filtered AS (SELECT a.* FROM events a WHERE {filter})");
     if query.group_by.is_empty()

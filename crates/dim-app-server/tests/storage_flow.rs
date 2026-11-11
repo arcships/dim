@@ -434,6 +434,9 @@ const V40_ADDITIONS: &[&str] = &[
     "CREATE INDEX timeline_events_source_positions ON timeline_events(session_id,branch_id,kind,json_extract(body,'$.record.event.data.epoch'),json_extract(body,'$.record.event.data.current.at.branch'),json_extract(body,'$.record.event.data.current.at.sequence'),sequence) WHERE kind='context-usage/recovered'",
 ];
 fn drop_v40(connection: &Connection) {
+    connection
+        .execute_batch("DROP INDEX IF EXISTS timeline_events_branch_interrupts")
+        .unwrap();
     for sql in V40_ADDITIONS.iter().rev() {
         let mut words = sql.split_whitespace();
         words.next();
@@ -467,6 +470,7 @@ fn schema_of(version: u32) -> Vec<String> {
         .chain(V37_ADDITIONS.iter().filter(|_| version >= 37))
         .chain(V39_ADDITIONS.iter().filter(|_| version >= 39))
         .chain(V40_ADDITIONS.iter().filter(|_| version >= 40))
+        .chain(["CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'"].iter().filter(|_| version >= 42))
         .filter(|sql| version <= 24 || !sql.starts_with("CREATE INDEX timeline_events_by_end "))
         .map(|sql| sql.replace("(version = 13)", &format!("(version = {version})")))
         .map(|sql| {
@@ -8231,7 +8235,7 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
 mod position_queries;
 
 #[tokio::test]
-async fn main_and_branch_formats_upgrade_to_v41_without_reinterpreting_their_markers() {
+async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() {
     for (version, main_layout) in [
         (37, true),
         (38, true),

@@ -51,7 +51,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v41**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+The current native format is **v42**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -60,10 +60,10 @@ omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
-requires the exact v41 SQL schema and a single
-format marker of 41 before writable PRAGMAs, or the exact v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+requires the exact v42 SQL schema and a single
+format marker of 42 before writable PRAGMAs, or the exact v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v41 one step after
+which the same startup transaction upgrades in place to v42 one step after
 another ([v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
@@ -77,7 +77,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v41, and v16 request rows stay readable as written.
+valid in v42, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -87,7 +87,7 @@ valid in v41, and v16 request rows stay readable as written.
 读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
 `CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
 `timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v41）；其余任何多余对象仍按原规则拒绝。代价是早于
+精确结构比较忽略这些名字，格式标记不变（当前 v42）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
 索引的库（行不变，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
@@ -225,13 +225,13 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 
 删除 Session 只释放库内页，数据库文件本身不缩小。维护入口是 `dimcode daemon vacuum [--database PATH]`：守护进程未运行时它取同一把维护锁，校验当前格式的精确结构后执行 `VACUUM`，打印操作前后数据库与 WAL 的字节数之和。`VACUUM` 重写整个库，需要约等于库大小的临时空间；守护进程持锁时该命令拒绝执行，也不升级或创建库。
 
-## Current v41 tables
+## Current v42 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 41)`; exactly one row |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 42)`; exactly one row |
 | `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills`, `user/mcp-projects` or `user/mcp-plugins`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
@@ -1378,9 +1378,9 @@ v39→v40事务内建立表达式索引并从handover输入与其终态回填存
 
 ContextUsage v5 changes only its private extension data: optional legacy_result and explicit unknown legacy counting metadata. Existing v4 and v1–v3 results are interpreted by ContextUsage. Native v41 is unchanged by Usage's private version: SQL schema, event envelope, content encodings and the indexed epoch/current.at properties are unchanged; no native migration or Store-side token calculation is added. The owner rejects an unsupported numeric schema explicitly. See [ContextUsage §6](../plugins/ContextUsage.md#61-统计版本与旧数据).
 
-## Proposed v42: indexes for unfinished external work
+## v42: indexes for unfinished external work
 
-This proposal adds no recovery snapshots and no executable progress. It extends the existing versioned member index with the following relationships, using original facts:
+This format adds no recovery snapshots and no executable progress. It extends the existing versioned member index with the following relationships, using original facts:
 
 | Origin | Removed by | Match |
 | --- | --- | --- |
@@ -1391,6 +1391,8 @@ This proposal adds no recovery snapshots and no executable progress. It extends 
 The new index_id values are approval/v1, collaboration-delivery/v1 and exec-wake/v1. Existing descriptors keep their meanings.
 
 Collaboration keeps its existing unfinished-request index for accepted delegations without a final result. The new undelivered-operation roots locate only missing delivery terminals; recovery writes Closed without repeating the operation. These are outstanding decisions/notifications, not old execution state. Completed work is absent from the current root; loading an empty root must not examine any old origin. Recovery reads current members only. Historical task output is located by task identity when requested, rather than loaded into a permanent task catalog on resume.
+
+The exec/v1 origin identity records are retained after a terminal removes the start from its current-member root. The v41 upgrade restores those origin identity records from exec/started facts; the existing terminal identity record already locates the first end. Historical task lookup selects the first start/end for its task ID at the fixed cutoff, using these keys, including IDs that are not ASCII or FTS-safe. The root still contains only unfinished starts.
 
 An exec end requires a notification only when its status is completed or failed and its original position is not in a closed generation. Compare the latest preceding branch/start, branch/resume or session/forked with the latest preceding branch-scoped stop/interrupt. A later stop suppresses that end; a subsequent resume starts a new generation. This is evaluated at the end's position, not at the current read head. An eligible end before a close remains owed if its input was never committed. An end suppressed by a close is absent from the notification root and cannot accumulate as a candidate on every resume. Loading never restores a previous generation's closing flag or process handle.
 
@@ -1405,6 +1407,6 @@ WHERE kind = 'stop/interrupt'
 
 The existing schema can encode these roots, but v41 does not guarantee their contents. Therefore adding them requires v42 rather than treating absent v41 roots as empty. The upgrade builds the derived relationships in the existing upgrade transaction and switches the marker only after success. Failure rolls back. Existing v41 and both historical version families remain readable through upgrade. Old binaries refuse v42. Verification uses disposable stores.
 
-The notification relationship requires two compatible additions to property-query operands. String concatenation expresses the literal wake-tag prefix plus the end ID. A reference to the second enclosing event expresses the close boundary: within an end, a preceding stop counts only if no opening lies between that stop and that same end. The current Outer refers only to the immediately enclosing event and cannot express the upper bound from the second nested Exists. Existing query objects remain valid and gain no required fields. The indexed root must match the complete notification predicate, including closing, in both native and memory execution; it cannot silently omit closed ends from a broader query. The store recognizes the exact indexed relationship and still evaluates unsupported query shapes correctly. No new business state API, owner database, event type or per-source recovery event is introduced.
+The notification relationship requires two compatible additions to property-query operands. String concatenation expresses the literal wake-tag prefix plus the end ID. The root-event reference expresses the close boundary: within an end, a preceding stop counts only if no opening lies between that stop and that same end. Outer refers only to the immediately enclosing event and cannot express the upper bound from the second nested Exists. Existing query objects remain valid and gain no required fields. The indexed root must match the complete notification predicate, including closing, in both native and memory execution; it cannot silently omit closed ends from a broader query. The store recognizes the exact indexed relationship and still evaluates unsupported query shapes correctly. No new business state API, owner database, event type or per-source recovery event is introduced.
 
-Native upgrade cost is separate from normal loading. A v41 database cannot acquire an index over its older facts without reading the indexed facts once; this proposal does not call that work a sub-200ms normal resume. The <=200ms end-to-end acceptance uses an already indexed native database; first upgrade is reported separately.
+Native upgrade cost is separate from normal loading. A v41 database cannot acquire an index over its older facts without reading the indexed facts once; this format decision does not call that work a sub-200ms normal resume. The <=200ms end-to-end acceptance uses an already indexed native database; first upgrade is reported separately.

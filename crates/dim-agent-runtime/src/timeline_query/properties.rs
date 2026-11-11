@@ -66,6 +66,8 @@ pub enum QueryOrderKey {
 pub enum QueryOperand {
     Field { path: String },
     Outer { path: String },
+    Root { path: String },
+    Concat { parts: Vec<QueryOperand> },
     Element { path: String },
     Value { value: Value },
 }
@@ -493,10 +495,8 @@ impl QueryFilter {
                 Ok(())
             }
             Self::Exists { condition } => {
-                if related || element {
-                    return invalid(
-                        "related queries cannot nest or start inside an array condition",
-                    );
+                if element {
+                    return invalid("related queries cannot start inside an array condition");
                 }
                 condition.validate(true, false)
             }
@@ -515,9 +515,14 @@ impl QueryOperand {
     fn validate(&self, related: bool, element: bool) -> Result<()> {
         match self {
             Self::Field { path } => validate_field(path, false),
-            Self::Outer { path } if related => validate_field(path, false),
+            Self::Outer { path } | Self::Root { path } if related => validate_field(path, false),
+            Self::Concat { parts } => parts
+                .iter()
+                .try_for_each(|part| part.validate(related, element)),
             Self::Element { path } if element => validate_path(path, false, true),
-            Self::Outer { .. } => invalid("outer fields require a related query"),
+            Self::Outer { .. } | Self::Root { .. } => {
+                invalid("outer fields require a related query")
+            }
             Self::Element { .. } => invalid("element fields require an array condition"),
             Self::Value { value } if value.is_array() || value.is_object() => {
                 invalid("comparison literals must be scalars")

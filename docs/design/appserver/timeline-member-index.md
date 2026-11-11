@@ -23,6 +23,11 @@ Store 的静态描述表记录：开始类型、终态类型、两端关联属�
 | step/tool-call.id | step/tool-result.call_event_id | 工具名称是公开数组属性，作为成员分组键；不在 Store 写 ask_user 特例。 |
 | exec/started.task_id | exec/ended.task_id | 无。 |
 | collaboration/request.id | result.request_event_id 或 delivered.op_event_id | delivered 只有 error 关闭该成员。 |
+| approval/request.approval_id | respond/cancelled.approval_id | v42；只读尚未答复的审批。 |
+| collaboration 四种操作的 id | delivered.op_event_id | v42；只读尚未交付的操作，不恢复调用栈。 |
+| exec/ended.id | input/message.tags 的固定前缀加 ID | v42；只有 completed/failed 且发生在有效代中的结果进入通知集合。 |
+
+v42 的通知资格、任务身份保留和事务升级由[原生格式 v42](native-storage-format.md#v42-indexes-for-unfinished-external-work)唯一规定。查询用公开 concat/root 表达完整关系；不向调用方暴露成员类型名称。exec 的历史起点定位记录保留，终态仍从当前未结束根移除它。
 
 索引描述必须与查询条件逐项等价；少一个终态、不同的关联字段或不同范围，不能套用近似结果。上述终态关联键是标量。复杂任意表达式仍沿用通用执行器，正常 owner inventory 只使用已验证支持的形状。
 

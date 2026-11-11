@@ -35,6 +35,7 @@ struct Terminal {
     kind: &'static str,
     key: &'static [&'static str],
     predicate: Option<(&'static str, &'static str)>,
+    tag_prefix: Option<&'static str>,
 }
 
 enum Groups {
@@ -45,7 +46,8 @@ enum Groups {
 
 struct Profile {
     id: &'static str,
-    origin: &'static str,
+    origins: &'static [&'static str],
+    wake: bool,
     key: &'static [&'static str],
     terminals: &'static [Terminal],
     groups: Groups,
@@ -55,18 +57,21 @@ struct Profile {
 const PROFILES: &[Profile] = &[
     Profile {
         id: "input/v1",
-        origin: "input/message",
+        origins: &["input/message"],
+        wake: false,
         key: &["id"],
         terminals: &[
             Terminal {
                 kind: "input/consumed",
                 key: &["data.input_id"],
                 predicate: None,
+                tag_prefix: None,
             },
             Terminal {
                 kind: "input/deleted",
                 key: &["data.input_id"],
                 predicate: None,
+                tag_prefix: None,
             },
         ],
         groups: Groups::Presence("data.handover", false),
@@ -74,42 +79,49 @@ const PROFILES: &[Profile] = &[
     },
     Profile {
         id: "tool/v1",
-        origin: "step/tool-call",
+        origins: &["step/tool-call"],
+        wake: false,
         key: &["id"],
         terminals: &[Terminal {
             kind: "step/tool-result",
             key: &["data.call_event_id"],
             predicate: None,
+            tag_prefix: None,
         }],
         groups: Groups::Elements("data.calls", "name"),
         tuple: false,
     },
     Profile {
         id: "exec/v1",
-        origin: "exec/started",
+        origins: &["exec/started"],
+        wake: false,
         key: &["data.task_id"],
         terminals: &[Terminal {
             kind: "exec/ended",
             key: &["data.task_id"],
             predicate: None,
+            tag_prefix: None,
         }],
         groups: Groups::None,
         tuple: false,
     },
     Profile {
         id: "collaboration/v1",
-        origin: "collaboration/request",
+        origins: &["collaboration/request"],
+        wake: false,
         key: &["id"],
         terminals: &[
             Terminal {
                 kind: "collaboration/result",
                 key: &["data.request_event_id"],
                 predicate: None,
+                tag_prefix: None,
             },
             Terminal {
                 kind: "collaboration/delivered",
                 key: &["data.op_event_id"],
                 predicate: Some(("data.status", "error")),
+                tag_prefix: None,
             },
         ],
         groups: Groups::None,
@@ -117,18 +129,21 @@ const PROFILES: &[Profile] = &[
     },
     Profile {
         id: "input-handover/v1",
-        origin: "input/message",
+        origins: &["input/message"],
+        wake: false,
         key: &["id"],
         terminals: &[
             Terminal {
                 kind: "input/consumed",
                 key: &["data.input_id"],
                 predicate: None,
+                tag_prefix: None,
             },
             Terminal {
                 kind: "input/deleted",
                 key: &["data.input_id"],
                 predicate: None,
+                tag_prefix: None,
             },
         ],
         groups: Groups::Presence("data.handover", true),
@@ -136,18 +151,21 @@ const PROFILES: &[Profile] = &[
     },
     Profile {
         id: "prepare/v1",
-        origin: "context/prepare",
+        origins: &["context/prepare"],
+        wake: false,
         key: &["data.turn_id", "data.request_id"],
         terminals: &[
             Terminal {
                 kind: "model/call",
                 key: &["data.turn_id", "data.request_id"],
                 predicate: None,
+                tag_prefix: None,
             },
             Terminal {
                 kind: "step/model-output-end",
                 key: &["data.turn_id", "data.request_id"],
                 predicate: None,
+                tag_prefix: None,
             },
         ],
         groups: Groups::None,
@@ -155,60 +173,245 @@ const PROFILES: &[Profile] = &[
     },
     Profile {
         id: "model-call/v1",
-        origin: "model/call",
+        origins: &["model/call"],
+        wake: false,
         key: &["data.turn_id", "data.request_id"],
         terminals: &[Terminal {
             kind: "step/model-output-end",
             key: &["data.turn_id", "data.request_id"],
             predicate: None,
+            tag_prefix: None,
         }],
         groups: Groups::None,
         tuple: true,
     },
     Profile {
         id: "model-start/v1",
-        origin: "step/model-start",
+        origins: &["step/model-start"],
+        wake: false,
         key: &["data.request_id"],
         terminals: &[Terminal {
             kind: "step/model-output-end",
             key: &["data.request_id"],
             predicate: None,
+            tag_prefix: None,
         }],
         groups: Groups::None,
         tuple: true,
     },
     Profile {
         id: "compaction-attempt/v1",
-        origin: "context/compaction-start",
+        origins: &["context/compaction-start"],
+        wake: false,
         key: &["position.sequence"],
         terminals: &[Terminal {
             kind: "context/compaction",
             key: &["data.start"],
             predicate: None,
+            tag_prefix: None,
         }],
         groups: Groups::None,
         tuple: true,
     },
     Profile {
         id: "compaction-command/v1",
-        origin: "context/compact",
+        origins: &["context/compact"],
+        wake: false,
         key: &["position.sequence"],
         terminals: &[
             Terminal {
                 kind: "context/compaction-start",
                 key: &["data.command"],
                 predicate: None,
+                tag_prefix: None,
             },
             Terminal {
                 kind: "context/compaction",
                 key: &["data.command"],
                 predicate: None,
+                tag_prefix: None,
             },
         ],
         groups: Groups::None,
         tuple: true,
     },
+    Profile {
+        id: "approval/v1",
+        origins: &["approval/request"],
+        wake: false,
+        key: &["data.approval_id"],
+        terminals: &[
+            Terminal {
+                kind: "approval/respond",
+                key: &["data.approval_id"],
+                predicate: None,
+                tag_prefix: None,
+            },
+            Terminal {
+                kind: "approval/cancelled",
+                key: &["data.approval_id"],
+                predicate: None,
+                tag_prefix: None,
+            },
+        ],
+        groups: Groups::None,
+        tuple: false,
+    },
+    Profile {
+        id: "collaboration-delivery/v1",
+        origins: &[
+            "collaboration/request",
+            "collaboration/cancel",
+            "collaboration/close",
+            "collaboration/message",
+        ],
+        wake: false,
+        key: &["id"],
+        terminals: &[Terminal {
+            kind: "collaboration/delivered",
+            key: &["data.op_event_id"],
+            predicate: None,
+            tag_prefix: None,
+        }],
+        groups: Groups::None,
+        tuple: false,
+    },
+    Profile {
+        id: "exec-wake/v1",
+        origins: &["exec/ended"],
+        wake: true,
+        key: &["id"],
+        terminals: &[Terminal {
+            kind: "input/message",
+            key: &["tags"],
+            predicate: None,
+            tag_prefix: Some("exec-wake-result:"),
+        }],
+        groups: Groups::None,
+        tuple: false,
+    },
 ];
+
+fn field_in(path: &str, values: &[&str]) -> QueryFilter {
+    QueryFilter::In {
+        value: QueryOperand::Field { path: path.into() },
+        values: values.iter().map(|value| (*value).into()).collect(),
+    }
+}
+
+fn wake_conditions() -> Vec<QueryFilter> {
+    vec![
+        field_in("data.status", &["completed", "failed"]),
+        QueryFilter::Not {
+            condition: Box::new(QueryFilter::Exists {
+                condition: Box::new(QueryFilter::And {
+                    conditions: vec![
+                        field_in("kind", &["stop/interrupt"]),
+                        field_in("data.scope", &["branch"]),
+                        QueryFilter::Compare {
+                            left: QueryOperand::Field {
+                                path: "position.sequence".into(),
+                            },
+                            comparison: QueryComparison::Le,
+                            right: QueryOperand::Outer {
+                                path: "position.sequence".into(),
+                            },
+                        },
+                        QueryFilter::Not {
+                            condition: Box::new(QueryFilter::Exists {
+                                condition: Box::new(QueryFilter::And {
+                                    conditions: vec![
+                                        field_in(
+                                            "kind",
+                                            &["branch/start", "branch/resume", "session/forked"],
+                                        ),
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field {
+                                                path: "position.sequence".into(),
+                                            },
+                                            comparison: QueryComparison::Gt,
+                                            right: QueryOperand::Outer {
+                                                path: "position.sequence".into(),
+                                            },
+                                        },
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field {
+                                                path: "position.sequence".into(),
+                                            },
+                                            comparison: QueryComparison::Le,
+                                            right: QueryOperand::Root {
+                                                path: "position.sequence".into(),
+                                            },
+                                        },
+                                    ],
+                                }),
+                            }),
+                        },
+                    ],
+                }),
+            }),
+        },
+    ]
+}
+
+fn wake_eligible(
+    connection: &Connection,
+    session: &str,
+    branch: &str,
+    sequence: u64,
+    value: &impl Fn(&str) -> Result<QueryValue>,
+    tail: &[std::sync::Arc<AgentEvent>],
+) -> Result<bool> {
+    if !matches!(value("data.status")?, QueryValue::Value { value: Value::String(status) } if status == "completed" || status == "failed")
+    {
+        return Ok(false);
+    }
+    let mut opening = 0i64;
+    for kind in ["branch/start", "branch/resume", "session/forked"] {
+        let position: Option<i64> = connection.prepare_cached("SELECT sequence FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND kind=?3 AND sequence<=?4 ORDER BY sequence DESC LIMIT 1")
+            .map_err(error)?.query_row(params![session,branch,kind,sequence as i64], |row| row.get(0)).optional().map_err(error)?;
+        opening = opening.max(position.unwrap_or(0));
+    }
+    let mut closing: i64 = connection.prepare_cached("SELECT coalesce(max(sequence),0) FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND kind='stop/interrupt' AND json_extract(body,'$.record.event.data.scope')='branch' AND sequence<=?3")
+        .map_err(error)?.query_row(params![session,branch,sequence as i64], |row| row.get(0)).map_err(error)?;
+    for event in tail.iter().filter(|event| event.sequence <= sequence) {
+        match &event.kind {
+            dim_agent_types::EventKind::BranchStart(_)
+            | dim_agent_types::EventKind::BranchResume(_)
+            | dim_agent_types::EventKind::SessionForked(_) => {
+                opening = opening.max(event.sequence as i64)
+            }
+            dim_agent_types::EventKind::StopInterrupt(data)
+                if data.scope == dim_agent_types::InterruptScope::Branch =>
+            {
+                closing = closing.max(event.sequence as i64)
+            }
+            _ => {}
+        }
+    }
+    Ok(closing == 0 || opening > closing)
+}
+
+fn terminal_keys(
+    terminal: &Terminal,
+    tuple: bool,
+    value: &impl Fn(&str) -> Result<QueryValue>,
+) -> Result<Vec<Vec<u8>>> {
+    if let Some(prefix) = terminal.tag_prefix {
+        let QueryValue::Value {
+            value: Value::Array(tags),
+        } = value(terminal.key[0])?
+        else {
+            return Ok(Vec::new());
+        };
+        tags.iter()
+            .filter_map(|tag| tag.as_str().and_then(|tag| tag.strip_prefix(prefix)))
+            .map(|id| (QueryValue::Value { value: id.into() }).scalar_key())
+            .collect()
+    } else {
+        Ok(key(terminal.key, tuple, value)?.into_iter().collect())
+    }
+}
 
 pub(super) fn branch(connection: &Connection, session: &str, branch: &str) -> Result<()> {
     for profile in PROFILES {
@@ -390,7 +593,12 @@ fn event_profiles(
         statistics: None,
     };
     for profile in profiles {
-        if profile.origin == kind {
+        if profile.origins.contains(&kind) {
+            if profile.wake
+                && !wake_eligible(connection, session, branch, sequence as u64, value, &[])?
+            {
+                continue;
+            }
             let groups = groups(profile, value)?;
             if groups.is_empty() {
                 continue;
@@ -401,6 +609,17 @@ fn event_profiles(
             let closed = connection.prepare_cached("SELECT 1 FROM timeline_member_terminals WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND match_key=?4")
                 .map_err(error)?.exists(params![session, branch, profile.id, key]).map_err(error)?;
             if closed {
+                if profile.id == "exec/v1" {
+                    for group in groups {
+                        connection
+                            .prepare_cached(
+                                "INSERT INTO timeline_member_origins VALUES(?1,?2,?3,?4,?5,?6)",
+                            )
+                            .map_err(error)?
+                            .execute(params![session, branch, profile.id, key, sequence, group])
+                            .map_err(error)?;
+                    }
+                }
                 continue;
             }
             let mut changes = BTreeMap::new();
@@ -452,38 +671,39 @@ fn event_profiles(
             {
                 continue;
             }
-            let Some(key) = key(terminal.key, profile.tuple, value)? else {
-                continue;
-            };
-            connection.prepare_cached("INSERT INTO timeline_member_terminals VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING")
+            for key in terminal_keys(terminal, profile.tuple, value)? {
+                connection.prepare_cached("INSERT INTO timeline_member_terminals VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING")
                 .map_err(error)?.execute(params![session, branch, profile.id, key, sequence]).map_err(error)?;
-            let origins = connection.prepare_cached("SELECT sequence,group_key FROM timeline_member_origins WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND match_key=?4")
+                let origins = connection.prepare_cached("SELECT sequence,group_key FROM timeline_member_origins WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND match_key=?4")
                 .map_err(error)?.query_map(params![session, branch, profile.id, key], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
                 .map_err(error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(error)?;
-            let mut changes = BTreeMap::new();
-            for (origin, group) in origins {
-                let previous = root(
-                    connection,
-                    session,
-                    branch,
-                    profile,
-                    &group,
-                    sequence,
-                    #[cfg(feature = "testing")]
-                    None,
-                )?;
-                let next = match changes.get(&(previous, origin)) {
-                    Some(next) => *next,
-                    None => {
-                        let next = tree.remove(previous, origin)?;
-                        changes.insert((previous, origin), next);
-                        next
-                    }
-                };
-                save_root(connection, session, branch, profile, &group, sequence, next)?;
+                let mut changes = BTreeMap::new();
+                for (origin, group) in origins {
+                    let previous = root(
+                        connection,
+                        session,
+                        branch,
+                        profile,
+                        &group,
+                        sequence,
+                        #[cfg(feature = "testing")]
+                        None,
+                    )?;
+                    let next = match changes.get(&(previous, origin)) {
+                        Some(next) => *next,
+                        None => {
+                            let next = tree.remove(previous, origin)?;
+                            changes.insert((previous, origin), next);
+                            next
+                        }
+                    };
+                    save_root(connection, session, branch, profile, &group, sequence, next)?;
+                }
+                if profile.id != "exec/v1" {
+                    connection.prepare_cached("DELETE FROM timeline_member_origins WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND match_key=?4")
+                    .map_err(error)?.execute(params![session, branch, profile.id, key]).map_err(error)?;
+                }
             }
-            connection.prepare_cached("DELETE FROM timeline_member_origins WHERE session_id=?1 AND branch_id=?2 AND index_id=?3 AND match_key=?4")
-                .map_err(error)?.execute(params![session, branch, profile.id, key]).map_err(error)?;
         }
     }
     Ok(())
@@ -497,7 +717,7 @@ pub(super) fn row(
     encoded: &str,
 ) -> Result<()> {
     if !PROFILES.iter().any(|profile| {
-        profile.origin == kind
+        profile.origins.contains(&kind)
             || profile
                 .terminals
                 .iter()
@@ -551,7 +771,16 @@ fn raw_event(
 }
 
 pub(super) fn backfill_v40(connection: &Connection) -> Result<()> {
-    let profiles = &PROFILES[4..];
+    backfill_profiles(connection, &PROFILES[4..10])
+}
+
+pub(super) fn backfill_v42(connection: &Connection) -> Result<()> {
+    backfill_profiles(connection, &PROFILES[10..])?;
+    connection.execute("INSERT OR IGNORE INTO timeline_member_origins SELECT session_id,branch_id,'exec/v1',query_scalar_key(body -> '$.record.event.data.task_id'),sequence,x'00' FROM timeline_events WHERE kind='exec/started'", []).map_err(error)?;
+    Ok(())
+}
+
+fn backfill_profiles(connection: &Connection, profiles: &[Profile]) -> Result<()> {
     let mut branches = connection
         .prepare("SELECT session_id,branch_id FROM timeline_branches")
         .map_err(error)?;
@@ -574,7 +803,10 @@ pub(super) fn backfill_v40(connection: &Connection) -> Result<()> {
     let kinds = profiles
         .iter()
         .flat_map(|profile| {
-            std::iter::once(profile.origin)
+            profile
+                .origins
+                .iter()
+                .copied()
                 .chain(profile.terminals.iter().map(|terminal| terminal.kind))
         })
         .map(|kind| format!("'{kind}'"))
@@ -601,20 +833,14 @@ pub(super) fn backfill_v40(connection: &Connection) -> Result<()> {
 }
 
 pub(super) fn backfill(connection: &Connection) -> Result<()> {
-    build(connection, None)
+    backfill_profiles(connection, &PROFILES[..10])
 }
 
 /// Builds member indexes for imported events inside their insertion transaction.
 /// The Session's fact rows must not already have been indexed.
 pub fn initialize_session_member_index(connection: &Connection, session: &str) -> Result<()> {
-    build(connection, Some(session))
-}
-
-fn build(connection: &Connection, session: Option<&str>) -> Result<()> {
     let mut branches = connection
-        .prepare(
-            "SELECT session_id,branch_id FROM timeline_branches WHERE ?1 IS NULL OR session_id=?1",
-        )
+        .prepare("SELECT session_id,branch_id FROM timeline_branches WHERE session_id=?1")
         .map_err(error)?;
     let mut rows = branches.query([session]).map_err(error)?;
     while let Some(row) = rows.next().map_err(error)? {
@@ -627,13 +853,16 @@ fn build(connection: &Connection, session: Option<&str>) -> Result<()> {
     let kinds = PROFILES
         .iter()
         .flat_map(|profile| {
-            std::iter::once(profile.origin)
+            profile
+                .origins
+                .iter()
+                .copied()
                 .chain(profile.terminals.iter().map(|terminal| terminal.kind))
         })
         .map(|kind| format!("'{kind}'"))
         .collect::<Vec<_>>()
         .join(",");
-    let mut statement = connection.prepare(&format!("SELECT session_id,branch_id,kind,body FROM timeline_events WHERE kind IN ({kinds}) AND (?1 IS NULL OR session_id=?1) ORDER BY session_id,branch_id,sequence")).map_err(error)?;
+    let mut statement = connection.prepare(&format!("SELECT session_id,branch_id,kind,body FROM timeline_events WHERE kind IN ({kinds}) AND session_id=?1 ORDER BY session_id,branch_id,sequence")).map_err(error)?;
     let mut rows = statement.query([session]).map_err(error)?;
     while let Some(row) = rows.next().map_err(error)? {
         self::row(
@@ -682,6 +911,43 @@ fn closes(profile: &Profile, filter: &QueryFilter, seen: &mut Vec<&'static str>)
         return conditions
             .iter()
             .all(|condition| closes(profile, condition, seen));
+    }
+    if let [
+        Terminal {
+            kind,
+            key: [field],
+            tag_prefix: Some(prefix),
+            ..
+        },
+    ] = profile.terminals
+    {
+        return filter
+            == &QueryFilter::And {
+                conditions: vec![
+                    field_in("kind", &[*kind]),
+                    QueryFilter::Any {
+                        field: (*field).into(),
+                        condition: Box::new(QueryFilter::Compare {
+                            left: QueryOperand::Element {
+                                path: String::new(),
+                            },
+                            comparison: QueryComparison::Eq,
+                            right: QueryOperand::Concat {
+                                parts: vec![
+                                    QueryOperand::Value {
+                                        value: (*prefix).into(),
+                                    },
+                                    QueryOperand::Outer { path: "id".into() },
+                                ],
+                            },
+                        }),
+                    },
+                ],
+            }
+            && {
+                seen.push(kind);
+                true
+            };
     }
     let mut conditions = Vec::new();
     terms(filter, &mut conditions);
@@ -881,17 +1147,125 @@ fn candidates_for<'a>(
     }
     let mut conditions = Vec::new();
     terms(filter, &mut conditions);
+    if after.is_none()
+        && query.pick == Some(dim_agent_runtime::QueryPick::First)
+        && conditions.len() == 2
+        && let Some(kinds) = conditions
+            .iter()
+            .find_map(|condition| values(condition, "kind"))
+        && kinds.len() == 1
+        && let Some(kind) = kinds[0]
+            .as_str()
+            .filter(|kind| matches!(*kind, "exec/started" | "exec/ended"))
+        && let Some(ids) = conditions
+            .iter()
+            .find_map(|condition| values(condition, "data.task_id"))
+        && let [Value::String(id)] = ids.as_slice()
+    {
+        let key = QueryValue::Value {
+            value: (*id).clone().into(),
+        }
+        .scalar_key()?;
+        let sql = if kind == "exec/started" {
+            "SELECT sequence FROM timeline_member_origins WHERE session_id=?1 AND branch_id=?2 AND index_id='exec/v1' AND match_key=?3 AND sequence>=?4 AND sequence<=?5 ORDER BY sequence LIMIT 1"
+        } else {
+            "SELECT sequence FROM timeline_member_terminals WHERE session_id=?1 AND branch_id=?2 AND index_id='exec/v1' AND match_key=?3 AND sequence<=?5 ORDER BY sequence LIMIT 1"
+        };
+        let parameters = vec![
+            scope.key.session_id.clone().into(),
+            segment.branch_id.clone().into(),
+            rusqlite::types::Value::Blob(key),
+            (segment.from as i64).into(),
+            (segment.through.min(segment.stored_through) as i64).into(),
+        ];
+        let mut statement = connection.prepare_cached(sql).map_err(error)?;
+        #[cfg(feature = "testing")]
+        for status in [
+            rusqlite::StatementStatus::VmStep,
+            rusqlite::StatementStatus::FullscanStep,
+            rusqlite::StatementStatus::Sort,
+            rusqlite::StatementStatus::AutoIndex,
+        ] {
+            statement.reset_status(status);
+        }
+        let mut positions: Vec<u64> = statement
+            .query_row(rusqlite::params_from_iter(&parameters), |row| {
+                row.get::<_, i64>(0)
+            })
+            .optional()
+            .map_err(error)?
+            .into_iter()
+            .map(|sequence| sequence as u64)
+            .collect();
+        #[cfg(feature = "testing")]
+        super::query::record_statement(
+            statistics,
+            connection,
+            &statement,
+            sql,
+            &parameters,
+            "member_identity",
+        )?;
+        if kind == "exec/ended"
+            && positions
+                .first()
+                .is_some_and(|sequence| *sequence < segment.from)
+        {
+            return Ok(None);
+        }
+        for event in segment.tail.iter().filter(|event| {
+            event.sequence > segment.stored_through
+                && event.sequence >= segment.from
+                && event.sequence <= segment.through
+                && event.kind.key() == kind
+        }) {
+            if event_property(event, &segment.branch_id, "data.task_id")?
+                == (QueryValue::Value {
+                    value: (*id).clone().into(),
+                })
+            {
+                positions.push(event.sequence);
+            }
+        }
+        positions.sort_unstable();
+        positions.truncate(1);
+        return Ok(Some(Candidates {
+            terminals: vec![],
+            positions,
+        }));
+    }
     for profile in PROFILES {
         let mut origin = false;
         let mut terminal = None;
         let mut grouped = None;
         let mut residual = false;
+        let expected = if profile.wake {
+            wake_conditions()
+        } else {
+            Vec::new()
+        };
+        if !expected.iter().all(|term| conditions.contains(&term)) {
+            continue;
+        }
         for condition in &conditions {
+            if expected.contains(condition) {
+                continue;
+            }
             if values(condition, "kind").is_some_and(|values| {
-                values.len() == 1 && values[0].as_str() == Some(profile.origin)
+                !values.is_empty()
+                    && values.iter().all(|value| {
+                        value
+                            .as_str()
+                            .is_some_and(|kind| profile.origins.contains(&kind))
+                    })
             }) && !origin
             {
                 origin = true;
+                if values(condition, "kind")
+                    .is_some_and(|kinds| kinds.len() != profile.origins.len())
+                {
+                    residual = true;
+                }
                 continue;
             }
             if let QueryFilter::Not { condition } = condition
@@ -916,6 +1290,15 @@ fn candidates_for<'a>(
             continue;
         }
         let Some(terminal) = terminal else { continue };
+        let mut known_absent = vec![terminal];
+        for condition in &conditions {
+            if expected.contains(condition)
+                && let QueryFilter::Not { condition } = condition
+                && let QueryFilter::Exists { condition } = condition.as_ref()
+            {
+                known_absent.push(condition.as_ref());
+            }
+        }
         let descending = match query.pick {
             Some(dim_agent_runtime::QueryPick::Last) => true,
             Some(dim_agent_runtime::QueryPick::First) => false,
@@ -930,7 +1313,7 @@ fn candidates_for<'a>(
         if let Some((ordinal, sequence, _)) = after {
             if ordinal != 0 {
                 return Ok(Some(Candidates {
-                    terminals: vec![terminal],
+                    terminals: known_absent,
                     positions: Vec::new(),
                 }));
             }
@@ -1017,11 +1400,18 @@ fn candidates_for<'a>(
                 {
                     continue;
                 }
-                if let Some(key) = key(terminal.key, profile.tuple, &value)? {
-                    closed.insert(key);
-                }
+                closed.extend(terminal_keys(terminal, profile.tuple, &value)?);
             }
-            if event.kind.key() == profile.origin
+            if profile.origins.contains(&event.kind.key())
+                && (!profile.wake
+                    || wake_eligible(
+                        connection,
+                        &scope.key.session_id,
+                        &segment.branch_id,
+                        event.sequence,
+                        &value,
+                        &segment.tail,
+                    )?)
                 && (all_groups
                     || groups(profile, &value)?
                         .iter()
@@ -1103,7 +1493,7 @@ fn candidates_for<'a>(
             positions.truncate(limit);
         }
         return Ok(Some(Candidates {
-            terminals: vec![terminal],
+            terminals: known_absent,
             positions,
         }));
     }

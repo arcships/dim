@@ -1432,6 +1432,7 @@ impl Connection {
                             "Command is not a task of this branch",
                         ),
                         TaskError::Closed => RpcError::reloading(),
+                        TaskError::Read(error) => error.into(),
                     })?;
                 Reply::ExecEnded(result)
             }

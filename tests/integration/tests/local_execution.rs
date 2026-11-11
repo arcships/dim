@@ -1643,14 +1643,14 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     .await;
     let ends = ended(&events);
     for task in ["exec-orphan", "exec-lost"] {
-        assert_eq!(
+        assert!(matches!(
             restored
                 .service::<BackgroundExec>("main")
                 .unwrap()
                 .output(task)
                 .await,
             Err(workspace_tools::background::TaskError::Unknown)
-        );
+        ));
     }
     let (orphan_event, orphan) = &ends[2];
     assert_eq!(orphan.task_id, "exec-orphan");

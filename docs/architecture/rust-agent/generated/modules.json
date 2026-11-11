@@ -1417,7 +1417,6 @@
       "file": "crates/dim-agent-capabilities/src/workspace_tools/background.rs",
       "unexpandedMacros": [
         "format",
-        "matches",
         "tracing::warn",
         "unreachable",
         "vec"
@@ -17579,9 +17578,11 @@
         "path BackgroundExecPlugin::new",
         "path background::BackgroundExec",
         "path background::OutputPageError::Closed",
+        "path background::OutputPageError::Read",
         "path background::OutputPageError::Unavailable",
         "path background::OutputPageError::Unknown",
         "path background::TaskError::Closed",
+        "path background::TaskError::Read",
         "path background::TaskError::Unknown",
         "use background::BackgroundExecPlugin"
       ]
@@ -17789,6 +17790,7 @@
       "references": [
         "path AgentError",
         "path AgentError::Closed",
+        "path AgentError::fault",
         "path dim_agent_runtime::Result",
         "use dim_agent_runtime::AgentError"
       ]
@@ -17813,23 +17815,39 @@
       "from": "dim_agent_capabilities::workspace_tools::background",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryFilter",
+        "path QueryFilter::And",
+        "path QueryFilter::Exists",
         "path QueryFilter::In",
+        "path QueryFilter::Not",
         "path QueryOperand::Field",
+        "path QueryOutput::Events",
         "path QueryOutput::Rows",
         "path QueryPage",
-        "path QuerySelect::Exists",
+        "path QueryPick::First",
+        "path QueryPick::Last",
+        "path QuerySelect::Events",
         "path QuerySelect::Fields",
         "path QuerySpec",
         "path QueryValue::Value",
         "path TimelineQuery",
+        "use dim_agent_runtime::QueryComparison",
         "use dim_agent_runtime::QueryFilter",
         "use dim_agent_runtime::QueryOperand",
         "use dim_agent_runtime::QueryOutput",
         "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QueryPick",
         "use dim_agent_runtime::QuerySelect",
         "use dim_agent_runtime::QuerySpec",
         "use dim_agent_runtime::QueryValue",
         "use dim_agent_runtime::TimelineQuery"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::background",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition"
       ]
     },
     {
@@ -17860,15 +17878,15 @@
         "path ExecStatus::Failed",
         "path InputMessageData",
         "path InputMode::Steer",
-        "path InterruptScope::Branch"
+        "path InterruptScope::Branch",
+        "path events"
       ]
     },
     {
       "from": "dim_agent_capabilities::workspace_tools::background",
       "to": "dim_agent_types::tool",
       "references": [
-        "path ToolResult",
-        "path kind"
+        "path ToolResult"
       ]
     },
     {
@@ -17938,6 +17956,7 @@
         "path StartError::Timeline",
         "path StartRequest",
         "path super::background::TaskError::Closed",
+        "path super::background::TaskError::Read",
         "path super::background::TaskError::Unknown",
         "use super::background::BackgroundExec",
         "use super::background::StartError",
@@ -20093,9 +20112,11 @@
         "path QueryFilter::Present",
         "path QueryFilter::TextCandidate",
         "path QueryOperand",
+        "path QueryOperand::Concat",
         "path QueryOperand::Element",
         "path QueryOperand::Field",
         "path QueryOperand::Outer",
+        "path QueryOperand::Root",
         "path QueryOperand::Value",
         "path QueryOrderKey::Count",
         "path QueryOrderKey::Field",
@@ -20115,6 +20136,7 @@
         "path QuerySelect::Fields",
         "path QuerySpec",
         "path QueryValue",
+        "path QueryValue::Missing",
         "path QueryValue::Value",
         "use crate::QueryComparison",
         "use crate::QueryCursor",
@@ -24857,6 +24879,7 @@
       "references": [
         "path BackgroundExec",
         "path TaskError::Closed",
+        "path TaskError::Read",
         "path TaskError::Unknown",
         "use dim_agent_capabilities::workspace_tools::background::BackgroundExec",
         "use dim_agent_capabilities::workspace_tools::background::TaskError"
@@ -31718,6 +31741,11 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
+        "path dim_agent_types::EventKind::BranchResume",
+        "path dim_agent_types::EventKind::BranchStart",
+        "path dim_agent_types::EventKind::SessionForked",
+        "path dim_agent_types::EventKind::StopInterrupt",
+        "path dim_agent_types::InterruptScope::Branch",
         "use dim_agent_types::AgentEvent"
       ]
     },
@@ -31875,9 +31903,11 @@
         "path QueryFilter::Present",
         "path QueryFilter::TextCandidate",
         "path QueryOperand",
+        "path QueryOperand::Concat",
         "path QueryOperand::Element",
         "path QueryOperand::Field",
         "path QueryOperand::Outer",
+        "path QueryOperand::Root",
         "path QueryOperand::Value",
         "path QueryOrderKey::Count",
         "path QueryOrderKey::Field",
@@ -32024,7 +32054,8 @@
       "references": [
         "path super::members::SCHEMA",
         "path super::members::backfill",
-        "path super::members::backfill_v40"
+        "path super::members::backfill_v40",
+        "path super::members::backfill_v42"
       ]
     },
     {

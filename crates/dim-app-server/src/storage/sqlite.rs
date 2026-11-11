@@ -16,7 +16,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 41;
+pub const FORMAT: u32 = 42;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -55,7 +55,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 41))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 42))",
     ),
     (
         "settings_documents",
@@ -120,6 +120,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "timeline_events_by_id",
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
+    ),
+    (
+        "timeline_events_branch_interrupts",
+        "CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'",
     ),
     (
         "timeline_events_requests",
@@ -243,7 +247,7 @@ ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 27] = [
+const UPGRADES: [(u32, &[&str]); 28] = [
     (
         13,
         &[
@@ -350,6 +354,7 @@ const UPGRADES: [(u32, &[&str]); 27] = [
         ],
     ),
     (40, &[]),
+    (41, &["timeline_events_branch_interrupts"]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -1082,6 +1087,12 @@ impl SqliteStorage {
                         if upgrade_from >= 37 {
                             super::members::backfill_v40(&connection)?;
                         }
+                    }
+                    if *from == 41 {
+                        for (_, sql) in DERIVED_INDEXES {
+                            connection.execute_batch(sql).map_err(storage)?;
+                        }
+                        super::members::backfill_v42(&connection)?;
                     }
                     if *from == 38 {
                         super::arrays::backfill(&connection)?;

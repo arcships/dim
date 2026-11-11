@@ -3660,59 +3660,47 @@ async fn restore(
         .map(Into::into)
         .to_vec(),
     };
-    undelivered.query.filter = Some(operations.clone());
-    undelivered.query.select = QuerySelect::Exists;
-    undelivered.page = None;
-    if matches!(
-        timeline.query(undelivered.clone()).await?.result,
-        QueryOutput::Exists { exists: true }
-    ) {
-        undelivered.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                operations,
-                QueryFilter::Not {
-                    condition: Box::new(QueryFilter::Exists {
-                        condition: Box::new(QueryFilter::And {
-                            conditions: vec![
-                                kind("collaboration/delivered"),
-                                related("data.op_event_id"),
-                            ],
-                        }),
+    undelivered.query.filter = Some(QueryFilter::And {
+        conditions: vec![
+            operations,
+            QueryFilter::Not {
+                condition: Box::new(QueryFilter::Exists {
+                    condition: Box::new(QueryFilter::And {
+                        conditions: vec![
+                            kind("collaboration/delivered"),
+                            related("data.op_event_id"),
+                        ],
                     }),
-                },
-            ],
-        });
-        undelivered.query.select = QuerySelect::Fields {
-            fields: vec!["id".into()],
+                }),
+            },
+        ],
+    });
+    loop {
+        let reply = timeline.query(undelivered.clone()).await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("undelivered operation identities")
         };
-        undelivered.page = pending.page.clone();
-        loop {
-            let reply = timeline.query(undelivered.clone()).await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("undelivered operation identities")
+        for row in rows {
+            let [
+                QueryValue::Value {
+                    value: Value::String(op_event_id),
+                },
+            ] = <[_; 1]>::try_from(row.values).unwrap()
+            else {
+                unreachable!("operation identity")
             };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: Value::String(op_event_id),
+            timeline.append(
+                EventKind::CollaborationDelivered(CollaborationDeliveredData {
+                    op_event_id,
+                    delivery: CollaborationDelivery::Error {
+                        error: Refusal::Closed,
                     },
-                ] = <[_; 1]>::try_from(row.values).unwrap()
-                else {
-                    unreachable!("operation identity")
-                };
-                timeline.append(
-                    EventKind::CollaborationDelivered(CollaborationDeliveredData {
-                        op_event_id,
-                        delivery: CollaborationDelivery::Error {
-                            error: Refusal::Closed,
-                        },
-                    })
-                    .into(),
-                )?;
-            }
-            let Some(next) = reply.next else { break };
-            undelivered.page.as_mut().unwrap().after = Some(next);
+                })
+                .into(),
+            )?;
         }
+        let Some(next) = reply.next else { break };
+        undelivered.page.as_mut().unwrap().after = Some(next);
     }
     loop {
         let reply = timeline.query(pending.clone()).await?;
