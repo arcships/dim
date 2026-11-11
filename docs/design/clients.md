@@ -58,7 +58,7 @@ Dashed boxes are outside this repository (Desktop) or not implemented (remote de
 | Provider management for every client | [Provider management](appserver/provider-management.md) |
 | Child tool batches: v4 envelope, v3 visibility and client grouping | [Child tool batches](appserver/child-tool-batches.md) |
 
-The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
+The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The CLI asks a daemon for its own version and accepts the highest one below it, down to v3, only to replace the daemon this executable runs or to stop the home's daemon; it never runs a Session below its own version. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
 
 ### Member tool approval
 

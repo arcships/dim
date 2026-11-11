@@ -6,7 +6,7 @@
 
 ## 1. 客户端
 
-每个客户端都是 App Server daemon 的协议 v3 客户端。daemon 无界面、共享：每个产品 home 一个，一个执行者、多个查看者（[Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves)）。客户端负责展示、协议适配和本地交互；执行、宿主配置和持久化的 Session 归 App Server（[功能清单](../../feature-list.md)）。
+每个客户端都是 App Server daemon 的协议 v4 客户端。daemon 无界面、共享：每个产品 home 一个，一个执行者、多个查看者（[Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves)）。客户端负责展示、协议适配和本地交互；执行、宿主配置和持久化的 Session 归 App Server（[功能清单](../../feature-list.md)）。
 
 ```mermaid
 flowchart TB
@@ -48,7 +48,7 @@ flowchart TB
 
 | 契约 | 负责文档 |
 | --- | --- |
-| 线路协议 v3：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 4 条）；[App Server README](../../../crates/dim-app-server/README.md) |
+| 线路协议 v4：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 4 条）；[App Server README](../../../crates/dim-app-server/README.md) |
 | Session 方法与管理方法之分，以及每种入口提供哪些方法 | [Session 边界](contracts/session-boundary.md)（A.3 入口）、[管理方法](../../design/appserver/management-methods.md) |
 | 读取 Session：先 `session.attach`，再按固定的头部读 `session.history`，然后接收实时的 `session.event`、`session.state`、`session.model.progress`；由客户端自己折叠。attach 的回复携带该 Session 的 `SessionInfo`，其中 `model` 取自该 Session 最近采纳的配置，而 `session.summaries` 的条目在 [#795](https://github.com/arcships/dim/issues/795) 完成前仍报告创建时的模型，因此打开已知 Session 的客户端从它取模型，不读目录；重载期间标题字段缺失、`running` 为 false，随后的通知将其更正 | [Session 访问](contracts/session-access.md)、[CLI 命令](cli-commands.md)；[#276](https://github.com/arcships/dim/issues/276) 的处理结论 |
 | 不属于 Timeline 事实的广播通知（`session.notice`，例如标题） | [Session 广播通知](appserver/session-notices.md) |
@@ -56,7 +56,7 @@ flowchart TB
 | 查看 Session 的界面：UI 登记处，终端界面作为 UI 叶子（`ui.open`、`ui.attach`、`ui.status`） | [Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves) |
 | 供所有客户端使用的 Provider 管理 | [Provider 管理](appserver/provider-management.md) |
 
-CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能；web 客户端及其静态资源要求协议版本完全一致（[Web 工作区 §2.4](../../design/web-workspace.md)）。
+CLI 要求协议 v4，以及 `session.create` 和 `session.history` 两项功能。CLI 按自身版本握手：只有在替换本可执行文件自己的 daemon 或停止 home 的 daemon 时，才接受 daemon 允许的最高版本（下限 v3），并且绝不在低于自身版本的连接上运行 Session。web 客户端及其静态资源要求协议版本完全一致（[Web 工作区 §2.4](../../design/web-workspace.md)）。
 
 ## 3. 能力覆盖
 
@@ -130,7 +130,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 1. 复制消息（`/timeline` 及其他消息操作见 [Timeline UI §4.6](timeline-ui.md#46-timeline跳到某条消息)）。
 2. `/queue` 面板与删除排队消息（服务端契约已有）。
 3. 取回带附件的排队消息：`QueuedInput` 只保存文本，附件会丢失。要么像功能清单写的那样由客户端拒绝取回，要么让队列保留附件。
-4. 协议 v3 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
+4. 协议 v4 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
 5. Web 工作区里的提问：它处理审批，但不处理 `ask_user`，而 Web 工作区 §4 也没有把它列为推迟项。
 6. Session 列表按项目/全部切换、`/debug`、其余 `/settings` 项、终端界面内导出、`dimcode upgrade`。
 
@@ -179,6 +179,6 @@ flowchart LR
 1. **全屏终端界面。** 代码已经交付了它，总体设计却说不在范围内。要么接受它在范围内（更新总体设计和 CLI 命令文档，并决定回滚和 `/stats` 是否仍不做），要么冻结它。
 2. **Web 第二阶段的范围**，包括回环 web 入口能否为设置页面提供管理方法（Web 工作区 Q2），以及 Web 工作区是否必须支持提问。
 3. **§4 中哪些缺口要做设计**，归哪个里程碑：`/timeline` 与消息操作、`/queue`、排队消息的附件。
-4. **协议 v3 参考文档**（§4 第 4 条）：写一份，还是继续以代码为准。
+4. **协议 v4 参考文档**（§4 第 4 条）：写一份，还是继续以代码为准。
 5. **开放的客户端 issue 归哪个里程碑**：[#263](https://github.com/arcships/dim/issues/263)（成员 transcript 卡片、子 agent 模型策略的运行时）、[#264](https://github.com/arcships/dim/issues/264)（Workflow 视图）、[#386](https://github.com/arcships/dim/issues/386)（UI 事件传给 agent）。
 6. **路线图中客户端负责线的负责人。**
