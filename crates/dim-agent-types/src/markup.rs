@@ -40,6 +40,18 @@ const MARKERS: &[&str] = &[
     "dim-workflow",             // Workflow: a run's report and its stage markers
 ];
 
+/// The element name `text` opens, when it is one of the runtime's own blocks.
+///
+/// Unlike [`runtime_element`] no index rule applies: a raw input block is
+/// never the operator's words, whatever its position.
+pub fn element(text: &str) -> Option<&'static str> {
+    let open = text.strip_prefix('<')?;
+    MARKERS.iter().copied().find(|marker| {
+        open.strip_prefix(marker)
+            .is_some_and(|rest| rest.starts_with('>') || rest.starts_with(char::is_whitespace))
+    })
+}
+
 /// The element name of the runtime block at `index`, when the text block is
 /// one a capability wrote rather than the operator's own words.
 ///
@@ -49,14 +61,7 @@ const MARKERS: &[&str] = &[
 /// A reader that shows different elements differently dispatches on the name;
 /// one that only wants the operator's words asks [`runtime_context`].
 pub fn runtime_element(index: usize, text: &str) -> Option<&'static str> {
-    if index == 0 {
-        return None;
-    }
-    let open = text.strip_prefix('<')?;
-    MARKERS.iter().copied().find(|marker| {
-        open.strip_prefix(marker)
-            .is_some_and(|rest| rest.starts_with('>') || rest.starts_with(char::is_whitespace))
-    })
+    (index != 0).then(|| element(text)).flatten()
 }
 
 /// Whether the text block at `index` is runtime context a capability injected
@@ -67,7 +72,7 @@ pub fn runtime_context(index: usize, text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{escaped, runtime_context, runtime_element};
+    use super::{element, escaped, runtime_context, runtime_element};
 
     #[test]
     fn every_markup_character_is_escaped() {
@@ -231,6 +236,17 @@ mod tests {
             "<dim-branch-lines-extra branch=\"main\">not the roster</dim-branch-lines-extra>",
         ] {
             assert!(!runtime_context(1, text), "{text}");
+            assert_eq!(element(text), None, "{text}");
         }
+    }
+
+    /// A raw input block is never the operator's words, so the element name
+    /// needs no index: a follow-up reads the same at every position.
+    #[test]
+    fn a_raw_blocks_element_name_holds_at_any_position() {
+        let text = "<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>";
+        assert_eq!(element(text), Some("dim-hooks"));
+        assert_eq!(runtime_element(0, text), None);
+        assert_eq!(runtime_element(3, text), Some("dim-hooks"));
     }
 }
