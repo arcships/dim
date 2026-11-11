@@ -795,6 +795,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "format",
         "vec"
       ]
     },
@@ -12389,6 +12390,7 @@
       "from": "dim_agent_capabilities::input_queue",
       "to": "dim_agent_types::input",
       "references": [
+        "path SubmitWarning",
         "path input"
       ]
     },
@@ -24557,18 +24559,18 @@
       "from": "dim_app_server::connection::tree",
       "to": "dim_agent_capabilities::input_queue",
       "references": [
-        "path SubmitCheckReply",
-        "path SubmitCheckReply::Block",
-        "path SubmitCheckReply::Proceed",
         "path SubmitCheckRequest",
         "path SubmitChecks",
+        "path SubmitDecision",
+        "path SubmitDecision::Block",
+        "path SubmitDecision::Proceed",
         "path SubmitEntry::Branch",
         "path SubmitEntry::Submit",
         "path append_blocks",
         "use dim_agent_capabilities::input_queue::CheckInterrupted",
-        "use dim_agent_capabilities::input_queue::SubmitCheckReply",
         "use dim_agent_capabilities::input_queue::SubmitCheckRequest",
         "use dim_agent_capabilities::input_queue::SubmitChecks",
+        "use dim_agent_capabilities::input_queue::SubmitDecision",
         "use dim_agent_capabilities::input_queue::SubmitEntry",
         "use dim_agent_capabilities::input_queue::append_blocks"
       ]
@@ -27771,6 +27773,13 @@
         "use dim_agent_types::ApprovalDecision",
         "use dim_agent_types::InputMode",
         "use dim_agent_types::UserInput"
+      ]
+    },
+    {
+      "from": "dim_app_server::protocol",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -31381,6 +31390,13 @@
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::ModelFailureKind"
+      ]
+    },
+    {
+      "from": "dim_app_server::tree_protocol",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -36514,6 +36530,7 @@
       "to": "dim_cli::wire",
       "references": [
         "path Created",
+        "path crate::wire::warnings",
         "use crate::wire::Created"
       ]
     },
@@ -36651,6 +36668,13 @@
       "to": "dim_agent_types::goal",
       "references": [
         "path dim_agent_types::GoalRead"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -37221,6 +37245,7 @@
         "path CatalogModel",
         "path Created",
         "path ProviderCatalogSnapshot",
+        "path crate::wire::warnings",
         "use crate::wire::CatalogModel",
         "use crate::wire::Created",
         "use crate::wire::ProviderCatalogSnapshot"
@@ -37677,6 +37702,7 @@
         "path Command::FocusLine",
         "path RuntimeAction::Configure",
         "path RuntimeAction::Install",
+        "path Update::Report",
         "path Update::Snapshot"
       ]
     },
@@ -45986,6 +46012,13 @@
       "to": "dim_cli::web_install",
       "references": [
         "path install"
+      ]
+    },
+    {
+      "from": "dim_cli::wire",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {

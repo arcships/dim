@@ -55,6 +55,31 @@ the checks again. This guarantee is specific to `session.submit`, not a retry
 policy for other methods or an assertion that a rejected request will succeed
 unchanged.
 
+### Submit check warnings
+
+A reply field, not an error. `session.submit` and `session.branch_create` carry an
+optional `warnings: [{check, message}]`, and `session.input.withdraw` carries the
+same list beside `status` and `steer`. Each element names the submit check that
+raised it (`check`, the registration name) and the sentence a client shows
+(`message`), for work the check did not do while the input was written: a
+`UserPromptSubmit` hook that failed with `onFailure: continue`, or a run the
+Hooks unload terminated (Hooks A.6.2).
+
+The field is an **additive interface change**: it is absent when empty, so a
+reply without one is byte-identical to the one before this field existed, and no
+protocol version is added. A built-in served to a frozen encoding fills none:
+`session.submit` on protocol v1 and v2, and `session.branch_create` on v2, which
+`validate_call` admits from v2 on; `session.input.withdraw` is a Session method,
+served from v3 on. The withdraw reply carries the list whenever it carries a
+`steer`, `deleted` or `notHeld`, because the batch writes that Steer input either
+way. The list is never model context: it enters no `user` content, and a client
+that does not know the field ignores it. A block discards it — the `input_blocked`
+error already names the hook that stopped the input.
+This repository's clients: the native CLI draws one warning row per element
+(`Update::Report { warning: true }` in the terminal UI, `Display::record` in the
+line client, stderr in `exec`); the ACP gateway and the Web workspace ignore it;
+Desktop sees it only after its own change to `npm/client-protocol.d.ts`.
+
 After commit, failure to confirm publication remains uncertain even on a live
 connection: `submission_unknown`, an opaque `-32603` publication/storage error,
 and every error outside the guaranteed set do not prove rejection. Transport

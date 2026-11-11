@@ -2279,6 +2279,25 @@ its window, and one slot for the state in force — a notice, a required answer 
 `esc interrupt`, or the background task count. The model, with its effort when both fit, is
 right-aligned on the same line; the line is clipped to the terminal width.
 
+### Submit check warnings
+
+A successful `session.submit`, `session.input.withdraw {steer}` or `session.branch_create` reply may
+carry `warnings: [{check, message}]`: work a submit check did not do, such as a `UserPromptSubmit`
+hook that failed with `onFailure: continue` ([Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)).
+The line client and both terminal UI modes print one line per warning, as the check sent it:
+
+```text
+◦ Hook user did not finish: exited with exit status: 3
+◦ Hook project did not finish: timed out after 30s
+```
+
+In the terminal UI each line is a status row in the warning colour, committed to the transcript
+beside the message it belongs to (`Update::Report { warning: true }`). In the line client it is one
+record: `stdout` when interactive, `stderr` otherwise. `exec` writes it to `stderr`, so `exec --json`
+stdout stays one JSON-RPC notification per line. The row is not an error: the input was written. A steer whose
+old message had already left the queue is written all the same, so its warnings appear beside the notice that
+the message left.
+
 ### Headless execution
 
 `exec` keeps its contract: an approval request is answered with the ordinary denial, the turn is
