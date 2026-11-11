@@ -197,12 +197,29 @@ async fn a_requested_title_is_written_once_and_a_later_rename_wins() {
     server.join().await.unwrap();
 
     // A daemon that loads the Session again sees a revision it must not
-    // replace, so the rename survives.
+    // replace, so the rename survives. The part's own write runs before it
+    // serves rename: while it loads, the call answers `service_reloading`.
+    // The daemon stops before the row is read, so a write the part had
+    // admitted settles before the read rather than racing it.
     let (server, mut client, _) = start(&store).await;
-    client
-        .rpc("session.attach", json!({"sessionId":id}))
-        .await
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client
+                .rpc("session.rename", json!({"sessionId":id,"title":0}))
+                .await;
+            if reply.is_err_and(|error| dim_client::app_error(&error) == Some("invalid_params")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("SessionTitle serves rename after the reload");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, mut client, _) = start(&store).await;
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     let entry = listed
         .as_array()
@@ -240,7 +257,8 @@ async fn a_requested_title_is_bounded_by_max_length() {
 }
 
 /// A requested title with a control character writes nothing: rename's text
-/// rule refuses it, so the Session stays untitled.
+/// rule refuses it, so the Session stays untitled. The daemon stops first, so
+/// no later write can land after the read: closing waits for the part's task.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_requested_title_with_a_control_character_writes_nothing() {
     let store = Store::new();
@@ -254,9 +272,9 @@ async fn a_requested_title_with_a_control_character_writes_nothing() {
         .rpc("session.attach", json!({"sessionId":id}))
         .await
         .unwrap();
-    // The part's write is what could title it, and it runs before the part
-    // serves rename: a part still loading answers `service_reloading`, and a
-    // served one answers the invalid title this call sends.
+    // The part's write runs before it serves rename: while it loads, the call
+    // answers `service_reloading`, and a served one answers the invalid title
+    // this call sends.
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let reply = client
@@ -270,6 +288,11 @@ async fn a_requested_title_with_a_control_character_writes_nothing() {
     })
     .await
     .expect("SessionTitle serves rename");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, mut client, _) = start(&store).await;
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     let entry = listed
         .as_array()
