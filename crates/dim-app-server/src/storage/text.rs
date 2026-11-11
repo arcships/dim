@@ -306,9 +306,9 @@ pub(super) fn trigrams(terms: &[String]) -> Option<Vec<String>> {
         .map(|term| term.to_lowercase())
         .filter(|term| {
             (3..=200).contains(&term.len())
-                && term
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+                && term.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'=')
+                })
         })
         .map(|term| {
             term.as_bytes()

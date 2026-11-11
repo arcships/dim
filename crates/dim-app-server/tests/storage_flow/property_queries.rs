@@ -1691,7 +1691,7 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
                     sequence,
                     EventKind::InputMessage(InputMessageData::text(
                         if sequence == size {
-                            "uniqueneedle"
+                            "uniqueneedle op=\"set\""
                         } else {
                             "ordinary content"
                         },
@@ -1718,7 +1718,12 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
         .await
         .unwrap();
         let mut measured = Vec::new();
-        for (term, expected) in [("uniqueneedle", 1), ("absentwordxyz", 0)] {
+        for (term, expected) in [
+            ("uniqueneedle", 1),
+            ("absentwordxyz", 0),
+            ("op=", 1),
+            ("absent=", 0),
+        ] {
             for (related, through, expected) in [
                 (false, size, expected),
                 (true, size, expected),

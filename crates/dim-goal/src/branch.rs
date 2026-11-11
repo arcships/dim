@@ -2225,27 +2225,6 @@ fn result_name(result: fold::ConclusionKind) -> &'static str {
     }
 }
 
-pub(crate) fn goal_inputs() -> QueryFilter {
-    QueryFilter::And {
-        conditions: vec![
-            QueryFilter::Any {
-                field: "data.blocks".into(),
-                condition: Box::new(QueryFilter::Prefix {
-                    value: QueryOperand::Element {
-                        path: "text".into(),
-                    },
-                    prefix: "<dim-goal ".into(),
-                }),
-            },
-            QueryFilter::TextCandidate {
-                field: "data".into(),
-                partition_by: vec![],
-                terms: vec!["goal".into()],
-            },
-        ],
-    }
-}
-
 pub(crate) fn key_block(key: &str) -> QueryFilter {
     QueryFilter::And {
         conditions: vec![
@@ -2259,7 +2238,7 @@ pub(crate) fn key_block(key: &str) -> QueryFilter {
             QueryFilter::TextCandidate {
                 field: "data".into(),
                 partition_by: vec![],
-                terms: vec!["goal".into()],
+                terms: vec![key.into()],
             },
         ],
     }

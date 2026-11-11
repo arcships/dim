@@ -1,6 +1,6 @@
 use crate::{
     branch::{
-        goal_inputs, live_inputs,
+        live_inputs,
         recovery::{self, BusinessState},
     },
     fold::Fold,
@@ -92,34 +92,8 @@ pub(crate) async fn load(
     };
     let Some(row) = rows.pop() else {
         let mut fold = legacy(branch, start, through, None, query_fn, cancel).await?;
-        let mut deleted = recovery::request(branch, start, through, &["input/message"], &[]);
-        deleted.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                kind("input/message"),
-                goal_inputs(),
-                QueryFilter::Exists {
-                    condition: Box::new(QueryFilter::And {
-                        conditions: vec![
-                            kind("input/deleted"),
-                            QueryFilter::Compare {
-                                left: QueryOperand::Field {
-                                    path: "data.input_id".into(),
-                                },
-                                comparison: QueryComparison::Eq,
-                                right: QueryOperand::Outer { path: "id".into() },
-                            },
-                        ],
-                    }),
-                },
-            ],
-        });
-        deleted.query.select = QuerySelect::Exists;
-        deleted.page = None;
-        let QueryOutput::Exists { exists } = query_fn(deleted).await?.result else {
-            unreachable!("deleted legacy Goal changes")
-        };
         let mut repaired = false;
-        if exists {
+        if !fold.invalidated_after.is_empty() {
             let mut published =
                 recovery::request(branch, start, through, &["input/message"], &["data.blocks"]);
             published.query.filter = Some(live_inputs(crate::branch::key_block(text::STATE_KEY)));
@@ -160,6 +134,19 @@ pub(crate) async fn load(
     fold.last_block = position;
     fold.record_after = position;
     if position == through {
+        return Ok(Loaded {
+            fold,
+            repaired: false,
+        });
+    }
+    let mut deleted =
+        recovery::request(branch, Some(position + 1), through, &["input/deleted"], &[]);
+    deleted.query.select = QuerySelect::Exists;
+    deleted.page = None;
+    let QueryOutput::Exists { exists } = query_fn(deleted).await?.result else {
+        unreachable!("deletions after the saved Goal state");
+    };
+    if !exists {
         return Ok(Loaded {
             fold,
             repaired: false,
@@ -350,7 +337,30 @@ async fn legacy(
     let mut query = recovery::request(branch_id, start, through, &[], &["position.sequence"]);
     let business_inputs = QueryFilter::And {
         conditions: vec![
-            goal_inputs(),
+            QueryFilter::Any {
+                field: "data.blocks".into(),
+                condition: Box::new(QueryFilter::Prefix {
+                    value: QueryOperand::Element {
+                        path: "text".into(),
+                    },
+                    prefix: "<dim-goal ".into(),
+                }),
+            },
+            QueryFilter::Or {
+                conditions: [
+                    text::STATE_KEY,
+                    text::OBJECTIVE_KEY,
+                    text::STATUS_KEY,
+                    "op=",
+                ]
+                .into_iter()
+                .map(|term| QueryFilter::TextCandidate {
+                    field: "data".into(),
+                    partition_by: vec![],
+                    terms: vec![term.into()],
+                })
+                .collect(),
+            },
             QueryFilter::Any {
                 field: "data.blocks".into(),
                 condition: Box::new(QueryFilter::Or {
@@ -448,7 +458,7 @@ async fn legacy(
             })
             .collect();
         let mut referenced = std::collections::BTreeSet::new();
-        for (_, _, _, blocks) in &rows {
+        for (sequence, _, _, blocks) in &rows {
             for block in blocks {
                 let InputBlock::Raw {
                     text: raw,
@@ -461,11 +471,15 @@ async fn legacy(
                 if key == text::STATE_KEY
                     && let Some(attrs) = text::marker(raw)
                     && attrs.get("restated").map(String::as_str) != Some("true")
-                    && let Some(after) = attrs
+                {
+                    if let Some(after) = attrs
                         .get("after")
                         .and_then(|value| crate::fold::sequence_of(value))
-                {
-                    referenced.insert(after);
+                    {
+                        referenced.insert(after);
+                    } else if attrs.contains_key("trigger") && *sequence < through {
+                        referenced.insert(sequence + 1);
+                    }
                 }
             }
         }
