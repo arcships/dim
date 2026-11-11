@@ -20,6 +20,10 @@ pub enum RowKind {
     ToolCall,
     /// A `context/compaction-start` and the `context/compaction` that ends it.
     Compaction,
+    /// Context a hook injected after the operator's words: drawn as one muted
+    /// status row under the message, its body behind the detail setting. Not a
+    /// message, so no pick, count or rail reads it.
+    HookContext,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -86,6 +90,10 @@ pub struct ViewRow {
     /// A line-opened marker: the line it opened, which a pick enters
     /// (timeline UI §4.4).
     pub line: Option<String>,
+    /// The user message row this row belongs to: a hook's context is part of
+    /// its message's group, so whatever settles the message settles it
+    /// (timeline UI §4.8).
+    pub parent_row: Option<String>,
     /// A compaction row's state and detail.
     pub compaction: Option<CompactionView>,
     /// A model failure's details, shown when the row is expanded.
@@ -123,13 +131,37 @@ pub struct RetryView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionView {
     pub state: CompactionState,
+    pub detail: Option<CompactionDetail>,
     /// A completed compaction's summary text — the strategy's part of what
     /// replaced the cut history — or the reason or error of one that did not
     /// complete.
-    pub text: String,
+    pub text: std::sync::Arc<str>,
     /// The parts that keep a completed compaction above its bound, as the
     /// record names them; empty when the record carries no such mark.
     pub insufficient: Vec<CompactionPartSize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionDetail {
+    pub event_id: String,
+    pub sequence: u64,
+    pub state: CompactionDetailState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionDetailState {
+    Unloaded,
+    Loading,
+    Loaded,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompactionTarget {
+    pub session_id: String,
+    pub branch_id: String,
+    pub event_id: String,
+    pub sequence: u64,
 }
 
 /// One part the record names in a compaction's insufficient-space mark.

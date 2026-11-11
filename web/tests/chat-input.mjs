@@ -117,7 +117,7 @@ async function permissionSession(t, policy) {
   t.after(() => chat.$dispose())
   const server = { policy, version: 3, updates: [], failure: undefined }
   const connection = {
-    supports: () => true,
+    supports: (method) => ["session.history.latestTurn", "session.methods", "session.permission.get", "session.permission.update"].includes(method),
     client: { async call(method, params, read) {
       if (method === "session.attach") return read({ model: { providerId: "test", modelId: "test" } })
       if (method === "session.methods") return read({ methods: ["session.permission.get", "session.permission.update", "session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })

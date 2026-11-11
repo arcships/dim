@@ -339,6 +339,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Suggestions" => "추천",
         "Skills" => "스킬",
         "Skill loaded: {name}" => "스킬 로드됨: {name}",
+        "Hook context · {count} line" => "훅 컨텍스트 · {count}줄",
+        "Hook context · {count} lines" => "훅 컨텍스트 · {count}줄",
         "Commands" => "명령",
         "Command Palette" => "명령 팔레트",
         "No matches" => "결과 없음",

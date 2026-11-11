@@ -174,16 +174,11 @@ impl Display {
         match event.content {
             EventContent::Input(data) if history => {
                 if let Some(user) = data.user {
-                    let text = user
-                        .content
-                        .into_iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let text = crate::projection::user_text(&user.content);
                     self.record(&format!("> {text}"))?;
+                    for line in crate::projection::context_lines(&user.content) {
+                        self.record(&line)?;
+                    }
                 }
             }
             EventContent::Text(data) => {

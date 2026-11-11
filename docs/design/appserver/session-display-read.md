@@ -1,0 +1,108 @@
+# Session 显示读取：窗口与按需详情
+
+Status: Draft.
+Scope: App Server 显示读取及 CLI、ACP、Web 消费。
+Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
+合同：[历史窗口](session-history-window.md)、[客户端窗口](../clients.md#opening-a-conversation-with-a-bounded-window)、[读取归属](../timeline-read-ownership.md)、[属性查询](../timeline-property-query.md)。
+
+## 1. 决定与兼容
+
+保留 session.history 的完整产品事件合同。新增 display/detail 能力，显示页明确区分完整 ProductEvent 和完成压缩摘要。摘要不冒充缺字段 AgentEvent，不进入模型或状态恢复。
+
+hello 在协议 v3 公布 session.history.display 和 session.history.detail。新客户端仅在两者均支持时于 attach 传 display=true；模式在订阅前确定，属于该 attachment，detach 释放。未协商客户端保留完整事件模式；新版客户端遇到旧服务器沿用既有有界 history，不全量回退。
+
+## 2. 公开方法与类型
+
+| 方法 | 请求 | 回复 |
+| --- | --- | --- |
+| session.history.display | 原 session/branch、latestTurn/before、through、limit | items、through、nextBefore、done、可选 turnStart；窗口位置语义不变。 |
+| session.history.detail | sessionId、branchId、eventId、sequence | eventId、sequence、data；data 为完整 ContextCompactionData。 |
+
+完成压缩摘要：
+
+~~~json
+{"id":"event-id","sequence":42,"create_at":1700000000000,
+ "type":"display","name":"compaction",
+ "data":{"start":38,"strategy":"summary"}}
+~~~
+
+摘要表示 completed；start 在旧事实未记录时省略；insufficientSpace 仅在原诊断有该标记时出现。replacement、context_baseline、digest_entries 和完整 diagnostics 不发送。其它压缩结果仍是原完整产品事件。
+
+display=true 时，实时完成压缩通过 session.display {sessionId,branchId,item} 发送同一摘要，其它实时产品事件仍走 session.event。重连同样协商模式，不能只改历史页而让实时流继续传大 replacement。
+
+### 2.1 detail 固定为一次类型化读取
+
+detail 只读本分支已发布且身份、sequence 同时匹配的完成压缩。按原位置和 ID 定位，不读取整个 turn。空身份/未来位置返回 invalid_params；未找到或类型不符返回 detail_not_found。
+
+一次请求加载这一个 data、编码一次并返回类型化对象。不返回 JSON 文本块，不使用 offset/nextOffset/totalBytes，不在每个分块重读和重编码完整事件，也不建立服务端详情缓存。
+
+回复使用既有 REPLY_FRAME_BYTES 预算，即 16 MiB 减 64 KiB；超出预算返回 detail_too_large，保留摘要，提示通过既有导出取得完整事实。不截断内容，不返回半份 data，不增加无限大详情传输协议。2.4 MB replacement 在此预算内。
+
+该限制约束回复，不是 Store 内存上限。为判断编码大小，服务端仍读取并解码一个完整详情，成本 O(B)；超限对象也计入这次读取。客户端在现有 RPC 边界解码一次类型化 data，不再拼接字符串后做第二次 JSON 文本解析。
+
+## 3. 窗口与数据读取
+
+1. 沿用既有窗口固定 through、批次端点和原始位置游标。
+2. 在正文解码前按同一 ProductEvent 可见性规则选类型；隐藏 model/call、context/prepare 和私有事实不加载请求正文。
+3. 完成压缩只取摘要字段，不在客户端丢弃已传输的 replacement。
+4. 按实际编码字节执行原窗口预算；隐藏位置保留内部零载荷位置项，仍推进游标，不伪造事件。
+5. 客户端投影该页后释放原始页。首开仍按原客户端预算：100 个 transcript 行、最多四页及 300 个身份；缺 turn/start 的分支也按此预算停止，不提前伪造 done=true。
+6. owner inventories 使用窗口固定头建立完整控制状态，然后交接后续实时事实；较早显示页不再推进当前 Goal/pending/turn 状态。同一 exec/started 同时出现在显示窗口与 pending 清单时，按分支和事件 ID 保留一个任务，停止全部对该任务只发一次请求。
+
+摘要字段仍位于同一存储事件 JSON。该物理行的读取和 SQLite JSON 解析计入服务端成本；本次不增加摘要表、不外置整个 compaction、不承诺摘要点读只触碰几个字节。确定减少的是 replacement 网络传输、客户端解码和折叠视图内存。隐藏请求的外置消息节点加载必须为零。
+
+普通大消息、工具结果和大原子批次沿用既有完整历史预算及传输错误，不擅自扩展成另一套摘要。导出始终使用完整事实。
+
+## 4. 客户端与交互
+
+~~~text
+resume -> 显示窗口 -> 先显示并接受输入
+      -> owner inventories -> 安装控制状态
+      -> 异步 usage -> 更新读数
+
+▸ Context compacted
+  展开 -> ▾ Loading -> 正文
+                     -> 失败：保留摘要，可收起后重试
+                     -> 超出显示预算：提示导出
+  收起 -> 释放正文，旧回复不再写回
+~~~
+
+TUI 两种模式共用原披露操作和 expanded 偏好；不增加菜单命令。展开偏好先显示摘要，再异步读取。行模式、ACP、Web 保留原先对 compaction 的显示效果，不新增原本不存在的详情视图。JSON exec 和导出继续完整模式。
+
+沿用现有 worker 和 RPC 完成通知。只保存目标身份、projection generation、RPC ID，以及 unloaded/loading/loaded/error 状态；一次至多一个详情 RPC，不建立字节分块队列或拼接缓冲。目标包含 Session、分支、事件 ID 和 sequence。主线、侧线和选中成员使用相同的可见/展开判断；不能渲染为 Expanded 却因全局 Collapsed 不发请求。
+
+收起、切换附件或关闭视图后释放正文；已发回复按目标及 generation 丢弃。一次失败不循环重试；重新展开才重试。worker 和视图共享已读对象，不复制成视图外永久缓存。
+
+usage 请求独立于历史和用户命令等待，不占用同一串行 await。未配置结果保留到配置变化，不在每轮空闲重复发送。它的服务端成本归 ContextUsage，异步消费本身不算计算优化。
+
+## 5. 成本与修改范围
+
+| 操作 | 目标和实际成本 |
+| --- | --- |
+| 首屏 | 窗口可见正文和摘要；未展开 replacement 传输为零；内联大行 JSON 解析另计。 |
+| 隐藏请求 | 零 system/tools/messages 节点加载；仍定位原始窗口位置。 |
+| 展开 B 字节详情 | 一次对象点读、一次编码、一次类型化消费；服务端和客户端临时内存 O(B)，不乘以分块次数。 |
+| 收起 | 释放详情；零持久化。 |
+| 加载更早 | 原固定范围下一页；不重放当前控制状态。 |
+
+| 修改对象 | 必须修改 |
+| --- | --- |
+| App Server 历史/Session 实时编码 | 显示摘要、附件协商和单次 detail。 |
+| 协议 DTO / native RPC 边界 | 明确 item 和类型化 detail；旧完整事件不变。 |
+| CLI worker、projection、TUI/成员详情 | 原异步请求与视图状态中接入一次详情，不做片段重组。 |
+| ACP / Web | 协商、窗口和原通知消费；不新增详情产品能力。 |
+| 历史/上下文业务 owner | 不改变状态机或上下文内容。 |
+
+## 6. Requirements raised to mechanism owners 与验收
+
+| owner / 问题 | 复用和要求 | 位置、兼容和取消 |
+| --- | --- | --- |
+| App Server / #1320 | 新显示类型，复用原窗口、可见性与回复帧预算。 | 先协商再订阅；不改旧通知和位置。 |
+| Store / #1320 | 先选窗口/可见字段，再加载所需内容；detail 按位置和 ID。 | 范围/取消不变；不增加 UI 表、业务分支或缓存。 |
+| 客户端 / #1320 | 复用原 worker、窗口和视图所有权。 | 取消只结束等待；旧 generation 回复不得覆盖新视图。 |
+
+复用显示和客户端 flow：原子批次、隐藏页、未知可见类型、合并输出、缺 turn/start、四页预算、实时压缩、重连、展开失败和超限。2.4 MB replacement 首屏传输为零，展开只请求一次；超预算明确报错，原导出仍完整。验证全局折叠但成员详情展开的场景。
+
+分别记录首屏、展开和所有页累计 SQL、JSON 解析、节点/字节、网络、CPU、内存；不能把回复变小等同于 Store 字节读取变小。旧服务器路径仍有界且可用。
+
+本设计不新增 Capability、Timeline 事实或模型上下文入口。Store 只执行通用字段/身份读取。删去分块文本协议、offset 校验链、片段拼接状态和重复整读；保留摘要、单个异步请求和视图状态，是实际折叠/展开交互所需。

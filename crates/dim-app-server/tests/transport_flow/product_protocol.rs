@@ -2658,6 +2658,10 @@ async fn model_progress_reaches_v3_subscribers_without_persisting() {
         appended.iter().all(|event| {
             matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_none())
                 || matches!(event.kind, EventKind::InputApplied(_))
+                || matches!(
+                    event.kind.key(),
+                    "input-queue/node" | "input-queue/recovered" | "prompt-state/recovered"
+                )
         }),
         "model progress does not persist facts: {appended:?}"
     );

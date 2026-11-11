@@ -1,6 +1,9 @@
 //! Spanish model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => {
+            "Detalles no disponibles; contrae y expande para reintentar"
+        }
         "The response above is incomplete." => "La respuesta anterior está incompleta.",
         "Could not reach the provider, or the connection dropped" => {
             "No se pudo alcanzar al proveedor, o se perdió la conexión"

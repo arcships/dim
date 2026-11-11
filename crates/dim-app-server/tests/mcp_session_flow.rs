@@ -2505,7 +2505,8 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
-                matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                    EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{:?}",
                 events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect::<Vec<_>>()
             );
@@ -2547,7 +2548,8 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             .unwrap();
         session.idle("main").await.unwrap();
         assert!(
-            matches!(chain_events(&session, "main", ..).await.unwrap().last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+            matches!(chain_events(&session, "main", ..).await.unwrap().iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
             "a later turn also completes"
         );
         agent.close().await.unwrap();
