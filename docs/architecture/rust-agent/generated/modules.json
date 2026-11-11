@@ -19748,7 +19748,6 @@
       "references": [
         "path Names",
         "path dim_agent_runtime::names::name_of",
-        "path dim_agent_runtime::names::register",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -20291,11 +20290,11 @@
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Caller",
-        "path ScheduleJobs",
         "path ToolRequest",
+        "path call_schedule",
         "use crate::methods::Caller",
-        "use crate::methods::ScheduleJobs",
-        "use crate::methods::ToolRequest"
+        "use crate::methods::ToolRequest",
+        "use crate::methods::call_schedule"
       ]
     },
     {
@@ -20303,10 +20302,14 @@
       "to": "dim_agent_scheduler::wakeups",
       "references": [
         "path WakeupRequest",
-        "path Wakeups",
+        "path cancel_wakeup",
         "path crate::wakeups::Wakeup",
+        "path create_wakeup",
+        "path list_wakeups",
         "use crate::wakeups::WakeupRequest",
-        "use crate::wakeups::Wakeups"
+        "use crate::wakeups::cancel_wakeup",
+        "use crate::wakeups::create_wakeup",
+        "use crate::wakeups::list_wakeups"
       ]
     },
     {

@@ -3,8 +3,8 @@
 //! before it calls the process service ([design §1.1, A.2, §10](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::MAX_PROMPT_BYTES,
-    methods::{Caller, ScheduleJobs, ToolRequest},
-    wakeups::{WakeupRequest, Wakeups},
+    methods::{Caller, ToolRequest, call_schedule},
+    wakeups::{WakeupRequest, cancel_wakeup, create_wakeup, list_wakeups},
 };
 use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
@@ -16,6 +16,8 @@ use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, host_key};
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -92,8 +94,6 @@ fn wakeup_declaration() -> ToolDefinition {
 }
 
 pub struct SchedulerSession {
-    jobs: Key<ScheduleJobs>,
-    wakeups: Key<Wakeups>,
     methods: Key<SessionMethods>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
@@ -104,16 +104,17 @@ pub struct SchedulerSession {
 
 impl SchedulerSession {
     pub fn new(names: &Names<'_>, description: String) -> rutis::Result<Self> {
-        Ok(Self {
-            jobs: names.key()?,
-            wakeups: names.key()?,
-            methods: names.key()?,
-            tools: names.key()?,
-            guide: names.key()?,
-            config: names.key()?,
-            identity: names.key()?,
-            description,
-        })
+        let build = || -> rutis::Result<Self> {
+            Ok(Self {
+                methods: names.key()?,
+                tools: names.key()?,
+                guide: names.key()?,
+                config: names.key()?,
+                identity: names.key()?,
+                description,
+            })
+        };
+        build()
     }
 }
 
@@ -123,8 +124,6 @@ impl DynPlugin for SchedulerSession {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
-            self.jobs.erase(),
-            self.wakeups.erase(),
             self.methods.erase(),
             self.tools.erase(),
             self.guide.erase(),
@@ -134,8 +133,12 @@ impl DynPlugin for SchedulerSession {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let jobs = ctx.require_at(&self.jobs)?;
-            let wakeups = ctx.require_at(&self.wakeups)?;
+            let jobs = ctx
+                .get_at(&host_key("scheduleJobs"))
+                .ok_or_else(|| rutis::Error::msg("scheduleJobs face is not provided"))?;
+            let wakeups = ctx
+                .get_at(&host_key("wakeups"))
+                .ok_or_else(|| rutis::Error::msg("wakeups face is not provided"))?;
             let methods = ctx.require_at(&self.methods)?;
             let tools = ctx.require_at(&self.tools)?;
             let config = ctx.require_at(&self.config)?;
@@ -254,7 +257,7 @@ fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
 
 /// The `session.wakeup.*` handler: parses at the wire boundary, forwards to
 /// the process owner, and maps its errors.
-fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Handler {
+fn wakeup_handler(wakeups: Arc<dyn HostDispatch>) -> dim_agent_capabilities::methods::Handler {
     Arc::new(move |call, _cancel, _progress| {
         let MethodCall {
             method,
@@ -271,14 +274,16 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
                     nonempty(&p.prompt, "prompt")?;
                     prompt_size(&p.prompt).map_err(RpcError::invalid)?;
                     let at = parse_at(&p.at)?;
-                    let created = wakeups
-                        .create(WakeupRequest {
+                    let created = create_wakeup(
+                        &wakeups,
+                        WakeupRequest {
                             session_id: p.session_id,
                             branch_id: p.branch_id,
                             at,
                             prompt: p.prompt,
-                        })
-                        .await?;
+                        },
+                    )
+                    .await?;
                     reply(json!({ "wakeupId": created.wakeup_id }))
                 }
                 "session.wakeup.list" => {
@@ -286,7 +291,7 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
                     nonempty(&p.session_id, "sessionId")?;
                     let branch_id = p.branch_id.as_deref().unwrap_or("main");
                     nonempty(branch_id, "branchId")?;
-                    let own = wakeups.list(&p.session_id, branch_id).await?;
+                    let own = list_wakeups(&wakeups, &p.session_id, branch_id).await?;
                     reply(json!({
                         "wakeups": own.iter().map(wire_scheduled).collect::<Vec<_>>()
                     }))
@@ -295,7 +300,8 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
                     let p: CancelParams = params(value)?;
                     nonempty(&p.session_id, "sessionId")?;
                     nonempty(&p.wakeup_id, "wakeupId")?;
-                    let (settled, changed) = wakeups.cancel(&p.session_id, &p.wakeup_id).await?;
+                    let (settled, changed) =
+                        cancel_wakeup(&wakeups, &p.session_id, &p.wakeup_id).await?;
                     if changed {
                         reply(json!({}))
                     } else {
@@ -309,7 +315,7 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
 }
 
 struct ScheduleTool {
-    jobs: Arc<ScheduleJobs>,
+    jobs: Arc<dyn HostDispatch>,
     config: Arc<SessionConfig>,
     session_id: String,
     /// Cancelled when this generation starts to unload.
@@ -351,7 +357,7 @@ impl ToolHandler for ScheduleTool {
             if cancel.is_cancelled() {
                 return Ok(ToolResult::error(CANCELLED_BEFORE_HANDOVER));
             }
-            let reply = self.jobs.call(request, caller).await;
+            let reply = call_schedule(&self.jobs, request, caller).await;
             if self.closing.is_cancelled() {
                 return Ok(ToolResult::error(UNLOADING_AFTER_CALL));
             }
@@ -379,7 +385,7 @@ struct WakeupArgs {
 }
 
 struct WakeupTool {
-    wakeups: Arc<Wakeups>,
+    wakeups: Arc<dyn HostDispatch>,
     config: Arc<SessionConfig>,
     session_id: String,
     /// Cancelled when this generation starts to unload.
@@ -434,15 +440,16 @@ impl ToolHandler for WakeupTool {
             if cancel.is_cancelled() {
                 return Ok(ToolResult::error(WAKEUP_CANCELLED_BEFORE_HANDOVER));
             }
-            let created = self
-                .wakeups
-                .create(WakeupRequest {
+            let created = create_wakeup(
+                &self.wakeups,
+                WakeupRequest {
                     session_id: self.session_id.clone(),
                     branch_id: context.branch_id,
                     at,
                     prompt: args.prompt,
-                })
-                .await;
+                },
+            )
+            .await;
             if self.closing.is_cancelled() {
                 return Ok(ToolResult::error(UNLOADING_AFTER_CALL));
             }

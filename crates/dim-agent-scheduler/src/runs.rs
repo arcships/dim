@@ -13,14 +13,14 @@ const FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message}")]
 pub struct SchedulerError {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
 }
 
 impl SchedulerError {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            code,
+            code: code.into(),
             message: message.into(),
         }
     }

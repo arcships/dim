@@ -3261,18 +3261,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_scheduler::methods::ScheduleJobs",
-        "provider": 70,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_scheduler::wakeups::Wakeups",
-        "provider": 70,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_app_server::agents::AgentDirectory",
         "provider": 37,
         "generation": 1,

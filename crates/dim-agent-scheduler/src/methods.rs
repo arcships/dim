@@ -24,7 +24,7 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{
     Error as BridgeError, HostDispatch, Reply, Value as BridgeValue, host_key,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -136,7 +136,6 @@ impl DynPlugin for SchedulerPlugin {
             let jobs = Arc::new(ScheduleJobs {
                 shared: shared.clone(),
             });
-            ctx.provide_as::<ScheduleJobs>(jobs.clone())?;
             ctx.provide_at(
                 host_key("scheduleJobs"),
                 Arc::new(ScheduleJobsFace(jobs.clone())),
@@ -144,7 +143,6 @@ impl DynPlugin for SchedulerPlugin {
             let wakeups = Arc::new(crate::wakeups::Wakeups {
                 shared: shared.clone(),
             });
-            ctx.provide_as::<crate::wakeups::Wakeups>(wakeups.clone())?;
             ctx.provide_at(
                 host_key("wakeups"),
                 Arc::new(crate::wakeups::WakeupsFace(wakeups.clone())),
@@ -305,7 +303,7 @@ fn handler(shared: Arc<Shared>) -> Handler {
 
 impl From<SchedulerError> for RpcError {
     fn from(error: SchedulerError) -> Self {
-        RpcError::service(error.code, error.message)
+        RpcError::service(&error.code, error.message)
     }
 }
 
@@ -840,7 +838,7 @@ pub struct ToolRequest {
     job: Option<JobPatch>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ToolAction {
     List,
@@ -856,7 +854,7 @@ enum ToolAction {
 /// The fields a tool `create` or `update` may write (A.2): no target, cwd,
 /// model, Agent or policy. A create fills the target from the calling
 /// Session and branch.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct JobPatch {
     #[serde(default)]
@@ -870,7 +868,7 @@ struct JobPatch {
 }
 
 /// The saving branch: the target a tool create saves (A.2, §2.1).
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Caller {
     pub session_id: String,
@@ -1139,8 +1137,56 @@ fn truncate(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
-/// The `scheduleJobs` data face: Scheduler's flat `JobRequest` over the
-/// typed `call(request, caller)`.
+/// The typed binding over the `scheduleJobs` face. It calls the same
+/// operations; it is not a second service.
+pub(crate) async fn call_schedule(
+    dispatch: &Arc<dyn HostDispatch>,
+    request: ToolRequest,
+    caller: Caller,
+) -> Result<JobReply, SchedulerError> {
+    let args = json!({
+        "action": request.action,
+        "job_id": request.job_id,
+        "enabled": request.enabled,
+        "limit": request.limit,
+        "job": request.job,
+        "caller": caller,
+    });
+    let value = resolve_face_value(
+        dispatch
+            .invoke("call", BridgeValue::Data(args))
+            .map_err(|error| SchedulerError::new("schedule_face", error.to_string()))?,
+    )
+    .await?
+    .json()
+    .map_err(|error| SchedulerError::new("schedule_face", error.to_string()))?;
+    if let Some(code) = value.get("code").and_then(Value::as_str) {
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("schedule call failed");
+        return Err(SchedulerError::new(code, message));
+    }
+    Ok(JobReply {
+        content: value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        records: value.get("records").cloned().unwrap_or(Value::Null),
+    })
+}
+
+async fn resolve_face_value(value: BridgeValue) -> Result<BridgeValue, SchedulerError> {
+    match value {
+        BridgeValue::Reference(reference) if reference.is_future() => reference
+            .wait_async()
+            .await
+            .map_err(|error| SchedulerError::new("schedule_face", error.to_string())),
+        value => Ok(value),
+    }
+}
+
 pub struct ScheduleJobsFace(Arc<ScheduleJobs>);
 
 #[derive(Deserialize)]

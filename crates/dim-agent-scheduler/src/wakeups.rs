@@ -503,7 +503,165 @@ impl Wakeups {
     }
 }
 
-/// The `wakeups` data face, following Scheduler §10.2.
+async fn resolve_face_value(value: BridgeValue) -> Result<BridgeValue, SchedulerError> {
+    match value {
+        BridgeValue::Reference(reference) if reference.is_future() => reference
+            .wait_async()
+            .await
+            .map_err(|error| SchedulerError::new("wakeup_face", error.to_string())),
+        value => Ok(value),
+    }
+}
+
+fn code_error(value: &serde_json::Value) -> Option<SchedulerError> {
+    let code = value.get("code")?.as_str()?;
+    let message = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("wakeup call failed");
+    Some(SchedulerError::new(code, message))
+}
+
+fn state_of(text: &str) -> WakeupState {
+    match text {
+        "fired" => WakeupState::Fired,
+        "cancelled" => WakeupState::Cancelled,
+        "expired" => WakeupState::Expired,
+        _ => WakeupState::Scheduled,
+    }
+}
+
+fn synthetic(
+    session_id: &str,
+    branch_id: &str,
+    wakeup_id: String,
+    at: String,
+    prompt: String,
+    state: WakeupState,
+) -> Wakeup {
+    Wakeup {
+        wakeup_id,
+        session_id: session_id.to_owned(),
+        branch_id: branch_id.to_owned(),
+        at: at.clone(),
+        prompt,
+        state,
+        created_at: at,
+        settled_at: None,
+    }
+}
+
+pub(crate) async fn create_wakeup(
+    dispatch: &Arc<dyn HostDispatch>,
+    request: WakeupRequest,
+) -> Result<Wakeup, SchedulerError> {
+    let at = format_instant(request.at);
+    let args = json!({
+        "sessionId": request.session_id,
+        "branchId": request.branch_id,
+        "at": at,
+        "prompt": request.prompt,
+    });
+    let value = dispatch
+        .invoke("create", BridgeValue::Data(args))
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    let value = resolve_face_value(value).await?;
+    let value = value
+        .json()
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    if let Some(error) = code_error(&value) {
+        return Err(error);
+    }
+    let wakeup_id = value
+        .get("wakeupId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| SchedulerError::new("wakeup_face", "create reply had no wakeupId"))?
+        .to_owned();
+    Ok(synthetic(
+        &request.session_id,
+        &request.branch_id,
+        wakeup_id,
+        at,
+        request.prompt,
+        WakeupState::Scheduled,
+    ))
+}
+
+pub(crate) async fn list_wakeups(
+    dispatch: &Arc<dyn HostDispatch>,
+    session_id: &str,
+    branch_id: &str,
+) -> Result<Vec<Wakeup>, SchedulerError> {
+    let args = json!({ "sessionId": session_id, "branchId": branch_id });
+    let value = dispatch
+        .invoke("list", BridgeValue::Data(args))
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    let value = resolve_face_value(value).await?;
+    let value = value
+        .json()
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    if let Some(error) = code_error(&value) {
+        return Err(error);
+    }
+    let records = value
+        .get("wakeups")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(records
+        .into_iter()
+        .filter_map(|record| {
+            Some(synthetic(
+                session_id,
+                branch_id,
+                record.get("wakeupId")?.as_str()?.to_owned(),
+                record.get("at")?.as_str()?.to_owned(),
+                record.get("prompt")?.as_str()?.to_owned(),
+                state_of(
+                    record
+                        .get("state")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                ),
+            ))
+        })
+        .collect())
+}
+
+pub(crate) async fn cancel_wakeup(
+    dispatch: &Arc<dyn HostDispatch>,
+    session_id: &str,
+    wakeup_id: &str,
+) -> Result<(Wakeup, bool), SchedulerError> {
+    let args = json!({ "sessionId": session_id, "wakeupId": wakeup_id });
+    let value = dispatch
+        .invoke("cancel", BridgeValue::Data(args))
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    let value = resolve_face_value(value).await?;
+    let value = value
+        .json()
+        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
+    if let Some(error) = code_error(&value) {
+        return Err(error);
+    }
+    let changed = value.get("state").is_none();
+    let state = value
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .map(state_of)
+        .unwrap_or(WakeupState::Cancelled);
+    Ok((
+        synthetic(
+            session_id,
+            "main",
+            wakeup_id.to_owned(),
+            String::new(),
+            String::new(),
+            state,
+        ),
+        changed,
+    ))
+}
 pub struct WakeupsFace(pub(crate) Arc<Wakeups>);
 
 #[derive(Deserialize)]
