@@ -16,7 +16,7 @@ Three faces, each a name whose public contract is data:
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `output`, `shell`, `write`, `resize`, `info`, `confined` | the process owner | #1295 |
-| `fsHost` | `facts`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
+| `fsHost` | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
 | `store` | Timeline and Session-row repository operations | the state owner | #1298 |
 
 ```text
@@ -56,8 +56,13 @@ consults who is calling.
 2. **One call per operation.** `read`, `write`, `edit`, `glob`, `grep` and `mentions` are one call
    each; a traversal is one call, not one call per file.
 3. **Paths are node paths.** A request carries a node-absolute resolved path; a reply returns
-   node-absolute resolved paths only. A relative path in a request is `invalid`. Returned paths
-   are stable for history: the same file always resolves to the same path.
+   node-absolute resolved paths only. A relative path in a request is `invalid`, with one
+   exception: **`fsHost.resolve` is the resolution entry point**, so it accepts the path as the
+   model gave it — relative to the `cwd` the caller passes, starting with `~`, containing `..`,
+   following symlinks — because only the node can resolve it. `cwd`, `workspace` and the
+   confirmed roots it is given are node-absolute. Every other operation, `execHost.start` and
+   `shell` included, takes a path that a `resolve` reply already returned. Returned paths are
+   stable for history: the same file always resolves to the same path.
 4. **Ids are values.** A task id is a string the caller assigns; ids carry no authority.
 5. **Pages are bounded.** Large output and long results cross as pages with a cursor, never as a
    stream. No reply carries unbounded bytes.
@@ -78,11 +83,11 @@ consults who is calling.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `start` | async | `{taskId, command, cwd, workspace}` | `{outputPath}` |
+| `start` | async | `{taskId, command, cwd, workspace, roots}` | `{outputPath}` |
 | `wait` | async | `{taskId, timeoutMs?}` | task record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
 | `output` | async | `{taskId, cursor?, limit?}` | page (§3.4) |
-| `shell` | async | `{taskId, cwd, workspace, cols, rows}` | `{outputPath}` |
+| `shell` | async | `{taskId, cwd, workspace, roots, cols, rows}` | `{outputPath}` |
 | `write` | async | `{taskId, data}` | `{}` |
 | `resize` | async | `{taskId, cols, rows}` | `{}` |
 | `info` | async | `{}` | `{home, execRoot, platformRoots, backend}` |
@@ -90,18 +95,31 @@ consults who is calling.
 
 ### 3.2 `start` and `wait`
 
-`start` accepts only `{taskId, command, cwd, workspace}`. `cwd` is the model's requested working
-directory and `workspace` the Session's workspace root, both passed as the caller holds them; an
-absent `cwd` is `workspace`. The provider resolves `cwd` against `workspace` and a path that does
-not exist is `cwd_not_found`. It builds the shell, argv and environment from its current shell
-preference, prepares the boundary from its switches, spawns, and creates the task's output file.
+`start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
+directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
+[worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
+known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
+`roots` the additional roots recognition confirmed and persisted. All are node-absolute. A cwd that does not exist is
+`cwd_not_found`; the provider never resolves a relative path itself.
+
+The provider prepares the boundary with `workspace` plus exactly `roots` and adds no other
+writable root of its own, apart from the output and temporary directories its contract already
+grants. `roots` holds the additional roots recognition confirmed; the workspace is always part of
+the writable range and cannot be narrowed or replaced by leaving it out. The provider has no way
+to confirm a root: a directory outside the range does not become writable because a command names
+it, because `cwd` sits in it, or because the model asked. The range is the caller's confirmed
+range, in the same trust position as the workspace list preparation already takes; the switches
+still decide enforcement, and the model cannot set either (§3.8). It builds the shell, argv and
+environment from its current shell preference, spawns, and creates the task's output file.
 `taskId` is assigned by the caller (the control side allocates `exec-<uuid>` as it does today); a
 second `start` with a live id is `task_exists` and starts nothing, so a retried call after a lost
 reply cannot run the command twice.
 
-`start` has no boundary input. A request that still carries `sandbox`, `network` or any other
-process-boundary field is `invalid`: the switch is not the caller's to send
+`start` has no switch input. A request that still carries `sandbox`, `network` or any other
+boundary switch is `invalid`: the switch is not the caller's to send
 ([ADR 003 D1](../adr/003-approval-scope.md), [process isolation](host-platform-isolation.md)).
+`roots` is not a switch: it is the workspace range the Session already confirmed, and it grants
+nothing the file facts do not already grant.
 
 `wait` returns the task record once the process tree has ended:
 
@@ -136,25 +154,49 @@ An ended task is a no-op that still answers `{}`; an id the provider never issue
 
 ### 3.4 `output`
 
-`output {taskId, cursor?, limit?}` reads the task's output file by byte cursor and answers
-`{text, bytes, nextCursor?, truncated}`. A missing `cursor` is the file's start. `limit` rejects
-`0` (`invalid`), defaults to 1 MiB and clamps to 4 MiB. `text` is sanitized exactly like the
-preview; `bytes` is the file bytes this page consumed; `nextCursor` is present only when the page
-was full and equals `cursor + bytes`; `bytes == 0` means caught up, so the caller retries the same
-cursor. The file is append-only, so a cursor the provider handed out always names a byte that
-never changes, and a page never splits a character. These are the rules of
-[background command output](background-task-output.md); this face adds no second page rule. The
-reply never selects a path: the task id does.
+`output {taskId, cursor?, limit?}` reads the task's captured output by byte cursor and answers
+`{text, bytes, nextCursor?, truncated, retainedFrom, reset?}`. `limit` rejects `0` (`invalid`),
+defaults to 1 MiB and clamps to 4 MiB. `text` is sanitized exactly like the preview; `bytes` is
+the captured bytes this page consumed; `nextCursor` is present only when the page was full and
+equals `cursor + bytes`; `bytes == 0` means caught up, so the caller retries the same cursor. A
+page never splits a character. For a command, the capture is the append-only output file: the
+file never changes behind a cursor, `retainedFrom` is `0`, and `truncated` is the 64 MiB cap. These
+are the rules of [background command output](background-task-output.md); this face adds no second
+page rule, only the fields below, which a bounded capture needs. The reply never selects a path:
+the task id does.
+
+**The retained start is data, not an error.** `retainedFrom` is the earliest cursor the provider
+can still serve. A capture grows at its end and drops at its start when it is bounded, so
+`retainedFrom` only ever increases.
+
+- An omitted `cursor` means `retainedFrom`, not byte zero. Asking for `{taskId}` is the reset
+  request: it answers from the oldest byte the provider still holds.
+- A `cursor` below `retainedFrom` is not a failure and not silent: the reply is
+  `{text: "", bytes: 0, retainedFrom, nextCursor: retainedFrom, reset: true}`, and the caller
+  continues at `nextCursor`. The reset is observable both as a position (`retainedFrom`) and as an
+  explicit flag (`reset`), so the caller never has to infer it from a message or from an empty
+  page.
+- The bytes between an old cursor and `retainedFrom` are gone on purpose: the capture is bounded,
+  and the reply never reconstructs them. A command's append-only output file has no such gap; only
+  a bounded shell capture drops text.
+- The capture may advance again between two calls. `retainedFrom` in each reply is the truth for
+  that reply; a caller that reads `nextCursor` and finds it below the new `retainedFrom` takes the
+  reset page and continues from there. It must not cache `retainedFrom`, and a cursor the provider
+  handed out is never revised in place, only overtaken by the start.
+- A lost reply is retried at the same cursor. Pages are reads of an append-only file or of an
+  absolute capture offset, so a repeated read returns the same bytes or the reset page; nothing is
+  consumed by reading, and no read changes the task.
 
 ### 3.5 Persistent shell
 
-`shell {taskId, cwd, workspace, cols, rows}` creates one persistent PTY shell as a task;
+`shell {taskId, cwd, workspace, roots, cols, rows}` creates one persistent PTY shell as a task;
 `write {taskId, data}` sends `data` (base64 bytes) to it, `resize` sets the geometry, `output`
-reads its captured text, and `kill` ends it. `read` is not a separate operation: one page
-operation with one cursor rule serves both a command's output file and the shell's capture, and a
-second name for the same operation would be a duplicate. The capture is bounded (64 KiB today), so
-a cursor before the retained start is `cursor_expired` and the caller continues from the earliest
-retained position.
+reads its captured text, and `kill` ends it. `cwd` and `roots` are resolved and confirmed exactly
+as for `start` (§3.2); a running shell keeps the roots it started with. `read` is not a separate
+operation: one page operation with one cursor rule serves both a command's output file and the
+shell's capture, and a second name for the same operation would be a duplicate. The shell's
+capture is bounded (64 KiB today), so its `retainedFrom` advances as it drops the oldest text and
+the reset page of §3.4 is how a caller catches up.
 
 The command protocol that runs on top of the shell — marker pairs, occupancy, the queue and the
 foreground timeout — is not part of this face. It stays with the shell's consumer, which uses
@@ -203,10 +245,11 @@ without a backend is `isolation_unavailable`; both refuse the payload before it 
 [process isolation](host-platform-isolation.md#failure) states, and nothing falls back to a weaker
 boundary.
 
-The consumer sends no switch, reads none, and cannot widen a boundary through `cwd`, `workspace`
-or `command`. Its tool declaration line stays what it is; it describes the switches, not their
-value. On a remote node the switches are the node user's; a local management client reads and
-writes them through the node's own management methods, not through this face.
+The consumer sends no switch, reads none, and cannot widen a boundary through `cwd`, `workspace`,
+`roots` or `command`: `roots` is the range the Session confirmed through the file facts, and the
+provider adds nothing to it. Its tool declaration line stays what it is; it describes the
+switches, not their value. On a remote node the switches are the node user's; a local management
+client reads and writes them through the node's own management methods, not through this face.
 
 ### 3.9 Errors
 
@@ -222,7 +265,6 @@ writes them through the node's own management methods, not through this face.
 | `isolation_config_invalid` | The switches cannot be read |
 | `spawn_failed` | The process could not start |
 | `output_unavailable` | The task's output file is gone |
-| `cursor_expired` | The cursor precedes the retained shell capture |
 | `cancelled` | The call was cancelled before it changed anything |
 
 ## 4. `fsHost`
@@ -231,7 +273,7 @@ writes them through the node's own management methods, not through this face.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `facts` | async | `{path, cwd, workspace}` | path facts (§4.2) |
+| `resolve` | async | `{path, cwd, workspace, roots?, recognize?}` | resolution and node facts (§4.2) |
 | `read` | async | `{path, offset?, limit?, encoding?}` | `{result, binding?}` (§4.3) |
 | `write` | async | `{path, content, binding?}` | `{result, binding?}` |
 | `edit` | async | `{path, oldText, newText, replaceAll?, binding?}` | `{result, binding?}` |
@@ -249,22 +291,42 @@ under the same lease discipline as today, `createDirectory` creates one director
 `remove` serve the sweep ([session files §3](appserver/session-files.md#3-layout-and-ownership),
 §7). One face, one implementation: the file-operations owner provides all eleven.
 
-### 4.2 `facts`
+Only `resolve` takes an unresolved `path`; the other ten take the node-absolute `path` a `resolve`
+reply returned (§2 rule 3). `resolve` is also what the file facts owner and process preparation
+call, so every file operation and every explicit process cwd goes through the same resolution and
+recognition entry point.
 
-`facts {path, cwd, workspace}` resolves `path` the way the file tools do — `cwd`, `~`, `..` and
-symlinks settled, and the longest existing prefix resolved so a Session started through a
-symlinked directory still matches — and answers:
+### 4.2 `resolve`
+
+`resolve {path, cwd, workspace, roots?, recognize?}` resolves `path` the way the file tools do —
+`cwd`, `~`, `..` and symlinks settled, and the longest existing prefix resolved so a Session
+started through a symlinked directory still matches — and answers:
 
 ```text
-{path: string,            // the resolved node path the caller then uses
- workspace: boolean,      // inside the workspace, or a confirmed worktree root
- system: boolean,         // inside the node's platform roots
- discoveryError?: string} // worktree recognition failed; the workspace was not expanded
+{path: string,             // the resolved node path the caller then uses
+ workspace: boolean,       // inside `workspace`
+ system: boolean,          // inside the node's platform roots
+ roots: [{path, valid}],   // each passed root: contains `path` and its recorded identity still matches
+ worktree?: {repository: string, root: string, subtree: string, rootIdentity: string},
+ discoveryError?: string}  // recognition was asked for and failed; nothing was expanded
 ```
 
-`workspace` covers the [worktree access](worktree-access.md) roots the node recognizes: discovery
-uses the node's repository, and a failure is reported as `discoveryError` without expanding
-anything, as it is today.
+- `workspace`, `system` and `roots` are path facts of the node: it holds the filesystem, so it
+  answers them. The request's `roots` entries are `{path, identity}` — the Session's confirmed
+  range, each with the directory identity recorded when it was confirmed — and the reply answers
+  `{path, valid}` for each; `valid: false` means the root was deleted, replaced or no longer
+  contains `path`, and the caller drops it.
+- `recognize: true` asks for the [worktree probe](#421-session-scoped-recognition-and-association)
+  when the path is outside `workspace` and `roots`. The reply's `worktree` is a **candidate
+  record**, not an expansion: the node reads Git metadata, applies the fixed-prefix mapping, and
+  returns what it found; it persists nothing and grants nothing. Without `recognize` the node
+  never runs Git.
+- `discoveryError` reports a probe that could not answer — Git unavailable, a timeout, or
+  metadata that does not verify. The Session part uses the same field when the association write
+  fails on the control side. Either way nothing is expanded, so the caller keeps the existing
+  approval path.
+- No `worktree` and no `discoveryError` means "not the same repository or outside the eligible
+  subtree": the ordinary facts decide, exactly as they do today.
 
 The other two facts of [ADR 014](../adr/014-file-access-facts.md) are Session records, not
 filesystem knowledge: `owned` is `sessionFiles.owns {sessionId, path}`
@@ -272,6 +334,51 @@ filesystem knowledge: `owned` is `sessionFiles.owns {sessionId, path}`
 Session's grant rows. Both are answered on the control side from the node's resolved `path`;
 neither reads a filesystem, so neither needs the node. The control side then applies ADR 014's
 table with the branch preset, and `Permission` and `Approval` stay exactly where they are.
+
+#### 4.2.1 Session-scoped recognition and association
+
+[Worktree access](worktree-access.md) owns the recognition rules, the mapping and the records; this
+section fixes only the data and the order, because a remote node moves the Git probe away from the
+Session that has to persist the result.
+
+| Concern | Owner |
+| --- | --- |
+| Git probe, repository identity, fixed-prefix mapping, root directory identity | `fsHost.resolve`, on the node holding the files |
+| Session view: confirmed roots with their identities, in-flight recognitions, "already known" answers, branch-independent cache | the file facts Session part — ADR 014's `fileAccessFacts` service — on the control node (worktree access §3) |
+| Worktree directory record and Session usage association, deduplicated and written atomically | the `store` face's `associateWorktree` operation, provided by SessionStore (worktree access §4, R2) |
+| Publishing the expanded range | the Session part, after the store acknowledges |
+| Admission, asks, presets | `Permission` and `Approval`, on the control side, unchanged |
+
+The order is fixed, and the Session part is the only participant that both waits and publishes:
+
+1. The Session part resolves the target — or the explicit process cwd — with `resolve`, setting
+   `recognize` only when its own view does not already cover the path.
+2. The node answers the resolution, the node facts, and either a `worktree` candidate or a
+   `discoveryError`.
+3. A candidate goes to `store.associateWorktree {sessionId, repository, root, subtree,
+   rootIdentity}`. That operation writes the directory record and the usage association together
+   and answers `{}` only after both commit, deduplicated by repository and root and by Session and
+   directory. A failed write is a `discoveryError` for the caller: the range is not published, and
+   the user can still take the ordinary single-approval path.
+4. Only after the acknowledgement does the Session part publish the confirmed root in its view and
+   answer `workspace: true` for that path. It never expands first and persists afterwards.
+5. A cancellation after the write keeps the association — it records a relationship that was
+   confirmed — but the call is cancelled and nothing is published for it. A cancellation before
+   the write publishes nothing.
+
+The node keeps no Session state: the same `resolve` answers for every Session, and only the
+control side knows which roots a Session confirmed. There is no Session id in a `resolve` request,
+and the node cannot expand a Session's range on its own.
+
+Later accesses re-check the root: `resolve` is called with the Session's roots and their recorded
+identities, and a root whose identity no longer matches comes back `valid: false`. The Session part
+drops it and re-recognizes on the next access, which is the unchanged-root rule of worktree access
+§3. Session close releases the view; restore and reload start from an empty view and re-verify;
+fork copies neither the view nor the associations. Session deletion releases the associations
+inside its own delete transaction and keeps the directory records.
+
+The persisted records are read only through `associateWorktree` and the store's own Session
+deletion step, never by reading tables: no other part queries them for admission.
 
 ### 4.3 `read`, `write` and `edit`
 
@@ -297,9 +404,9 @@ or changed one:
   what the call installed.
 - The control side records the returned binding in `FileReads` for the branch; that record stays
   branch memory on the control node and is not reconstructed from the node.
-- `write` and `edit` are admitted before they run, so their `path` is the resolved path `facts`
-  returned. `ToolHost.resolve_write` asks `fsHost.facts` for a remote Session instead of resolving
-  locally; the resolved call is what approval and execution receive, as today.
+- `write` and `edit` are admitted before they run, so their `path` is the resolved path `resolve`
+  returned. `ToolHost.resolve_write` asks `fsHost.resolve` for a remote Session instead of
+  resolving locally; the resolved call is what approval and execution receive, as today.
 
 ### 4.4 `glob`, `grep` and `mentions`
 
@@ -320,7 +427,7 @@ on the node.
 ### 4.5 Paths, facts and approvals
 
 A path outside the facts is refused by the same rule as today, evaluated on the node's filesystem:
-the `facts` call resolves and classifies, the control side's `Permission` decides with the branch
+the `resolve` call resolves and classifies, the control side's `Permission` decides with the branch
 preset, and `Approval` asks the user when the table says to ask. No approval, preset, grant or
 retry is sent to the node, and the node has no policy of its own.
 
@@ -359,11 +466,16 @@ daemon that owns the Session:
 | Family | Operations |
 | --- | --- |
 | Timeline | `append`, `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `saveSnapshot`, `latestSnapshot` |
-| Session rows | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, and the row-set operations for sessions, owners, branches, content, snapshots, grants, metadata, settings, providers, agents, worktree associations and Session-file rows, with `fork` and `delete` as one transaction each |
+| Session rows | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `associateWorktree`, and the row-set operations for sessions, owners, branches, content, snapshots, grants, metadata, settings, providers, agents and Session-file rows, with `fork` and `delete` as one transaction each |
 
 - `append` takes one atomic batch and answers after the batch is durable, so the publish step is
   the reply and no callback crosses. `head`, `readPage` and the rest keep the cursor and batch
   boundary rules of [timeline storage](../architecture/rust-agent/timeline-storage.md).
+- `associateWorktree {sessionId, repository, root, subtree, rootIdentity}` writes the worktree
+  directory record and the Session usage association as one commit and answers `{}` after it, so
+  the reply is the acknowledgement the file facts owner waits for before publishing a confirmed
+  root (§4.2.1). Its deduplication, its place in Session deletion and its format decision belong
+  to [worktree access §4](worktree-access.md#4-持久使用关联与清理边界) and the storage owner.
 - The Session-row operations are the repository operations of
   [#1298](https://github.com/arcships/dim/issues/1298); that issue's list and field sets are the
   contract, and this document does not pre-empt them.
@@ -414,16 +526,19 @@ the face, not a new accessor beside it.
 | ADR 009 | Permission decides; `execHost`'s provider enforces |
 | ADR 010, ADR 011 | The switches stay the host user's settings, read and enforced by the provider |
 | ADR 012, ADR 013 | Grants and Session-file ownership stay control-side records; paths are the node's |
-| ADR 014 | The four facts keep their sources: resolution, workspace and system are the node's, the row facts the control node's |
+| ADR 014 | The four facts keep their sources: resolution, workspace, system and the worktree probe are the node's, the row facts the control node's. `resolve` never publishes an expansion; the Session part publishes only after the store acknowledged the association (§4.2.1) |
+| Worktree access R1 | The Session part answers "known range" from its own view before it asks the node to probe; the probe is one extra field on the same call, not a second facts service |
+| Worktree access R3 | Process preparation resolves its explicit cwd through `resolve` before `start`/`shell`, and hands the confirmed range as `roots`; a running process keeps what it started with |
 
 ## 8. Requirements raised to mechanism owners
 
 None beyond what is already raised. [#861](https://github.com/arcships/dim/issues/861) is the one
 runtime dependency: the host side resolves a Session's process-scope service per call, by the
 Session's resource node, which [overview §6.3](overview.md#63-multiple-nodes) already states as a
-requirement on the runtime and on rutis. The store's repository operations are
-[#1298](https://github.com/arcships/dim/issues/1298)'s own work. Neither face needs a new event, a
-batch change, a synchronous callback across a link, or a Timeline rule.
+requirement on the runtime and on rutis. The store's repository operations and
+`associateWorktree` are [#1298](https://github.com/arcships/dim/issues/1298)'s own work, and the
+recognition records are [worktree access](worktree-access.md) R2's. Neither face needs a new event,
+a batch change, a synchronous callback across a link, or a Timeline rule.
 
 ## 9. Open decisions
 
@@ -450,6 +565,10 @@ batch change, a synchronous callback across a link, or a Timeline rule.
 6. **One `store` name or two.** The Timeline family and the Session-row family are one face with
    two families here because one repository port serves both (#1298). If the implementation finds
    two names clearer, the split is a naming decision on that PR, not a new contract.
+7. **Root identity form.** `roots` entries carry the directory identity a confirmed root was
+   recorded with, and `resolve` compares it on the node. What that identity is (device and inode,
+   file id, something else) is the provider's platform detail; the caller treats it as an opaque
+   string and only compares it for equality through the `valid` answer.
 
 ## 10. Ablation
 
@@ -457,8 +576,15 @@ The faces are operations over data with ids, not adapters: `start`/`wait`/`kill`
 existing process tree, capture, page rule and fault vocabulary; `shell`/`write`/`resize` are the
 PTY primitives the shell already has; `info` and `confined` are reads and a start the platform
 already performs. `fsHost` adds no primitive file API, no per-file traversal, and no policy of its
-own: the raw storage operations are the four the node's storage already offers, and the `facts`
+own: the raw storage operations are the four the node's storage already offers, and the `resolve`
 call is needed because a path's facts cannot be computed on a machine that does not hold the file.
 `store` publishes the repository operations the state owner already has, so the SQL engine and the
-`TimelineStore` trait stop being second contracts instead of gaining a wrapper. Nothing else was
+`TimelineStore` trait stop being second contracts instead of gaining a wrapper.
+
+Three details were added because the remote split leaves no other place for them, and each replaces
+something that would otherwise be guesswork: the `worktree` candidate field on `resolve` (the
+probe must run where the files are, while the association must commit where the rows are), the
+`retainedFrom`/`reset` page (an error cannot carry the cursor, and an omitted cursor cannot mean
+zero for a bounded capture), and the resolved-`cwd` rule for `start`/`shell` (a caller cannot
+resolve a node path, and recognition has to happen before the process starts). Nothing else was
 added that a caller could not do without.
