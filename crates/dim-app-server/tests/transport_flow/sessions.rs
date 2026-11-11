@@ -1058,7 +1058,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         ..
     } = serve_sessions(None).await;
     client_session(&mut client, &agent, host_policy()).await;
-    let session = launched(&sessions, &agent, json!({})).await;
+    let session = launched(&sessions, &agent, json!({"preset":"workspace-write"})).await;
     let at = |extra: Value| {
         let mut request = json!({"sessionId":session.id(),"branchId":"main"});
         request
@@ -1084,15 +1084,37 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     let first = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:confirm",
+                json!([{"type":"text","text":"tool:confirm {}"}]),
+            ),
+        )
+        .await;
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:held",
+                json!([{"type":"text","text":"queued"}]),
+            ),
+        )
+        .await;
     let batch = client
         .rpc(
             "session.input.withdraw",
-            json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown",
+            json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
                 "steer":{"content":[{"type":"text","text":"steer"}]}}),
         )
         .await;
-    assert_eq!(batch["result"]["status"], "notHeld", "{batch}");
-    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap() - 1;
+    assert_eq!(batch["result"]["status"], "deleted", "{batch}");
+    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap();
+    sessions.ok("stop", at(json!({}))).await;
     let head = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();

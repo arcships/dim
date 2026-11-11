@@ -21,15 +21,15 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 /// What InputQueue writes for an input it decided on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Decision {
     Apply(String, InputMode),
-    Delete(String),
+    Delete(String, Option<InputMessageData>),
 }
 impl Decision {
     fn input_id(&self) -> &str {
         match self {
-            Self::Apply(id, _) | Self::Delete(id) => id,
+            Self::Apply(id, _) | Self::Delete(id, _) => id,
         }
     }
 }
@@ -42,6 +42,8 @@ pub enum Withdrawal {
     /// Unknown, already applied or already deleted: nothing was written.
     NotHeld,
 }
+
+type WithdrawalAnswer = (Withdrawal, Option<Arc<AgentEvent>>);
 
 /// One committed input until Loop consumes it.
 struct Entry {
@@ -91,14 +93,14 @@ impl QueueState {
                 self.entries.retain(|entry| entry.id != data.input_id);
                 Vec::new()
             }
-            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id),
+            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id, data.steer.clone()),
             _ => Vec::new(),
         }
     }
     fn input(&mut self, id: &str, mode: InputMode, handover: Option<&str>) -> Vec<Decision> {
         if let Some(turn_id) = handover {
             if self.turn.as_deref() != Some(turn_id) {
-                return vec![Decision::Delete(id.to_owned())];
+                return vec![Decision::Delete(id.to_owned(), None)];
             }
             self.entries.push(Entry {
                 id: id.to_owned(),
@@ -135,7 +137,7 @@ impl QueueState {
         self.entries.retain(|entry| {
             let ended = matches!(&entry.kind, EntryKind::Handover { turn_id } if turn_id == turn);
             if ended {
-                decisions.push(Decision::Delete(entry.id.clone()));
+                decisions.push(Decision::Delete(entry.id.clone(), None));
             }
             !ended
         });
@@ -153,13 +155,13 @@ impl QueueState {
         }
         decisions
     }
-    fn withdraw(&mut self, id: &str) -> Vec<Decision> {
+    fn withdraw(&mut self, id: &str, steer: Option<InputMessageData>) -> Vec<Decision> {
         match self.entries.iter().position(|entry| {
             entry.id == id && !matches!(entry.kind, EntryKind::Input { released: true, .. })
         }) {
             Some(index) => {
                 self.entries.remove(index);
-                vec![Decision::Delete(id.to_owned())]
+                vec![Decision::Delete(id.to_owned(), steer)]
             }
             None => Vec::new(),
         }
@@ -196,7 +198,7 @@ pub struct InputQueue {
     timeline: Arc<Timeline>,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
-    answers: Mutex<HashMap<u64, Withdrawal>>,
+    answers: Mutex<HashMap<u64, WithdrawalAnswer>>,
     answered: tokio::sync::Notify,
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
@@ -211,9 +213,8 @@ impl InputQueue {
                 .count(),
         });
     }
-    /// Writes the decisions; returns the sequence of the last `input/deleted`.
-    fn write(&self, decisions: Vec<Decision>) -> Result<Option<u64>> {
-        let mut deleted = None;
+    fn write(&self, decisions: Vec<Decision>) -> Result<WithdrawalAnswer> {
+        let mut answer = (Withdrawal::NotHeld, None);
         for decision in decisions {
             match decision {
                 Decision::Apply(input_id, mode) => {
@@ -225,15 +226,26 @@ impl InputQueue {
                         .into(),
                     )?;
                 }
-                Decision::Delete(input_id) => {
-                    let event = self
-                        .timeline
-                        .append(EventKind::InputDeleted(InputDeletedData { input_id }).into())?;
-                    deleted = Some(event.sequence);
+                Decision::Delete(input_id, steer) => {
+                    let mut drafts = Vec::new();
+                    if let Some(input) = steer {
+                        drafts.push(EventKind::InputMessage(input).into());
+                    }
+                    drafts.push(EventKind::InputDeleted(InputDeletedData { input_id }).into());
+                    let mut events = self.timeline.append_batch_registered(drafts, |_| Ok(()))?;
+                    let deletion = events
+                        .pop()
+                        .expect("a withdrawal result ends with deletion");
+                    answer = (
+                        Withdrawal::Deleted {
+                            sequence: deletion.sequence,
+                        },
+                        events.pop(),
+                    );
                 }
             }
         }
-        Ok(deleted)
+        Ok(answer)
     }
     async fn rebuild(&self) -> Result<u64> {
         let through = self.timeline.committed();
@@ -269,6 +281,7 @@ impl InputQueue {
                         "data.input_id",
                         "data.turn_id",
                         "data.handover.turn_id",
+                        "data.steer",
                     ]
                     .map(String::from)
                     .to_vec(),
@@ -303,8 +316,9 @@ impl InputQueue {
                         input,
                         turn,
                         handover,
+                        steer,
                     ],
-                ) = <[_; 7]>::try_from(row.values)
+                ) = <[_; 8]>::try_from(row.values)
                 else {
                     return Err(AgentError::fault(
                         "InputQueue",
@@ -366,7 +380,20 @@ impl InputQueue {
                                 state.entries.retain(|entry| entry.id != input_id);
                                 owed.retain(|decision| !matches!(decision, Decision::Apply(id, _) if *id == input_id));
                             }
-                            "input/withdraw" => owed.extend(state.withdraw(&input_id)),
+                            "input/withdraw" => {
+                                let steer = match steer {
+                                    QueryValue::Missing => None,
+                                    QueryValue::Value { value } => {
+                                        Some(serde_json::from_value(value).map_err(|error| {
+                                            AgentError::fault("InputQueue", error.to_string())
+                                        })?)
+                                    }
+                                    QueryValue::Elements { .. } => {
+                                        unreachable!("a withdrawal candidate is an object")
+                                    }
+                                };
+                                owed.extend(state.withdraw(&input_id, steer));
+                            }
                             _ => owed.retain(|decision| decision.input_id() != input_id),
                         }
                     }
@@ -384,7 +411,7 @@ impl InputQueue {
         }
         owed.retain(|decision| match decision {
             Decision::Apply(id, _) => state.entries.iter().any(|entry| entry.id == *id),
-            Decision::Delete(_) => true,
+            Decision::Delete(_, _) => true,
         });
         self.publish(&state);
         *self.state.lock().unwrap() = state;
@@ -398,48 +425,43 @@ impl InputQueue {
             self.publish(&state);
             decisions
         };
-        let deleted = self.write(decisions)?;
+        let answer = self.write(decisions)?;
         if matches!(event.kind, EventKind::InputWithdraw(_)) {
-            let answer = match deleted {
-                Some(sequence) => Withdrawal::Deleted { sequence },
-                None => Withdrawal::NotHeld,
-            };
             self.answers.lock().unwrap().insert(event.sequence, answer);
             self.answered.notify_waiters();
         }
         Ok(())
     }
     /// Withdraws an input by its `input_id` and replies with this queue's
-    /// decision for the command. With `steer`, the command and the new Steer
-    /// input are one batch: the withdrawal takes effect only if the old
-    /// input is still held, the new input is written either way.
-    pub async fn withdraw(
-        &self,
-        command: InputWithdrawData,
-        steer: Option<InputMessageData>,
-    ) -> Result<(Withdrawal, Option<Arc<AgentEvent>>)> {
+    /// decision for the command. Only an accepted withdrawal adopts its
+    /// optional checked Steer candidate, atomically with the deletion.
+    /// An accepted Steer replies after that result batch is published.
+    pub async fn withdraw(&self, command: InputWithdrawData) -> Result<WithdrawalAnswer> {
         command
             .validate_external()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-        let mut drafts = vec![EventKind::InputWithdraw(command).into()];
-        if let Some(input) = steer {
-            if input.mode != Some(InputMode::Steer) {
-                return Err(AgentError::InvalidInput(
-                    "a replacement input must be Steer".into(),
-                ));
-            }
-            input
-                .validate()
-                .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-            drafts.push(EventKind::InputMessage(input).into());
-        }
-        let mut events = self.timeline.append_batch_registered(drafts, |_| Ok(()))?;
-        let replacement = (events.len() > 1).then(|| events.remove(1));
-        let sequence = events[0].sequence;
+        let sequence = self
+            .timeline
+            .append(EventKind::InputWithdraw(command).into())?
+            .sequence;
         loop {
             let answered = self.answered.notified();
-            if let Some(answer) = self.answers.lock().unwrap().remove(&sequence) {
-                return Ok((answer, replacement));
+            let answer = self.answers.lock().unwrap().remove(&sequence);
+            if let Some(answer) = answer {
+                if let (Withdrawal::Deleted { sequence }, Some(_)) = &answer {
+                    let mut publication = self.timeline.watch();
+                    tokio::select! {
+                        result = publication.wait_for(|&(published, closed)| published >= *sequence || closed) => {
+                            if !matches!(result, Ok(head) if head.0 >= *sequence) {
+                                return Err(AgentError::Storage("withdrawal result publication was not confirmed; query history after recovery".into()));
+                            }
+                        }
+                        _ = self.lifecycle.cancelled() => {
+                            return Err(AgentError::Reloading("InputQueue".into()));
+                        }
+                    }
+                }
+                return Ok(answer);
             }
             tokio::select! {
                 _ = answered => {}
@@ -760,8 +782,8 @@ impl DynPlugin for InputMethodsPlugin {
                                 InputWithdrawData {
                                     input_id: p.input_id,
                                     reason: p.reason,
+                                    steer,
                                 },
-                                steer,
                             )
                             .await?;
                         let mut result = match answer {

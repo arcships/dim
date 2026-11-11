@@ -12,12 +12,17 @@ branch's InputQueue. It also provides the Session table `submitChecks`
 ([`SubmitChecks`](../../../../crates/dim-agent-capabilities/src/input_queue.rs)):
 Session parts register submit checks with it from their own `apply` and the
 registration is withdrawn when that part unloads. A `session.input.withdraw`
-with `steer` calls each check registered now, in name order, before its batch;
+with `steer` validates the operator's content and calls each check registered
+now, in name order, before admitting its command;
 any block fails the call with `input_blocked` and writes nothing, else each
 context that is one runtime marker element becomes a text block after the
 steer's own content, and one that is not is dropped with a diagnostic. This is
 Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
-with none registered the withdrawal writes unchecked.
+with none registered the validated candidate has no submit-check additions.
+The checked candidate is passed inside the withdrawal command, not submitted
+as an independent input. Passing checks does not reserve the held input;
+InputQueue decides conditional acceptance in sequence order
+([Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal)).
 
 ### Dependencies
 
@@ -71,21 +76,38 @@ observable input queue.
 | Service | Purpose |
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
-| `B:Timeline` | Commit application decisions. |
+| `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
 
 ### Events and lifetime
 
-Consumes `input/message`, `input/consumed`, `turn/start`, `turn/end`,
-`stop/interrupt`; produces `input/applied`. It does not run a model itself.
+Consumes `input/message`, `input/consumed`, `input/withdraw`, `input/applied`,
+`input/deleted`, `turn/start`, `turn/end` and `stop/interrupt`, including result
+facts needed by recovery. Its withdrawal service writes `input/withdraw`;
+its decisions produce `input/applied`, `input/deleted` and, only for an accepted
+queued-input Steer, the replacement `input/message`. It does not run a model itself.
 It registers with `Dispatcher::consume`; recovery reads ordered identity, input
 mode, handover identity and turn identity fields in pages at one committed boundary. User-content shape
 distinguishes the default queue mode from an internal append; content text is
-not read. Recovery retains queue entries and owed decisions, removes each owed
-decision when its written result is read, and writes the remaining application
-or withdrawal decisions before live delivery. It holds no historical event
-list. No background tasks or external resources. An idle append
-is pending until a driving input; an interrupt is not permission to start a new
-turn from previously unapplied input.
+not otherwise needed for queue decisions. Recovery also reads the optional full
+checked `steer` candidate from withdrawal commands and retains it for an owed
+conditional result; it never reruns external submission checks. Recovery retains
+queue entries and owed decisions, removes each owed decision when its written
+result is read, and writes the remaining application or withdrawal decisions
+before live delivery. A committed replacement/deletion result is not recreated.
+It holds no historical event list. No background tasks or external resources.
+An idle append is pending until a driving input; an interrupt is not permission
+to start a new turn from previously unapplied input.
+
+For an accepted queued-input Steer, the replacement `input/message` precedes
+the original input's `input/deleted` in one atomic result batch. A `notHeld`
+decision writes neither result nor replacement, even though its command remains
+committed, and returns no Steer receipt. The service replies to an accepted Steer only
+after the result batch is published; a retry after a lost reply cannot replace
+the deleted input again. A candidate in `input/withdraw.steer` is not itself an
+adopted input and never enters model context. The owner contract is
+[Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal),
+and its durable form is the
+[v39 format decision](../../../design/appserver/native-storage-format.md#v39-conditional-queued-input-steer).
 
 ### Handover inputs
 

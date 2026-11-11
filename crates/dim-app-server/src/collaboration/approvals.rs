@@ -352,13 +352,11 @@ impl CollaborationSession {
         if let Ok(branch) = self.tree.get(branch_id)
             && let Ok(queue) = branch.service::<InputQueue>()
             && let Err(error) = queue
-                .withdraw(
-                    InputWithdrawData {
-                        input_id: route.input_id.clone(),
-                        reason: Some("Member approval ended".into()),
-                    },
-                    None,
-                )
+                .withdraw(InputWithdrawData {
+                    input_id: route.input_id.clone(),
+                    reason: Some("Member approval ended".into()),
+                    steer: None,
+                })
                 .await
             && !branch.is_closing()
         {
@@ -426,13 +424,11 @@ impl CollaborationSession {
                         && let Ok(queue) = branch.service::<InputQueue>()
                     {
                         let _ = queue
-                            .withdraw(
-                                InputWithdrawData {
-                                    input_id,
-                                    reason: Some("Member approval is not active".into()),
-                                },
-                                None,
-                            )
+                            .withdraw(InputWithdrawData {
+                                input_id,
+                                reason: Some("Member approval is not active".into()),
+                                steer: None,
+                            })
                             .await;
                     }
                     owner.deny_member(&source.descriptor).await;

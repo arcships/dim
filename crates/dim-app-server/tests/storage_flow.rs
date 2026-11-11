@@ -1771,6 +1771,178 @@ async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
 }
 
 #[tokio::test]
+async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_inputs() {
+    use dim_agent_capabilities::input_queue::{InputQueue, Withdrawal};
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        key("session", "main"),
+        Vec::new(),
+        store.clone(),
+    );
+    let write = |kind: EventKind| timeline.append(kind.into()).unwrap();
+    let input = |text: &str, mode| InputMessageData::text(text, Some(mode));
+    let withdraw = |id: &str, steer| InputWithdrawData {
+        input_id: id.into(),
+        reason: None,
+        steer,
+    };
+    let driving = write(EventKind::InputMessage(input("driving", InputMode::Queue)));
+    write(EventKind::InputApplied(InputAppliedData {
+        input_id: driving.id.clone(),
+        mode: Some(InputMode::Queue),
+    }));
+    let checked = |text: &str| {
+        let mut data = input(text, InputMode::Steer);
+        data.user
+            .as_mut()
+            .unwrap()
+            .content
+            .push(ContentBlock::Text {
+                text: "<dim-hooks kind=\"prompt-submit\">durable checked context</dim-hooks>"
+                    .into(),
+            });
+        data
+    };
+    let mut originals = Vec::new();
+    for (text, committed) in [("recovered", false), ("committed", true)] {
+        let old = write(EventKind::InputMessage(input(
+            "old queued content",
+            InputMode::Queue,
+        )));
+        let candidate = checked(text);
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(candidate.clone()),
+        )));
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+        if committed {
+            timeline
+                .append_batch_registered(
+                    vec![
+                        EventKind::InputMessage(candidate).into(),
+                        EventKind::InputDeleted(InputDeletedData {
+                            input_id: old.id.clone(),
+                        })
+                        .into(),
+                    ],
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        originals.push(old.id.clone());
+    }
+    let legacy = write(EventKind::InputMessage(input(
+        "legacy original",
+        InputMode::Queue,
+    )));
+    timeline
+        .append_batch_registered(
+            vec![
+                EventKind::InputWithdraw(withdraw(&legacy.id, None)).into(),
+                EventKind::InputMessage(input("legacy replacement", InputMode::Steer)).into(),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    write(EventKind::InputDeleted(InputDeletedData {
+        input_id: legacy.id.clone(),
+    }));
+    for id in [&driving.id, &legacy.id, "unknown"] {
+        write(EventKind::InputWithdraw(withdraw(
+            id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+    }
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+
+    for _ in 0..2 {
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+        dim_agent_capabilities::defaults::install(&mut builder);
+        builder.timeline_store(store.clone());
+        let agent = MinimalHost::start(&builder).await.unwrap();
+        let session = agent.restore_session("session".into()).await.unwrap();
+        tokio::time::timeout(PUBLISHED, session.idle("main"))
+            .await
+            .unwrap()
+            .unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let replacements: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer) => {
+                    Some((event, data))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replacements.len(), 3);
+        for (id, text) in originals.iter().zip(["recovered", "committed"]) {
+            let deleted: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind,
+                EventKind::InputDeleted(data) if &data.input_id == id)
+                })
+                .collect();
+            assert_eq!(deleted.len(), 1);
+            let (replacement, data) = replacements
+                .iter()
+                .find(|(_, data)| **data == checked(text))
+                .unwrap();
+            assert_eq!(**data, checked(text));
+            assert_eq!(replacement.sequence + 1, deleted[0].sequence);
+            let stored = store
+                .read(
+                    &key("session", "main"),
+                    replacement.sequence..=deleted[0].sequence,
+                )
+                .await
+                .unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(
+                stored
+                    .iter()
+                    .all(|event| event.batch_end == deleted[0].sequence)
+            );
+            assert!(!events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if &data.input_id == id)));
+            let retry = session
+                .service::<InputQueue>("main")
+                .unwrap()
+                .withdraw(withdraw(id, Some(checked(text))))
+                .await
+                .unwrap();
+            assert_eq!(retry, (Withdrawal::NotHeld, None));
+        }
+        assert!(
+            replacements
+                .iter()
+                .any(|(_, data)| **data == input("legacy replacement", InputMode::Steer))
+        );
+        agent.close().await.unwrap();
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn branch_end_events_restore_unchanged_and_the_line_stays_ended() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -4205,8 +4377,8 @@ fn a_newer_store_leaves_an_actionable_startup_note() {
     Connection::open(&database.0)
         .unwrap()
         .execute_batch(
-            "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 39));
-             INSERT INTO agent_store_format VALUES (39);",
+            "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 40));
+             INSERT INTO agent_store_format VALUES (40);",
         )
         .unwrap();
     let original = std::fs::read(&database.0).unwrap();
@@ -4216,10 +4388,10 @@ fn a_newer_store_leaves_an_actionable_startup_note() {
     assert!(message.contains("unsupported SQLite schema"), "{message}");
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
-    assert!(note.contains("Store format: v39"), "{note}");
-    assert!(note.contains("Daemon format: v38"), "{note}");
+    assert!(note.contains("Store format: v40"), "{note}");
+    assert!(note.contains("Daemon format: v39"), "{note}");
     assert!(note.contains("Existing data was preserved"), "{note}");
-    assert!(note.contains("Run a build supporting v39"), "{note}");
+    assert!(note.contains("Run a build supporting v40"), "{note}");
     assert!(note.contains("--home PATH"), "{note}");
 }
 
@@ -4237,7 +4409,7 @@ fn a_mismatched_store_note_does_not_claim_a_downgrade() {
     assert!(SqliteStorage::open(database.0.clone()).is_err());
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
-    assert!(note.contains("Store format: v29 (schema is v38)"), "{note}");
+    assert!(note.contains("Store format: v29 (schema is v39)"), "{note}");
     assert!(note.contains("marker and schema disagree"), "{note}");
     assert!(
         note.contains("Use the build that wrote this store"),
@@ -4281,7 +4453,7 @@ fn an_empty_marker_table_is_reported_as_missing_or_ambiguous() {
     assert_eq!(std::fs::read(&database.0).unwrap(), original);
     let note = read_startup_note(&database.0);
     assert!(
-        note.contains("Store format: v38 (format marker is missing or ambiguous)"),
+        note.contains("Store format: v39 (format marker is missing or ambiguous)"),
         "{note}"
     );
     assert!(!note.contains("Run a build supporting"), "{note}");
@@ -4380,14 +4552,14 @@ fn a_failed_open_replaces_the_previous_startup_note() {
         .unwrap();
     std::fs::write(
         startup_note(&database.0),
-        "dimcode-startup-failure v1 pid=1\nCannot open native store /previous.\n  Store format: v39\n",
+        "dimcode-startup-failure v1 pid=1\nCannot open native store /previous.\n  Store format: v40\n",
     )
     .unwrap();
     assert!(SqliteStorage::open(database.0.clone()).is_err());
     let note = read_startup_note(&database.0);
     assert!(note.contains("Store format: v34"), "{note}");
     assert!(!note.contains("/previous"), "{note}");
-    assert!(!note.contains("v39"), "{note}");
+    assert!(!note.contains("v40"), "{note}");
 }
 
 #[test]
@@ -7792,6 +7964,28 @@ async fn a_v31_store_upgrades_in_place_once() {
         .unwrap();
     assert_eq!(schema(&connection), schema_of(31));
     upgrades_in_place_once(&database, connection, 31).await;
+}
+
+#[tokio::test]
+async fn a_v38_store_upgrades_in_place_once() {
+    let database = Database::new();
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(38);
+    statements.sort_by_key(|sql| !sql.starts_with("CREATE TABLE"));
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (38)", [])
+        .unwrap();
+    assert_eq!(schema(&connection), schema_of(38));
+    upgrades_in_place_once(&database, connection, 38).await;
+    let connection = Connection::open(&database.0).unwrap();
+    assert_ne!(
+        schema(&connection),
+        schema_of(38),
+        "v38's exact-schema gate rejects the upgraded store"
+    );
 }
 
 /// A store upgrade that outlives `startup_timeout` still opens while it

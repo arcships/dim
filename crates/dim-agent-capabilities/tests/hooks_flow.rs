@@ -1233,15 +1233,16 @@ async fn a_prompt_context_cannot_close_its_runtime_block() {
         }))],
     })));
     let session = env.session().await;
+    let (old, _release) = held_input(&env, &session).await;
     let reply = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [
+            "inputId": old.id, "steer": {"content": [
                 {"type": "text", "text": "keep my words"}]}}),
     )
     .await
     .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(reply["status"], "deleted", "{reply}");
     let steer = reply["steer"]["inputId"].as_str().unwrap();
     let event = branch_events(&session, "main", ..)
         .await
@@ -2634,6 +2635,26 @@ async fn only_the_follow_ups_turn_reports_stop_hook_active() {
     env.close().await;
 }
 
+async fn held_input(
+    env: &Env,
+    session: &Session,
+) -> (Arc<AgentEvent>, tokio::sync::oneshot::Sender<()>) {
+    let release = env.model.hold(1);
+    session
+        .submit("driving".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    wait_event(session, |kind| {
+        matches!(kind, EventKind::TurnStart(_)).then_some(())
+    })
+    .await;
+    let held = session
+        .submit("queued".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    (held, release)
+}
+
 /// Calls `session.input.withdraw` as Rpc does, through the Session.
 async fn withdraw(
     session: &Session,
@@ -2747,6 +2768,86 @@ async fn a_blocked_steer_writes_nothing_and_the_old_input_still_applies() {
     env.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_steer_retry_runs_checks_without_reserving_the_held_input() {
+    for winner in ["steer", "withdraw", "apply"] {
+        let env = Env::new().await;
+        let session = env.session().await;
+        let (old, release) = held_input(&env, &session).await;
+        let mut release = Some(release);
+        let params = serde_json::json!({"sessionId": session.id(), "branchId": "main",
+            "inputId": old.id, "steer": {"content": [{"type": "text", "text": "checked replacement"}]}});
+        env.sources.set(document(serde_json::json!({
+            "UserPromptSubmit": [command(serde_json::json!({
+                "type": "command", "command": "exit 2",
+            }))],
+        })));
+        let refused = withdraw(&session, params.clone()).await.unwrap_err();
+        assert_eq!(app_error(&refused), "input_blocked");
+        assert!(
+            !events(&session)
+                .await
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::InputWithdraw(_)))
+        );
+        let entered = env.path("check-entered");
+        let gate = env.path("check-release");
+        env.sources.set(document(serde_json::json!({
+            "UserPromptSubmit": [command(serde_json::json!({
+                "type": "command", "command": format!(
+                    "touch '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; printf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"checked context\"}}}}'",
+                    entered.display(), gate.display()),
+            }))],
+        })));
+        let caller = session.clone();
+        let pending = tokio::spawn(async move { withdraw(&caller, params).await });
+        wait_file(&entered, "the retry's submission check started").await;
+        match winner {
+            "withdraw" => {
+                let reply = withdraw(
+                    &session,
+                    serde_json::json!({
+                        "sessionId": session.id(), "branchId": "main", "inputId": old.id,
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["status"], "deleted");
+            }
+            "apply" => {
+                release.take().unwrap().send(()).unwrap();
+                session.idle("main").await.unwrap();
+            }
+            _ => {}
+        }
+        std::fs::write(&gate, "release").unwrap();
+        let reply = pending.await.unwrap().unwrap();
+        if winner == "steer" {
+            assert_eq!(reply["status"], "deleted", "{reply}");
+            assert!(reply["steer"]["inputId"].is_string());
+        } else {
+            assert_eq!(reply, serde_json::json!({"status": "notHeld"}));
+        }
+        if let Some(release) = release {
+            let _ = release.send(());
+        }
+        session.idle("main").await.unwrap();
+        let local = events(&session).await;
+        let replacements = local
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind,
+            EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer))
+            })
+            .count();
+        assert_eq!(replacements, usize::from(winner == "steer"));
+        let request = last_request(&env.model);
+        assert_eq!(request.contains("checked replacement"), winner == "steer");
+        assert_eq!(request.contains("checked context"), winner == "steer");
+        env.close().await;
+    }
+}
+
 /// Appendix D 5: the hook's context is a text block after the operator's own content,
 /// and the input carries no raw block, so it stays operator input (Goal A5
 /// restarts its count on it).
@@ -2760,14 +2861,15 @@ async fn the_prompt_context_follows_the_operator_text_and_keeps_it_operator_inpu
         }))],
     })));
     let session = env.session().await;
+    let (old, _release) = held_input(&env, &session).await;
     let reply = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
+            "inputId": old.id, "steer": {"content": [{"type": "text", "text": "new"}]}}),
     )
     .await
     .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(reply["status"], "deleted", "{reply}");
     let steer = reply["steer"]["inputId"].as_str().unwrap();
     let event = branch_events(&session, "main", ..)
         .await
@@ -2906,10 +3008,11 @@ async fn two_proceeding_handlers_keep_their_contexts_in_catalog_order() {
         }],
     })));
     let session = env.session().await;
+    let (old, _release) = held_input(&env, &session).await;
     let reply = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
+            "inputId": old.id, "steer": {"content": [{"type": "text", "text": "new"}]}}),
     )
     .await
     .unwrap();
@@ -3917,15 +4020,16 @@ async fn a_prompt_submit_hook_precedes_a_referenced_skill() {
         }))],
     })));
     let session = env.session().await;
+    let (old, _release) = held_input(&env, &session).await;
     let reply = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [
+            "inputId": old.id, "steer": {"content": [
                 {"type": "text", "text": "$skill: checkin keep my words"}]}}),
     )
     .await
     .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(reply["status"], "deleted", "{reply}");
     let steer = reply["steer"]["inputId"].as_str().unwrap();
     let event = branch_events(&session, "main", ..)
         .await
@@ -3974,14 +4078,31 @@ async fn a_prompt_submit_hook_precedes_a_referenced_skill() {
     );
     // A queued input is steered with its recorded content, which carries the
     // hook's context; the reference inside that context must not load.
+    session.idle("main").await.unwrap();
+    let _release_again = env.model.hold(1);
+    session
+        .submit("driving again".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    let queued = session
+        .input(
+            InputMessageData {
+                user: Some(user.clone()),
+                mode: Some(InputMode::Queue),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
     let reply = withdraw(
         &session,
         serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": serde_json::to_value(user).unwrap()}),
+            "inputId": queued.id, "steer": serde_json::to_value(user).unwrap()}),
     )
     .await
     .unwrap();
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(reply["status"], "deleted", "{reply}");
     let steered = reply["steer"]["inputId"].as_str().unwrap();
     let event = branch_events(&session, "main", ..)
         .await
