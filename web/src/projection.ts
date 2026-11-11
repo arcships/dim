@@ -16,7 +16,7 @@ import type { Goal } from "./goal"
 import type { AskQuestion, ModelFailure, ModelId, ModelProgress, ProviderPresentation, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
-  | { kind: "user"; key: string; text: string; skills?: string[]; at: number; sequence: number; cut: number }
+  | { kind: "user"; key: string; text: string; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; elapsedMs?: number }
   | { kind: "tool"; key: string; callId: string; name: string; input: Record<string, unknown>; pending: boolean; result?: ToolResult }
@@ -87,7 +87,7 @@ export class Projection {
     const content = event.content
     switch (content.kind) {
       case "input":
-        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, user: content.user })
+        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, hooks: content.hooks, user: content.user })
         break
       case "input-consumed":
       case "input-deleted": this.held.delete(content.inputId); break
@@ -122,6 +122,7 @@ export class Projection {
             key: `user-${event.sequence}`,
             text: content.text,
             skills: content.skills,
+            ...(content.hooks === undefined ? {} : { hooks: content.hooks }),
             at: event.createAt,
             sequence: event.sequence,
             cut: Math.max(0, event.sequence - 1),

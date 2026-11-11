@@ -8,8 +8,9 @@ use dim_agent_capabilities::adapters::DefaultPrepareModelPlugin;
 use dim_agent_capabilities::defaults::{self as capability_defaults};
 use dim_agent_capabilities::history::HistoryRenderer;
 use dim_agent_capabilities::host::{
-    ContextModel, HostError, HostFuture, IdentityContext, ModelChunk, ModelDriver, ModelHost,
-    ModelStopReason, ModelStream, PrepareContextHost, ResolveContextModel,
+    ContextContribution, ContextCounter, ContextModel, HostError, HostFuture, IdentityContext,
+    ModelChunk, ModelDriver, ModelHost, ModelStopReason, ModelStream, PrepareContextHost,
+    ResolveContextModel,
 };
 use dim_agent_capabilities::model_provider::ModelProviderPlugin;
 use dim_agent_capabilities::prompt_suggestion;
@@ -321,6 +322,31 @@ impl ContextModel for Tiny {
     fn count_tokens(&self, _: &ModelRequest) -> f64 {
         50.
     }
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        Some(self)
+    }
+}
+
+impl ContextCounter for Tiny {
+    fn algorithm(&self) -> &str {
+        "test/fixed-usage/v1"
+    }
+    fn fixed(
+        &self,
+        _: Option<&dim_agent_types::SystemPrompt>,
+        _: Option<&[dim_agent_types::ToolDefinition]>,
+    ) -> ContextContribution {
+        ContextContribution {
+            serialized_bytes: 50,
+            images: 0,
+        }
+    }
+    fn message(&self, _: &Message) -> ContextContribution {
+        ContextContribution::default()
+    }
+    fn estimate(&self, value: ContextContribution) -> f64 {
+        value.serialized_bytes as f64
+    }
 }
 
 /// A window with room to spare: a request's usage check passes once the
@@ -338,6 +364,31 @@ impl ContextModel for Room {
     }
     fn count_tokens(&self, _: &ModelRequest) -> f64 {
         10.
+    }
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        Some(self)
+    }
+}
+
+impl ContextCounter for Room {
+    fn algorithm(&self) -> &str {
+        "test/fixed-usage/v1"
+    }
+    fn fixed(
+        &self,
+        _: Option<&dim_agent_types::SystemPrompt>,
+        _: Option<&[dim_agent_types::ToolDefinition]>,
+    ) -> ContextContribution {
+        ContextContribution {
+            serialized_bytes: 10,
+            images: 0,
+        }
+    }
+    fn message(&self, _: &Message) -> ContextContribution {
+        ContextContribution::default()
+    }
+    fn estimate(&self, value: ContextContribution) -> f64 {
+        value.serialized_bytes as f64
     }
 }
 
@@ -362,9 +413,32 @@ impl Held {
             ..Self::default()
         }
     }
-    /// Holds the next resolution.
-    fn hold(&self) {
+    async fn hold_configuration(&self, fixture: &Fixture, id: &str) {
         self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let session = fixture.server.agent().unwrap().get_session(id).unwrap();
+        let settings = session
+            .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+            .unwrap()
+            .unwrap()
+            .configuration
+            .unwrap();
+        let mut metadata = settings.metadata.unwrap_or_default();
+        metadata.trace_id = Some(uuid::Uuid::new_v4().to_string());
+        session
+            .service::<dim_agent_capabilities::prompt::Prompt>("main")
+            .unwrap()
+            .configure_loaded(
+                Some(dim_agent_types::ModelSelection {
+                    provider_id: settings.provider_id,
+                    model_id: settings.model_id,
+                    capability_snapshot: settings.capability_snapshot,
+                    config: settings.config,
+                    metadata: Some(metadata),
+                }),
+                vec![],
+            )
+            .await
+            .unwrap();
     }
     /// Resolves once a resolution waits at the barrier.
     async fn entered(&self) {
@@ -580,21 +654,18 @@ async fn attach(fixture: &Fixture, session_id: &str) -> Client {
 
 /// The `turnId` of the newest `turn/end` on `main`.
 async fn latest_turn(client: &mut Client, id: &str) -> String {
-    let history = client
+    let reply = client
         .rpc(
-            "session.history",
-            json!({"sessionId":id,"branchId":"main","after":0,"limit":256}),
+            "session.turn.get",
+            json!({"sessionId":id,"branchId":"main"}),
         )
         .await;
-    assert_ok(&history);
-    history["result"]["events"]
-        .as_array()
+    assert_ok(&reply);
+    assert_eq!(reply["result"]["turn"]["ended"], true);
+    reply["result"]["turn"]["turnId"]
+        .as_str()
         .unwrap()
-        .iter()
-        .rev()
-        .find(|event| event["type"] == "turn" && event["name"] == "end")
-        .map(|event| event["data"]["turn_id"].as_str().unwrap().to_owned())
-        .expect("a completed turn")
+        .to_owned()
 }
 
 async fn configure(client: &mut Client, document: Value) -> Value {
@@ -1009,7 +1080,7 @@ async fn a_sharer_answers_disabled_when_the_shared_preflight_is_disabled() {
     let turn = latest_turn(&mut client, &id).await;
     configure(&mut client, json!({"enabled":true})).await;
 
-    held.hold();
+    held.hold_configuration(&fixture, &id).await;
     let asked = (id.clone(), turn.clone());
     let owner = tokio::spawn(async move { suggest(&mut client, &asked.0, &asked.1).await });
     held.entered().await;
@@ -1046,7 +1117,7 @@ async fn a_sharer_answers_compaction_due_when_the_shared_preflight_refuses() {
     let turn = latest_turn(&mut client, &id).await;
     configure(&mut client, json!({"enabled":true})).await;
 
-    held.hold();
+    held.hold_configuration(&fixture, &id).await;
     let asked = (id.clone(), turn.clone());
     let owner = tokio::spawn(async move { suggest(&mut client, &asked.0, &asked.1).await });
     held.entered().await;
@@ -1081,7 +1152,7 @@ async fn a_sharer_is_accepted_when_the_shared_preflight_starts() {
     let turn = latest_turn(&mut client, &id).await;
     configure(&mut client, json!({"enabled":true})).await;
 
-    held.hold();
+    held.hold_configuration(&fixture, &id).await;
     let asked = (id.clone(), turn.clone());
     let owner = tokio::spawn(async move { suggest(&mut client, &asked.0, &asked.1).await });
     held.entered().await;
@@ -1182,7 +1253,7 @@ async fn disabling_during_the_usage_check_starts_no_request() {
     let turn = latest_turn(&mut client, &id).await;
     configure(&mut client, json!({"enabled":true})).await;
 
-    held.hold();
+    held.hold_configuration(&fixture, &id).await;
     let asked = (id.clone(), turn.clone());
     let request = tokio::spawn(async move { suggest(&mut client, &asked.0, &asked.1).await });
     held.entered().await;
@@ -1209,7 +1280,7 @@ async fn dismissing_during_the_usage_check_starts_no_request() {
     let turn = latest_turn(&mut client, &id).await;
     configure(&mut client, json!({"enabled":true})).await;
 
-    held.hold();
+    held.hold_configuration(&fixture, &id).await;
     let asked = (id.clone(), turn.clone());
     let request = tokio::spawn(async move { suggest(&mut client, &asked.0, &asked.1).await });
     held.entered().await;

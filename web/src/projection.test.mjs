@@ -138,6 +138,21 @@ test("a user row carries the Skills its message loaded", () => {
   }])
 })
 
+test("a hook-bearing user row carries the number of hook contexts", () => {
+  const projection = new Projection()
+  projection.apply(event(5, { kind: "input", text: "check the build", skills: ["checkin"], hooks: 2, blocks: [] }))
+  assert.deepEqual(projection.rows, [{
+    kind: "user",
+    key: "user-5",
+    text: "check the build",
+    skills: ["checkin"],
+    hooks: 2,
+    at: 1_005,
+    sequence: 5,
+    cut: 4,
+  }])
+})
+
 function failure(fields = {}) {
   return {
     kind: "server_error",

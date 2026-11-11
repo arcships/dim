@@ -26,15 +26,38 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
 ];
 
+const DATA_EXCLUDED: &[&str] = &["context/prepare", "model/call", "context/compaction"];
+
+pub(super) fn data_index_sql(kind: &str) -> String {
+    let domains = dim_agent_types::RESERVED_DOMAINS
+        .iter()
+        .map(|domain| format!("'{domain}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let excluded = DATA_EXCLUDED
+        .iter()
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("(substr({kind},1,instr({kind},'/')-1) IN ({domains}) AND {kind} NOT IN ({excluded}))")
+}
+
 pub(super) fn indexed(kind: &str, field: &str) -> bool {
     match field {
-        "data" => !matches!(
-            kind,
-            "context/prepare" | "model/call" | "context/compaction"
-        ),
+        "data" => {
+            !DATA_EXCLUDED.contains(&kind)
+                && kind
+                    .split_once('/')
+                    .is_some_and(|(domain, _)| dim_agent_types::RESERVED_DOMAINS.contains(&domain))
+        }
         "data.delta" => kind == "step/text",
         _ => false,
     }
+}
+
+pub(super) fn restrict_coverage(connection: &Connection) -> Result<()> {
+    let indexed = data_index_sql("e.kind");
+    connection.execute_batch(&format!("DELETE FROM timeline_text WHERE property='data' AND NOT EXISTS(SELECT 1 FROM timeline_events e WHERE e.session_id=timeline_text.session_id AND e.branch_id=timeline_text.branch_id AND e.sequence=timeline_text.physical_sequence AND {indexed})")).map_err(error)
 }
 
 fn document(
@@ -145,23 +168,43 @@ pub(super) fn row_through(
     body: &str,
     through: u64,
 ) -> Result<()> {
-    let row: Value = serde_json::from_str(body).map_err(error)?;
-    match row["encoding"].as_str() {
-        Some("event") => event(
-            connection,
-            session,
-            branch,
-            physical,
-            &row["record"]["event"],
-        ),
-        Some("output") => {
-            for record in row["records"]
-                .as_array()
-                .ok_or_else(|| error("text index output has no records"))?
-            {
-                let mut item = record["event"].clone();
-                item["data"]["turn_id"] = row["turn_id"].clone();
-                item["data"]["request_id"] = row["request_id"].clone();
+    let row: super::timeline::Row = serde_json::from_str(body).map_err(error)?;
+    match row {
+        super::timeline::Row::Event { mut record } => {
+            let kind = format!(
+                "{}/{}",
+                record.event["type"]
+                    .as_str()
+                    .ok_or_else(|| error("text event has no type"))?,
+                record.event["name"]
+                    .as_str()
+                    .ok_or_else(|| error("text event has no name"))?
+            );
+            if record.changes.is_some() && indexed(&kind, "data") {
+                let mut reader = super::codec::Reader::new(0);
+                loop {
+                    match reader.property(connection, session, &record, "data")? {
+                        Some(dim_agent_runtime::QueryValue::Value { value }) => {
+                            record.event["data"] = value;
+                            break;
+                        }
+                        Some(_) => return Err(error("array event has no data object")),
+                        None => reader.begin_hold(),
+                    }
+                }
+            }
+            event(connection, session, branch, physical, &record.event)
+        }
+        super::timeline::Row::Output {
+            turn_id,
+            request_id,
+            records,
+            ..
+        } => {
+            for record in records {
+                let mut item = record.event;
+                item["data"]["turn_id"] = turn_id.clone().into();
+                item["data"]["request_id"] = request_id.clone().into();
                 if item["sequence"]
                     .as_u64()
                     .is_some_and(|sequence| sequence <= through)
@@ -171,7 +214,6 @@ pub(super) fn row_through(
             }
             Ok(())
         }
-        _ => Err(error("text index row has an unsupported encoding")),
     }
 }
 

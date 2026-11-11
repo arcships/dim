@@ -8,6 +8,7 @@ pub mod context_methods;
 pub mod context_model;
 mod context_policy;
 pub mod context_preparation;
+mod context_usage;
 pub mod defaults;
 pub mod environment_clients;
 pub mod exec_stop;
@@ -100,6 +101,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<agent_loop::AgentLoop>(catalog, branch);
     register::<prompt::Prompt>(catalog, branch);
     register::<context_preparation::ContextPreparation>(catalog, branch);
+    register::<context_usage::ContextUsage>(catalog, branch);
     register::<context_preparation::ConfigurationPublisher>(catalog, branch);
     register::<model_provider::ModelProvider>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
