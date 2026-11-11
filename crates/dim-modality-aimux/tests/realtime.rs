@@ -4,7 +4,6 @@
 #![cfg(unix)]
 use dim_agent_capabilities::host::{
     HttpModelConnection, ModalityConnection, ModelConnection, ModelNetwork, RealtimeDeclaration,
-    ResolvedModelConnection,
 };
 use dim_agent_types::ModelProtocol;
 use dim_modality::{
@@ -32,22 +31,18 @@ fn connection(address: SocketAddr) -> ModalityConnection {
     let mut headers = HashMap::new();
     headers.insert("x-extra".to_owned(), "kept".to_owned());
     ModalityConnection {
-        resolved: ResolvedModelConnection {
-            connection: ModelConnection::Http(HttpModelConnection {
-                protocol: ModelProtocol::OpenaiCompatible,
-                base_url: format!("http://{address}/v1"),
-                network: ModelNetwork {
-                    proxy: None,
-                    timeout_ms: None,
-                },
-                headers,
-                bearer: Some(KEY.to_owned()),
-                api_key: None,
-                preset: None,
-            }),
-            failure_policy: None,
-            recovery: None,
-        },
+        connection: ModelConnection::Http(HttpModelConnection {
+            protocol: ModelProtocol::OpenaiCompatible,
+            base_url: format!("http://{address}/v1"),
+            network: ModelNetwork {
+                proxy: None,
+                timeout_ms: None,
+            },
+            headers,
+            bearer: Some(KEY.to_owned()),
+            api_key: None,
+            preset: None,
+        }),
         protocol: ModelProtocol::OpenaiCompatible,
         model: MODEL.to_owned(),
         realtime: Some(RealtimeDeclaration {

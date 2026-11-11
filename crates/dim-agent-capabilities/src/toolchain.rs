@@ -4,11 +4,6 @@
 //! HostPlatform appends to the PATH of the processes it starts and grants to a
 //! confined one read-only. A host without it starts every process with the
 //! PATH it would have without any runtime.
-use crate::port_faces::{no_args, port_failure, unknown_method};
-use rutis::Ctx;
-use rutis::host::{CtxHost, Key};
-use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue, host_key};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,46 +20,8 @@ pub struct InstalledToolchain {
     pub root: PathBuf,
 }
 
-/// The downloaded runtimes and tools installed under the plan in effect, in
-/// the fixed order node, python, then uv. Read when a process starts, so a
-/// runtime installed meanwhile reaches the next process without a reload.
-pub trait ToolchainSource: Send + Sync + 'static {
-    fn toolchains(&self) -> Vec<InstalledToolchain>;
-}
-
-pub struct ToolchainSourceHost(pub Arc<dyn ToolchainSource>);
-
-impl ToolchainSourceHost {
-    /// Toolchains that never change, for an assembly that installs no
-    /// runtimes, such as a test or an evaluation.
-    pub fn fixed(toolchains: Vec<InstalledToolchain>) -> Self {
-        struct Fixed(Vec<InstalledToolchain>);
-        impl ToolchainSource for Fixed {
-            fn toolchains(&self) -> Vec<InstalledToolchain> {
-                self.0.clone()
-            }
-        }
-        Self(Arc::new(Fixed(toolchains)))
-    }
-}
-
-/// Provides one owner's [`ToolchainSourceHost`]: the directories the
-/// `HostPlatform` reads, and the `toolchainSourceHost` face other languages
-/// read them by.
-pub fn provide(ctx: &Ctx, host: &ToolchainSourceHost) -> rutis::Result<()> {
-    ctx.provide_at(
-        Key::<ToolchainSourceHost>::of(),
-        Arc::new(ToolchainSourceHost(host.0.clone())),
-    )?;
-    ctx.provide_at(
-        host_key(&dim_agent_runtime::names::name_of::<ToolchainSourceHost>()),
-        Arc::new(ToolchainSourceFace(host.0.clone())) as Arc<dyn HostDispatch>,
-    )?;
-    Ok(())
-}
-
-/// One installed runtime on the wire. The two directories are UTF-8 paths, as
-/// every path that crosses is
+/// One installed runtime in the `list` reply. The two directories are UTF-8
+/// paths, as every path that crosses is
 /// ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,41 +30,59 @@ pub struct ToolchainView {
     pub root: String,
 }
 
-/// The `toolchainSourceHost.list` reply: the installed runtimes, in order.
+/// The `list` reply of `toolchainSourceHost`: the installed runtimes, in the
+/// fixed order node, python, then uv.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolchainSourceReply {
     pub toolchains: Vec<ToolchainView>,
 }
 
-const NAME: &str = "toolchainSourceHost";
+/// What `toolchainSourceHost` fails with: `{code, message}`.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ToolchainSourceError {
+    #[error("{message}")]
+    Failed { message: String },
+}
 
-struct ToolchainSourceFace(Arc<dyn ToolchainSource>);
+/// An owner's list of the installed runtimes, bound as the face's one
+/// operation. Read when a process starts, so a runtime installed meanwhile
+/// reaches the next process without a reload.
+pub type InstalledToolchains =
+    Arc<dyn Fn() -> Result<Vec<InstalledToolchain>, ToolchainSourceError> + Send + Sync>;
 
-impl HostDispatch for ToolchainSourceFace {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"list": "sync"}))
+/// The `toolchainSourceHost` face: its owner provides it with the runtimes,
+/// another language calls `list` by name, and a Rust reader calls the same
+/// method directly.
+#[derive(Clone)]
+pub struct ToolchainSourceHost(InstalledToolchains);
+
+impl ToolchainSourceHost {
+    /// Binds an owner's list as the face's operation.
+    pub fn new(toolchains: InstalledToolchains) -> Self {
+        Self(toolchains)
     }
 
-    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        if method != "list" {
-            return Err(unknown_method(NAME, method));
-        }
-        no_args(NAME, method, args)?;
-        let toolchains = self
-            .0
-            .toolchains()
+    /// Toolchains that never change, for an assembly that installs no
+    /// runtimes, such as a test or an evaluation.
+    pub fn fixed(toolchains: Vec<InstalledToolchain>) -> Self {
+        Self::new(Arc::new(move || Ok(toolchains.clone())))
+    }
+}
+
+#[rutis::service]
+impl ToolchainSourceHost {
+    /// The installed runtimes, in order.
+    pub fn list(&self) -> std::result::Result<ToolchainSourceReply, ToolchainSourceError> {
+        let toolchains = (self.0)()?
             .iter()
             .map(view)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|path| {
-                port_failure(
-                    NAME,
-                    "failed",
-                    format!("toolchain path is not UTF-8: {}", path.display()),
-                )
+            .map_err(|path| ToolchainSourceError::Failed {
+                message: format!("toolchain path is not UTF-8: {}", path.display()),
             })?;
-        rutis_bridge::session::arg(&ToolchainSourceReply { toolchains })
+        Ok(ToolchainSourceReply { toolchains })
     }
 }
 

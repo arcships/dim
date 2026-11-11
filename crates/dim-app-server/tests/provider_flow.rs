@@ -9,8 +9,8 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
         AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryRequest, AwsCredentials, BedrockAuth,
-        HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk,
-        ModelConnection, ModelHost, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
+        ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelHost,
+        ModelPortError, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
         SelectableModelsHost,
     },
 };
@@ -1390,7 +1390,7 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     route.models = vec![no_route];
     provider.create(route, &cancel).await.unwrap();
 
-    let first = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let first = selectable.selectable_models().await.unwrap().models;
     let mine: Vec<_> = first
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1579,7 +1579,7 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     // entries it omits keep the enablement they have, so naming `text` alone
     // disables the served model and nothing else.
     assert_eq!(enabled_text.disabled_model_ids, ["served"]);
-    let second = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let second = selectable.selectable_models().await.unwrap().models;
     let second_ids: Vec<&str> = second
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1587,27 +1587,10 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
         .collect();
     assert_eq!(second_ids, ["text"]);
     assert_eq!(ids, ["served"], "the earlier reply must not change");
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        selectable.0.selectable(cancelled).await,
-        Err(HostError::Cancelled(_))
-    ));
     root.shutdown().await.unwrap();
-    let error = selectable
-        .0
-        .selectable(CancellationToken::new())
-        .await
-        .err()
-        .unwrap();
+    let error = selectable.selectable_models().await.err().unwrap();
     assert!(
-        matches!(
-            error,
-            HostError::Failed {
-                kind: HostErrorKind::OwnerClosed,
-                ..
-            }
-        ),
+        matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
     );
     server.abort();
@@ -1713,11 +1696,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         )
         .unwrap();
 
-    let modality = selectable
-        .0
-        .selectable_for_modality(cancel.clone())
-        .await
-        .unwrap();
+    let modality = selectable.selectable_for_modality().await.unwrap().models;
     let listed: Vec<(String, Vec<String>)> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1779,15 +1758,11 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     .await;
     let modality_face: Vec<dim_agent_types::ModalityModelSnapshot> =
         serde_json::from_value(listed["models"].clone()).unwrap();
-    let chat = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let chat = selectable.selectable_models().await.unwrap().models;
     assert_eq!(chat_face, chat, "the face lists what the port lists");
     assert_eq!(
         modality_face,
-        selectable
-            .0
-            .selectable_for_modality(cancel.clone())
-            .await
-            .unwrap()
+        selectable.selectable_for_modality().await.unwrap().models
     );
     let resolved = face_call(
         &root,
@@ -1830,10 +1805,10 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     );
     assert!(
         selectable
-            .0
-            .selectable_for_modality(cancel.clone())
+            .selectable_for_modality()
             .await
             .unwrap()
+            .models
             .iter()
             .any(|model| model.target.model_id == "modality-media"),
         "its conversational reason does not exclude the model from modality"
@@ -1848,11 +1823,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         )
         .await
         .unwrap();
-    let modality = selectable
-        .0
-        .selectable_for_modality(cancel.clone())
-        .await
-        .unwrap();
+    let modality = selectable.selectable_for_modality().await.unwrap().models;
     let listed: Vec<&str> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1863,27 +1834,10 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         ["modality-media"],
         "a disabled model leaves the modality options"
     );
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        selectable.0.selectable_for_modality(cancelled).await,
-        Err(HostError::Cancelled(_))
-    ));
     root.shutdown().await.unwrap();
-    let error = selectable
-        .0
-        .selectable_for_modality(CancellationToken::new())
-        .await
-        .err()
-        .unwrap();
+    let error = selectable.selectable_for_modality().await.err().unwrap();
     assert!(
-        matches!(
-            error,
-            HostError::Failed {
-                kind: HostErrorKind::OwnerClosed,
-                ..
-            }
-        ),
+        matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
     );
     std::fs::remove_dir_all(home).unwrap();
@@ -2019,11 +1973,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         },
         operation: operation.into(),
     };
-    let listed = selectable
-        .0
-        .selectable_for_modality(cancel.clone())
-        .await
-        .unwrap();
+    let listed = selectable.selectable_for_modality().await.unwrap().models;
     assert!(
         listed.iter().any(|model| model.target.provider_id == MINE
             && model.target.model_id == "media"
@@ -2033,16 +1983,14 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     assert!(seen.lock().unwrap().is_empty(), "the read made a request");
 
     let connection = modality
-        .0
-        .resolve_for_modality(modality_target("media", "image.generate"), cancel.clone())
+        .resolve_modality_connection(modality_target("media", "image.generate"))
         .await
         .unwrap();
     assert_eq!(connection.model, "media");
     assert_eq!(connection.protocol, ModelProtocol::OpenaiCompatible);
-    assert!(connection.resolved.recovery.is_none());
     let debug = format!("{connection:?}");
     assert!(!debug.contains(KEY), "{debug}");
-    let (base_url, headers, bearer) = match &connection.resolved.connection {
+    let (base_url, headers, bearer) = match &connection.connection {
         ModelConnection::Http(http) => (
             http.base_url.clone(),
             http.headers.clone(),
@@ -2076,8 +2024,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     // operation of the same model carries none, and a declaration that does
     // not parse is refused rather than silently absent.
     let voice = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "realtime.voice"), cancel.clone())
+        .resolve_modality_connection(modality_target("voice", "realtime.voice"))
         .await
         .unwrap();
     assert_eq!(
@@ -2089,16 +2036,14 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     );
     assert!(!format!("{voice:?}").contains(KEY));
     let image = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "image.generate"), cancel.clone())
+        .resolve_modality_connection(modality_target("voice", "image.generate"))
         .await;
     assert_eq!(
         image.err().unwrap().to_string(),
         "Model does not declare the image.generate operation"
     );
     let broken = modality
-        .0
-        .resolve_for_modality(modality_target("broken", "realtime.voice"), cancel.clone())
+        .resolve_modality_connection(modality_target("broken", "realtime.voice"))
         .await
         .err()
         .unwrap();
@@ -2136,8 +2081,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         ),
     ] {
         let error = modality
-            .0
-            .resolve_for_modality(target, cancel.clone())
+            .resolve_modality_connection(target)
             .await
             .err()
             .unwrap();
@@ -2150,15 +2094,6 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         1,
         "a refused resolution reached the stub"
     );
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        modality
-            .0
-            .resolve_for_modality(modality_target("media", "image.generate"), cancelled)
-            .await,
-        Err(HostError::Cancelled(_))
-    ));
     root.shutdown().await.unwrap();
     server.abort();
     std::fs::remove_dir_all(home).unwrap();

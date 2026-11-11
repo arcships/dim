@@ -39,7 +39,10 @@ pub use adapter::{
     RemoteCancel, Submitted,
 };
 use dim_agent_capabilities::{
-    host::{HostError, HostErrorKind, ModelSelectionHost, SelectableModelsHost},
+    host::{
+        HostError, HostErrorKind, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
+        SelectableModelsHost,
+    },
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
@@ -1003,6 +1006,16 @@ pub(crate) fn host_error(error: HostError) -> RpcError {
     }
 }
 
+/// A process model port's failure as this plugin reports it: the two codes a
+/// caller acts on, and the owner's message for the rest.
+pub(crate) fn port_error(error: ModelPortError) -> RpcError {
+    match error {
+        ModelPortError::Cancelled { .. } => RpcError::interrupted(),
+        ModelPortError::OwnerClosed { .. } => RpcError::reloading(),
+        error => RpcError::app(-32000, "modality_failed", error.to_string()),
+    }
+}
+
 /// Whether one call reads the plugin-supplied OCR target (A.2.1): only a call
 /// whose reply or resolution names the OCR category reads `ocrHelper`, so an
 /// image, video or speech request and a realtime session never wait on it.
@@ -1029,18 +1042,17 @@ pub(crate) async fn evaluate(
         .await
         .map_err(settings_error)?;
     let selectable_models = selectable
-        .0
-        .selectable(cancel.clone())
+        .selectable_models()
         .await
-        .map_err(host_error)?;
+        .map_err(port_error)?
+        .models;
     let declared = selectable
-        .0
-        .selectable_for_modality(cancel.clone())
+        .selectable_for_modality()
         .await
-        .map_err(host_error)?;
+        .map_err(port_error)?
+        .models;
     let global = selection
-        .0
-        .resolve(None, None, cancel.clone())
+        .resolve(ModelSelectionRequest::at(None, None).map_err(|error| host_error(error.into()))?)
         .await
         .ok()
         .map(|selection| ModelId {

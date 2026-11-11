@@ -37,7 +37,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `mcpAuth` | process | Mcp | internal(secret) | — |
 | `mcpService` | process | Mcp | internal(host-resource) | — |
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
-| `modalityConnectionHost` | process | Provider | internal(secret) | — |
+| `modalityConnectionHost` | process | Provider | data | `resolveModalityConnection` async |
 | `modelHost` | process | Aimux | internal(owner-api) | — |
 | `modelSelectionHost` | process | Provider | data | `resolve` async |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
@@ -66,7 +66,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `skillsInstructionsSettingsHost` | process | PromptSettings | internal(owner-api) | — |
 | `sqliteStorage` | process | SqliteStorage | internal(object) | — |
 | `summaryPromptSettingsHost` | process | PromptSettings | internal(owner-api) | — |
-| `toolchainSourceHost` | process | ToolchainSource | data | `list` sync |
+| `toolchainSourceHost` | process | ToolchainSource | data | `list` async |
 | `uiExtensions` | process | UiExtensions | internal(control) | — |
 | `uiHost` | process | UiHost | internal(control) | — |
 | `wakeups` | process | Scheduler | internal(owner-api) | — |

@@ -8,7 +8,7 @@ use crate::session_typescript::{ForeignRuntime, RuntimeState, RuntimeStatus};
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
 };
-use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSource, ToolchainSourceHost};
+use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::Disposer;
@@ -1727,19 +1727,6 @@ async fn pip_install(plan: &Plan, packages: &Path) -> Result<(), String> {
 /// The port HostPlatform reads: RuntimeService is resolved at each call
 /// through an optional dependency, so RuntimeManager's reload neither reloads
 /// HostPlatform nor leaves it holding a withdrawn service.
-struct RuntimeToolchain {
-    ctx: Ctx,
-    service: Key<RuntimeService>,
-}
-impl ToolchainSource for RuntimeToolchain {
-    fn toolchains(&self) -> Vec<InstalledToolchain> {
-        self.ctx
-            .get_at(&self.service)
-            .map(|service| service.toolchains())
-            .unwrap_or_default()
-    }
-}
-
 /// The process row `ToolchainSource`: provides the port that carries the
 /// installed runtimes' bin directories to HostPlatform. It reads
 /// RuntimeService optionally, so it exists on hosts without RuntimeManager.
@@ -1759,11 +1746,14 @@ impl DynPlugin for ToolchainSourcePlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let port = RuntimeToolchain {
-                ctx: ctx.clone(),
-                service: self.service.clone(),
-            };
-            dim_agent_capabilities::toolchain::provide(ctx, &ToolchainSourceHost(Arc::new(port)))?;
+            let port = ctx.clone();
+            let service = self.service.clone();
+            ctx.provide(ToolchainSourceHost::new(Arc::new(move || {
+                Ok(port
+                    .get_at(&service)
+                    .map(|service| service.toolchains())
+                    .unwrap_or_default())
+            })))?;
             Ok(Effect::Done)
         })
     }

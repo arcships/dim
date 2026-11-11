@@ -1,23 +1,29 @@
-//! The process host ports whose owner is a Settings source: the switches, the
-//! installed runtimes and PromptSuggestion's document. Each is read by its
-//! Rust consumer and, under its own name, by a part of any language
-//! ([service faces §2.1](../../docs/design/service-faces.md#21-标记)).
+//! The process host ports whose owner is a Settings source or a model
+//! catalogue: the switches, the installed runtimes, PromptSuggestion's
+//! document and the three model ports. Each face is served under its own name
+//! for any language, and the Rust binding calls the same operations: these
+//! tests pin that both answer the same
+//! ([service faces §4.8](../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等六个)).
 use dim_agent_capabilities::execution_settings::{
-    ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost, ExecutionSettingsSource,
+    ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost,
 };
-use dim_agent_capabilities::host::{HostError, HostFuture, SelectableModels, SelectableModelsHost};
+use dim_agent_capabilities::host::{
+    HostError, ModalityConnection, ModalityConnectionHost, ModelConnection, ModelPortError,
+    ModelProtocol, ModelSelectionHost, ModelSelectionRequest, SelectableModelsHost,
+};
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettings, PromptSuggestionSettingsError, PromptSuggestionSettingsHost,
-    PromptSuggestionSettingsSource,
 };
-use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost, ToolchainView};
-use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot};
+use dim_agent_capabilities::toolchain::{
+    InstalledToolchain, ToolchainSourceHost, ToolchainSourceReply, ToolchainView,
+};
+use dim_agent_types::{ModalityModelSnapshot, ModelId, ModelSelection};
 use rutis::Ctx;
-use rutis::host::{BoxFuture, CtxHost};
+use rutis::host::CtxHost;
 use rutis_bridge::session::{Error, HostDispatch, Value as RpcValue, host_key};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 
 /// The face `name` is provided under, as a caller of another language reads
 /// it.
@@ -38,96 +44,36 @@ async fn call(
     }
 }
 
-/// An execution source whose read fails, as a Settings document that cannot
-/// be read does.
-struct Unreadable;
-
-impl ExecutionSettingsSource for Unreadable {
-    fn read(
-        &self,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'_, Result<ExecutionSettings, ExecutionSettingsError>> {
-        Box::pin(async move { Err(ExecutionSettingsError::Failed("no document".into())) })
-    }
-}
-
-/// A selectable-models owner whose read ends with the failure of a closed
-/// owner.
-struct Closed;
-
-impl SelectableModels for Closed {
-    fn selectable(&self, _: CancellationToken) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>> {
-        Box::pin(async move { Err(HostError::Cancelled("the owner closed".into())) })
-    }
-    fn selectable_for_modality(
-        &self,
-        _: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>> {
-        Box::pin(async move { Err(HostError::Cancelled("the owner closed".into())) })
-    }
-}
-
-struct FixedSuggestions(PromptSuggestionSettings);
-
-impl PromptSuggestionSettingsSource for FixedSuggestions {
-    fn read(
-        &self,
-        _cancel: CancellationToken,
-    ) -> BoxFuture<'_, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>> {
-        Box::pin(async move { Ok(self.0) })
-    }
+/// What the face `name` answers `method`, read as its reply type.
+async fn wire<T: DeserializeOwned>(root: &Ctx, name: &str, method: &str) -> T {
+    let reply = call(&face(root, name), method, vec![])
+        .await
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    serde_json::from_value(reply).unwrap_or_else(|error| panic!("{name}.{method}: {error}"))
 }
 
 #[tokio::test]
-async fn the_execution_switches_cross_as_data() {
+async fn the_execution_switches_answer_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
     let switches = ExecutionSettings {
         sandbox: true,
         network: false,
     };
-    dim_agent_capabilities::execution_settings::provide(
-        &root,
-        &ExecutionSettingsHost::fixed(switches),
-    )
-    .unwrap();
-    assert!(
-        root.get::<ExecutionSettingsHost>().is_some(),
-        "the Rust consumer still reads the port at its own key"
-    );
-    let port = face(&root, "executionSettingsHost");
-    assert_eq!(port.methods().unwrap(), json!({"read": "async"}));
+    root.provide(ExecutionSettingsHost::fixed(switches))
+        .unwrap();
+    let binding = root.get::<ExecutionSettingsHost>().unwrap();
     assert_eq!(
-        call(&port, "read", vec![]).await.unwrap(),
-        json!({"sandbox": true, "network": false})
+        binding.read().await.unwrap(),
+        wire::<ExecutionSettings>(&root, "executionSettingsHost", "read").await
     );
-    // A cancellation that is not a function is the caller's mistake.
     assert_eq!(
-        call(&port, "read", vec![json!({"cancel": true}).into()])
-            .await
-            .unwrap_err()
-            .code(),
-        Some("invalid_request")
-    );
-    assert!(call(&port, "write", vec![]).await.is_err());
-
-    let failing = Ctx::root().unwrap();
-    dim_agent_capabilities::execution_settings::provide(
-        &failing,
-        &ExecutionSettingsHost(Arc::new(Unreadable)),
-    )
-    .unwrap();
-    assert_eq!(
-        call(&face(&failing, "executionSettingsHost"), "read", vec![])
-            .await
-            .unwrap_err()
-            .code(),
-        Some("failed"),
-        "the owner's failure keeps its own code, not the caller's"
+        wire::<ExecutionSettings>(&root, "executionSettingsHost", "read").await,
+        switches
     );
 }
 
 #[tokio::test]
-async fn the_installed_runtimes_cross_as_data() {
+async fn the_installed_runtimes_answer_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
     let installed = vec![
         InstalledToolchain {
@@ -139,76 +85,204 @@ async fn the_installed_runtimes_cross_as_data() {
             root: "/home/runtimes/python".into(),
         },
     ];
-    dim_agent_capabilities::toolchain::provide(&root, &ToolchainSourceHost::fixed(installed))
-        .unwrap();
-    assert!(root.get::<ToolchainSourceHost>().is_some());
-    let port = face(&root, "toolchainSourceHost");
-    assert_eq!(port.methods().unwrap(), json!({"list": "sync"}));
-    let reply = call(&port, "list", vec![]).await.unwrap();
-    let toolchains: Vec<ToolchainView> =
-        serde_json::from_value(reply["toolchains"].clone()).unwrap();
+    root.provide(ToolchainSourceHost::fixed(installed)).unwrap();
+    let binding = root.get::<ToolchainSourceHost>().unwrap();
+    let listed = wire::<ToolchainSourceReply>(&root, "toolchainSourceHost", "list").await;
+    assert_eq!(binding.list().unwrap(), listed);
     assert_eq!(
-        toolchains,
-        [
-            ToolchainView {
-                bin: "/home/runtimes/node-v22/bin".into(),
-                root: "/home/runtimes/node-v22".into(),
-            },
-            ToolchainView {
-                bin: "/home/runtimes/python/bin".into(),
-                root: "/home/runtimes/python".into(),
-            },
-        ]
-    );
-    assert_eq!(
-        call(&port, "list", vec![json!({}).into()])
-            .await
-            .unwrap_err()
-            .code(),
-        Some("invalid_request")
+        listed,
+        ToolchainSourceReply {
+            toolchains: vec![
+                ToolchainView {
+                    bin: "/home/runtimes/node-v22/bin".into(),
+                    root: "/home/runtimes/node-v22".into(),
+                },
+                ToolchainView {
+                    bin: "/home/runtimes/python/bin".into(),
+                    root: "/home/runtimes/python".into(),
+                },
+            ],
+        }
     );
 }
 
 #[tokio::test]
-async fn the_prompt_suggestion_document_crosses_as_data() {
+async fn the_prompt_suggestion_document_answers_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
     let document = PromptSuggestionSettings {
         enabled: true,
         max_chars: 120,
     };
-    dim_agent_capabilities::prompt_suggestion::provide_settings(
-        &root,
-        &PromptSuggestionSettingsHost(Arc::new(FixedSuggestions(document))),
-    )
+    root.provide(PromptSuggestionSettingsHost::new(Arc::new(move || {
+        Box::pin(async move { Ok(document) })
+    })))
     .unwrap();
-    assert!(root.get::<PromptSuggestionSettingsHost>().is_some());
-    let port = face(&root, "promptSuggestionSettingsHost");
-    assert_eq!(port.methods().unwrap(), json!({"read": "async"}));
-    assert_eq!(
-        call(&port, "read", vec![]).await.unwrap(),
-        json!({"enabled": true, "maxChars": 120}),
-        "the document crosses in the spelling its Settings source has"
-    );
+    let binding = root.get::<PromptSuggestionSettingsHost>().unwrap();
+    let read =
+        wire::<PromptSuggestionSettings>(&root, "promptSuggestionSettingsHost", "read").await;
+    assert_eq!(binding.read().await.unwrap(), read);
+    assert_eq!(read, document, "the document keeps its Settings spelling");
 }
 
 #[tokio::test]
-async fn a_host_failure_keeps_its_kind_as_the_code() {
+async fn the_selectable_models_answer_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
-    dim_agent_capabilities::port_faces::provide_selectable_models(
+    let declared = || ModalityModelSnapshot {
+        target: ModelId {
+            provider_id: "provider".into(),
+            model_id: "media".into(),
+        },
+        operations: vec!["image.generate".into()],
+    };
+    root.provide(SelectableModelsHost::new(
+        Arc::new(|| Box::pin(async { Ok(Vec::new()) })),
+        Arc::new(move || Box::pin(async move { Ok(vec![declared()]) })),
+    ))
+    .unwrap();
+    let binding = root.get::<SelectableModelsHost>().unwrap();
+    assert_eq!(
+        binding.selectable_models().await.unwrap().models,
+        wire::<dim_agent_capabilities::host::SelectableModelsReply>(
+            &root,
+            "selectableModelsHost",
+            "selectableModels"
+        )
+        .await
+        .models
+    );
+    let modality = wire::<dim_agent_capabilities::host::ModalityModelsReply>(
         &root,
-        &SelectableModelsHost(Arc::new(Closed)),
+        "selectableModelsHost",
+        "selectableForModality",
+    )
+    .await;
+    assert_eq!(binding.selectable_for_modality().await.unwrap(), modality);
+    assert_eq!(modality.models, vec![declared()]);
+}
+
+#[tokio::test]
+async fn the_model_selection_answers_the_same_through_the_binding_and_the_face() {
+    let root = Ctx::root().unwrap();
+    root.provide(ModelSelectionHost::new(Arc::new(|explicit, _| {
+        Box::pin(async move {
+            let id = explicit.unwrap_or(ModelId {
+                provider_id: "provider".into(),
+                model_id: "default".into(),
+            });
+            Ok(ModelSelection {
+                provider_id: id.provider_id,
+                model_id: id.model_id,
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            })
+        })
+    })))
+    .unwrap();
+    let binding = root.get::<ModelSelectionHost>().unwrap();
+    let request = ModelSelectionRequest::at(
+        Some(ModelId {
+            provider_id: "provider".into(),
+            model_id: "chosen".into(),
+        }),
+        Some(std::path::Path::new("/work")),
     )
     .unwrap();
-    let port = face(&root, "selectableModelsHost");
+    let reply = call(
+        &face(&root, "modelSelectionHost"),
+        "resolve",
+        vec![serde_json::to_value(&request).unwrap().into()],
+    )
+    .await
+    .unwrap();
+    let selected: ModelSelection = serde_json::from_value(reply).unwrap();
+    assert_eq!(binding.resolve(request).await.unwrap(), selected);
+    assert_eq!(selected.model_id, "chosen");
+}
+
+#[tokio::test]
+async fn the_modality_connection_answers_the_same_through_the_binding_and_the_face() {
+    let root = Ctx::root().unwrap();
+    root.provide(ModalityConnectionHost::new(Arc::new(|target| {
+        Box::pin(async move {
+            Ok(ModalityConnection {
+                connection: ModelConnection::Local,
+                protocol: ModelProtocol::Anthropic,
+                model: target.target.model_id,
+                realtime: None,
+            })
+        })
+    })))
+    .unwrap();
+    let binding = root.get::<ModalityConnectionHost>().unwrap();
+    let target = dim_agent_capabilities::host::ModalityTarget {
+        target: ModelId {
+            provider_id: "provider".into(),
+            model_id: "media".into(),
+        },
+        operation: "image.generate".into(),
+    };
+    let reply = call(
+        &face(&root, "modalityConnectionHost"),
+        "resolveModalityConnection",
+        vec![serde_json::to_value(&target).unwrap().into()],
+    )
+    .await
+    .unwrap();
+    let connection: ModalityConnection = serde_json::from_value(reply).unwrap();
     assert_eq!(
-        port.methods().unwrap(),
-        json!({"selectableModels": "async", "selectableForModality": "async"})
+        binding.resolve_modality_connection(target).await.unwrap(),
+        connection
     );
-    for method in ["selectableModels", "selectableForModality"] {
-        assert_eq!(
-            call(&port, method, vec![]).await.unwrap_err().code(),
-            Some("cancelled"),
-            "a host failure crosses with the kind its caller acts on"
-        );
-    }
+    assert_eq!(connection.model, "media");
+}
+
+#[tokio::test]
+async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
+    let root = Ctx::root().unwrap();
+    root.provide(SelectableModelsHost::new(
+        Arc::new(|| Box::pin(async { Err(HostError::Cancelled("the owner closed".into())) })),
+        Arc::new(|| Box::pin(async { Err(HostError::failed("storage")) })),
+    ))
+    .unwrap();
+    let cancelled = call(
+        &face(&root, "selectableModelsHost"),
+        "selectableModels",
+        vec![],
+    )
+    .await
+    .expect_err("the owner fails");
+    assert_eq!(cancelled.code(), Some("cancelled"));
+    let failed = call(
+        &face(&root, "selectableModelsHost"),
+        "selectableForModality",
+        vec![],
+    )
+    .await
+    .expect_err("the owner fails");
+    assert_eq!(failed.code(), Some("failed"));
+}
+
+#[test]
+fn the_port_errors_cross_as_code_and_message() {
+    let cancelled = serde_json::to_value(ModelPortError::Cancelled {
+        message: "stop".into(),
+    })
+    .unwrap();
+    assert_eq!(cancelled, json!({"code": "cancelled", "message": "stop"}));
+    let closed = serde_json::to_value(ModelPortError::OwnerClosed {
+        message: "reload".into(),
+    })
+    .unwrap();
+    assert_eq!(closed, json!({"code": "owner_closed", "message": "reload"}));
+    let failed = serde_json::to_value(ExecutionSettingsError::Failed {
+        message: "no document".into(),
+    })
+    .unwrap();
+    assert_eq!(failed, json!({"code": "failed", "message": "no document"}));
+    let failed = serde_json::to_value(PromptSuggestionSettingsError::Failed {
+        message: "no document".into(),
+    })
+    .unwrap();
+    assert_eq!(failed, json!({"code": "failed", "message": "no document"}));
 }

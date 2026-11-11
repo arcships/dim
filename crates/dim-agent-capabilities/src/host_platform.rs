@@ -4,9 +4,9 @@
 //! Shell resolution copies ADR 020 and TS `packages/agent/src/exec-shell.ts`.
 //! Process facts are captured at apply; exec shell preferences are read at use
 //! time. Shell problems are returned as data, never raised during assembly.
-use crate::execution_settings::{ExecutionSettingsHost, ExecutionSettingsSource};
+use crate::execution_settings::ExecutionSettingsHost;
 use crate::file_storage::{FileStorage, FileStorageError};
-use crate::toolchain::{InstalledToolchain, ToolchainSource, ToolchainSourceHost};
+use crate::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
@@ -231,10 +231,10 @@ pub struct HostPlatform {
     pub platform_roots: Vec<PathBuf>,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
-    pub(crate) execution: Option<Arc<dyn ExecutionSettingsSource>>,
+    pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
     /// The installed runtimes a started process finds at the end of its
     /// `PATH`; `None` is a host that installs none.
-    pub(crate) toolchain: Option<Arc<dyn ToolchainSource>>,
+    pub(crate) toolchain: Option<Arc<ToolchainSourceHost>>,
 }
 
 struct ResolvedShell {
@@ -368,14 +368,14 @@ impl HostPlatform {
     /// HostPlatform plugin wires it; a platform without switches fails
     /// preparation instead of running unsandboxed (ADR 011 D1).
     pub fn with_execution_settings(mut self, host: ExecutionSettingsHost) -> Self {
-        self.execution = Some(host.0);
+        self.execution = Some(Arc::new(host));
         self
     }
     /// Uses `host` for the installed runtimes at each process start. The
     /// HostPlatform plugin wires it; a platform without it starts processes
     /// with the PATH they would have without any runtime.
     pub fn with_toolchain_source(mut self, host: ToolchainSourceHost) -> Self {
-        self.toolchain = Some(host.0);
+        self.toolchain = Some(Arc::new(host));
         self
     }
     /// Reads the configured exec shell for this invocation without reloading
@@ -441,13 +441,10 @@ impl HostPlatform {
                 "The host has no execution settings port, so the sandbox switches cannot be read"
                     .into(),
         })?;
-        source
-            .read(CancellationToken::new())
-            .await
-            .map_err(|error| ProcessSpecError {
-                code: "isolation_config_invalid",
-                reason: error.to_string(),
-            })
+        source.read().await.map_err(|error| ProcessSpecError {
+            code: "isolation_config_invalid",
+            reason: error.to_string(),
+        })
     }
 
     /// The sandbox backend a new process would use. Preparation reads the same
@@ -511,11 +508,23 @@ impl HostPlatform {
     /// archive directory is skipped: the sandbox grant is the root, so the two
     /// must nest.
     pub fn installed_toolchains(&self) -> Vec<InstalledToolchain> {
-        self.toolchain
-            .as_ref()
-            .map(|source| source.toolchains())
-            .unwrap_or_default()
+        let Some(source) = self.toolchain.as_ref() else {
+            return Vec::new();
+        };
+        let reply = match source.list() {
+            Ok(reply) => reply,
+            Err(error) => {
+                tracing::warn!(%error, "the installed runtimes cannot cross as data");
+                return Vec::new();
+            }
+        };
+        reply
+            .toolchains
             .into_iter()
+            .map(|toolchain| InstalledToolchain {
+                bin: toolchain.bin.into(),
+                root: toolchain.root.into(),
+            })
             .filter(|toolchain| toolchain.bin.starts_with(&toolchain.root))
             .collect()
     }
@@ -1045,9 +1054,9 @@ impl DynPlugin for HostPlatformPlugin {
             }
             platform.shell_file = shell_file;
             let execution = ctx.require_at(&self.execution)?;
-            platform.execution = Some(execution.0.clone());
+            platform.execution = Some(execution.clone());
             let toolchain = ctx.require_at(&self.toolchain)?;
-            platform.toolchain = Some(toolchain.0.clone());
+            platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)

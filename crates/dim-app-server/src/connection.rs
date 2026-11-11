@@ -7,6 +7,7 @@ use crate::{
     skills_management::skills_error,
 };
 use dim_agent_capabilities::{
+    host::ModelSelectionRequest,
     methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},
     permission::{Permission, PermissionState, PermissionUpdateError},
     skills::SkillsBranch,
@@ -2261,13 +2262,14 @@ impl RpcService {
                 ),
             ));
         }
+        let request = ModelSelectionRequest::at(explicit, cwd.as_deref())
+            .map_err(|error| provider_error(error.into()))?;
         self.index
             .model_selection()
             .ok_or_else(RpcError::reloading)?
-            .0
-            .resolve(explicit, cwd, self.unloading.clone())
+            .resolve(request)
             .await
-            .map_err(provider_error)
+            .map_err(|error| provider_error(error.into()))
     }
 }
 

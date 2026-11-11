@@ -47,17 +47,24 @@ impl Plugin for ConfiguredModelsPlugin {
             generation: ctx.cancellation_token(),
         });
         ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
-        dim_agent_capabilities::port_faces::provide_model_selection(
-            ctx,
-            &ModelSelectionHost(resolver.clone()),
-        )?;
-        ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-        dim_agent_capabilities::port_faces::provide_selectable_models(
-            ctx,
-            &SelectableModelsHost(Arc::new(ConfiguredSelectable {
-                models: self.0.clone(),
-            })),
-        )?;
+        let selection = resolver.clone();
+        ctx.provide(ModelSelectionHost::new(Arc::new(move |explicit, cwd| {
+            selection.resolve(explicit, cwd)
+        })))?;
+        let modality = resolver.clone();
+        ctx.provide(ModalityConnectionHost::new(Arc::new(move |target| {
+            modality.resolve_modality_connection(target)
+        })))?;
+        let selectable = ConfiguredSelectable {
+            models: self.0.clone(),
+        };
+        let modalities = ConfiguredSelectable {
+            models: self.0.clone(),
+        };
+        ctx.provide(SelectableModelsHost::new(
+            Arc::new(move || selectable.selectable()),
+            Arc::new(move || modalities.selectable_for_modality()),
+        ))?;
         let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
             models: self.0.clone(),
             connection: resolver,
@@ -72,28 +79,15 @@ impl Plugin for ConfiguredModelsPlugin {
 struct ConfiguredSelectable {
     models: Arc<AimuxModels>,
 }
-impl SelectableModels for ConfiguredSelectable {
-    fn selectable(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<dim_agent_types::ModelCapabilitySnapshot>> {
-        Box::pin(async move {
-            if cancel.is_cancelled() {
-                return Err(HostError::Cancelled("selectable models cancelled".into()));
-            }
-            Ok(self.models.selectable())
-        })
+impl ConfiguredSelectable {
+    fn selectable(&self) -> HostFuture<'static, Vec<dim_agent_types::ModelCapabilitySnapshot>> {
+        let models = self.models.selectable();
+        Box::pin(async move { Ok(models) })
     }
     fn selectable_for_modality(
         &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<dim_agent_types::ModalityModelSnapshot>> {
+    ) -> HostFuture<'static, Vec<dim_agent_types::ModalityModelSnapshot>> {
         Box::pin(async move {
-            if cancel.is_cancelled() {
-                return Err(HostError::Cancelled(
-                    "selectable modality models cancelled".into(),
-                ));
-            }
             // The development model configuration declares no modality
             // operation, so no model is offered for one.
             Ok(Vec::new())
@@ -105,25 +99,23 @@ struct ConfiguredConnection {
     models: Arc<AimuxModels>,
     generation: CancellationToken,
 }
-impl ResolveModelSelection for ConfiguredConnection {
+impl ConfiguredConnection {
     fn resolve(
         &self,
         explicit: Option<dim_agent_types::ModelId>,
         _: Option<std::path::PathBuf>,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, dim_agent_types::ModelSelection> {
+    ) -> HostFuture<'static, dim_agent_types::ModelSelection> {
+        let models = self.models.clone();
+        let generation = self.generation.clone();
         Box::pin(async move {
-            if self.generation.is_cancelled() {
+            if generation.is_cancelled() {
                 return Err(HostError::classified(
                     HostErrorKind::OwnerClosed,
                     "Model catalog owner is closed",
                 ));
             }
-            if cancel.is_cancelled() {
-                return Err(HostError::Cancelled("Model selection cancelled".into()));
-            }
-            let id = explicit.unwrap_or_else(|| self.models.default_model().clone());
-            let model = self.models.get(&id.provider_id, &id.model_id)?;
+            let id = explicit.unwrap_or_else(|| models.default_model().clone());
+            let model = models.get(&id.provider_id, &id.model_id)?;
             // Record the protocol beside the adopted configuration, in the
             // same metadata member Provider records it, so the existing reads
             // derive the preferences the configuration sends.
@@ -181,7 +173,7 @@ impl ResolveModelConnection for ConfiguredConnection {
                             "Invalid credential header",
                         )
                     })?;
-                    Ok(key)
+                    Ok::<String, HostError>(key)
                 })
                 .transpose()?;
             Ok(ResolvedModelConnection {
@@ -215,26 +207,21 @@ impl ResolveModelConnection for ConfiguredConnection {
     }
 }
 
-impl ResolveModalityConnection for ConfiguredConnection {
-    fn resolve_for_modality(
+impl ConfiguredConnection {
+    fn resolve_modality_connection(
         &self,
         target: ModalityTarget,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, ModalityConnection> {
+    ) -> HostFuture<'static, ModalityConnection> {
+        let models = self.models.clone();
+        let generation = self.generation.clone();
         Box::pin(async move {
-            if self.generation.is_cancelled() {
+            if generation.is_cancelled() {
                 return Err(HostError::classified(
                     HostErrorKind::OwnerClosed,
                     "Model catalog owner is closed",
                 ));
             }
-            if cancel.is_cancelled() {
-                return Err(HostError::Cancelled(
-                    "Connection resolution cancelled".into(),
-                ));
-            }
-            self.models
-                .get(&target.target.provider_id, &target.target.model_id)?;
+            models.get(&target.target.provider_id, &target.target.model_id)?;
             // The model file declares no modality operation, so this profile's
             // `selectableForModality` read answers none and every target fails
             // the declaration rule before a connection is built.

@@ -2615,16 +2615,18 @@ impl ResolveModelConnection for ProductResolver {
         })
     }
 }
-impl ResolveModalityConnection for ProductResolver {
-    fn resolve_for_modality(
+impl ProductResolver {
+    /// The connection one non-conversational call of `target` uses. Bounded by
+    /// the owner's lifetime: a caller ends the call by dropping it.
+    pub(crate) fn resolve_modality_connection(
         &self,
         target: ModalityTarget,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, ModalityConnection> {
+    ) -> HostFuture<'static, ModalityConnection> {
+        let owner = self.0.clone();
+        let cancel = owner.stop.child_token();
         Box::pin(async move {
-            self.0.check(&cancel)?;
-            let resolution = self
-                .0
+            owner.check(&cancel)?;
+            let resolution = owner
                 .resolve_connection(
                     &target.target.provider_id,
                     &target.target.model_id,
@@ -2635,23 +2637,25 @@ impl ResolveModalityConnection for ProductResolver {
                 )
                 .await?;
             Ok(ModalityConnection {
-                resolved: resolution.connection,
+                connection: resolution.connection.connection,
                 protocol: resolution.protocol,
                 model: target.target.model_id,
                 realtime: resolution.realtime,
             })
         })
     }
-}
-impl ResolveModelSelection for ProductResolver {
-    fn resolve(
+
+    /// The model one request resolves to, resolved once. Bounded by the
+    /// owner's lifetime.
+    pub(crate) fn resolve(
         &self,
         explicit: Option<ModelId>,
         cwd: Option<std::path::PathBuf>,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, ModelSelection> {
+    ) -> HostFuture<'static, ModelSelection> {
+        let owner = self.0.clone();
+        let cancel = owner.stop.child_token();
         Box::pin(async move {
-            self.0
+            owner
                 .configuration(
                     explicit,
                     cwd.as_deref(),
@@ -2661,20 +2665,20 @@ impl ResolveModelSelection for ProductResolver {
                 .await
         })
     }
-}
-impl SelectableModels for ProductResolver {
-    fn selectable(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>> {
+
+    /// Every model execution would accept. Bounded by the owner's lifetime.
+    pub(crate) fn selectable(&self) -> HostFuture<'static, Vec<ModelCapabilitySnapshot>> {
         let owner = self.0.clone();
+        let cancel = self.0.stop.child_token();
         Box::pin(async move { owner.selectable_models(&cancel).await })
     }
-    fn selectable_for_modality(
+
+    /// Every model a non-conversational use could select.
+    pub(crate) fn selectable_for_modality(
         &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>> {
+    ) -> HostFuture<'static, Vec<ModalityModelSnapshot>> {
         let owner = self.0.clone();
+        let cancel = self.0.stop.child_token();
         Box::pin(async move { owner.selectable_modality_models(&cancel).await })
     }
 }
@@ -2959,15 +2963,20 @@ impl DynPlugin for ProviderPlugin {
             })?;
             let resolver = Arc::new(ProductResolver(service.clone()));
             ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
-            dim_agent_capabilities::port_faces::provide_model_selection(
-                ctx,
-                &ModelSelectionHost(resolver.clone()),
-            )?;
-            ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-            dim_agent_capabilities::port_faces::provide_selectable_models(
-                ctx,
-                &SelectableModelsHost(resolver),
-            )?;
+            let selection = resolver.clone();
+            ctx.provide(ModelSelectionHost::new(Arc::new(move |explicit, cwd| {
+                selection.resolve(explicit, cwd)
+            })))?;
+            let modality = resolver.clone();
+            ctx.provide(ModalityConnectionHost::new(Arc::new(move |target| {
+                modality.resolve_modality_connection(target)
+            })))?;
+            let selectable = resolver.clone();
+            let modalities = resolver;
+            ctx.provide(SelectableModelsHost::new(
+                Arc::new(move || selectable.selectable()),
+                Arc::new(move || modalities.selectable_for_modality()),
+            ))?;
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),
                 host,

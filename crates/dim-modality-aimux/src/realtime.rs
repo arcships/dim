@@ -95,7 +95,7 @@ impl Relay {
                 declaration.protocol
             )));
         }
-        let ModelConnection::Http(http) = &connection.resolved.connection else {
+        let ModelConnection::Http(http) = &connection.connection else {
             return Err(AdapterError::unavailable(
                 "The model's connection is local and serves no realtime session",
             ));

@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dim_agent_capabilities::host::{
     HttpModelConnection, ModalityConnection, ModelConnection, ModelNetwork, ModelProtocol,
-    ResolvedModelConnection,
 };
 use dim_agent_types::ModelId;
 use dim_modality::{AdapterErrorCode, Job, JobFile, ModalityAdapter, ProgressSink};
@@ -121,19 +120,15 @@ fn scripted(
 
 fn connection(base_url: &str, model: &str) -> ModalityConnection {
     ModalityConnection {
-        resolved: ResolvedModelConnection {
-            connection: ModelConnection::Http(HttpModelConnection {
-                protocol: ModelProtocol::OpenaiCompatible,
-                base_url: base_url.to_owned(),
-                network: ModelNetwork::default(),
-                headers: Default::default(),
-                bearer: Some(CREDENTIAL.to_owned()),
-                api_key: None,
-                preset: None,
-            }),
-            failure_policy: None,
-            recovery: None,
-        },
+        connection: ModelConnection::Http(HttpModelConnection {
+            protocol: ModelProtocol::OpenaiCompatible,
+            base_url: base_url.to_owned(),
+            network: ModelNetwork::default(),
+            headers: Default::default(),
+            bearer: Some(CREDENTIAL.to_owned()),
+            api_key: None,
+            preset: None,
+        }),
         protocol: ModelProtocol::OpenaiCompatible,
         model: model.to_owned(),
         realtime: None,
@@ -143,7 +138,7 @@ fn connection(base_url: &str, model: &str) -> ModalityConnection {
 /// The same connection with a request timeout, as a provider record sets one.
 fn connection_with_timeout(base_url: &str, model: &str, timeout_ms: u64) -> ModalityConnection {
     let mut connection = connection(base_url, model);
-    if let ModelConnection::Http(http) = &mut connection.resolved.connection {
+    if let ModelConnection::Http(http) = &mut connection.connection {
         http.network.timeout_ms = Some(timeout_ms);
     }
     connection
@@ -1392,7 +1387,7 @@ async fn a_credentialed_download_stops_at_a_cross_origin_redirect() {
     // a custom provider header is the one reqwest would let cross a redirect.
     let connect = || {
         let mut connection = connection(&format!("{a_base}/v1"), "grok-imagine-video");
-        if let ModelConnection::Http(http) = &mut connection.resolved.connection {
+        if let ModelConnection::Http(http) = &mut connection.connection {
             http.headers
                 .insert("x-goog-api-key".to_owned(), CREDENTIAL.to_owned());
         }

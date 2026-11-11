@@ -508,9 +508,7 @@
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/execution_settings.rs",
-      "unexpandedMacros": [
-        "json"
-      ]
+      "unexpandedMacros": []
     },
     {
       "id": "dim_agent_capabilities::execution_settings::prompt",
@@ -682,6 +680,7 @@
         "cfg",
         "format",
         "matches",
+        "tracing::warn",
         "vec"
       ]
     },
@@ -878,18 +877,6 @@
         "tokio::select",
         "unreachable",
         "vec"
-      ]
-    },
-    {
-      "id": "dim_agent_capabilities::port_faces",
-      "crate": "dim_agent_capabilities",
-      "parent": "dim_agent_capabilities",
-      "file": "crates/dim-agent-capabilities/src/port_faces.rs",
-      "unexpandedMacros": [
-        "format",
-        "json",
-        "tokio::pin",
-        "tokio::select"
       ]
     },
     {
@@ -1315,8 +1302,7 @@
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/toolchain.rs",
       "unexpandedMacros": [
-        "format",
-        "json"
+        "format"
       ]
     },
     {
@@ -7947,31 +7933,20 @@
         "path HostFuture",
         "path HttpModelConnection",
         "path ModalityConnection",
-        "path ModalityConnectionHost",
+        "path ModalityConnectionHost::new",
         "path ModalityTarget",
         "path ModelConnection::Http",
         "path ModelHost",
-        "path ModelSelectionHost",
+        "path ModelSelectionHost::new",
         "path ModelSettings",
         "path ModelSettings::new",
         "path PrepareModel",
         "path PrepareModelHost",
         "path ProviderConnectionResolver",
-        "path ResolveModalityConnection",
         "path ResolveModelConnection",
-        "path ResolveModelSelection",
         "path ResolvedModelConnection",
-        "path SelectableModels",
-        "path SelectableModelsHost",
+        "path SelectableModelsHost::new",
         "path undeclared_modality_operation"
-      ]
-    },
-    {
-      "from": "dim_agent_aimux::plugin",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "path dim_agent_capabilities::port_faces::provide_model_selection",
-        "path dim_agent_capabilities::port_faces::provide_selectable_models"
       ]
     },
     {
@@ -8735,13 +8710,6 @@
         "mod permission",
         "path permission::CommandRulesHost",
         "path permission::Permission"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "mod port_faces"
       ]
     },
     {
@@ -10708,27 +10676,6 @@
       ]
     },
     {
-      "from": "dim_agent_capabilities::execution_settings",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "path cancel_arg",
-        "path cancelled_by",
-        "path port_failure",
-        "path unknown_method",
-        "use crate::port_faces::cancel_arg",
-        "use crate::port_faces::cancelled_by",
-        "use crate::port_faces::port_failure",
-        "use crate::port_faces::unknown_method"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::execution_settings",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path dim_agent_runtime::names::name_of"
-      ]
-    },
-    {
       "from": "dim_agent_capabilities::execution_settings::prompt",
       "to": "dim_agent_capabilities::branch_input",
       "references": [
@@ -11999,10 +11946,8 @@
       "to": "dim_agent_capabilities::execution_settings",
       "references": [
         "path ExecutionSettingsHost",
-        "path ExecutionSettingsSource",
         "path crate::execution_settings::ExecutionSettings",
-        "use crate::execution_settings::ExecutionSettingsHost",
-        "use crate::execution_settings::ExecutionSettingsSource"
+        "use crate::execution_settings::ExecutionSettingsHost"
       ]
     },
     {
@@ -12089,10 +12034,8 @@
       "to": "dim_agent_capabilities::toolchain",
       "references": [
         "path InstalledToolchain",
-        "path ToolchainSource",
         "path ToolchainSourceHost",
         "use crate::toolchain::InstalledToolchain",
-        "use crate::toolchain::ToolchainSource",
         "use crate::toolchain::ToolchainSourceHost"
       ]
     },
@@ -13242,66 +13185,6 @@
       ]
     },
     {
-      "from": "dim_agent_capabilities::port_faces",
-      "to": "dim_agent_capabilities::host",
-      "references": [
-        "path HostError",
-        "path HostError::Cancelled",
-        "path HostError::Failed",
-        "path HostErrorKind::Http",
-        "path HostErrorKind::InvalidRequest",
-        "path HostErrorKind::Other",
-        "path HostErrorKind::OwnerClosed",
-        "path HostErrorKind::Transport",
-        "path HostErrorKind::Unsupported",
-        "path ModelSelectionHost",
-        "path ResolveModelSelection",
-        "path SelectableModels",
-        "path SelectableModelsHost",
-        "use crate::host::HostError",
-        "use crate::host::HostErrorKind",
-        "use crate::host::ModelSelectionHost",
-        "use crate::host::ResolveModelSelection",
-        "use crate::host::SelectableModels",
-        "use crate::host::SelectableModelsHost",
-        "use crate::host::optional_non_null"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::port_faces",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path name_of",
-        "use dim_agent_runtime::names::name_of"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::port_faces",
-      "to": "dim_agent_types::model",
-      "references": [
-        "path ModalityModelSnapshot",
-        "path ModelCapabilitySnapshot",
-        "use dim_agent_types::ModalityModelSnapshot",
-        "use dim_agent_types::ModelCapabilitySnapshot"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::port_faces",
-      "to": "dim_agent_types::profile",
-      "references": [
-        "path ModelId",
-        "use dim_agent_types::ModelId"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::port_faces",
-      "to": "dim_agent_types::prompt",
-      "references": [
-        "path ModelSelection",
-        "use dim_agent_types::ModelSelection"
-      ]
-    },
-    {
       "from": "dim_agent_capabilities::prompt",
       "to": "dim_agent_capabilities::branch_input",
       "references": [
@@ -13922,20 +13805,6 @@
     },
     {
       "from": "dim_agent_capabilities::prompt_suggestion",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "path cancel_arg",
-        "path cancelled_by",
-        "path port_failure",
-        "path unknown_method",
-        "use crate::port_faces::cancel_arg",
-        "use crate::port_faces::cancelled_by",
-        "use crate::port_faces::port_failure",
-        "use crate::port_faces::unknown_method"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::prompt_suggestion",
       "to": "dim_agent_capabilities::prompt_suggestion::testing",
       "references": [
         "mod testing",
@@ -14007,7 +13876,6 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
-        "path dim_agent_runtime::names::name_of",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -16519,25 +16387,6 @@
         "path ToolCall",
         "path ToolResult",
         "path ToolResult::text"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::toolchain",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "path no_args",
-        "path port_failure",
-        "path unknown_method",
-        "use crate::port_faces::no_args",
-        "use crate::port_faces::port_failure",
-        "use crate::port_faces::unknown_method"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::toolchain",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path dim_agent_runtime::names::name_of"
       ]
     },
     {
@@ -22151,6 +22000,14 @@
     },
     {
       "from": "dim_app_server::agents::configuration",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path ModelSelectionRequest::at",
+        "use dim_agent_capabilities::host::ModelSelectionRequest"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents::configuration",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path MethodCall",
@@ -22252,6 +22109,14 @@
       "to": "dim_app_server::protocol",
       "references": [
         "path crate::protocol::agent_unknown"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents::sessions",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path ModelSelectionRequest::at",
+        "use dim_agent_capabilities::host::ModelSelectionRequest"
       ]
     },
     {
@@ -23179,10 +23044,14 @@
         "path HostError::Cancelled",
         "path HostError::failed",
         "path HostFuture",
+        "path ModelPortError::Cancelled",
+        "path ModelSelectionRequest::at",
         "path SelectableModelsHost",
         "path ToolExecutionContext",
         "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::HostFuture",
+        "use dim_agent_capabilities::host::ModelPortError",
+        "use dim_agent_capabilities::host::ModelSelectionRequest",
         "use dim_agent_capabilities::host::SelectableModelsHost",
         "use dim_agent_capabilities::host::ToolExecutionContext"
       ]
@@ -23962,9 +23831,11 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_capabilities::host",
       "references": [
+        "path ModelSelectionRequest::at",
         "path dim_agent_capabilities::host::HostError",
         "path dim_agent_capabilities::host::HostError::Cancelled",
-        "path dim_agent_capabilities::host::HostError::failed"
+        "path dim_agent_capabilities::host::HostError::failed",
+        "use dim_agent_capabilities::host::ModelSelectionRequest"
       ]
     },
     {
@@ -24945,17 +24816,11 @@
       "from": "dim_app_server::execution_settings",
       "to": "dim_agent_capabilities::execution_settings",
       "references": [
-        "path ExecutionSettings",
-        "path ExecutionSettingsError",
         "path ExecutionSettingsError::Failed",
-        "path ExecutionSettingsHost",
-        "path ExecutionSettingsSource",
+        "path ExecutionSettingsHost::new",
         "path SOURCE",
-        "path dim_agent_capabilities::execution_settings::provide",
-        "use dim_agent_capabilities::execution_settings::ExecutionSettings",
         "use dim_agent_capabilities::execution_settings::ExecutionSettingsError",
         "use dim_agent_capabilities::execution_settings::ExecutionSettingsHost",
-        "use dim_agent_capabilities::execution_settings::ExecutionSettingsSource",
         "use dim_agent_capabilities::execution_settings::SOURCE"
       ]
     },
@@ -27782,17 +27647,11 @@
       "from": "dim_app_server::prompt_suggestion_settings",
       "to": "dim_agent_capabilities::prompt_suggestion",
       "references": [
-        "path PromptSuggestionSettings",
-        "path PromptSuggestionSettingsError",
         "path PromptSuggestionSettingsError::Failed",
-        "path PromptSuggestionSettingsHost",
-        "path PromptSuggestionSettingsSource",
+        "path PromptSuggestionSettingsHost::new",
         "path SOURCE",
-        "path dim_agent_capabilities::prompt_suggestion::provide_settings",
-        "use dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings",
         "use dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsError",
         "use dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost",
-        "use dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsSource",
         "use dim_agent_capabilities::prompt_suggestion::SOURCE"
       ]
     },
@@ -28003,34 +27862,23 @@
         "path HostFuture",
         "path HttpModelConnection",
         "path ModalityConnection",
-        "path ModalityConnectionHost",
+        "path ModalityConnectionHost::new",
         "path ModalityTarget",
         "path ModelConnection::Bedrock",
         "path ModelConnection::Http",
         "path ModelHost",
         "path ModelNetwork",
         "path ModelNetwork::default",
-        "path ModelSelectionHost",
+        "path ModelSelectionHost::new",
         "path ProviderConnectionResolver",
         "path RealtimeDeclaration",
         "path RecoverModelConnection",
         "path RecoveredModelConnection",
-        "path ResolveModalityConnection",
         "path ResolveModelConnection",
-        "path ResolveModelSelection",
         "path ResolvedModelConnection",
-        "path SelectableModels",
-        "path SelectableModelsHost",
+        "path SelectableModelsHost::new",
         "path dim_agent_capabilities::host::adopted_preferences",
         "path undeclared_modality_operation"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider",
-      "to": "dim_agent_capabilities::port_faces",
-      "references": [
-        "path dim_agent_capabilities::port_faces::provide_model_selection",
-        "path dim_agent_capabilities::port_faces::provide_selectable_models"
       ]
     },
     {
@@ -29201,11 +29049,8 @@
       "to": "dim_agent_capabilities::toolchain",
       "references": [
         "path InstalledToolchain",
-        "path ToolchainSource",
-        "path ToolchainSourceHost",
-        "path dim_agent_capabilities::toolchain::provide",
+        "path ToolchainSourceHost::new",
         "use dim_agent_capabilities::toolchain::InstalledToolchain",
-        "use dim_agent_capabilities::toolchain::ToolchainSource",
         "use dim_agent_capabilities::toolchain::ToolchainSourceHost"
       ]
     },
@@ -48300,11 +48145,17 @@
         "path HostError::Cancelled",
         "path HostError::Failed",
         "path HostErrorKind::OwnerClosed",
+        "path ModelPortError",
+        "path ModelPortError::Cancelled",
+        "path ModelPortError::OwnerClosed",
         "path ModelSelectionHost",
+        "path ModelSelectionRequest::at",
         "path SelectableModelsHost",
         "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::HostErrorKind",
+        "use dim_agent_capabilities::host::ModelPortError",
         "use dim_agent_capabilities::host::ModelSelectionHost",
+        "use dim_agent_capabilities::host::ModelSelectionRequest",
         "use dim_agent_capabilities::host::SelectableModelsHost"
       ]
     },
@@ -48854,7 +48705,7 @@
         "path catalog_category",
         "path crate::OcrLookup::Skip",
         "path crate::OperationRow",
-        "path crate::host_error",
+        "path crate::port_error",
         "path evaluate",
         "path unknown_operation",
         "use crate::ModalityAdapterService",

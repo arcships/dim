@@ -36,6 +36,9 @@ fn declarations(root: &Path) -> Result<String> {
             "import('./plugin.js').SessionConfig",
         )
         .declared("std::num::NonZeroU64", "number | bigint")
+        // `ModelConfig` serializes through a function the generator cannot
+        // read, so an adopted configuration crosses as opaque data.
+        .declared("dim_agent_types::ModelConfig", "Record<string, unknown>")
         .declared(
             "dim_agent_types::TimelinePosition",
             "{ branch_id: string; sequence: number | bigint }",

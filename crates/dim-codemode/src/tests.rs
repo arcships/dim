@@ -41,7 +41,7 @@ impl NestedGate for MockGate {
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult, HostError>> + Send + '_>> {
         Box::pin(async move {
             let result = match call.name.as_str() {
-                "echo" => Ok(ToolResult::text(
+                "echo" => Ok::<ToolResult, HostError>(ToolResult::text(
                     serde_json::to_string(&call.input).expect("input serializes"),
                 )),
                 "fail" => Ok(ToolResult::error("boom")),

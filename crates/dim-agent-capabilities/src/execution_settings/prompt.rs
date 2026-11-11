@@ -108,12 +108,12 @@ struct SettingsHandler {
     host: Arc<ExecutionSettingsHost>,
 }
 impl SettingsHandler {
-    async fn answer(&self, call: &ToolCall, cancel: CancellationToken) -> ToolResult {
+    async fn answer(&self, call: &ToolCall) -> ToolResult {
         let arguments: Arguments = match serde_json::from_value(Value::Object(call.input.clone())) {
             Ok(arguments) => arguments,
             Err(error) => return ToolResult::error(format!("invalid settings arguments: {error}")),
         };
-        let settings = match self.host.0.read(cancel).await {
+        let settings = match self.host.read().await {
             Ok(settings) => settings,
             Err(error) => return ToolResult::error(format!("execution settings: {error}")),
         };
@@ -141,9 +141,9 @@ impl ToolHandler for SettingsHandler {
         &self,
         call: ToolCall,
         _: ToolExecutionContext,
-        cancel: CancellationToken,
+        _: CancellationToken,
     ) -> crate::host::HostFuture<'_, ToolResult> {
-        Box::pin(async move { Ok(self.answer(&call, cancel).await) })
+        Box::pin(async move { Ok(self.answer(&call).await) })
     }
 }
 
@@ -258,7 +258,7 @@ impl DynPlugin for SettingsSnapshotBranch {
                     if pending {
                         let read = tokio::select! {
                             _ = phase.closing() => return,
-                            result = host.0.read(lifecycle.child_token()) => result,
+                            result = host.read() => result,
                         };
                         match read {
                             Ok(settings) => {
@@ -332,9 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_names_both_switches() {
-        let result = handler()
-            .answer(&call(json!({"op": "list"})), CancellationToken::new())
-            .await;
+        let result = handler().answer(&call(json!({"op": "list"}))).await;
         let ToolContent::Text(text) = result.content else {
             panic!("text result");
         };
@@ -346,10 +344,7 @@ mod tests {
     #[tokio::test]
     async fn get_returns_one_setting_and_rejects_unknown_names() {
         let result = handler()
-            .answer(
-                &call(json!({"op": "get", "name": "execution.sandbox"})),
-                CancellationToken::new(),
-            )
+            .answer(&call(json!({"op": "get", "name": "execution.sandbox"})))
             .await;
         let ToolContent::Text(text) = result.content else {
             panic!("text result");
@@ -357,10 +352,7 @@ mod tests {
         assert!(text.contains("\"value\":true"));
 
         let result = handler()
-            .answer(
-                &call(json!({"op": "get", "name": "execution.nope"})),
-                CancellationToken::new(),
-            )
+            .answer(&call(json!({"op": "get", "name": "execution.nope"})))
             .await;
         assert_eq!(result.is_error, Some(true));
     }

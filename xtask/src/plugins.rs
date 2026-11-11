@@ -85,9 +85,9 @@ impl DynPlugin for GraphPlatform {
                 reason: "Graph generation does not execute commands".into(),
             })
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?
-            .with_execution_settings(ExecutionSettingsHost(execution.0.clone()));
+            .with_execution_settings((*execution).clone());
             let toolchain = ctx.require_at(&self.toolchain)?;
-            platform = platform.with_toolchain_source(ToolchainSourceHost(toolchain.0.clone()));
+            platform = platform.with_toolchain_source((*toolchain).clone());
             platform.home = self.home.clone();
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)

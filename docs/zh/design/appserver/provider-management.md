@@ -414,10 +414,11 @@ leader 的模型，同样不自留规则（[Collaboration](../plugins/Collaborat
 Dispatcher、before 回调、Session 与分支部件；driver、路由和非 chat 规则。读取不增加状态、
 缓存、通知、crate 或模块。
 
-**Rust 绑定。** 端口定义在 `crates/dim-agent-capabilities/src/host.rs`，`ModelSelectionHost`
-旁。Provider 在 `ProviderPlugin::apply` 中提供该端口；catalog 以 shared 名字
-`selectableModelsHost` 注册它，每个提供方同时给出 Session 部件读的 Rust 值和旁边的跨语言面，
-方法就是 §3.6 列出的那些（[服务面 §4.8](../../service-faces.md#48-宿主端口executionsettingshost-等五个)）：
+**Rust 绑定。** 端口是 `crates/dim-agent-capabilities/src/host.rs` 中的
+`SelectableModelsHost`，位于 `ModelSelectionHost` 旁。它的两个公开方法就是 §3.6 列出的操作，
+`#[rutis::service]` 按名服务它们，Rust 读取方调用同样的方法。Provider 在
+`ProviderPlugin::apply` 中提供该端口；catalog 以 shared 名注册它，`xtask types` 生成它的
+TypeScript 声明（[服务面 §4.8](../../service-faces.md#48-宿主端口executionsettingshost-等六个)）：
 
 ```rust
 pub trait SelectableModels: Send + Sync + 'static {
@@ -450,11 +451,12 @@ owner 实现是 `ProviderService::selectable_models` 与
 `{target: {providerId, modelId}, operation: string}`，回复 `{connection, protocol,
 model, realtime}`。
 
-`connection` 是同一模型的对话调用会取得的既有 `ResolvedModelConnection`——连接事实、失败
-策略，以及托管账号上的凭据恢复——因此适配器执行与执行时相同的一次恢复规则。`protocol` 是
-目录为该模型携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的
-读取、目录构建、选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的
-临时启动连接与已采用能力快照不适用；调用者传入目录标识与操作。
+`connection` 是同一模型的对话调用会取得的连接事实——路由的协议、base URL、网络事实、头，
+以及该次调用使用的凭据或租约——作为这次调用的能力交给适配器。失败策略与托管账号的凭据恢复
+留在对话路径：没有适配器使用它们，所以该面携带事实，不携带回调。`protocol` 是目录为该模型
+携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的读取、目录构建、
+选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的临时启动连接与
+已采用能力快照不适用；调用者传入目录标识与操作。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
 凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
@@ -476,18 +478,19 @@ base URL 之后。
 **凭据规则与生命周期。** 连接只活在那一次调用中。Provider 从不持久化它，从不把它返回给
 客户端，也从不写进任务记录、结果、诊断或错误。它的 `Debug` 打印模型、路由、base URL、头名
 以及是否存在凭据，从不打印头的值、bearer 或 key；`ModelConnection` 当前未实现 `Debug`，
-因此没有其他连接会格式化凭据。托管账号的连接携带与对话调用相同的
-`RecoverModelConnection`。`recovery::invoke` 是基于 `ModelHost`、`ModelRequest` 与
-`ModelStream` 的对话执行路径，适配器不能原样复用；它自行执行该规则：把 provider 的拒绝
-映射为恢复逻辑可解释的 `HostError`，以当前阶段询问 `rejection`，可恢复时 `recover` 一次并
-重试，终止时 `finish_rejected`。
+因此没有其他连接会格式化凭据。托管账号的连接携带那次调用使用的租约。对话路径的失败策略与
+凭据恢复不属于它：它们是对话执行的内部机制（`recovery::invoke` 基于 `ModelHost`、
+`ModelRequest` 与 `ModelStream`），适配器不能复用，也没有适配器使用过。遇到凭据被拒的适配器
+报 Provider 自己的错误；下一次调用会重新解析并取得当时的凭据。
 
-**Rust binding。** 端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与
-`ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作。Provider 在
+**Rust binding。** 端口是 `dim-agent-capabilities` 中的 `modalityConnectionHost` 面：
+`ModalityConnectionHost` 持有 owner 的解析，`#[rutis::service]` 由它服务
+`resolveModalityConnection`，Rust 适配器调用同一个方法。`ModalityTarget` 携带模型标识与
+操作；回复是 `ModalityConnection`——连接事实、`ModelProtocol`、模型 id 与条目声明的
+`RealtimeDeclaration`。不新增凭据类型：连接自身的事实携带这次调用的租约。Provider 在
 `ProviderPlugin::apply` 提供它，配置式模型配置从模型文件提供它，其条目未声明任何操作，
-因此对每个 target 都以声明拒绝作答。App Server catalog 以 Rust-only 名
-`modalityConnectionHost` 注册它。回复复用 `ResolvedModelConnection` 与 `ModelProtocol`，并新增
-`RealtimeDeclaration`（条目声明的传输）；不新增凭据类型。
+因此对每个 target 都以声明拒绝作答。catalog 以 shared 名注册它，`xtask types` 生成它的
+TypeScript 声明（[服务面 §4.8](../../service-faces.md#48-宿主端口executionsettingshost-等六个)）。
 
 ### 3.7 已存选择的离线校验
 

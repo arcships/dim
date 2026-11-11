@@ -338,7 +338,6 @@ struct Boundary {
 
 /// Drives every selected scenario that has no saved session yet.
 async fn live(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
-    let cancel = CancellationToken::new();
     for scenario in scenarios {
         let directory = options.sessions(scenario);
         if directory.join("session.jsonl").exists() && directory.join("boundaries.json").exists() {
@@ -366,7 +365,7 @@ async fn live(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
             |_| {},
         )
         .await?;
-        let driven = serve_one(options, &server, &settings, scenario, &work, &cancel).await;
+        let driven = serve_one(options, &server, &settings, scenario, &work).await;
         server.shutdown();
         server.join().await?;
         if let Some(error) = &driven.error {
@@ -419,9 +418,8 @@ async fn serve_one(
     settings: &RunSettings,
     scenario: &Scenario,
     workspace: &Path,
-    cancel: &CancellationToken,
 ) -> Driven {
-    let model = match selection(server, &options.model, workspace, cancel).await {
+    let model = match selection(server, &options.model, workspace).await {
         Ok(model) => model,
         Err(error) => {
             return Driven::failed(format!("the model selection failed: {error}"));
@@ -950,7 +948,7 @@ async fn replay(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
             ) else {
                 return Err("the served profile resolves no model host".to_string());
             };
-            let judge = selection(&server, &options.judge, &options.out, &cancel)
+            let judge = selection(&server, &options.judge, &options.out)
                 .await
                 .map_err(|error| error.to_string())?;
             let mut model = Model::Live {

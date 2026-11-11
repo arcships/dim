@@ -5,7 +5,7 @@
 use dim_agent_capabilities::{
     defaults,
     environment_clients::{SessionClientsHost, SessionClientsSource},
-    execution_settings::{ExecutionSettings, ExecutionSettingsHost, ExecutionSettingsSource},
+    execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     history::HistoryRenderer,
     host::*,
     host_platform::{
@@ -388,9 +388,10 @@ pub struct Options {
     pub require_without_install: bool,
     /// A client-presence source, provided at the root when present.
     pub clients: Option<Arc<dyn SessionClientsSource>>,
-    /// The execution switches, provided to HostPlatform and the root when
-    /// present; the settings tool and snapshot parts are registered with it.
-    pub execution: Option<Arc<dyn ExecutionSettingsSource>>,
+    /// The `executionSettingsHost` face, provided to HostPlatform and the root
+    /// when present; the settings tool and snapshot parts are registered with
+    /// it.
+    pub execution: Option<Arc<ExecutionSettingsHost>>,
     /// The host's user override of `dim/base`, provided at the root when
     /// present.
     pub base_prompt: Option<Arc<dyn dim_agent_capabilities::prompt_sources::BasePromptSettings>>,
@@ -462,7 +463,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let mut host = platform(&dirs.home);
     host.timezone = Some(options.timezone.into());
     if let Some(execution) = options.execution.clone() {
-        host = host.with_execution_settings(ExecutionSettingsHost(execution));
+        host = host.with_execution_settings((*execution).clone());
     }
     let settings = options.settings.clone();
     let model = Arc::new(ScriptedModel::default());
@@ -567,7 +568,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
             root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost(clients)))?;
         }
         if let Some(execution) = execution {
-            root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost(execution)))?;
+            root.provide_as::<ExecutionSettingsHost>(execution)?;
         }
         Ok(())
     })

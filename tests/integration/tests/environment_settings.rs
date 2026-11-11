@@ -1,15 +1,13 @@
 mod local_support;
 
 use dim_agent_capabilities::{
-    execution_settings::{ExecutionSettings, ExecutionSettingsError, ExecutionSettingsSource},
+    execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     settings::{SettingsChanged, SettingsScope, settings_changes},
 };
 use dim_agent_runtime::Session;
 use local_support::*;
-use rutis::host::BoxFuture;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 fn changed(env: &Env, revision: &str) {
     env.root
@@ -24,13 +22,15 @@ fn changed(env: &Env, revision: &str) {
 
 /// A mutable execution-settings source: the test changes it as another client
 /// would.
-struct Execution(Mutex<ExecutionSettings>);
-impl ExecutionSettingsSource for Execution {
-    fn read(
-        &self,
-        _: CancellationToken,
-    ) -> BoxFuture<'_, Result<ExecutionSettings, ExecutionSettingsError>> {
-        Box::pin(async move { Ok(*self.0.lock().unwrap()) })
+struct Execution(Arc<Mutex<ExecutionSettings>>);
+impl Execution {
+    /// The switches as the face's `read` answers them.
+    fn host(&self) -> ExecutionSettingsHost {
+        let settings = self.0.clone();
+        ExecutionSettingsHost::new(Arc::new(move || {
+            let settings = *settings.lock().unwrap();
+            Box::pin(async move { Ok(settings) })
+        }))
     }
 }
 impl Execution {
@@ -64,11 +64,13 @@ async fn until_block(session: &Session, needle: &str) {
 async fn execution_state_is_adopted_and_unchanged_values_do_not_duplicate() {
     let dirs = Dirs::new();
     let cwd = dirs.dir("work");
-    let execution = Arc::new(Execution(Mutex::new(ExecutionSettings::default())));
+    let execution = Arc::new(Execution(Arc::new(
+        Mutex::new(ExecutionSettings::default()),
+    )));
     let env = env(
         &dirs,
         Options {
-            execution: Some(execution.clone()),
+            execution: Some(Arc::new(execution.host())),
             ..Options::default()
         },
     )
