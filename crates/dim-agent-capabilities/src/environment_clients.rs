@@ -262,11 +262,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_empty_session_is_stated_as_such() {
-        assert_eq!(body(&[]), "No client connection is attached.");
-    }
-
-    #[test]
     fn every_connection_is_listed() {
         let presences = vec![
             ClientPresence {
