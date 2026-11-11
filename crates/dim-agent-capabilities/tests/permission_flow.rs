@@ -338,7 +338,7 @@ async fn granted_agent_with(
     grants: Arc<dyn ReadSessionGrants>,
     files: Arc<TestFiles>,
     platform: HostPlatform,
-    associations: Option<Arc<dyn file_access::AssociateWorktree>>,
+    associations: Option<file_access::WorktreeAssociations>,
 ) -> MinimalHost {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
@@ -350,7 +350,7 @@ async fn granted_agent_with(
         .process_value(Arc::new(SessionFilesHost(files)))
         .process_value(Arc::new(platform));
     if let Some(associations) = associations {
-        builder.process_value(Arc::new(file_access::WorktreeAssociations(associations)));
+        builder.process_value(Arc::new(associations));
     }
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
     file_access::install(&mut builder);

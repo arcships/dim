@@ -76,7 +76,10 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<prompt::InitialPromptConfiguration>(catalog, session);
     register::<prompt_guide::GuideEntries>(catalog, session);
     register::<prompt_registry::PromptRegistry>(catalog, session);
-    register::<prompt_sources::SessionLanguage>(catalog, session);
+    catalog.register_shared_instance(
+        dim_agent_runtime::names::name_of::<prompt_sources::SessionLanguage>(),
+        SESSION_GROUP,
+    );
     register::<skills::SessionSkills>(catalog, session);
     register::<host::PrepareModelHost>(catalog, session);
     register::<host::PrepareContextHost>(catalog, session);
@@ -90,7 +93,9 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<input_queue::SubmitChecks>(catalog, session);
     register::<session_grants::SessionGrantsHost>(catalog, session);
     register::<file_access::FileAccessFacts>(catalog, session);
-    register::<file_access::WorktreeAssociations>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<
+        file_access::WorktreeAssociations,
+    >());
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);

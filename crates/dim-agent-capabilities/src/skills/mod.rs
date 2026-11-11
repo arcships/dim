@@ -35,6 +35,24 @@ pub struct SkillsConfig {
     pub instructions: Option<Arc<str>>,
 }
 
+/// The `get` reply: the factory instructions text, when the assembly set one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillsConfigReply {
+    pub instructions: Option<String>,
+}
+
+#[rutis::service]
+impl SkillsConfig {
+    /// The instructions text the assembly configured, as data; `null` means
+    /// the built-in [`INSTRUCTIONS`].
+    pub fn get(&self) -> SkillsConfigReply {
+        SkillsConfigReply {
+            instructions: self.instructions.as_deref().map(str::to_owned),
+        }
+    }
+}
+
 /// The host's user override of [`INSTRUCTIONS`]. `None` keeps the factory
 /// configuration or the built-in text.
 pub trait SkillsInstructionsSettings: Send + Sync + 'static {
@@ -55,9 +73,9 @@ pub fn install(builder: &mut AgentBuilder) {
 /// text.
 pub fn install_with_config(builder: &mut AgentBuilder, config: SkillsConfig) {
     crate::register_names(builder);
-    dim_agent_runtime::names::register::<SkillsConfig>(
-        builder.catalog_mut(),
-        Some(dim_agent_runtime::SESSION_GROUP),
+    builder.catalog_mut().register_shared_instance(
+        dim_agent_runtime::names::name_of::<SkillsConfig>(),
+        dim_agent_runtime::SESSION_GROUP,
     );
     builder.session_value(Arc::new(config));
     builder.session_extension_part::<content::ContentConfig>(

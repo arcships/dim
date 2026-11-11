@@ -2112,6 +2112,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#agentConfig@session",
+        "provider": 21,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#guideEntries@session",
         "provider": 28,
         "generation": 1,

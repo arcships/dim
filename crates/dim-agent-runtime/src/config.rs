@@ -26,6 +26,26 @@ impl Default for AgentConfig {
         }
     }
 }
+/// The `get` reply: the Agent's identity and default model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentConfigReply {
+    pub name: String,
+    pub system_prompt: String,
+    pub model: ModelId,
+}
+#[service]
+impl AgentConfig {
+    /// The Agent's identity and default model as data, for parts in other
+    /// languages.
+    pub fn get(&self) -> AgentConfigReply {
+        AgentConfigReply {
+            name: self.name.clone(),
+            system_prompt: self.system_prompt.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {

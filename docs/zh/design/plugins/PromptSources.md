@@ -62,7 +62,7 @@ shell 指引也是策略。它是环境来源为操作者的 shell 携带的那�
 
 **没有选择就没有块。** 操作者没有选过语言时——跟随系统默认——来源不产生条目，base 那句话的规则成立。
 
-**载体。** 客户端把操作者的选择带进 Session：`session.create {language?}` 播种它，`session.language.update` 修改它，值就是 `SessionConfig.language`，Session 配置记录中的一个可选成员。daemon 从不读取客户端的界面语言文件。PromptSources 的 Session 部件提供该 Session 的活值（`SessionLanguage` 单元），每次加载时读取它；分支部件把该单元再暴露到每个分支，供修改它的 Session 方法使用，正如 Skill 列表的做法。没有做出选择的 Session（包括旧客户端写下的记录）没有值，也不产生条目。更新先在 `main` 上采纳，并在回复之前让每个已加载的分支也采纳，因此这些分支的下一次请求就带着新值、无需唤醒；之后才加载的分支在加载时读到当前值，各分支的定时检查仍是兜底。
+**载体。** 客户端把操作者的选择带进 Session：`session.create {language?}` 播种它，`session.language.update` 修改它，值就是 `SessionConfig.language`，Session 配置记录中的一个可选成员。daemon 从不读取客户端的界面语言文件。PromptSources 的 Session 部件提供该 Session 的活值（`SessionLanguage` 单元），每次加载时读取它；该单元的 `get` 就是 `sessionLanguage` 数据面，其他语言按名字读取，分支部件把同一单元再暴露到每个分支，供修改它的 Session 方法使用，正如 Skill 列表的做法。数据面没有写操作：更新还要写 Session 记录并让 Prompt 采用来源。没有做出选择的 Session（包括旧客户端写下的记录）没有值，也不产生条目。更新先在 `main` 上采纳，并在回复之前让每个已加载的分支也采纳，因此这些分支的下一次请求就带着新值、无需唤醒；之后才加载的分支在加载时读到当前值，各分支的定时检查仍是兜底。
 
 ## 4. 依赖
 

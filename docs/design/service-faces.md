@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 118 个名字：30 data、86 internal、2 shared-no-dispatcher（#1292 已转 `agentConfig`、`collaborationConfig`、`sessionLanguage`、`skillsConfig`、`worktreeAssociations`；`collaborationSession` 归入 `hot-path`，见 §4.8）。§3 表覆盖这 86 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -169,6 +169,7 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `prepareContextHost` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `faultReporter` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
+| `collaborationSession` | session | CollaborationSession | hot-path | 留宿主；它按 dispatch 顺序结算成员请求（`operate`/`consume`/`deliver`/`settle`），没有可单列的读操作；数据面会重写这套顺序，见 §4.8 |
 
 ### 3.6 入口、secret 与宿主资源
 原因 `control`（入口/控制面）、`secret`（凭据/token）或 `host-resource`（FS 索引、活进程）。`managedProviders` 的搜索走新的 `managedSearch`；账号与 token 仍留在这个 internal 名字上。
@@ -203,23 +204,17 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
 | `eventSubscriptions` | process | eventhub | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `sessionLanguage` | session | PromptSources | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `selectableModelsHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `modelSelectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `modalityConnectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `worktreeAssociations` | process | SessionStore | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `listenAddresses` | process | Transport | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `credentialVariablesHost` | process | root | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `reservedMethods` | process | — | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `agentConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `skillsConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `sessionClientsHost` | process | Connection | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 
 ## 4. 第一批改造（#1292）
 
@@ -299,7 +294,7 @@ managedSearch.search {query, count}
 - 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
 - `managedProviders` 保持 internal(secret)：账号、登录、token、租约仍在类型化面。
 - Web 的搜索改调 `managedSearch`；Web 的 settings 仍走 `settings`。
-- 新名字使 catalog 多一行；它不在当前 91 个 internal 名字里。
+- 新名字使 catalog 多一行；它不在当前 86 个 internal 名字里。
 
 ### 4.7 `wakeups`
 
@@ -316,6 +311,31 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 改动：给 `Wakeups` 加数据面（或手写 dispatcher），在 `host_key("wakeups")` 提供；`SchedulerSession` 改注入 `dyn HostDispatch`。`WakeupRequest` 补 serde（camelCase）；`Wakeup` 是持久化记录，已经 snake_case，**不要**给它加 `rename_all`，data face 的 record 用单独的 wire 类型或显式映射。测试：wakeup 的 create/list/cancel flow，加 loopback。
 
+### 4.8 旧主机端口：`agentConfig` 等六个
+
+这六个端口里五个的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。第六个 `collaborationSession` 不是数据内容，留 `hot-path`（§3.5），本节只列五个。
+
+```text
+agentConfig.get {} -> {name, systemPrompt, model: {providerId, modelId}}
+  -- Agent 的身份与默认模型；SessionScope 提供
+sessionLanguage.get {} -> {language?}
+  -- 只读：更新还要写 Session 记录并让 Prompt 采用来源，仍走 session.language.update
+skillsConfig.get {} -> {instructions?}
+  -- Skills 的 factory 文本；null 表示内置
+collaborationConfig.get {} -> {leaderDescription?, memberDescription?}
+  -- Collaboration 的 factory 文本；null 表示内置
+worktreeAssociations.associate {sessionId, repository, root, subtree} -> {}
+  -> error {code: failed, message}
+  -- 路径按 §1 是 UTF-8 字符串；一次写入仍由 SessionStore 的原子事务保证
+```
+
+- `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。
+- `skillsConfig`、`collaborationConfig` 的注册从 typed 改成 shared instance；值仍由 `install_with_config` 的 `session_value` 提供。
+- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
+- `worktreeAssociations` 去掉 `AssociateWorktree` trait：端口持有所有者的写闭包，Rust 调用方和 wire 调用同一个 `associate`。SessionStore 绑定 `associate_worktree`；字符串转回 `PathBuf`，绝对性和子树包含仍由所有者校验。
+- `collaborationSession` 是成员请求的 dispatch 顺序状态机（`operate`/`consume`/`deliver`/`settle`），没有可单列的数据读；把它做成面会重写顺序和失败语义，所以从 §3.7 移到 §3.5 的 `hot-path`，等有 leaf 消费者时再定义操作面。
+- 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
+
 ## 5. 验证
 
 - `xtask check`：双向测试（dispatcher 未 shared 失败；shared 无 dispatcher 失败，两个外部名字除外；shared+reason 失败；reason 不在闭集失败）。
@@ -330,7 +350,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 91 个 internal 名字里 18 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
+5. **legacy 标记**：当前 86 个 internal 名字里 12 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序
