@@ -13,83 +13,69 @@
 5. **错误是数据**。`{code, message}`；转发方原样抛。
 6. **取消是调用**。显式 cancel，或调用方丢弃。
 
-`internal` **不是“写个原因”**，而是：这个服务面不能被另一个语言或进程实现、提供或注入。它不能借给 leaf，不能由 leaf 提供，不能跨作用域注入。原因解释为什么这个面不能数据化（状态机、锁内回调、OS 对象、secret、热路径）。功能可以在 leaf 里重新实现，但那是新的数据服务；同一进程内换一个同类型契约的 Rust 实现不算跨语言替换。作用域与它无关：instance-scoped 的 `timeline`/`dispatcher` 是数据，process-scoped 的 `hostPlatform` 是 `internal`。
+目标目录里没有 `internal`：每个公开服务都是 data face。迁移期间，尚未暴露的名字可以带一个 `internal(reason)` 作为 TODO；原因只描述还需要做什么（状态机、锁内回调、OS 对象、secret、热路径），不是永久分类，也不是“这个面永远不能跨”。功能可以整体作为 leaf 运行，但对外仍然是数据服务。
 
-## 2. 策略怎么落地（#1289）
+## 2. 策略（#1289）
 
-### 2.1 标记
+### 2.1 目标
 
-**数据面 = 名字在 catalog 里 shared，并且在 `host_key(name)` 上有一个 `HostDispatch`。** 两个条件缺一不可。`#[rutis::service]`、`register_shared`、`register_shared_instance` 都是标记写法，但 shared 本身不是数据面：`loaderService`、`pluginMounter` 今天是 shared 却没有 dispatcher，leaf 不能调用它们。
+**Every public service is a data face.** A data face is a name shared in the catalog **and** a
+`HostDispatch` at `host_key(name)`. The target catalog has no `internal` service class.
 
-`internal` 需要一条原因，放在 `AgentBuilder` 的旁表里，不改 rutis 的 `ServiceCatalog`：
+A Rust typed client is a binding over the same face, not a second public API. The owner trait is the
+implementation behind the face; it is not a parallel contract.
 
-```rust
-pub struct Faces {
-    reasons: HashMap<String, &'static str>,
-}
+### 2.2 Migration marker
 
-impl AgentBuilder {
-    /// Marks the name of T as internal, with the reason a face cannot cross.
-    pub fn internal<T: ?Sized + 'static>(&mut self, reason: &'static str);
-    /// The same for a name that has no Rust type (a hand-written dispatcher).
-    pub fn internal_name(&mut self, name: &str, reason: &'static str);
-    pub fn faces(&self) -> &Faces;
-}
-```
+During the migration only, a name that is not yet exposed may carry `internal(reason)` as a TODO.
+It is not a target and not a contract category:
 
-各 crate 的 `register_names(builder: &mut AgentBuilder)` 在注册完名字后，对自己不共享的名字调用 `builder.internal::<T>(reason)`。`xtask` 和 App Server 用的是同一个 builder，所以 reason 只有一份。
+- `object`, `hot-path`, `lock-callback`, `secret`, `control`, `host-resource`, `legacy-no-consumer`
+  and `owner-api` describe the work needed to expose the name, not permission to keep it internal.
+- A new service must not be marked internal. It is written as a data face from the start.
+- `legacy-no-consumer` means the migration has not happened; no consumer is required to expose a
+  face.
+- A secret **value** stays in the owner; the service still has a data face of operations. The value
+  is a capability, not a serialization exception.
 
-### 2.2 catalog 与检查
+### 2.3 Checks
 
-- `xtask graph` 把 `Crosses languages` 列换成 `face`：
-  - shared 且有 dispatcher：`data`；
-  - 非 shared 且有 reason：`internal(<reason>)`；
-  - shared 但没有 dispatcher：`shared-no-dispatcher`；除 `loaderService`、`pluginMounter` 两个 rutis-loader 外部名字外，生成失败；
-  - 非 shared 且没有 reason：生成失败，报名字。
-- `xtask check` 双向检查：
-  - 一个在 `host_key(name)` 上有 dispatcher、但没有 shared 的名字失败（`managementMethods` 是这一类）；
-  - 一个 shared、但没有 dispatcher 的名字失败；`loaderService`、`pluginMounter` 是仅有的两个例外，catalog 显示 `shared-no-dispatcher`；
-  - 一个名字同时 shared 和有 reason 是矛盾，失败。
-- `managementMethods` 不是只加一行：`session_typescript.rs:80` 已经 `register_shared`，但 `xtask/src/catalog.rs:81` 在 `serve` 注册 typed 名字之前调用 `share_names`，后者会被覆盖。改动是让 shared 注册发生在 typed 注册之后，或让 `register_names` 保留已有的 shared；这是 #1289 的代码项。
-- `localId` 由 root 的 `get` dispatcher 变成 `data`。`loaderService`、`pluginMounter` 保持 `shared-no-dispatcher`：它们是 rutis-loader 的外部名字，leaf 不能调用，去掉或补 dispatcher 需要上游改动。检查只对这两个名字放行。
-- `xtask/src/catalog.rs` 的 `crosses` 字段改名 `face`，枚举 `Data | Internal(&'static str) | SharedNoDispatcher`。
+`xtask graph` and `check` enforce:
 
-### 2.3 leaf 的运行时拒绝
+- shared + dispatcher → `data`;
+- shared without dispatcher → failure, including `loaderService` and `pluginMounter`; the target has
+  no `shared-no-dispatcher` exception;
+- not shared + migration reason → `internal(reason)`, which must disappear as the batches land;
+- not shared without a reason → failure;
+- shared and internal at once → failure.
 
-- `PartRegistry` 挂载 leaf 部件前，`Names` 解析每个 `inject` 名字：`face != data` → 失败，`ErrorKind::PluginFailed`，消息以 `internal_service:` 开头并写明名字和原因。
-- 一个 leaf 行声明 `provides` 的名字时，同样要求 data；否则它的服务在宿主侧不可解析，直接拒绝，不等到第一次调用。
-- `Names` 需要读到 `Faces`：新增 `Names::copy_with_faces(catalog, build, faces)`；`Names::copy` 保持原签名并传空表。不要给 `copy` 加可选参数（Rust 没有），也不要改所有调用点。
+The target state is zero `internal(...)` rows and zero `shared-no-dispatcher` rows.
 
-### 2.4 作者侧与原因词汇
+### 2.4 Leaf readiness
 
-- 新服务默认写数据面；有 leaf/跨语言消费者时不需要另写适配层。
-- 只有确实无法数据化的面才标 `internal`，原因必须是闭集里的一个：
-  - `object`：句柄/OS 对象，需要拆操作；
-  - `hot-path`：每回合/每条输入的状态机或严格本地顺序；
-  - `lock-callback`：commit 锁内同步回调；
-  - `secret`：凭据/token，只暴露操作；
-  - `owner-api`：类型化所有者 API，已有数据兄弟，或只给本地用；
-  - `control`：宿主入口/控制面；
-  - `host-resource`：FS 索引、活进程等宿主资源；
-  - `legacy-no-consumer`：内容是数据，但还没有 leaf 消费者。
-- 模板和 PR 清单固定一问：“公开服务的方法只有数据；句柄留在哪一层内部？”
+A leaf part's every `inject` and every `provides` name must be `data`. During migration an
+`internal(reason)` inject fails at composition with `internal_service:` and the reason; after the
+migration there is no internal face to reject.
 
-### 2.5 存量迁移
+### 2.5 One contract, typed binding
 
-存量不是例外：公开服务从第一天起就按 data face 写，存量名字是迁移债，不是稳定分类。§3 的分组是迁移类别：可转的按批次转成 data face；确实不能跨的（`object`、`hot-path`、`lock-callback`、`secret`、`control`、`host-resource`）才保留 `internal(reason)`。`legacy-no-consumer` 只表示“还没转”，不是“可以一直 internal”；每个这样的名字要有迁移批次。`xtask check` 拦住新写的未标记服务，评审按 §3 盘点拦住把可转名字继续留成 internal。
+- The face is the only public contract.
+- A typed client is a binding: it calls the face's operations, directly in-process instead of
+  through JSON, and owns no second business logic.
+- Do not leave an owner trait and a face as two public APIs. Tests prove the typed binding and the
+  wire return the same result.
+- `SessionFilesHost` + `sessionFiles` is a temporary migration state, not the target.
 
-### 2.6 一个契约，typed 只是 binding
+### 2.6 Migration rule
 
-公开服务只有一个契约：data face。Rust 的 typed 客户端是同一个 face 的 binding，不是第二个 API。
-
-- binding 调用 face 的 operation；本地同一进程可以直接传 typed 值，不经过 JSON，但不绕过 face 去调 owner 内部。
-- owner trait 是实现，不是第二个公开服务。迁移时把它降为内部实现或生成的 binding，不能同时保留两个公开面。
-- 一份定义生成 wire 类型、dispatcher 和 typed binding；测试必须证明 typed binding 与 wire 返回同一结果。
-- `SessionFilesHost` + `sessionFiles` 这种并存是迁移中的临时状态，不是目标；最终只留一个公开契约。
+There is no permanent internal set. Every catalog name gets a data face in some batch; a face may
+have no consumer yet. Performance and usability are the plugin author's concern; the platform
+provides the mechanism. Split a handle into operations; keep a secret value in the owner and
+expose operations.
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是迁移分类，不是永久结论：可转的都要转，永久 internal 只限确实不能跨的形态。
+catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher；这是迁移起点，不是目标。§3 表覆盖这 91 个待迁移名字；`scheduleJobs`、`wakeups` 已在 #1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。这些分组是当前迁移状态，不是永久分类；目标是没有 internal，所有名字都成为 data face。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -148,9 +134,9 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `wait` | `WaitResult`、`CancellationToken` | `start`/`wait`/`result` 操作面 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 留宿主；`hot-path` |
 
-这些面即使有数据接口，实例核心仍默认留在宿主；它们列在这里是为了说明“对象形状”不是永久 internal，而是需要操作化；原因 `object`。
+这些面需要拆成操作加 id；对象核心可以留在宿主，但服务面仍然是 data；`object` 只是迁移工作标签，不是永久 internal。
 
-### 3.5 热路径与顺序：契约上 internal
+### 3.5 热路径与顺序：待操作化
 原因 `hot-path`：每回合/每条输入的状态机、严格本地顺序，或同步回调。跨了要重写顺序和失败语义，收益不成比例。
 
 | 名字 | scope | provider | reason | 动作 |
@@ -179,7 +165,7 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `faultReporter` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 
-### 3.6 入口、secret 与宿主资源
+### 3.6 入口、secret 与宿主资源：仍需 data face
 原因 `control`（入口/控制面）、`secret`（凭据/token）或 `host-resource`（FS 索引、活进程）。`managedProviders` 的搜索走新的 `managedSearch`；账号与 token 仍留在这个 internal 名字上。
 
 | 名字 | scope | provider | reason | 动作 |
@@ -339,12 +325,12 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 91 个 internal 名字里 18 个是待迁移的数据内容。`legacy-no-consumer` 是迁移状态，不是永久 internal；它们按批次转成 data face。
+5. **legacy 标记**：当前 internal 名字全部是迁移待办。`legacy-no-consumer` 只是状态，不是永久 internal；目标目录里没有 internal。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序
 
 1. **#1289**：`Faces`、`AgentBuilder::internal`、catalog `face`、双向 `xtask check`、leaf 拒绝、`managementMethods` 注册顺序、`localId` dispatcher；`loaderService`/`pluginMounter` 作为两个外部 `shared-no-dispatcher` 例外。
 2. **#1300**：按 §3 的分组在 catalog 里补齐 reason；`xtask graph` 的 diff 就是盘点结果。此 PR 不改服务。
-3. **#1292**：存量 data face 迁移。先做 `scheduleJobs`、`wakeups`、`sessionFiles`、`managedSearch`，再按 §3 分类把可转的名字一批批转完；确实不能跨的写清原因。`workflowRuns` 已是数据面，只核对。
+3. **#1292**：把所有名字迁移成 data face。先做 `scheduleJobs`、`wakeups`、`sessionFiles`、`managedSearch`，再按 owner 铺开；没有“确实不能跨”的永久例外，只有还没做的工作。`workflowRuns` 已是数据面，只核对。
 4. 每项都带现有 flow 测试；不新增适配层，不写第二份逻辑。
