@@ -10391,6 +10391,7 @@
         "path ContextCompactionResult::Cancelled",
         "path ContextPrepareData",
         "path EventDraft",
+        "path EventDraft::new",
         "path EventKind::ContextCompaction",
         "path EventKind::ContextConfigured",
         "path EventKind::ContextPrepare",

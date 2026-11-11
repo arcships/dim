@@ -150,9 +150,26 @@ impl ConfigurationPublisher {
         let mut drafts: Vec<EventDraft> = Vec::new();
         if !changes.is_empty() {
             let revision = Uuid::new_v4().to_string();
+            let mut after = before.clone();
+            after.changed(&self.identity.branch_id, &revision, &changes);
+            // Each delivery input's id is assigned here, before the change is
+            // built, so the change names the blocks that will deliver it: a
+            // line that inherits the change applies it only once they were
+            // consumed in that line's prefix.
+            let deliveries: Vec<EventDraft> = inputs(before, &after, &changes)
+                .into_iter()
+                .map(|block| {
+                    EventDraft::new(EventKind::InputMessage(InputMessageData {
+                        blocks: vec![block],
+                        mode: Some(InputMode::Append),
+                        ..Default::default()
+                    }))
+                    .with_id(Uuid::new_v4().to_string())
+                })
+                .collect();
             let data = PromptChangedData {
                 timeline: self.identity.branch_id.clone(),
-                revision: revision.clone(),
+                revision,
                 previous: before.revision.clone(),
                 reason: if before.revision.is_some() {
                     PromptChangeReason::Refresh
@@ -160,19 +177,13 @@ impl ConfigurationPublisher {
                     PromptChangeReason::Initialize
                 },
                 changes,
+                inputs: deliveries
+                    .iter()
+                    .map(|draft| draft.id.clone().expect("assigned delivery id"))
+                    .collect(),
             };
-            let mut after = before.clone();
-            after.changed(&data.timeline, &data.revision, &data.changes);
-            let blocks = inputs(before, &after, &data.changes);
             drafts.push(EventKind::PromptChanged(data).into());
-            drafts.extend(blocks.into_iter().map(|block| {
-                EventKind::InputMessage(InputMessageData {
-                    blocks: vec![block],
-                    mode: Some(InputMode::Append),
-                    ..Default::default()
-                })
-                .into()
-            }));
+            drafts.extend(deliveries);
             if after.system_revision != before.system_revision {
                 let settings = effective_configuration.clone().ok_or_else(|| {
                     AgentError::InvalidInput("system prompt update requires configuration".into())
