@@ -3108,7 +3108,6 @@ async fn a_withdrawal_without_a_replacement_carries_no_warnings() {
 }
 
 /// A.5 and A.6.2: the same for a timeout, bounded by the handler's own short
-/// `timeout` rather than the 30 s default.// A.5 and A.6.2: the same for a timeout, bounded by the handler's own short
 /// `timeout` rather than the 30 s default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_timed_out_prompt_hook_proceeds_and_is_reported() {
