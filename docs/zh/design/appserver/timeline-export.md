@@ -41,13 +41,15 @@
    │  精确比对结构：当前格式，或本构建可从之升级的格式
    ▼
  storage::export
-   │  validate_session(S)：分支目录，按恢复时的规则校验
+   │  read_directory(S)：只读取、校验分支元数据
    │  每个分支 read_range 1..=head，分页读取：事件及其 before 轨迹
    ▼
  stdout：头行、分支行、事件行、结束行   ──►  F 或 CLI 的 stdout
 ```
 
-导出位于存储模块中、`timeline.rs` 旁边，因此与 Session 恢复使用同一套行解码、请求内容重建和校验。它给 `SqliteStorage` 增加一个构造函数，给二进制的 `main` 增加一个模式；守护进程的路径不变。
+导出位于存储模块中、`timeline.rs` 旁边，因此与其他 Timeline 读取使用同一套行解码、请求内容重建和校验。它给 `SqliteStorage` 增加一个构造函数，给二进制的 `main` 增加一个模式；守护进程的路径不变。
+
+读取失败可能留下部分 stdout；只有完整 `end` 行及成功退出才表示导出成功。导出前不扫描完整历史。
 
 ## 4. 打开数据库
 
@@ -123,7 +125,7 @@ UTF-8 JSONL，每行一个对象，各带一个 `kind`。外层字段用 snake_c
 | 路径上没有数据库 | `No dimcode database at PATH`；退出码 1 |
 | 不支持的格式 | `unsupported Timeline storage format at PATH; the database was not changed`；退出码 1 |
 | 没有该 Session | `Session S is not in PATH`；退出码 1 |
-| 存储的 Timeline 校验失败 | 读取器的错误，与恢复时报告的相同；退出码 1 |
+| 读取事件或请求内容失败 | 读取器的错误；退出码 1；已输出部分不带 `end` 行 |
 | 只读目录中缺少 `-wal` 与 `-shm` 文件 | SQLite 的错误；把数据库复制到可写目录；退出码 1 |
 | 写入失败（磁盘满、管道关闭） | 退出码 1；删除部分写出的文件 |
 | `--output` 指向已存在的路径 | 导出开始前拒绝；退出码 1 |

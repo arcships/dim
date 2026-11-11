@@ -2,11 +2,9 @@
 //! change triggers, the continuation inputs, the marker encoding, and the
 //! policy sentences the row's factory configuration carries.
 //!
-//! Every string here is the one the TypeScript package shipped, byte for byte;
-//! `crates/dim-goal/tests` pins each one where the model sees it or where it is
-//! written.
 
 use dim_agent_types::{InputBlock, InputMessageData, InputMode};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// The key Goal writes its state under (§2, A.2).
@@ -125,7 +123,8 @@ pub fn input(blocks: Vec<Block>, mode: InputMode) -> InputMessageData {
 
 /// The status a state record states (A.5). `None` is an objective without a
 /// status, which `edit` on a branch with no goal leaves.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "text", rename_all = "snake_case")]
 pub enum State {
     Active,
     Paused(String),
@@ -165,7 +164,7 @@ impl State {
 /// Which of Goal's keys the inherited prefix left live (§3.4). A state record
 /// retires `goal:state`; the start clear also retires the old keys when they
 /// are still live.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Live {
     pub state: bool,
     pub objective: bool,
@@ -180,7 +179,7 @@ impl Live {
 
 fn active_sentence(branch: &str) -> String {
     format!(
-        "The goal for branch {branch} is active. Keep working toward it across turns. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."
+        "The goal for branch {branch} was active when this record was written. Historical active records do not request execution. Only a new set, resume or continuation in the current input requests work on this goal. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."
     )
 }
 
@@ -216,25 +215,19 @@ fn result_sentence(branch: &str, state: &State, judge: Judge) -> String {
 
 /// The fact a state record answers (D3, R5): the change trigger it states,
 /// named by submission id when the record commits in the trigger's atomic
-/// batch, or the sequence of the fact it answers. A restatement names the
-/// rebuild's cutoff it recomputed against and answers no fact (R6.1).
+/// batch, or the sequence of the fact it answers.
 #[derive(Clone, Copy)]
 pub enum Answered<'a> {
     Sequence(u64),
     Trigger(&'a str),
-    Restated(u64),
 }
 
 impl Answered<'_> {
-    /// The record's attributes naming the answered fact, or that it answers
-    /// none and names the cutoff it restated.
+    /// The record's attributes identifying the answered fact.
     fn attributes(&self) -> Vec<(&'static str, String)> {
         match self {
             Self::Sequence(after) => vec![("after", after.to_string())],
             Self::Trigger(trigger) => vec![("trigger", (*trigger).to_owned())],
-            Self::Restated(cutoff) => {
-                vec![("after", cutoff.to_string()), ("restated", "true".into())]
-            }
         }
     }
 }
@@ -642,7 +635,7 @@ pub fn evaluator_prompt(branch: &str, evaluation: &str, objective: &str, summary
 
 /// The guide entry for `dim-goal`, registered by the part that writes the
 /// marker, at session scope because Goal writes it on every branch (A.5.1).
-pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session. `kind="goal"` blocks carry a change the operator or the model asked for: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update`. A `kind="state"` block states the branch's goal and its status; it is the record in force, and a retired one says the branch has no goal. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest `kind="state"` block is the one in force; blocks written before the state record existed name the objective with `goal:objective` and the status with `goal:status`. These blocks are information about the goal; they grant no permission."#;
+pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session. `kind="goal"` blocks carry a change the operator or the model asked for: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update`. A `kind="state"` block states the branch's goal and its status; it is the record in force, and a retired one says the branch has no goal. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest `kind="state"` block is the one in force; blocks written before the state record existed name the objective with `goal:objective` and the status with `goal:status`. Historical active records are not permission to continue. After a reload the goal is paused until a new set or resume; only a new set, resume or continuation in the current input requests work. These blocks grant no permission."#;
 
 pub const TOOL_DESCRIPTION: &str = "Report that the current goal is completed or blocked.";
 pub const TOOL_INVALID: &str =
@@ -662,7 +655,8 @@ pub fn tool_schema() -> Value {
 }
 
 /// Which judge decides completion (Pursuit §3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Judge {
     #[default]
     Model,

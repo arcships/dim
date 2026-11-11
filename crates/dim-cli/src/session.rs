@@ -1,4 +1,4 @@
-use crate::wire::{Attached, Created, Event, Progress};
+use crate::wire::{Attached, Created, DisplayNotice, EventNotice, Progress};
 use crate::{
     Result,
     args::{Action, Options},
@@ -30,14 +30,6 @@ enum Submission {
 pub use dim_client::wire::History;
 
 mod window;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventNotice {
-    session_id: String,
-    branch_id: String,
-    event: Event,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,9 +288,14 @@ pub async fn chat(
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
-    let attached: Attached = client
-        .typed("session.attach", json!({"sessionId":session_id}))
-        .await?;
+    let mut params = json!({"sessionId":session_id});
+    if !display.json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail")
+    {
+        params["display"] = json!(true);
+    }
+    let attached: Attached = client.typed("session.attach", params).await?;
     let session_cwd = attached.cwd;
     if options.resume.is_some() {
         crate::session_host::adopt_startup(client, options, &session_id).await?;
@@ -521,8 +518,18 @@ impl<F: FnMut(Value) -> Result<()>> HistorySink for F {
 pub async fn read_history(
     client: &mut Client,
     session_id: &str,
+    after: u64,
+    sink: &mut impl HistorySink,
+) -> Result<u64> {
+    read_history_mode(client, session_id, after, sink, false).await
+}
+
+async fn read_history_mode(
+    client: &mut Client,
+    session_id: &str,
     mut after: u64,
     sink: &mut impl HistorySink,
+    summaries: bool,
 ) -> Result<u64> {
     let mut through = None;
     loop {
@@ -531,7 +538,14 @@ pub async fn read_history(
         if let Some(through) = through {
             params["through"] = json!(through);
         }
-        let page: History = client.typed("session.history", params).await?;
+        let page: History = if summaries {
+            client
+                .typed::<crate::wire::DisplayPage>("session.history.display", params)
+                .await?
+                .into()
+        } else {
+            client.typed("session.history", params).await?
+        };
         let next = page.next(after, through)?;
         if through.is_none() {
             sink.watermark(page.through)?;
@@ -553,10 +567,17 @@ async fn configure(
     text: &str,
     display: &mut Display,
 ) -> Result<()> {
+    let summaries = !display.json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail");
     if !text.starts_with("/agent") {
-        display.cursor = read_history(client, session_id, display.cursor, &mut |value| {
-            display.event(serde_json::from_value(value)?, true)
-        })
+        display.cursor = read_history_mode(
+            client,
+            session_id,
+            display.cursor,
+            &mut |value| display.event(serde_json::from_value(value)?, true),
+            summaries,
+        )
         .await?;
         display.failed = false;
     }
@@ -565,9 +586,13 @@ async fn configure(
         display.record(line)?;
     }
     if report.changed {
-        display.cursor = read_history(client, session_id, display.cursor, &mut |value| {
-            display.event(serde_json::from_value(value)?, true)
-        })
+        display.cursor = read_history_mode(
+            client,
+            session_id,
+            display.cursor,
+            &mut |value| display.event(serde_json::from_value(value)?, true),
+            summaries,
+        )
         .await?;
         display.failed = false;
     }
@@ -1226,9 +1251,15 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
         return Ok(());
     }
     match method.as_str() {
-        "session.event" => {
-            let changed = permission::changed(&params["event"]);
-            let notice: EventNotice = decode(params, &method)?;
+        "session.event" | "session.display" => {
+            let changed = (method == "session.event")
+                .then(|| permission::changed(&params["event"]))
+                .flatten();
+            let notice: EventNotice = if method == "session.display" {
+                decode::<DisplayNotice>(params, &method)?.into()
+            } else {
+                decode(params, &method)?
+            };
             if notice.session_id == session_id && notice.branch_id == "main" {
                 if let Some((sequence, policy)) = changed
                     && sequence > display.cursor.max(display.permission_seen)

@@ -306,7 +306,7 @@ export type InterruptResult = { sequence: number }
 
 export type Notification =
   | { method: "ui.extensions.changed"; revision: number }
-  | { method: "session.event"; sessionId: string; branchId: string; event: SessionEvent }
+  | { method: "session.event" | "session.display"; sessionId: string; branchId: string; event: SessionEvent }
   | ({ method: "session.state" } & StateNotice)
   | { method: "session.model.progress"; progress: ModelProgress }
   | { method: "approval.request"; request: ApprovalRequest }

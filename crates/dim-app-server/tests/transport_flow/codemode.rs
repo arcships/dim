@@ -1,9 +1,19 @@
 use super::*;
-use dim_agent_capabilities::host::{ModelChunk, ModelDriver, ModelStopReason, ModelStream};
+use dim_agent_capabilities::{
+    adapters::DefaultPrepareModelPlugin,
+    context_methods::ContextMethodsPlugin,
+    context_model::window_facts,
+    host::{
+        CompactionStrategy, CompactionStrategyHost, ContextModel, ContextModelHost,
+        IdentityContext, ModelChunk, ModelDriver, ModelHost, ModelStopReason, ModelStream,
+        PrepareContextHost, ResolveContextModel,
+    },
+};
 use dim_agent_runtime::SessionConfig;
 use std::sync::Arc;
 
-struct CodeModeModel;
+#[derive(Default)]
+struct CodeModeModel(std::sync::Mutex<Option<Arc<dim_agent_types::ModelRequest>>>);
 
 impl ModelDriver for CodeModeModel {
     fn invoke(
@@ -19,6 +29,7 @@ impl ModelDriver for CodeModeModel {
             .count();
         let answered = results > 0;
         if answered {
+            *self.0.lock().unwrap() = Some(request.clone());
             assert_eq!(
                 results, 1,
                 "the child tool result leaked into the model context"
@@ -63,19 +74,68 @@ impl ModelDriver for CodeModeModel {
     }
 }
 
-async fn launch_codemode() -> RunningServer {
-    launch_codemode_with_defaults(SessionConfig::default().tools).await
+struct UsageResolver;
+impl ResolveContextModel for UsageResolver {
+    fn resolve(
+        &self,
+        request: Arc<dim_agent_types::ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, Arc<dyn ContextModel>> {
+        Box::pin(async move { Ok(window_facts(1_000_000, 64., &request)) })
+    }
+}
+
+impl CompactionStrategy for UsageResolver {
+    fn name(&self) -> &str {
+        "fixture"
+    }
+    fn replacement_size(&self, _: &dyn ContextModel) -> f64 {
+        0.
+    }
+    fn compact(
+        &self,
+        _: dim_agent_capabilities::host::CompactionInput,
+        _: CancellationToken,
+    ) -> HostFuture<'_, dim_agent_capabilities::host::StrategyOutcome> {
+        Box::pin(async {
+            Err(dim_agent_capabilities::host::HostError::failed(
+                "the CodeMode fixture fits without compaction",
+            ))
+        })
+    }
 }
 
 async fn launch_codemode_with_defaults(tools: Option<Vec<String>>) -> RunningServer {
+    launch_codemode_with_model(tools, Arc::new(CodeModeModel::default())).await
+}
+
+async fn launch_codemode_with_model(
+    tools: Option<Vec<String>>,
+    model: Arc<CodeModeModel>,
+) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
     defaults::install(&mut builder);
-    defaults::mock_model_hosts_with_model(
-        &mut builder,
-        dim_agent_capabilities::history::HistoryRenderer::default(),
-        Arc::new(CodeModeModel),
-    );
+    builder
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .process_value(Arc::new(ModelHost(model)))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(Some(Arc::new(UsageResolver)))))
+        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
+            UsageResolver,
+        )))))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        )
+        .require_feature(
+            Feature::new("ContextMethods").session("ContextMethods", |names| {
+                Ok(Box::new(ContextMethodsPlugin::new(names)?))
+            }),
+        );
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     dim_app_server::collaboration::install(&mut builder);
     dim_codemode::install(&mut builder);
@@ -99,7 +159,8 @@ async fn launch_codemode_with_defaults(tools: Option<Vec<String>>) -> RunningSer
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
-    let server = launch_codemode().await;
+    let model = Arc::new(CodeModeModel::default());
+    let server = launch_codemode_with_model(SessionConfig::default().tools, model.clone()).await;
     let mut client = Client::new_version(&server, false, 4).await;
     let created = client
         .rpc(
@@ -109,6 +170,22 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
         .await;
     assert_ok(&created);
     let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let loaded = server.agent().unwrap().get_session(&session).unwrap();
+    loaded
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(dim_agent_types::ModelSelection {
+                provider_id: "mock".into(),
+                model_id: "echo".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            }),
+            vec![],
+        )
+        .await
+        .unwrap();
     assert_ok(
         &client
             .rpc("session.attach", json!({"sessionId":session}))
@@ -159,6 +236,32 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
         })
         .expect("the child echo batch");
     assert_eq!(child["data"]["calls"][0]["name"], "echo");
+    let mut request = model.0.lock().unwrap().as_ref().unwrap().as_ref().clone();
+    let usage = client
+        .rpc(
+            "session.context.usage",
+            json!({"sessionId":session,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&usage);
+    let context = dim_agent_capabilities::history::HistoryRenderer::default()
+        .context_in(
+            &loaded,
+            "main",
+            usage["result"]["through"].as_u64().unwrap(),
+        )
+        .await
+        .unwrap();
+    request.messages = dim_agent_capabilities::history::context_messages(
+        &context,
+        &dim_agent_capabilities::history::project_context_history(&context).unwrap(),
+    );
+    let expected = window_facts(1_000_000, 64., &request).count_tokens(&request);
+    assert_eq!(
+        usage["result"]["estimatedInputTokens"].as_f64().unwrap(),
+        expected,
+        "numeric usage matches the actual model request, excluding child execution facts"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

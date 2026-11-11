@@ -1,4 +1,4 @@
-use super::sqlite::error;
+use super::{arrays, sqlite::error};
 use dim_agent_runtime::core::TraceStep;
 use dim_agent_runtime::{QueryValue, Result, StoredEvent, TimelineTrace, project_property};
 use dim_agent_types::{
@@ -15,6 +15,8 @@ use std::{collections::HashMap, sync::Arc};
 pub(super) struct WireEvent {
     pub event: Value,
     refs: Option<Refs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<arrays::Reference>,
     trace: Option<WireTrace>,
     pub batch_end: u64,
 }
@@ -55,6 +57,8 @@ struct Node<P = String, M = Arc<Message>> {
 struct WireDraft {
     event: Value,
     refs: Option<Refs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    changes: Option<arrays::Reference>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,6 +166,35 @@ impl Refs {
     }
 }
 impl WireEvent {
+    pub(super) fn externalize_arrays(
+        &mut self,
+        connection: &Connection,
+        session: &str,
+    ) -> Result<bool> {
+        let mut changed = false;
+        if self.changes.is_none() {
+            self.changes = arrays::encode(connection, session, &mut self.event)?;
+            changed |= self.changes.is_some();
+        }
+        if let Some(trace) = &mut self.trace {
+            for draft in std::iter::once(&mut trace.original).chain(
+                trace
+                    .steps
+                    .iter_mut()
+                    .filter_map(|step| step.result.as_mut()),
+            ) {
+                if draft.changes.is_none() {
+                    draft.changes = arrays::encode(connection, session, &mut draft.event)?;
+                    changed |= draft.changes.is_some();
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn array_references(&self) -> impl Iterator<Item = &arrays::Reference> {
+        self.parts().filter_map(|(_, _, changes)| changes)
+    }
     /// The list a stored request row references, `None` for a v16 row.
     pub(super) fn list(&self) -> Result<Option<&ListReferences>> {
         match &self.refs {
@@ -177,11 +210,16 @@ impl WireEvent {
     /// The references of the event, then of each draft of its trace, in
     /// the order `encode` writes and `Reader::decode` rebuilds them.
     fn lists(&self) -> impl Iterator<Item = Option<&Refs>> {
+        self.parts().map(|(_, refs, _)| refs)
+    }
+
+    fn parts(&self) -> impl Iterator<Item = (&Value, Option<&Refs>, Option<&arrays::Reference>)> {
         let drafts = self.trace.iter().flat_map(|trace| {
             std::iter::once(&trace.original)
                 .chain(trace.steps.iter().filter_map(|step| step.result.as_ref()))
         });
-        std::iter::once(self.refs.as_ref()).chain(drafts.map(|draft| draft.refs.as_ref()))
+        std::iter::once((&self.event, self.refs.as_ref(), self.changes.as_ref()))
+            .chain(drafts.map(|draft| (&draft.event, draft.refs.as_ref(), draft.changes.as_ref())))
     }
 }
 
@@ -234,8 +272,8 @@ pub(super) struct Previous {
 }
 #[derive(Clone)]
 pub(super) enum Values {
-    /// Still in memory: written earlier in the round or held by the writer
-    /// memo.
+    /// Known values of the previous prefix, written in this round, held by
+    /// the writer memo, or proved from the current request's addresses.
     Written(Arc<ModelRequest>),
     /// Rebuilt from its stored list.
     Stored(Arc<Rebuilt>),
@@ -267,9 +305,46 @@ pub(super) fn prefix(previous: &Previous, request: &ModelRequest) -> usize {
         .values
         .messages()
         .iter()
+        .take(previous.refs.length)
         .zip(&request.messages)
         .take_while(|(kept, message)| Arc::ptr_eq(kept, message) || kept == message)
         .count()
+}
+/// Whether `request` proves the complete stored prefix and fixed values
+/// by their content addresses. A different address still requires value
+/// comparison because serialization order need not define value equality.
+pub(super) fn matches_list(request: &ModelRequest, refs: &ListReferences) -> Result<bool> {
+    if request.messages.len() < refs.length {
+        return Ok(false);
+    }
+    let mut parent = None::<String>;
+    for message in &request.messages[..refs.length] {
+        let body = serde_json::to_string(&Node {
+            parent: parent.as_deref(),
+            message: &**message,
+        })
+        .map_err(error)?;
+        parent = Some(hash("node", &body));
+    }
+    if parent != refs.list {
+        return Ok(false);
+    }
+    let tools = request
+        .tools
+        .as_ref()
+        .map(|tools| serde_json::to_string(tools).map(|body| hash("tools", &body)))
+        .transpose()
+        .map_err(error)?;
+    if tools != refs.tools {
+        return Ok(false);
+    }
+    let system = request
+        .system
+        .as_ref()
+        .map(|system| serde_json::to_string(system).map(|body| hash("system", &body)))
+        .transpose()
+        .map_err(error)?;
+    Ok(system == refs.system)
 }
 /// `value`'s address: the previous request's when equal, without
 /// serializing; otherwise a content row of `kind`.
@@ -381,7 +456,11 @@ fn strip(kind: &EventKind, mut event: Value, refs: Option<ListReferences>) -> Re
         (None, None) => None,
         _ => return Err(error("request lists do not match event kinds")),
     };
-    Ok(WireDraft { event, refs })
+    Ok(WireDraft {
+        event,
+        refs,
+        changes: None,
+    })
 }
 /// The stored form of `record`, with `lists` holding the list of its event
 /// request and of each request draft of its trace, in `drafts` order, and
@@ -441,6 +520,7 @@ pub(super) fn encode(
     Ok(WireEvent {
         event: event.event,
         refs: event.refs,
+        changes: None,
         trace,
         batch_end: record.batch_end,
     })
@@ -452,13 +532,14 @@ enum Content {
     Node(Arc<Node>),
     Tools(Arc<Vec<ToolDefinition>>),
     System(Arc<SystemPrompt>),
+    Element(Arc<arrays::Element>),
 }
-/// Bytes of content bodies one read or validation pass keeps decoded. Each
+/// Bytes of content bodies one read keeps decoded. Each
 /// request repeats the content of the one before, so the budget must hold
 /// one request's distinct content, or every request evicts what the next
 /// one needs; 64 MiB is many times a 1M-token context.
 pub(super) const CONTENT_BUDGET: usize = 64 << 20;
-/// Decoded request content of one read or validation pass, by reference. A
+/// Decoded request content of one read, by reference. A
 /// miss that would take the bodies past the budget first drops every entry,
 /// which also drops content no later request references, such as content a
 /// compaction replaced; a body larger than the budget is not kept.
@@ -510,6 +591,9 @@ impl ContentCache {
             "node" => Content::Node(Arc::new(serde_json::from_str(&body).map_err(error)?)),
             "tools" => Content::Tools(Arc::new(serde_json::from_str(&body).map_err(error)?)),
             "system" => Content::System(Arc::new(serde_json::from_str(&body).map_err(error)?)),
+            "array-element" => {
+                Content::Element(Arc::new(serde_json::from_str(&body).map_err(error)?))
+            }
             _ => return Err(error(format!("unknown request content kind {kind}"))),
         };
         if body.len() <= self.budget {
@@ -568,6 +652,11 @@ struct Walk {
     position: usize,
     loaded: Vec<(String, Arc<Message>)>,
 }
+
+struct ArrayWalk {
+    id: String,
+    values: Vec<Value>,
+}
 /// Whether a read rebuilds the request bodies it returns: the `request` of
 /// `context/prepare` and `model/call` records.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -580,7 +669,7 @@ pub(super) enum RequestBodies {
     /// these records or use only their other fields (§7.5).
     Unused,
 }
-/// The decoding state of one read call or validation pass, carried across
+/// The decoding state of one read call, carried across
 /// its connection holds: what it does with request bodies, the content cache, the
 /// last event request rebuilt from a list with its node addresses (§7.1 of
 /// the request storage design), and, when a hold ran out of node loads, the
@@ -592,7 +681,8 @@ pub(super) struct Reader {
     kept_nodes: Vec<String>,
     walk: Option<Walk>,
     /// The requests of the record being decoded rebuilt so far.
-    rebuilt: Vec<Option<Rebuilt>>,
+    rebuilt: Vec<ResolvedDraft>,
+    array_walk: Option<ArrayWalk>,
     /// Node loads in the current hold.
     hold: usize,
     #[cfg(feature = "testing")]
@@ -619,6 +709,7 @@ impl Reader {
             kept_nodes: vec![],
             walk: None,
             rebuilt: vec![],
+            array_walk: None,
             hold: 0,
             #[cfg(feature = "testing")]
             loads: NodeLoads::default(),
@@ -646,6 +737,21 @@ impl Reader {
         session: &str,
         address: &str,
     ) -> Result<Option<Arc<Node>>> {
+        let Some(content) = self.content(connection, session, address)? else {
+            return Ok(None);
+        };
+        match content {
+            Content::Node(node) => Ok(Some(node)),
+            _ => Err(error("request list references wrong content kind")),
+        }
+    }
+
+    fn content(
+        &mut self,
+        connection: &Connection,
+        session: &str,
+        address: &str,
+    ) -> Result<Option<Content>> {
         let content = match self.cache.get(address) {
             Some(content) => content,
             None if self.hold == NODE_LOADS_PER_HOLD => return Ok(None),
@@ -659,10 +765,56 @@ impl Reader {
                 self.cache.fetch(connection, session, address)?
             }
         };
-        match content {
-            Content::Node(node) => Ok(Some(node)),
-            _ => Err(error("request list references wrong content kind")),
+        Ok(Some(content))
+    }
+
+    pub(super) fn element(
+        &mut self,
+        connection: &Connection,
+        session: &str,
+        array: &arrays::Reference,
+        index: u64,
+    ) -> Result<Option<Value>> {
+        let reference = arrays::content_ref(connection, session, array, index)?
+            .ok_or_else(|| error("array element is outside its source"))?;
+        let Some(content) = self.content(connection, session, &reference)? else {
+            return Ok(None);
+        };
+        let Content::Element(element) = content else {
+            return Err(error("array references wrong content kind"));
+        };
+        if element.array != array.id || element.index != index {
+            return Err(error("array element identity mismatch"));
         }
+        Ok(Some(element.value.clone()))
+    }
+
+    fn array(
+        &mut self,
+        connection: &Connection,
+        session: &str,
+        array: &arrays::Reference,
+    ) -> Result<Option<Value>> {
+        arrays::check(connection, session, array)?;
+        let mut walk = self.array_walk.take().unwrap_or_else(|| ArrayWalk {
+            id: array.id.clone(),
+            values: Vec::new(),
+        });
+        if walk.id != array.id {
+            return Err(error("array decoding changed source"));
+        }
+        while u64::try_from(walk.values.len()).map_err(error)? < array.length {
+            let index = u64::try_from(walk.values.len()).map_err(error)?;
+            let Some(value) = self.element(connection, session, array, index)? else {
+                self.array_walk = Some(walk);
+                return Ok(None);
+            };
+            walk.values.push(value);
+        }
+        if arrays::fingerprint(&walk.values)?.0 != array.id {
+            return Err(error("array content hash mismatch"));
+        }
+        Ok(Some(Value::Array(walk.values)))
     }
     /// The parent of node `address`, or `None` when this hold has no node
     /// load left; for stepping back through a list.
@@ -781,7 +933,52 @@ impl Reader {
         wire: &WireEvent,
         path: &str,
     ) -> Result<Option<QueryValue>> {
+        let mut changes = None;
+        if let Some(array) = &wire.changes {
+            if wire.event["data"].get("changes").is_some() {
+                return Err(error("array reference also has inline changes"));
+            }
+            if let Some(rest) = path.strip_prefix("data.changes") {
+                arrays::check(connection, session, array)?;
+                if rest.is_empty() || rest.starts_with("[]") {
+                    let Some(value) = self.array(connection, session, array)? else {
+                        return Ok(None);
+                    };
+                    return project_property(&value, rest).map(Some);
+                }
+                if let Some(index) = rest.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+                    let number = index.0.parse::<u64>().map_err(error)?;
+                    if number >= array.length {
+                        return Ok(Some(QueryValue::Missing));
+                    }
+                    let Some(value) = self.element(connection, session, array, number)? else {
+                        return Ok(None);
+                    };
+                    return project_property(&value, index.1.strip_prefix('.').unwrap_or(index.1))
+                        .map(Some);
+                }
+                if rest.starts_with('.') {
+                    return Ok(Some(QueryValue::Missing));
+                }
+            }
+            if path == "data" {
+                let Some(value) = self.array(connection, session, array)? else {
+                    return Ok(None);
+                };
+                changes = Some(value);
+            }
+        }
         let Some(refs) = &wire.refs else {
+            if let Some(changes) = changes {
+                let mut data = wire.event["data"]
+                    .as_object()
+                    .ok_or_else(|| error("array has no data object"))?
+                    .clone();
+                data.insert("changes".into(), changes);
+                return Ok(Some(QueryValue::Value {
+                    value: Value::Object(data),
+                }));
+            }
             return project_property(&wire.event, path).map(Some);
         };
         for field in ["messages", "tools", "system"] {
@@ -831,6 +1028,9 @@ impl Reader {
                 .as_object()
                 .expect("the request belongs to data")
                 .clone();
+            if let Some(changes) = changes {
+                data.insert("changes".into(), changes);
+            }
             data.insert("request".into(), Value::Object(request));
             Value::Object(data)
         };
@@ -980,31 +1180,34 @@ impl Reader {
         session: &str,
         wire: WireEvent,
     ) -> Result<std::result::Result<StoredEvent, WireEvent>> {
-        if self.request_bodies == RequestBodies::Unused {
-            let requests: Vec<_> = wire
-                .lists()
-                .map(|refs| refs.map_or(Request::None, |_| Request::Unused))
-                .collect();
-            return Ok(Ok(finish(wire, requests.into_iter())?));
-        }
         loop {
             let index = self.rebuilt.len();
-            let Some(refs) = wire.lists().nth(index) else {
+            let Some((event, refs, array)) = wire.parts().nth(index) else {
                 break;
             };
-            let rebuilt = match refs {
+            let request = match refs {
+                Some(_) if self.request_bodies == RequestBodies::Unused => Request::Unused,
                 Some(refs) => match self.rebuild(connection, session, refs, index == 0)? {
-                    Some(rebuilt) => Some(rebuilt),
+                    Some(rebuilt) => Request::Rebuilt(rebuilt),
                     None => return Ok(Err(wire)),
                 },
-                None => None,
+                None => Request::None,
             };
-            self.rebuilt.push(rebuilt);
+            let changes = if let Some(array) = array {
+                if event["data"].get("changes").is_some() {
+                    return Err(error("array reference also has inline changes"));
+                }
+                let Some(value) = self.array(connection, session, array)? else {
+                    return Ok(Err(wire));
+                };
+                Some(value)
+            } else {
+                None
+            };
+            self.rebuilt.push(ResolvedDraft { request, changes });
         }
-        let requests = std::mem::take(&mut self.rebuilt)
-            .into_iter()
-            .map(|rebuilt| rebuilt.map_or(Request::None, Request::Rebuilt));
-        Ok(Ok(finish(wire, requests)?))
+        let rebuilt = std::mem::take(&mut self.rebuilt);
+        Ok(Ok(finish(wire, rebuilt.into_iter())?))
     }
 }
 /// What a read made of one stored request.
@@ -1017,14 +1220,38 @@ enum Request {
     /// The record or draft is not a request.
     None,
 }
+
+struct ResolvedDraft {
+    request: Request,
+    changes: Option<Value>,
+}
 /// The record of `wire` with each request settled in order: the event's,
 /// then each draft's of its trace.
-fn finish(wire: WireEvent, mut requests: impl Iterator<Item = Request>) -> Result<StoredEvent> {
+fn finish(
+    mut wire: WireEvent,
+    mut rebuilt: impl Iterator<Item = ResolvedDraft>,
+) -> Result<StoredEvent> {
+    let resolved = rebuilt.next().expect("one resolved value per wire part");
+    if let Some(changes) = resolved.changes {
+        wire.event
+            .get_mut("data")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| error("array has no data object"))?
+            .insert("changes".into(), changes);
+    }
     let mut event: AgentEvent = serde_json::from_value(wire.event).map_err(error)?;
-    settle(&mut event.kind, requests.next())?;
-    let mut draft = |wire: WireDraft| {
+    settle(&mut event.kind, Some(resolved.request))?;
+    let mut draft = |mut wire: WireDraft| {
+        let resolved = rebuilt.next().expect("one resolved value per wire part");
+        if let Some(changes) = resolved.changes {
+            wire.event
+                .get_mut("data")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| error("array has no data object"))?
+                .insert("changes".into(), changes);
+        }
         let mut draft: EventDraft = serde_json::from_value(wire.event).map_err(error)?;
-        settle(&mut draft.kind, requests.next())?;
+        settle(&mut draft.kind, Some(resolved.request))?;
         Ok::<_, dim_agent_runtime::AgentError>(draft)
     };
     let trace = wire

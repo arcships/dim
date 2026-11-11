@@ -5,9 +5,13 @@ Owner: [prompt.rs](../../../../crates/dim-agent-capabilities/src/prompt.rs) and
 Loads and adopts prompt/model/tool configuration in timeline order, exposes
 ConfigureControl and projects adopted prompt and configuration state.
 `Branch::get<PromptSnapshot>()` reads the last adopted `context/configured` without
-replaying history. Rebuilding reads the latest adopted configuration and pages only
-prompt changes, branch/turn boundaries and scope fields. It retains prompt state,
-not the conversation or historical model requests.
+replaying history. Prompt owns the current projection and its effective entry references under one
+lock. Recovery reads the latest v2 effective references and adoption revisions,
+then the actual prompt changes after changed_through. Configuration is obtained
+separately from its latest fact. Referenced event/element pairs read only effective
+entries, with turn/task lifetime boundaries checked by complete scope keys.
+No turns, tasks or configuration identity is copied into a recovery record.
+The publisher receives explicit adopted state instead of rebuilding history.
 
 ## Dependencies
 
@@ -31,7 +35,15 @@ boundaries, branch start/resume, `context/scope`, `stop/interrupt`. Produces
 configure controls and, through ConfigurationPublisher, prompt changes,
 context configuration and final adopted `input/message` content. Scope/turn
 changes can produce retirement inputs. A tracked adoption worker serializes
-work; opening handlers register receipts and return. Cleanup cancels pending
+loads and adoptions. Source handlers synchronously compute state and append required
+retirement inputs with a recovery result, then return without a database wait.
+Committed recovery facts publish the Snapshot monotonically, so idle cannot precede
+an unregistered state write. Opening captures its Snapshot at the source position
+and queues the existing receipt. Assembly-time adoption queries only the unprocessed
+source suffix and applies actual committed configuration facts before Dispatcher
+startup. Live adoption waits the existing Dispatcher through its fixed source
+position instead of querying those bodies again. It retains no source-event queue
+or history bodies. Cleanup cancels pending
 loads, joins tasks and settles waiters. Constructed host-load futures are joined
 even after cancellation. Reload projects committed context; runtime waiter IDs
 do not resume host operations. Source loading alone is not adoption.
@@ -97,9 +109,8 @@ the open runs included. A branch whose composition did not move reads
 nothing, because the composition reads the in-memory entries only. One more
 adoption runs inside every open, over the configuration the branch carries
 and before it reports itself open, so a fork and a restore converge on the
-entries in force at load and their first request carries them; it costs one
-context read per open and publishes nothing when the adopted System already
-equals the composition. The listener ends when the branch starts closing,
+entries in force at load and their first request carries them. Reconciliation
+publishes nothing when the adopted System already equals the composition. The listener ends when the branch starts closing,
 and an adoption that already started reading refuses its append then, so
 entries that withdraw only because the branch shuts down are never recorded.
 A writer's tools can reach a request one step before its entry: the tools bind through the tool adoption as soon as their source loads,
@@ -123,9 +134,9 @@ through the request Loop assembles, never through a request of their own.
 `a_fork_carries_its_own_entry_in_its_first_request`,
 `a_restored_branch_converges_on_the_entries_its_writers_register`,
 `a_restored_branch_carries_its_entries_in_its_first_request`,
-`a_guide_adoption_racing_its_branch_close_records_nothing`,
+`a_closing_branch_does_not_adopt_its_withdrawn_guide`,
 `an_entry_withdrawing_as_the_session_unloads_is_not_recorded`,
-`a_reloaded_writer_that_keeps_its_entry_records_nothing`,
+`a_reloaded_writer_readopts_its_returned_entry`,
 `a_composition_that_moved_and_returned_while_its_branch_opens_is_adopted`,
 `an_entry_that_returns_during_the_open_adoption_is_adopted`,
 `each_branch_keeps_its_own_entries`, `the_frame_states_the_compaction_handle`;

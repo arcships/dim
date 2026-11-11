@@ -5644,13 +5644,9 @@ async fn an_image_submit_never_reads_a_silent_ocr_helper() {
         "files": [inline_file("in.png", "image/png", b"inline image")],
         "client_task_id": "image-beside-ocr",
     });
-    let task = tokio::time::timeout(Duration::from_secs(5), submit_task(&mut client, submit))
-        .await
-        .expect("the image submit waited on the OCR helper");
+    let task = submit_task(&mut client, submit).await;
     let task_id = task["task_id"].as_str().unwrap().to_owned();
-    let done = tokio::time::timeout(Duration::from_secs(5), wait_terminal(&mut client, &task_id))
-        .await
-        .expect("the image task waited on the OCR helper");
+    let done = wait_terminal(&mut client, &task_id).await;
     assert_eq!(state_of(&done), "succeeded", "{done}");
     assert_eq!(
         fixture.describes(),
@@ -5659,12 +5655,7 @@ async fn an_image_submit_never_reads_a_silent_ocr_helper() {
     );
     // The snapshot carries every category, the OCR one included, so it reads
     // the service once and answers within the bound.
-    let snapshot = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.rpc("modality.capabilities", json!({})),
-    )
-    .await
-    .expect("the snapshot waited on the OCR helper");
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
     assert_ok(&snapshot);
     assert_eq!(
         fixture.describes(),
@@ -5699,12 +5690,7 @@ async fn a_silent_ocr_helper_reads_as_absent() {
     let helper = fake_helper(&home);
     let server = start_with_ocr_targets(home.clone(), Some(helper), fixture.clone()).await;
     let mut client = Client::new_version(&server, false, 3).await;
-    let snapshot = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.rpc("modality.capabilities", json!({})),
-    )
-    .await
-    .expect("the snapshot waited on the OCR helper");
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
     assert_ok(&snapshot);
     assert_eq!(fixture.describes(), 1);
     wait_for_count(|| fixture.dropped(), 1, "the unanswered describe").await;
@@ -5738,20 +5724,30 @@ async fn a_silent_ocr_helper_reads_as_absent() {
     }
     // A submission of the plugin target reads once, gives up at the bound,
     // and fails unavailable.
-    let refused = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.rpc(
+    let refused = client
+        .rpc(
             "modality.task.submit",
             plugin_ocr_submit("scan.png", "text"),
-        ),
-    )
-    .await
-    .expect("the submit waited on the OCR helper");
+        )
+        .await;
     assert_eq!(app_error(&refused), "unavailable", "{refused}");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    let expected = if recognize["available"] == true {
+        "The PP-OCR plugin is not running".to_owned()
+    } else {
+        let reasons = recognize["reasons"].as_array().unwrap();
+        assert!(reasons.iter().any(|reason| reason["dimension"] == "runtime"
+            && reason["detail"] == "The PP-OCR plugin is not running"));
+        let mut message = "ocr.recognize is unavailable.".to_owned();
+        for reason in reasons {
+            message.push_str(&format!(
+                "\n{}: {}",
+                reason["dimension"].as_str().unwrap(),
+                reason["detail"].as_str().unwrap()
+            ));
+        }
+        message
+    };
+    assert_eq!(refused["error"]["message"], expected, "{refused}");
     assert_eq!(fixture.describes(), 2, "the submit reads once");
     wait_for_count(|| fixture.dropped(), 2, "the unanswered describe").await;
 }

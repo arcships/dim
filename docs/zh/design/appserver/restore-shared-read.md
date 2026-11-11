@@ -1,5 +1,7 @@
 # 恢复期间共用的历史读取
 
+> 当前恢复没有完整历史校验。下文涉及该校验的读取次数和耗时均为历史实现的测量；当前以[恢复读取边界](../../../design/appserver/restore-validation.md)为准。
+
 状态：已在 [#235](https://github.com/arcships/dim/pull/235) 实现；§17（TimelineTree 的恢复事实，[#239](https://github.com/arcships/dim/issues/239)）在此基础上扩展。[#193](https://github.com/arcships/dim/issues/193) 的第 3 阶段。第 1 阶段是在一次读取的各页之间共用有界内容缓存，已以 [#213](https://github.com/arcships/dim/pull/213) 合入；第 2 阶段是请求消息列表（原生格式 v17），已以 [#224](https://github.com/arcships/dim/pull/224) 合入，其[设计](request-delta-storage.md) §15 把本阶段留给运行时。§2 至 §8 的数据是在 #224 的分支上用原型测得的；§8 末尾是实现的数据。这项改动属于运行时基础设施（[原则 §4](../../../architecture/rust-agent/principles.md#4-通过时间线扩展行为) 第 8 条），须经运行时机制所有者评审，即核心机制负责线（eric8810，[路线图 §3.5](../../../design/roadmap.md#35-按人按批次)）。作者负责线：Agents/存储（yyhhyyyyyy）。评审：eric8810、zerob13。范围：`Timeline` 的已提交历史读取路径（[timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），由分支作用域开始共用（[assembly.rs](../../../../crates/dim-agent-runtime/src/assembly.rs)），分支离开 `Loading` 时由该分支的 `BranchLifecycle` 结束共用（[config.rs](../../../../crates/dim-agent-runtime/src/config.rs)）。
 
 > **打开期间副本已撤销。** [ADR 021](../../adr/021-reads-follow-the-state-owner.md) D6 与 [#1063](https://github.com/arcships/dim/issues/1063) 删除了分支打开期间共用的解码副本：分支打开期间没有读取填充或使用副本，`Agent::live_openings` 也已删除。§4、§5、§8、§14 和 §17 描述它，仅供参考。第 1 阶段一次读取各页之间共用的有界内容缓存、第 2 阶段的请求消息列表是另外的机制，仍然有效。
@@ -246,7 +248,7 @@ Timeline 的每次以区间读取已存储事件的已提交历史读取都经�
 
 子分支现在除上述本分支读取外，还要读五次祖先链：TimelineTree 在父分支上的截点校验（读取 C）、Permission、Prompt，以及 ToolBinding 两次。有副本后，它读一次本分支部分、两次祖先链（读取 C 与一次填充）。在 v17 上跟踪一个截于 `main` 第 3,002 条事件的子分支：它自己的事件被读了 11 次，`main` 的前缀被读了 5 次；原型下各两次（本分支：扫描和填充；前缀：读取 C 和填充），外加一个单事件尾段。
 
-**把校验结果交给运行时（读取 A）不在范围内。** 存储在运行时构建任何东西之前逐页校验每个分支，不加载请求正文（校验每个引用与每个节点的父引用是否存在），在有界持锁区间内完成（[timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描)“恢复”行）。把它解码出的事件交给运行时，就要从校验一直持有每个分支的历史到最后一个分支打开，要么改变 `TimelineStore` 端口的返回值，要么让它在调用之间保留状态，并且与有界读取的约定相违。让校验本身更便宜是存储的工作，不需要运行时改动（[恢复校验复用](../../../design/appserver/restore-validation.md)）；每个进程的首次校验仍会解码每条事件，之后目录未变的恢复会复用它。
+**历史校验交接（读取 A）。** 当时测量的实现在构建运行时前校验各分支，本设计没有采用把解码结果交给运行时的方案。现在已删除整个准入校验及其缓存；当前合同以[原生 Session 恢复读取边界](../../../design/appserver/restore-validation.md)为准。首次打开和再次加载都不为准入解码完整历史。
 
 **TimelineTree 的扫描（读取 B）在本设计中保留**：本设计不改能力代码，而这次扫描发生在分支的 Timeline 存在之前。§17 接手了它：创建失败在分支打开期间从副本读取，子分支的创建检查只读它最前面的事件。
 

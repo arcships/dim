@@ -546,16 +546,29 @@ pub(crate) fn render_block(
         Block::Compaction {
             state,
             text,
+            detail,
             insufficient,
             expanded,
-        } => render_compaction(
-            *state,
-            &crate::sanitize::safe(text),
-            insufficient,
-            *expanded,
-            width,
-            p,
-        ),
+            ..
+        } => {
+            use crate::model::view::CompactionDetailState;
+            let shown = if *state == CompactionState::Completed && !expanded {
+                String::new()
+            } else {
+                match detail.as_ref().map(|detail| &detail.state) {
+                    Some(CompactionDetailState::Unloaded | CompactionDetailState::Loading) => {
+                        t("Loading...").to_owned()
+                    }
+                    Some(CompactionDetailState::Failed(error)) => format!(
+                        "{}: {}",
+                        t("Details unavailable; collapse and expand to retry"),
+                        crate::sanitize::safe(error)
+                    ),
+                    _ => crate::sanitize::safe(text),
+                }
+            };
+            render_compaction(*state, &shown, insufficient, *expanded, width, p)
+        }
         Block::Shell(run) => {
             let shown = run.output.len().saturating_sub(SHELL_PREVIEW_LINES);
             let mut notes = Vec::new();

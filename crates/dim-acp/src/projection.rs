@@ -266,6 +266,15 @@ impl Projection {
                 self.tool(json!(["compaction",event.sequence]).to_string(),"Context compaction",Value::Null,"in_progress",&mut updates);
                 if let Some(update) = updates.last_mut() { update["_meta"] = json!({"lody":{"activity":{"version":1,"kind":"context_compaction","automatic":automatic}}}); }
             }
+            EventContent::CompactionSummary(data) => {
+                let automatic = data.start.and_then(|start|self.compactions.remove(&start));
+                self.tool(json!(["compaction",data.start.unwrap_or(event.sequence)]).to_string(),"Context compaction",Value::Null,"completed",&mut updates);
+                if let Some(update) = updates.last_mut() {
+                    let mut activity = json!({"version":1,"kind":"context_compaction"});
+                    if let Some(automatic) = automatic { activity["automatic"] = json!(automatic); }
+                    update["_meta"] = json!({"lody":{"activity":activity}});
+                }
+            }
             EventContent::Compaction(data) => {
                 let automatic = data.start.and_then(|start|self.compactions.remove(&start));
                 let (status,diagnostics,reason) = match &data.outcome {

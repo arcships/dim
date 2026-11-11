@@ -294,7 +294,12 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|event| matches!(&event.kind, EventKind::StopInterrupt(data) if data.scope == InterruptScope::Turn)));
         assert!(matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Cancelled { .. },
                 ..
@@ -309,13 +314,26 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
             usize::from(stage == Stage::Tools)
         );
         if stage == Stage::Model {
-            let closure = &events[events.len() - 2];
+            let closure = events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::ToolResult(_)))
+                .unwrap();
             assert!(matches!(&closure.kind,
                 EventKind::ToolResult(data) if data.call_event_id.is_none()
                     && data.results.len() == 1
                     && data.results[0].call_id == "pending-tool"
                     && data.results[0].result.content
                         == ToolContent::Text("Tool was not executed: stop requested".into())));
+            assert!(
+                closure.sequence
+                    < events
+                        .iter()
+                        .rev()
+                        .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                        .unwrap()
+                        .sequence
+            );
             assert!(
                 !events
                     .iter()
@@ -1008,7 +1026,12 @@ async fn a_stop_during_output_keeps_its_text_and_closes_every_started_call() {
             .any(|event| matches!(event.kind, EventKind::ToolCall(_)))
     );
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Cancelled { .. },
             ..
@@ -1214,7 +1237,12 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
     assert_eq!(model_calls.load(Ordering::SeqCst), 1);
     assert!(echoed(&events, "STEER-MARKER"));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -1645,7 +1673,12 @@ async fn stop_turn_stops_only_the_open_turn_it_names() {
                 if data.reason == "operator stop" && data.scope == InterruptScope::Turn)
     }));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Cancelled { .. },
             ..
