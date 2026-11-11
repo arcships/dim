@@ -8,6 +8,11 @@
 其他表以 `REFERENCES agent_sessions(session_id)` 指向它，改名会把这些表的存储 SQL 改写成临时名，因此步骤内打开 `legacy_alter_table`，启动事务在关闭外键约束的状态下运行，提交前用 `PRAGMA foreign_key_check` 补做这次事务未强制的检查。
 
 步骤不回填：升级前由启动创建的 `internal` 行与 Workflow 阶段、丢失回复的空 Session 无法区分，改标 `automation` 会凭空造出库中没有的来源，这些行保持 `internal`、默认不列出。
+## v43：提示变更携带其投递输入
+
+v43 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inputs`，列出与它同一批次写入、用于投递该变更的 `input/message` 事件 id。没有投递块的变更（System 内容、以及写在此字段出现之前的事实）不写该字段，读出为空列表。
+
+不改表、索引或行。之所以要 bump marker：`PromptChangedData` 拒绝未知字段，而自 #1409 起启动不再解码历史事件，所以旧 daemon 会先接受带该字段的存储、直到会话中第一次解码 `prompt/changed`（恢复的后缀重放或实时订阅）才失败。marker 让它在这一步之前就拒读。降级是单向的：v42 及更早的程序拒读 v43。
 
 ## v41：合并 child tool-call 与 Timeline 索引格式
 
