@@ -368,6 +368,7 @@ const V16_ADDITIONS: &[&str] = &[
 const AGENT_SESSIONS_V25: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENT_SESSIONS_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
 const AGENT_SESSIONS_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))";
+const AGENT_SESSIONS_V42: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')))";
 const AGENTS_V25: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
 const AGENTS_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)), owner_session_id TEXT REFERENCES agent_sessions(session_id))";
 const V27_ADDITIONS: &[&str] = &[
@@ -449,6 +450,23 @@ fn drop_v40(connection: &Connection) {
 }
 const SESSION_OWNERS_V37: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))";
 const SESSION_OWNERS_V38: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)))";
+/// Rewrites `agent_sessions` at its text before v42, as test fixtures do when
+/// they take a live store back to an earlier format: #1421 widened the
+/// column's CHECK, and the format gate compares the statement verbatim.
+fn without_automation_origin(connection: &Connection) {
+    connection
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TEMP TABLE sessions_before_v42 AS SELECT * FROM agent_sessions;
+             DROP INDEX agent_sessions_by_leader;
+             DROP TABLE agent_sessions;
+             {AGENT_SESSIONS_V30};
+             CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+             INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM sessions_before_v42;
+             DROP TABLE sessions_before_v42;"
+        ))
+        .unwrap();
+}
 fn schema_of(version: u32) -> Vec<String> {
     let mut statements: Vec<String> = V13_SCHEMA
         .iter()
@@ -506,6 +524,13 @@ fn schema_of(version: u32) -> Vec<String> {
                 sql
             } else {
                 sql.replace(SESSION_OWNERS_V37, SESSION_OWNERS_V38)
+            }
+        })
+        .map(|sql| {
+            if version < 42 {
+                sql
+            } else {
+                sql.replace(AGENT_SESSIONS_V30, AGENT_SESSIONS_V42)
             }
         })
         .collect();
@@ -4296,6 +4321,22 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     }
     let before: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert!(before.iter().filter(|rows| !rows.is_empty()).count() >= 7);
+    // A store at or past v36 already holds the member index rows its writes
+    // built, which no later step recomputes; the documented records are
+    // inserted under a later format, so they get them here.
+    if from >= 36 {
+        let sessions = connection
+            .prepare("SELECT session_id FROM agent_sessions")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for session in sessions {
+            dim_app_server::storage::initialize_session_member_index(&connection, &session)
+                .unwrap();
+        }
+    }
     drop(connection);
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -7561,6 +7602,112 @@ async fn a_v31_store_upgrades_in_place_once() {
         .unwrap();
     assert_eq!(schema(&connection), schema_of(31));
     upgrades_in_place_once(&database, connection, 31).await;
+}
+
+/// #1421: the step that rebuilds `agent_sessions` for the `automation` origin
+/// keeps every business row and every Session `internal`, recreates each
+/// object `SCHEMA` places on the table, and leaves the SQL of the tables that
+/// reference it unchanged.
+#[tokio::test]
+async fn a_v41_store_upgrades_in_place_once_keeping_internal_launches() {
+    let database = Database::new();
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(41);
+    statements.sort_by_key(|sql| {
+        !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
+    });
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (41)", [])
+        .unwrap();
+    assert_eq!(schema(&connection), schema_of(41));
+    let referencing: Vec<(String, String)> = connection
+        .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name != 'agent_sessions' \
+             AND sql LIKE '%REFERENCES agent_sessions(%' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        referencing.len() >= 8,
+        "every table that references the rebuilt one is compared: {referencing:?}"
+    );
+    assert!(
+        referencing
+            .iter()
+            .any(|(name, _)| name == "session_catalog"),
+        "{referencing:?}"
+    );
+    upgrades_in_place_once(&database, connection, 41).await;
+    let connection = Connection::open(&database.0).unwrap();
+    for (name, sql) in &referencing {
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name=?1",
+                    [name],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+            *sql,
+            "the rebuild leaves the referencing table {name} as it was"
+        );
+    }
+    let indexed: Vec<String> = connection
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE tbl_name='agent_sessions' AND type='index' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(indexed, ["agent_sessions_by_leader"]);
+    for (session, expected) in [("s1", "client"), ("member", "internal")] {
+        let origin: String = connection
+            .query_row(
+                "SELECT origin FROM agent_sessions WHERE session_id=?1",
+                [session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            origin, expected,
+            "{session} keeps the origin it was stored with"
+        );
+    }
+    connection
+        .execute(
+            "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+             SELECT 'automation', config, created_at_ms, 'automation' FROM agent_sessions WHERE session_id='s1'",
+            [],
+        )
+        .unwrap();
+    // The catalog's own condition, over the upgraded table: the row a launch
+    // created before this format stays out of the automation class.
+    let automation: Vec<String> = connection
+        .prepare("SELECT session_id FROM agent_sessions WHERE origin != 'automation' ORDER BY session_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(automation, ["member", "s1"]);
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+                 SELECT 'bogus', config, created_at_ms, 'bogus' FROM agent_sessions WHERE session_id='s1'",
+                [],
+            )
+            .is_err(),
+        "the widened CHECK still refuses an origin it does not name"
+    );
 }
 
 /// A store upgrade that outlives `startup_timeout` still opens while it
