@@ -51,10 +51,7 @@ jobs:
   dependencies:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
-    runs-on: >-
-      ${{ fromJSON(vars.DIM_CI_MACOS_DEDICATED_RUNNERS == 'true'
-      && '["self-hosted","macOS","ARM64","dim-dependencies"]'
-      || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     env:
       CARGO_INCREMENTAL: "0"
@@ -87,10 +84,7 @@ jobs:
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
       needs.changes.outputs.web == 'true' || needs.changes.outputs.scripts == 'true'
     # PR runners must be isolated from release credentials and private networks.
-    runs-on: >-
-      ${{ fromJSON(vars.DIM_CI_MACOS_DEDICATED_RUNNERS == 'true'
-      && '["self-hosted","macOS","ARM64","dim-verify"]'
-      || '["self-hosted","macOS","ARM64"]') }}
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: "4"
