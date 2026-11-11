@@ -473,6 +473,33 @@ Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities
 Owns commands transferred from foreground execution, their terminal records and
 bounded completion notices on the calling branch.
 
+### Data face
+
+`backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id));
+the typed `BackgroundExec` serves it and stays the Rust binding.
+
+| Method | Request | Reply | Errors |
+| --- | --- | --- | --- |
+| `output` | `{taskId}` | `string`: the live tail preview | `unknown`, `closed` |
+| `outputPage` | `{taskId, cursor, limit}` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit` |
+| `wait` | `{taskId, timeoutMs}` | the `exec/ended` record `{taskId, status, result}` | `unknown`, `closed`, `timeout` |
+| `stop` | `{taskId}` | the `exec/ended` record | `unknown`, `closed` |
+
+`taskId` is a task this branch started. `output` reads the live capture; it is
+`unknown` for an ended or replayed task, whose registered file stays readable by
+`outputPage`. `outputPage` reads that file by byte cursor: `limit` rejects 0 and
+clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
+`cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
+ended task at once and otherwise waits for its dispatch, including with
+`timeoutMs: 0`. `stop` is kill: it cancels a running task so it ends `cancelled`
+and does not wake, and answers an already ended task's record without changing
+its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+drops the read and a dropped `wait` releases the watch. `start` needs the live
+process, so it is the `exec` tool's own operation and is not on the face.
+
+Errors cross as `{code, message}`; the codes are the variants above. The owner
+releases no lock across a read: the page opens the registered file itself.
+
 ### Dependencies
 
 | Service | Purpose |
@@ -533,13 +560,15 @@ branch-scoped, and a request on that branch after the notice carries the entry
 `a_turn_stop_keeps_background_work_and_its_wake_starts_a_turn`,
 `idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_end`,
 `running_tasks_hold_the_session_until_the_last_one_ends`,
-`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`.
+`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`,
+`background_exec_face_answers_as_the_typed_service` (the `backgroundExec` face
+against the typed service: tail, page, wait, stop and the error codes).
 
 <!-- generated:plugin BackgroundExec — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle` |
-| 提供 | `B:BackgroundExec` |
+| 提供 | `B:BackgroundExec`、`B:dyn HostDispatch#backgroundExec` |
 | 被注入于 | — |
 <!-- /generated -->

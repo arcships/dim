@@ -49,25 +49,55 @@ pub enum StartError {
     Termination(Box<ToolResult>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TaskError {
     /// No matching task or live output on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
 }
 
 /// Why one paged read of a task's registered output file answered nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum OutputPageError {
     /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// The registered output file is gone or unreadable: it was cleaned, or
     /// the task's Session was deleted.
+    #[error("the task's output file is no longer available")]
     Unavailable,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
+    /// The page budget was zero.
+    #[error("limit must be at least 1")]
+    InvalidLimit,
 }
+
+/// Why waiting for a task's end answered nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitError {
+    /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
+    Unknown,
+    /// This instance was unloaded, or the task's record was released.
+    #[error("BackgroundExec is closed")]
+    Closed,
+    /// The wait's own timeout elapsed first.
+    #[error("the task did not end before the timeout")]
+    Timeout,
+}
+
+/// Default page and largest page the paged read serves; a caller's `limit`
+/// clamps to the latter.
+pub const OUTPUT_PAGE_BYTES: u64 = 1024 * 1024;
+pub const OUTPUT_PAGE_BYTES_MAX: u64 = 4 * 1024 * 1024;
 
 /// One page of a task's registered output file, as
 /// `session.exec.output.page` answers it.
@@ -140,9 +170,14 @@ pub struct BackgroundExec {
     state: Mutex<State>,
 }
 
+#[rutis::service]
 impl BackgroundExec {
     /// Records the task with `exec/started` and supervises `process`; on
     /// failure the process is terminated and reaped before returning.
+    ///
+    /// Starting needs the live process, so it is the exec tool's own
+    /// operation; the `backgroundExec` face serves the task id afterwards.
+    #[service(skip)]
     pub async fn start(
         self: &Arc<Self>,
         request: StartRequest,
@@ -256,8 +291,9 @@ impl BackgroundExec {
         Ok(task_id)
     }
 
-    /// Reads the live capture without reconstructing a resource from history.
-    pub async fn output(&self, task_id: &str) -> Result<String, TaskError> {
+    /// Reads the live capture without reconstructing a resource from history:
+    /// what `backgroundExec.output` answers.
+    pub async fn output(&self, task_id: String) -> Result<String, TaskError> {
         let output = {
             let state = self.state.lock().unwrap();
             if state.closed {
@@ -265,19 +301,36 @@ impl BackgroundExec {
             }
             state
                 .tasks
-                .get(task_id)
+                .get(&task_id)
                 .and_then(|task| task.output.clone())
                 .ok_or(TaskError::Unknown)?
         };
         Ok(output.preview().await)
     }
 
-    /// Reads one page of the task's registered output file, by byte offset.
+    /// Reads one page of the task's registered output file, by byte offset:
+    /// what `backgroundExec.outputPage` answers. `limit` rejects 0 and clamps
+    /// to [`OUTPUT_PAGE_BYTES_MAX`]; a dropped call drops the read.
+    pub async fn output_page(
+        &self,
+        task_id: String,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<OutputPage, OutputPageError> {
+        if limit == 0 {
+            return Err(OutputPageError::InvalidLimit);
+        }
+        let limit = limit.min(OUTPUT_PAGE_BYTES_MAX) as usize;
+        self.page(&task_id, cursor, limit).await
+    }
+
+    /// The paged read behind [`Self::output_page`].
+    ///
     /// The file is the read's only source, so a running task, an ended task
     /// and a task rebuilt after an unload answer alike; the live capture and
     /// the result preview are not consulted. The file is append-only, so a
     /// cursor the method handed out always names a byte that never changes.
-    pub async fn output_page(
+    async fn page(
         &self,
         task_id: &str,
         cursor: u64,
@@ -376,16 +429,43 @@ impl BackgroundExec {
         })
     }
 
+    /// Waits until the task ends, or `timeout_ms` elapses: what
+    /// `backgroundExec.wait` answers. An ended task answers its record at
+    /// once; a dropped call releases the wait.
+    pub async fn wait(&self, task_id: String, timeout_ms: u64) -> Result<ExecEndedData, WaitError> {
+        let mut ended = {
+            let state = self.state.lock().unwrap();
+            if state.closed {
+                return Err(WaitError::Closed);
+            }
+            let task = state.tasks.get(&task_id).ok_or(WaitError::Unknown)?;
+            if let Some(done) = task.ended.borrow().clone() {
+                return Ok(done);
+            }
+            task.ended.subscribe()
+        };
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            ended.wait_for(Option::is_some),
+        )
+        .await
+        {
+            Ok(Ok(done)) => Ok(done.clone().expect("waited for Some")),
+            Ok(Err(_)) => Err(WaitError::Closed),
+            Err(_) => Err(WaitError::Timeout),
+        }
+    }
+
     /// Stops a task: cancels it while running, so it ends `cancelled` and
     /// does not wake. Returns once its `exec/ended` is dispatched; a task that
     /// already ended keeps its result and its wake.
-    pub async fn stop(&self, task_id: &str) -> Result<ExecEndedData, TaskError> {
+    pub async fn stop(&self, task_id: String) -> Result<ExecEndedData, TaskError> {
         let mut ended = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
                 return Err(TaskError::Closed);
             }
-            let task = state.tasks.get_mut(task_id).ok_or(TaskError::Unknown)?;
+            let task = state.tasks.get_mut(&task_id).ok_or(TaskError::Unknown)?;
             if let Some(done) = task.ended.borrow().clone() {
                 return Ok(done);
             }

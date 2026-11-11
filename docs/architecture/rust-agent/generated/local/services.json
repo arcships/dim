@@ -1977,6 +1977,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#backgroundExec@main",
+        "provider": 64,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#branchLifecycle@main",
         "provider": 60,
         "generation": 1,

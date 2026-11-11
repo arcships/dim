@@ -82,7 +82,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `guideEntries` | session | PromptGuide | data | `register` async |
 | `historyRenderer` | session | SessionScope | internal(hot-path) | — |
 | `initialPromptConfiguration` | session | PromptRegistry | internal(hot-path) | — |
-| `mcpSession` | session | McpSession | internal(object) | — |
+| `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
 | `prepareContextHost` | session | SessionScope | internal(hot-path) | — |
 | `prepareModelHost` | session | PrepareModelHost | internal(hot-path) | — |
 | `promptHost` | session | PromptRegistry | internal(hot-path) | — |
@@ -107,7 +107,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
 | `agentLoop` | branch | Loop | internal(hot-path) | — |
 | `approval` | branch | Approval | internal(object) | — |
-| `backgroundExec` | branch | BackgroundExec | internal(object) | — |
+| `backgroundExec` | branch | BackgroundExec | data | `output` async, `outputPage` async, `stop` async, `wait` async |
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | internal(hot-path) | — |
 | `branchOpening` | branch | BranchScope | internal(hot-path) | — |
