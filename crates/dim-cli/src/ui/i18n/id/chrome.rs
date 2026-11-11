@@ -522,6 +522,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "menggambar diagram… {count} baris",
         // notify.rs
         "Task complete" => "Tugas selesai",
+        "Background task finished: {label}" => "Tugas latar selesai: {label}",
+        "Background task failed: {label}" => "Tugas latar gagal: {label}",
+        "Background task stopped: {label}" => "Tugas latar dihentikan: {label}",
         "Permission needed: {tool}" => "Perlu izin: {tool}",
         "Question waiting for your answer" => "Pertanyaan menunggu jawaban",
         "Notify when agent needs you" => "Beri tahu saat agen butuh Anda",

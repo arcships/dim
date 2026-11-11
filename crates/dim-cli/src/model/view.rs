@@ -268,13 +268,44 @@ pub struct TaskView {
     pub finished: Option<TaskFinish>,
 }
 
+/// How a task ended, as the owner that ended it classified it: a stop is not
+/// a failure, so the three outcomes stay distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl TaskOutcome {
+    /// The mark the task row draws before a finished task's label, one cell
+    /// each.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Completed => "\u{2713} ",
+            Self::Failed => "\u{2717} ",
+            Self::Stopped => "\u{2298} ",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskFinish {
     pub at: u64,
+    /// The owner's own status name, which the panel and a card show.
     pub status: &'static str,
-    pub failed: bool,
+    pub outcome: TaskOutcome,
+    /// Whether a read of recorded events produced this finish rather than the
+    /// live event stream: a replayed end is history, not news.
+    pub replayed: bool,
     pub text: String,
     pub exit_code: Option<i64>,
+}
+
+impl TaskFinish {
+    pub fn failed(&self) -> bool {
+        self.outcome == TaskOutcome::Failed
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -290,7 +321,10 @@ pub enum TaskOutputState {
     Unavailable,
     Unsupported,
     ReadError(String),
-    Finished { status: &'static str, failed: bool },
+    Finished {
+        status: &'static str,
+        outcome: TaskOutcome,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

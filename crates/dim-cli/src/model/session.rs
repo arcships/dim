@@ -159,7 +159,7 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
-    ErrorReport(crate::report::Request),
+    Report(crate::report::Request),
     Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft(Vec<DraftPart>, SubmitMode),

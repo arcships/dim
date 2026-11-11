@@ -470,8 +470,6 @@ impl Worker {
                 history.error = Some(error.clone());
                 let fatal = request.branch_id == "main" && !history.done;
                 let report = crate::report::Captured::observed(
-                    &request.session_id,
-                    &request.branch_id,
                     crate::report::Operation::SessionRead,
                     code.as_deref(),
                     format!("Could not read conversation state: {error}"),
@@ -489,7 +487,7 @@ impl Worker {
                     history.earlier = false;
                     let mut older = Projection::for_branch(&request.branch_id);
                     for event in events {
-                        older.apply(&request.branch_id, &event);
+                        older.replay(&request.branch_id, &event);
                     }
                     if let Some(projection) =
                         transcript_mut(&mut self.projection, &mut self.lines, &request.branch_id)
@@ -498,7 +496,7 @@ impl Worker {
                     }
                 } else {
                     for event in events {
-                        self.apply(&request.branch_id, event);
+                        self.replay(&request.branch_id, event);
                     }
                     self.task_history_queue.push_back(request.branch_id.clone());
                 }

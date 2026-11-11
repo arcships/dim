@@ -336,8 +336,8 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 指令 | `input/withdraw { input_id, reason? }`，一个分支指令事件。`reason` 是通用可选文本，不带业务含义，由客户端为被删除的输入显示；不带它的事件不变。生产方：撤回服务（客户端、进程调用方）。它本身从不是关于该输入的事实 |
 | 结果事实 | `input/deleted { input_id }`，只由 InputQueue 写入，且只在它消费 `input/withdraw` 时仍持有该输入、尚未应用的情况下写入 |
 | 持有 | InputQueue 从某输入的 `input/message` 起持有它，直到为其写入 `input/applied` 或 `input/deleted`。 |
-| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写入任何内容，也没有失败事件；调用方收到的回复为 `notHeld` |
-| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，回复还带 `steer: {inputId, sequence}`，即新 Steer 输入，以及提交检查没有做的工作（Hooks A.6.2）对应的 `warnings?: [{check, message}]`，没有时缺省。Steer 输入无论旧输入是否仍被持有都会写入，所以带 steer 的 `notHeld` 回复同样带这些警告 |
+| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写入结果事实或替代输入，也没有失败事件；调用方收到的回复为 `notHeld` |
+| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，只有 `deleted` 回复还带 `steer: {inputId, sequence}`，即已提交的替代输入，并随之带提交检查没有做的工作（Hooks A.6.2）对应的 `warnings?: [{check, message}]`，没有时缺省。这些警告描述的就是这次替代写入，并随它的回执出现：没有写入替代输入的回复两者都不带 |
 | 进程与分支部分路径 | 进程调用方使用 `sessions.withdraw`，分支部分使用 InputQueue 的分支撤回服务：按调用方写入输入时拿到的 `input_id` |
 | 写入路径 | 该服务追加 `input/withdraw`，然后以 InputQueue 对该指令的决定作答。InputQueue 的复核只使用其自身的决策状态（持有集合），从不对另一所有者的事实加锁 |
 | 撤回并作为 Steer 重新提交 | 一个原子批次：针对旧输入的 `input/withdraw` 加新的 Steer `input/message`。撤回只在旧输入仍被持有时生效；新输入无论如何都会写入 |

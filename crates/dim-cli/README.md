@@ -974,17 +974,22 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
  user message
                           one normal separator row
  ◆ Thinking… · text
-                          released layout space, if any
+ ◐ 1 · cargo build 1m12s  the tasks running apart from the turn
  ╭─ · thinking… ─────────────────────────────╮
  │ › Ask anything...                        │   composer stays anchored
  ╰──────────────────────────────────────────╯
 ```
+
+The task row sits above the composer here as it does above the dock in fullscreen,
+so the released space of a closing menu still returns below it and the composer
+keeps its place.
 
 While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
 
 Fullscreen takes the alternate screen, keeps the transcript itself and scrolls it in a viewport above a dock that never moves. A transcript shorter than the viewport sits on the dock and grows upwards:
 
 ```text
+ ◐ 2 · cargo build 1m12s · cargo test 34s
  answer row                                                     ▁   scrollbar: last column,
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
@@ -994,6 +999,14 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
 ```
+
+The row above the composer names the tasks running apart from the turn, in both
+modes: `◐ <count> · <label> <elapsed>` for each, cut to one line, with `✓`, `⊘`
+for a stop or `✗` for a failure where a task that just ended keeps its place for
+five seconds. With nothing running the count is dropped, so the row starts at
+the first mark: `✓ cargo build 1m12s`. It reads the same Session task list
+`/tasks` shows and draws nothing while none runs. `Enter` on an empty composer
+opens `/tasks` while it shows, once no held message is left to steer.
 
 | Fullscreen input | Effect |
 | --- | --- |
@@ -1268,7 +1281,10 @@ its rows and queued retries are discarded.
 The same collection keeps all unfinished work and the latest 50 terminal facts,
 ordered by the terminal event timestamp and then branch/start-event identity.
 Only actual command ends, delivery failures and delegation results finish rows.
-The status strip counts unfinished work. Enter shows a command's live output or
+The status strip counts unfinished work beside the run status rather than in its
+place, so a running turn does not hide what it left running. A task that ends in
+the background sends one terminal notification, once per task; a reconnect that
+finds tasks already finished sends none. Enter shows a command's live output or
 its recorded final result, or opens a delivered member's read-only conversation.
 Finished delivery results remain available even without a member Session.
 

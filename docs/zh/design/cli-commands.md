@@ -106,7 +106,8 @@ Fullscreen, 8 rows             Scrollback, 8 rows
 
 ```text
 按键                 空闲                         运行中
-Enter               提交                         排队草稿；草稿为空：steer 最早的排队消息
+Enter               提交；草稿为空且任务行显示时    排队草稿；草稿为空：steer 最早的排队消息；
+                    打开 /tasks                  没有排队消息时，任务行显示则打开 /tasks
 Tab                 选择较早消息                 选择较早消息
                     （fullscreen）               （fullscreen）
 Shift+Left          —                            草稿为空：把最新一条排队消息取回草稿
@@ -115,6 +116,11 @@ Ctrl+S              —                            草稿非空：steer 草稿�
 Up / Down           输入历史                     输入历史
 Home / End          滚动（fullscreen，草稿为空） 滚动（fullscreen，草稿为空）
 ```
+
+草稿为空时按 Enter 只有在更早的分支都不适用时才打开 `/tasks`：先是两种模式下的
+shell 运行拦截，再是 steer 最早的排队消息，只有在没有排队消息时才轮到它。任务行必须
+正在显示，即有任务在运行、或有刚结束的任务仍在淡出；后台没有任何任务时，这个按键既不
+提交也不打开。
 
 - 排队消息在当前运行结束后运行，每次运行一条。被 steer 的消息在当前运行的下一个轮次边界并入该运行。
 - 取回消息和中断都通过 `session.input.withdraw` 撤回消息。文字只在撤回被删除后才进入草稿。
@@ -126,7 +132,7 @@ Home / End          滚动（fullscreen，草稿为空） 滚动（fullscreen，
 
 ### 队列条
 
-有消息排队时，输入框上方的队列条在带标题的边框里画出队列：按排队顺序排列，最先运行的一条在最上面，最后一行提示作用于队列的按键。运行中，草稿为空时，`Shift+Left` 把最新排队的消息取回输入框编辑。`Ctrl+S` steer 当前草稿；草稿为空时，`Ctrl+S` 或 `Enter` steer 最早的排队消息。Up/Down 仍用于输入历史。提示只在命令表里有对应命令时才写出命令名，因此它写出的 `/name` 都在本地执行，不会作为用户消息发给模型。目前没有查看队列的命令，所以提示只列按键。
+有消息排队时，输入框上方的队列条在带标题的边框里画出队列：按排队顺序排列，最先运行的一条在最上面，最后一行提示作用于队列的按键。运行中，草稿为空时，`Shift+Left` 把最新排队的消息取回输入框编辑。`Ctrl+S` steer 当前草稿；草稿为空时，`Ctrl+S` 或 `Enter` steer 最早的排队消息。没有排队消息时，草稿为空的 Enter 在任务行显示期间打开 `/tasks`，见[运行按键](#运行按键与排队)。Up/Down 仍用于输入历史。提示只在命令表里有对应命令时才写出命令名，因此它写出的 `/name` 都在本地执行，不会作为用户消息发给模型。目前没有查看队列的命令，所以提示只列按键。
 
 ```text
 ┌─ Queue (2) ─────────────────────────────────────┐
@@ -922,7 +928,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode account PROVIDER` | 打印被描述账号的非机密状态。 |
 | `dimcode logout PROVIDER` | 让被描述的账号退出。 |
 | `/connect` | 列出 `provider.management` 报告的提供方；被描述的账号打开签到或退出步骤，其他提供方打开连接表单。 |
-| `/report` | 打开当前 TUI 中最近一条可上报的错误。可将报告保存为 ZIP，查看保存路径，并在保存后打开分享页面。参见[报告契约](../../design/plugins/Report.md#2-client-interaction)。 |
+| `/report` | 上报当前 Session。回合进行中或没有错误时均可使用。可将报告保存为 ZIP，查看保存路径，并在保存后打开分享页面。参见[报告契约](../../design/plugins/Report.md#2-client-interaction)。 |
 | `/exit` | 在空闲的交互提示符处断开并退出。 |
 | `!command` / `!!command` | 以 record/private 模式调用 Session 现有的 `shell.run`，模型回合进行中也可用。 |
 | `--permission read-only\|workspace-write\|full-access` | 为 `dimcode`、`tui`、`exec` 和 `exec resume` 选择新建或恢复的 Session 的预设（[权限控制](#权限控制)）。 |

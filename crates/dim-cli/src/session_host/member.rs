@@ -46,24 +46,31 @@ struct Observation {
 impl Observation {
     fn apply(&mut self, notice: Notice) {
         match notice {
-            Notice::Event(event) => {
-                if let EventContent::Configuration(configuration) = &event.content
-                    && event.sequence > self.model_through
-                {
-                    self.model_through = event.sequence;
-                    self.model = Some(format!(
-                        "{} / {}",
-                        configuration.provider_id, configuration.model_id
-                    ));
-                }
-                if event.sequence > self.cursor {
-                    self.cursor = event.sequence;
-                    self.goal_stale |= crate::goal::changed(&event.content);
-                    self.projection.apply("main", &event);
-                }
-            }
+            Notice::Event(event) => self.event(event, false),
             Notice::Progress(progress) => self.projection.progress(&progress),
             Notice::State(running) => self.projection.set_running(running),
+        }
+    }
+
+    /// Folds one event of the member's Session; `replayed` says a read of its
+    /// recorded history carried it, as every page of the conversation does.
+    fn event(&mut self, event: Event, replayed: bool) {
+        if let EventContent::Configuration(configuration) = &event.content
+            && event.sequence > self.model_through
+        {
+            self.model_through = event.sequence;
+            self.model = Some(format!(
+                "{} / {}",
+                configuration.provider_id, configuration.model_id
+            ));
+        }
+        if event.sequence > self.cursor {
+            self.cursor = event.sequence;
+            self.goal_stale |= crate::goal::changed(&event.content);
+            match replayed {
+                true => self.projection.replay("main", &event),
+                false => self.projection.apply("main", &event),
+            }
         }
     }
 }
@@ -480,13 +487,13 @@ impl Worker {
                             if observation.earlier {
                                 let mut older = Projection::default();
                                 for event in observation.window.take() {
-                                    older.apply("main", &event);
+                                    older.replay("main", &event);
                                 }
                                 observation.projection.prepend(older);
                                 observation.earlier = false;
                             } else {
                                 for event in observation.window.take() {
-                                    observation.apply(Notice::Event(event));
+                                    observation.event(event, true);
                                 }
                                 observation.cursor =
                                     observation.window.through.expect("window cutoff");

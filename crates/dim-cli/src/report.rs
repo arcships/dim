@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::wire::{Event, EventContent};
 
-pub const HINT: &str = "Run /report to report this error.";
+pub const HINT: &str = "Run /report to create a report.";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,35 +20,23 @@ pub enum Operation {
 
 #[derive(Clone)]
 pub struct Captured {
-    pub session: String,
-    pub branch: String,
     pub message: String,
-    sequence: Option<u64>,
     pub operation: Operation,
     code: Option<String>,
     observed_at: DateTime<Utc>,
 }
 
 impl Captured {
-    pub fn observed(
-        session: &str,
-        branch: &str,
-        operation: Operation,
-        code: Option<&str>,
-        message: String,
-    ) -> Self {
+    pub fn observed(operation: Operation, code: Option<&str>, message: String) -> Self {
         Self {
-            session: session.to_owned(),
-            branch: branch.to_owned(),
             message,
-            sequence: None,
             operation,
             code: code.map(str::to_owned),
             observed_at: SystemTime::now().into(),
         }
     }
 
-    pub fn event(session: &str, branch: &str, event: &Event) -> Option<Self> {
+    pub fn event(event: &Event) -> Option<Self> {
         let (operation, error) = match &event.content {
             EventContent::ModelEnd(end) => match &end.outcome {
                 ModelOutputOutcome::Failed { error, .. } => (Operation::ModelGeneration, error),
@@ -59,26 +47,24 @@ impl Captured {
             }
             _ => return None,
         };
-        let mut capture = Self::observed(session, branch, operation, None, error.clone());
-        capture.sequence = Some(event.sequence);
-        Some(capture)
+        Some(Self::observed(operation, None, error.clone()))
     }
 
-    pub fn params(&self, session: bool) -> Value {
+    pub fn params(&self) -> Value {
         let observed = json!({
             "operation": self.operation,
             "code": self.code,
             "observedAt": self.observed_at,
             "clientVersion": crate::version::VERSION,
         });
-        let error = match self.sequence.filter(|_| session) {
-            Some(sequence) => {
-                json!({"kind":"timeline","branchId":self.branch,"sequence":sequence,"observed":observed})
-            }
-            None => json!({"kind":"observed","observed":observed}),
-        };
-        json!({"error":error})
+        json!({"error":{"kind":"observed","observed":observed}})
     }
+}
+
+#[derive(Clone)]
+pub enum Target {
+    Session(String),
+    Error(Captured),
 }
 
 pub struct Request {
@@ -87,7 +73,7 @@ pub struct Request {
 }
 
 pub enum Action {
-    Prepare(Captured),
+    Prepare(Target),
     Plan {
         draft: Draft,
         redact: bool,
@@ -143,15 +129,19 @@ enum LocalGeneration {
 
 #[derive(Deserialize)]
 pub struct Evidence {
-    pub timeline: Option<Value>,
+    pub timeline: Option<TimelineEvidence>,
     pub unavailable: Option<EvidenceUnavailable>,
+}
+
+#[derive(Deserialize)]
+pub struct TimelineEvidence {
+    pub recent: Vec<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceUnavailable {
     NoReference,
-    FailureUnavailable,
     ReadFailed,
     Omitted,
     #[serde(other)]

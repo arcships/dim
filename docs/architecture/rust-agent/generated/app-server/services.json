@@ -263,11 +263,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::agents::sessions::SessionPermissions",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "status": "Ready"
@@ -293,12 +288,6 @@
             "service": "dim_agent_runtime::parts::PartRegistry",
             "scope": null,
             "provider": 45,
-            "generation": 1
-          },
-          {
-            "service": "dim_app_server::agents::sessions::SessionPermissions",
-            "scope": null,
-            "provider": 37,
             "generation": 1
           },
           {
@@ -330,12 +319,6 @@
           {
             "service": "dim_agent_runtime::parts::PartRegistry",
             "provider": 45,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_app_server::agents::sessions::SessionPermissions",
-            "provider": 37,
             "declared": true,
             "external": true
           },

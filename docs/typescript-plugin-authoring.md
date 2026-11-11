@@ -1006,6 +1006,11 @@ pass the plugin module, or its object or function, to `registerDefinition`, and 
 
 ## Packaging and trust
 
+The [plugin distribution proposal](design/plugin-distribution.md) defines the requirements for
+catalog discovery, repository subdirectory installation, authoring and debugging skills, and
+their human guides and tool reference. Its new fields and commands are proposals; use the
+supported package contract below until the owning interfaces are available.
+
 Keep the `dimcode/plugin` import type-only. Use a plugin's own build dependencies
 to resolve it and bundle the rutis SDK/business dependencies, or include them in
 that plugin's package. Module resolution must not rely on the host repository's

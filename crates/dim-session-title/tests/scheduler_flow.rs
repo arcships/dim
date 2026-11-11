@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Duration};
 use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn scheduler_reports_do_not_replace_the_first_operator_input_for_titles() {
+async fn a_scheduled_delivery_does_not_replace_the_first_operator_input_for_titles() {
     let store = Store::new();
     std::fs::create_dir(store.0.join("scheduler")).unwrap();
     let mut builder = AgentBuilder::new(AgentConfig::default());

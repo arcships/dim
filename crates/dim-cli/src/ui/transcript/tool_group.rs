@@ -965,7 +965,7 @@ fn append_card(lines: &mut Vec<Line>, call: &Call<'_>, now: u64, detail: Detail)
     let task = &card.task;
     let (status, state) = match &task.finished {
         Some(_) if refused => (t("Not started"), State::Failed),
-        Some(finish) if finish.failed => (t(finish.status), State::Failed),
+        Some(finish) if finish.failed() => (t(finish.status), State::Failed),
         Some(finish) => (t(finish.status), State::Done),
         None if task.kind == TaskKind::Member(MemberTarget::Starting) => {
             (t("Starting"), State::Running)
@@ -1063,7 +1063,7 @@ fn append_card(lines: &mut Vec<Line>, call: &Call<'_>, now: u64, detail: Detail)
         lines.push(line(activity, Tone::Muted, Overflow::Truncate));
     }
     if let Some(finish) = &task.finished {
-        let tone = if finish.failed {
+        let tone = if finish.failed() {
             Tone::Danger
         } else {
             Tone::Text

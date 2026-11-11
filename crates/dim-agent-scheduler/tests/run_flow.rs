@@ -1,6 +1,7 @@
-//! A manual run (`schedule.run_now`) through a real App Server: the run
-//! launches a non-interactive Session, its scheduled-run input is consumed,
-//! and the run settles `completed` with its effective authority recorded.
+//! A manual run (`schedule.run_now`) through a real App Server: the window
+//! launches a non-interactive Session, writes one input to its `main` branch,
+//! and settles `delivered` with the authority the Session received. Nothing
+//! follows the launched Session after the write (§3.2).
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_scheduler::install;
@@ -98,7 +99,7 @@ async fn select_model(client: &mut Client) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_manual_run_launches_a_session_and_settles_completed() {
+async fn a_manual_run_launches_a_session_writes_one_input_and_settles_delivered() {
     let home = tempfile::tempdir().unwrap();
     std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
@@ -150,7 +151,7 @@ async fn a_manual_run_launches_a_session_and_settles_completed() {
         .await
         .unwrap();
     let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    assert_eq!(accepted["state"], "launching", "{accepted}");
+    assert_eq!(accepted["state"], "delivering", "{accepted}");
 
     let run = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -165,10 +166,7 @@ async fn a_manual_run_launches_a_session_and_settles_completed() {
                 .find(|run| run["run_id"] == run_id.as_str())
                 .cloned();
             if let Some(run) = found
-                && !matches!(
-                    run["state"].as_str(),
-                    Some("launching" | "submitted" | "running")
-                )
+                && run["state"] != json!("delivering")
             {
                 return run;
             }
@@ -176,14 +174,25 @@ async fn a_manual_run_launches_a_session_and_settles_completed() {
         }
     })
     .await
-    .expect("the run settles");
-    assert_eq!(run["state"], "completed", "{run}");
-    assert_eq!(run["detail"], "completed", "{run}");
+    .expect("the delivery settles");
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["detail"], "", "{run}");
     assert_eq!(run["session_origin"], "launch", "{run}");
+    assert_eq!(run["branch_id"], "main", "{run}");
     assert!(run["session_id"].is_string(), "{run}");
     assert!(run["input_event_id"].is_string(), "{run}");
+    assert!(run["deadline_at"].is_string(), "{run}");
     assert_eq!(run["policy"]["preset"], "read-only", "{run}");
 
+    // The record is settled by the write; the launched Session consumes the
+    // input on its own, so the model sees it only once that turn runs.
+    client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": run["session_id"], "branchId": "main"}),
+        )
+        .await
+        .unwrap();
     let requests = model.texts();
     assert!(
         requests.contains("scheduled-run"),
@@ -192,6 +201,10 @@ async fn a_manual_run_launches_a_session_and_settles_completed() {
     assert!(
         requests.contains("Summarize the day."),
         "the prompt reached the model"
+    );
+    assert!(
+        !requests.contains("scheduler-report:"),
+        "no report input reaches any Session"
     );
 
     drop(client);

@@ -17,7 +17,8 @@ use crate::model::session::{
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    CompactionState, LineState, LineView, RowKind, SideLine, TaskTarget, ViewRow, ViewSnapshot,
+    CompactionState, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome, TaskTarget,
+    ViewRow, ViewSnapshot,
 };
 use crate::ui::Env;
 use crate::ui::Initial;
@@ -1037,6 +1038,12 @@ struct App {
     message_blocks: Vec<usize>,
     /// The second their running time was last drawn for.
     card_second: u64,
+    /// The second the task line was last laid out for: its elapsed times
+    /// follow this, and it repaints the row so an ended task leaves on time.
+    task_second: u64,
+    /// Whether the task line was drawn in the frame the pulse last asked for:
+    /// the frame that erases it is the one where it stopped being drawn.
+    task_row: bool,
     session_id: String,
     /// The invocation's first message, submitted once the first frame is
     /// drawn.
@@ -1102,6 +1109,9 @@ struct App {
     /// The permission or question request last notified: a prompt that
     /// stays open notifies once.
     notified_request: Option<String>,
+    /// Background tasks already reported as ended, by task id: a task the
+    /// live stream ended is reported once.
+    notified_tasks: HashSet<String>,
     /// The session's runs as the terminal's program status follows them.
     runs: Runs,
     /// The draft set aside while Ctrl+O/Ctrl+P has the palette open; it
@@ -1426,6 +1436,8 @@ impl App {
             card_blocks: Vec::new(),
             message_blocks: Vec::new(),
             card_second: 0,
+            task_second: 0,
+            task_row: false,
             session_id: String::new(),
             initial: None,
             unsent: None,
@@ -1457,6 +1469,7 @@ impl App {
             notifications: Vec::new(),
             revealed: std::collections::HashMap::new(),
             notified_request: None,
+            notified_tasks: HashSet::new(),
             runs: Runs::default(),
             palette_stash: None,
             command_entry: false,
@@ -1915,6 +1928,19 @@ impl App {
             self.refresh_cards();
             changed = true;
         }
+        // The task row names a running task's elapsed time and drops an ended
+        // one after TASK_FADE, so it needs a frame on every new second while
+        // it is drawn, and one more once it is not: the pulse of a running
+        // turn is not enough, and a task that ends while the turn is idle
+        // would otherwise stay on screen.
+        if second != self.task_second {
+            let shown = self.task_line_shown();
+            if shown || self.task_row {
+                self.task_second = second;
+                self.task_row = shown;
+                changed = true;
+            }
+        }
         if self.composer.mention_tick() {
             changed = true;
         }
@@ -2055,6 +2081,7 @@ impl App {
                 }
                 self.sync_prompt();
                 self.queue_notification(was_running && !switched);
+                self.queue_background_notifications();
             }
             Update::QuestionReply {
                 session_id,
@@ -2168,20 +2195,22 @@ impl App {
                         tone: Tone::Warning,
                     });
                 }
-                self.report_error = Some(error);
+                if self.session_id.is_empty()
+                    && matches!(error.operation, crate::report::Operation::SessionRead)
+                {
+                    self.report_error = Some(error);
+                }
             }
             Update::ReportReply { panel, reply } => {
                 if let Some(Prompt::Report(report)) = &mut self.prompt
                     && report.id == panel
                 {
                     if let Some(action) = report.reply(reply) {
-                        self.host.send(Command::ErrorReport(crate::report::Request {
-                            panel,
-                            action,
-                        }));
+                        self.host
+                            .send(Command::Report(crate::report::Request { panel, action }));
                     }
                 } else if let crate::report::Reply::Prepared(session, prepared) = reply {
-                    self.host.send(Command::ErrorReport(crate::report::Request {
+                    self.host.send(Command::Report(crate::report::Request {
                         panel,
                         action: crate::report::Action::Cancel {
                             draft: crate::report::Draft {
@@ -2811,10 +2840,8 @@ impl App {
                 }
             };
             if let Some(action) = action {
-                self.host.send(Command::ErrorReport(crate::report::Request {
-                    panel,
-                    action,
-                }));
+                self.host
+                    .send(Command::Report(crate::report::Request { panel, action }));
             }
             return Outcome::Continue;
         }
@@ -3000,6 +3027,12 @@ impl App {
                 if key.mods.0 == 0 && self.composer.is_empty() && !self.queued().is_empty() =>
             {
                 self.steer();
+                return Outcome::Continue;
+            }
+            KeyCode::Enter
+                if key.mods.0 == 0 && self.composer.is_empty() && self.task_line_shown() =>
+            {
+                self.run_command("tasks", "");
                 return Outcome::Continue;
             }
             KeyCode::Left
@@ -3980,6 +4013,39 @@ impl App {
         }
     }
 
+    /// Reports each background task the live stream ended, once per task: a
+    /// redraw or a return to the Session does not report it again, and a
+    /// finish a read replayed is history, not news.
+    fn queue_background_notifications(&mut self) {
+        use crate::ui::notify::Event;
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let ended: Vec<(String, String, TaskOutcome)> = snapshot
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                let finish = task.finished.as_ref()?;
+                (!finish.replayed).then(|| {
+                    (
+                        task.id.clone(),
+                        crate::sanitize::safe(&task.label),
+                        finish.outcome,
+                    )
+                })
+            })
+            .collect();
+        for (id, label, outcome) in ended {
+            if !self.notified_tasks.insert(id) {
+                continue;
+            }
+            if self.notify {
+                self.notifications
+                    .push(Event::BackgroundFinished { label, outcome });
+            }
+        }
+    }
+
     /// What the terminal's program status says (`ui::status`): an
     /// interface that lost its App Server has failed whatever it was doing.
     fn program_status(&self) -> Status {
@@ -4631,19 +4697,26 @@ impl App {
             "report" => {
                 if !args.trim().is_empty() {
                     self.set_notice(t("Usage: /report"));
-                } else if let Some(error) = self.report_error.clone() {
-                    self.report_sequence += 1;
-                    let panel = self.report_sequence;
-                    self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
-                        panel, &error,
-                    ))));
-                    self.host.send(Command::ErrorReport(crate::report::Request {
-                        panel,
-                        action: crate::report::Action::Prepare(error),
-                    }));
-                } else {
-                    self.set_notice(t("No reportable error in this interface."));
+                    return Outcome::Continue;
                 }
+                let target = if !self.session_id.is_empty() {
+                    crate::report::Target::Session(self.session_id.clone())
+                } else if let Some(error) = self.report_error.clone() {
+                    crate::report::Target::Error(error)
+                } else {
+                    self.set_notice(t("No session to report."));
+                    return Outcome::Continue;
+                };
+                self.report_sequence += 1;
+                let panel = self.report_sequence;
+                self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
+                    panel,
+                    target.clone(),
+                ))));
+                self.host.send(Command::Report(crate::report::Request {
+                    panel,
+                    action: crate::report::Action::Prepare(target),
+                }));
                 Outcome::Continue
             }
             "exit" => Outcome::Exit(0),
@@ -5128,6 +5201,23 @@ impl App {
         if let Some(panel) = side_above {
             let margin = " ".repeat(MARGIN);
             live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
+        }
+        // The tasks running apart from the turn sit on one row above the
+        // composer, in both interfaces; a task that just ended keeps its place
+        // for TASK_FADE seconds so it does not vanish from under the eye. No
+        // task draws no row, so an idle Session keeps the space. It goes above
+        // the anchor, so the row and the executor it names give their space
+        // back rather than moving the composer up.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if self.prompt.is_none()
+            && let Some(snapshot) = &self.snapshot
+            && let Some(line) =
+                task_line(shown_tasks(&snapshot.tasks, now), now, width, &self.palette)
+        {
+            live.push(format!("{}{line}", " ".repeat(MARGIN)));
         }
         frame.anchor = live.len();
         let live_budget = crate::ui::render::live_row_budget(
@@ -5859,6 +5949,7 @@ impl App {
     }
 
     fn switch_session(&mut self, session_id: String, kind: SwitchKind) {
+        self.report_error = None;
         let first = self.session_id.is_empty();
         // Home's first message started this Session: nothing shown to clear.
         if first
@@ -5888,6 +5979,9 @@ impl App {
         }
         self.snapshot = None;
         self.runs = Runs::default();
+        // Another Session's tasks are its own: this interface has reported
+        // none of them.
+        self.notified_tasks.clear();
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
@@ -6314,20 +6408,41 @@ impl App {
                 Some(s) if !s.questions.is_empty() => Some(t("answer required").to_owned()),
                 Some(s) if !s.approvals.is_empty() => Some(t("permission required").to_owned()),
                 Some(s) if s.running => Some(t("esc interrupt").to_owned()),
-                Some(s) if s.tasks.iter().any(|task| task.finished.is_none()) => Some(tf(
-                    "{count} in background · /tasks",
-                    &[(
-                        "count",
-                        &s.tasks
-                            .iter()
-                            .filter(|task| task.finished.is_none())
-                            .count()
-                            .to_string(),
-                    )],
-                )),
                 _ => None,
             },
         }
+    }
+
+    /// How many tasks the Session runs apart from the turn, as its own
+    /// status segment: none while every task has ended, so an idle Session
+    /// with nothing in the background draws no segment at all.
+    fn background_label(&self) -> Option<String> {
+        let count = self
+            .snapshot
+            .as_ref()?
+            .tasks
+            .iter()
+            .filter(|task| task.finished.is_none())
+            .count();
+        (count > 0).then(|| {
+            tf(
+                "{count} in background · /tasks",
+                &[("count", &count.to_string())],
+            )
+        })
+    }
+
+    /// Whether the task line draws now: a task runs, or one ended within
+    /// [`TASK_FADE`] seconds.
+    fn task_line_shown(&self) -> bool {
+        let Some(snapshot) = &self.snapshot else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        !shown_tasks(&snapshot.tasks, now).is_empty()
     }
 
     /// `1.8K / 256K`: the main branch's context use against its window, with
@@ -6383,6 +6498,9 @@ impl App {
                 &p.muted
             };
             parts.push(fg(&slot, color));
+        }
+        if let Some(background) = self.background_label() {
+            parts.push(fg(&background, &p.muted));
         }
         if let Some(goal) = self.goal_label() {
             parts.push(fg(goal, &p.muted));
@@ -6450,6 +6568,10 @@ impl App {
         if let Some(slot) = slot {
             left.push_str("  ");
             left.push_str(&slot);
+        }
+        if let Some(background) = self.background_label() {
+            left.push_str("  ");
+            left.push_str(&background);
         }
         let total = cols.saturating_sub(2);
         let label = self
@@ -6641,6 +6763,105 @@ fn queue_strip(
         .into_iter()
         .map(|row| format!("{margin}{row}"))
         .collect()
+}
+
+/// A background task's end stays on the persistent line this long (seconds)
+/// after it ended, so it does not vanish from under the eye that just saw it.
+const TASK_FADE: u64 = 5;
+
+/// `elapsed` as the task line writes it: `0s`, `12s`, `1m12s`, `2h05m`.
+fn task_elapsed(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    if seconds < 3600 {
+        return format!("{}m{:02}s", seconds / 60, seconds % 60);
+    }
+    format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+}
+
+/// The tasks the line shows at `now` (Unix seconds): every unfinished task,
+/// then each finished one for [`TASK_FADE`] seconds after it ended. The
+/// second value is the task's end, absent while it runs.
+fn shown_tasks(
+    tasks: &[crate::model::view::TaskView],
+    now: u64,
+) -> Vec<(&crate::model::view::TaskView, Option<u64>)> {
+    tasks
+        .iter()
+        .filter_map(|task| match &task.finished {
+            None => Some((task, None)),
+            Some(finish) => {
+                let ended = finish.at / 1000;
+                (ended + TASK_FADE > now).then_some((task, Some(ended)))
+            }
+        })
+        .collect()
+}
+
+/// The line of tasks running apart from the turn: `◐ 2 · cargo build 1m12s ·
+/// cargo test 34s` while both run, with `✓`, `✗` or `⊘` in place of the
+/// elapsed time's lead once one ends. Without a running task the count has
+/// nothing to say, so the row starts at the first entry's mark:
+/// `✓ cargo build 1m12s`. A single row, cut to `width` cells; `None` when
+/// there is nothing to show.
+fn task_line(
+    tasks: Vec<(&crate::model::view::TaskView, Option<u64>)>,
+    now: u64,
+    width: usize,
+    p: &Palette,
+) -> Option<String> {
+    use crate::ui::text::truncate_cells;
+    if tasks.is_empty() {
+        return None;
+    }
+    let running = tasks.iter().filter(|(_, end)| end.is_none()).count();
+    let head = (running > 0).then(|| format!("\u{25d0} {running}"));
+    let mut row = head.clone().unwrap_or_default();
+    let mut room = width.saturating_sub(display_width(&row));
+    for (shown, (task, end)) in tasks.iter().enumerate() {
+        let started = task.started_at / 1000;
+        let at = end.unwrap_or(now).max(started);
+        let elapsed = task_elapsed(at - started);
+        let label = crate::sanitize::safe(&task.label);
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mark = task
+            .finished
+            .as_ref()
+            .map_or("", |finish| finish.outcome.mark());
+        let lead = if shown == 0 && head.is_none() {
+            ""
+        } else {
+            " · "
+        };
+        let entry = format!("{lead}{mark}{label} {elapsed}");
+        let fits = display_width(&entry) <= room;
+        if !fits {
+            if shown == 0 {
+                // The first entry still names what runs, shortened to fit.
+                let tail = format!(" {elapsed}");
+                let fixed = display_width(lead) + display_width(mark) + tail.len();
+                let label = truncate_cells(&label, room.saturating_sub(fixed).max(1));
+                row.push_str(&format!("{lead}{mark}{label}{tail}"));
+            } else {
+                row.push_str(&truncate_cells(" · …", room.max(1)));
+            }
+            break;
+        }
+        row.push_str(&entry);
+        room -= display_width(&entry);
+    }
+    let failed = tasks
+        .iter()
+        .any(|(task, end)| end.is_some() && task.finished.as_ref().is_some_and(TaskFinish::failed));
+    let color = if running > 0 {
+        &p.activity
+    } else if failed {
+        &p.danger
+    } else {
+        &p.success
+    };
+    Some(fg(&truncate_cells(&row, width.max(1)), color))
 }
 
 /// The side panel's line drawn as its transcript, without the opening
@@ -8901,6 +9122,557 @@ mod tests {
         fn shutdown(self: Box<Self>) {}
     }
 
+    /// An unfinished command task named `label`.
+    fn background_task(id: &str, label: &str) -> crate::model::view::TaskView {
+        crate::model::view::TaskView {
+            id: id.into(),
+            branch_id: "main".into(),
+            kind: crate::model::view::TaskKind::Command(TaskTarget {
+                branch_id: "main".into(),
+                task_id: id.into(),
+            }),
+            label: label.into(),
+            started_at: 0,
+            finished: None,
+        }
+    }
+
+    /// A task the live stream ended with `outcome`.
+    fn finished(
+        mut task: crate::model::view::TaskView,
+        outcome: TaskOutcome,
+    ) -> crate::model::view::TaskView {
+        task.finished = Some(crate::model::view::TaskFinish {
+            at: 1,
+            status: match outcome {
+                TaskOutcome::Completed => "Completed",
+                TaskOutcome::Failed => "Failed",
+                TaskOutcome::Stopped => "Cancelled",
+            },
+            outcome,
+            replayed: false,
+            text: String::new(),
+            exit_code: None,
+        });
+        task
+    }
+
+    /// A task that ended at `at_ms`, Unix milliseconds.
+    fn ended_at(
+        mut task: crate::model::view::TaskView,
+        at_ms: u64,
+    ) -> crate::model::view::TaskView {
+        task.finished = Some(crate::model::view::TaskFinish {
+            at: at_ms,
+            status: "Completed",
+            outcome: TaskOutcome::Completed,
+            replayed: false,
+            text: String::new(),
+            exit_code: None,
+        });
+        task
+    }
+
+    #[test]
+    fn the_task_line_names_running_tasks_and_fades_an_ended_one() {
+        use crate::ui::render::panel::strip_escapes;
+        let p = &test_theme().palette;
+        let now = 1_000;
+        let running = background_task("t1", "cargo build");
+        let mut running = running;
+        running.started_at = (now - 72) * 1000;
+        let line = task_line(shown_tasks(&[running.clone()], now), now, 60, p)
+            .expect("a running task draws a line");
+        let plain = strip_escapes(&line);
+        assert_eq!(plain, "◐ 1 · cargo build 1m12s", "{plain}");
+
+        let mut second = background_task("t2", "cargo test");
+        second.started_at = (now - 34) * 1000;
+        let line = task_line(
+            shown_tasks(&[running.clone(), second.clone()], now),
+            now,
+            60,
+            p,
+        )
+        .expect("two tasks draw one line");
+        let plain = strip_escapes(&line);
+        assert_eq!(plain, "◐ 2 · cargo build 1m12s · cargo test 34s", "{plain}");
+
+        let ended = ended_at(running, now * 1000);
+        let both = [ended.clone(), second.clone()];
+        let shown = shown_tasks(&both, now);
+        let plain = strip_escapes(&task_line(shown.clone(), now, 60, p).expect("a line"));
+        assert!(plain.starts_with("◐ 1 · ✓ cargo build 1m12s"), "{plain}");
+        assert!(plain.contains("cargo test 34s"), "{plain}");
+
+        // An ended task that has not faded yet is the only one the row
+        // shows, so it carries no count.
+        let ended_now = |task, outcome| {
+            let mut task = finished(task, outcome);
+            task.finished.as_mut().expect("a finish").at = now * 1000;
+            task
+        };
+        let mut failed = ended_now(background_task("t3", "cargo build"), TaskOutcome::Failed);
+        failed.started_at = (now - 72) * 1000;
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&[failed], now), now, 60, p).expect("a line"));
+        assert!(plain.starts_with("✗ cargo build 1m12s"), "{plain}");
+
+        let mut stopped = ended_now(background_task("t4", "cargo test"), TaskOutcome::Stopped);
+        stopped.started_at = (now - 12) * 1000;
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&[stopped], now), now, 60, p).expect("a line"));
+        assert_eq!(plain, "⊘ cargo test 12s", "{plain}");
+
+        // Five seconds after the end the ended task leaves; nothing else runs.
+        let later = now + TASK_FADE;
+        assert!(
+            shown_tasks(&[ended], later).is_empty(),
+            "an ended task fades out"
+        );
+        assert!(task_line(Vec::new(), later, 60, p).is_none());
+    }
+
+    /// With nothing running the count has nothing to say, so the row starts
+    /// at the first entry's mark and carries no leading separator; a narrow
+    /// row still names that task.
+    #[test]
+    fn a_row_of_ended_tasks_starts_at_the_first_mark_without_a_count() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+        let p = &test_theme().palette;
+        let now = 1_000;
+        let ended_now = |task, outcome| {
+            let mut task = finished(task, outcome);
+            task.finished.as_mut().expect("a finish").at = now * 1000;
+            task
+        };
+        let mut first = ended_now(
+            background_task("t1", "cargo build --all-targets --locked"),
+            TaskOutcome::Completed,
+        );
+        first.started_at = (now - 72) * 1000;
+        let mut second = ended_now(
+            background_task("t2", "cargo test --workspace --locked"),
+            TaskOutcome::Stopped,
+        );
+        second.started_at = (now - 34) * 1000;
+
+        let tasks = [first.clone(), second.clone()];
+        let plain =
+            strip_escapes(&task_line(shown_tasks(&tasks, now), now, 100, p).expect("a line"));
+        assert_eq!(
+            plain,
+            "✓ cargo build --all-targets --locked 1m12s · ⊘ cargo test --workspace --locked 34s",
+            "{plain}"
+        );
+
+        for width in [20, 30, 40, 100] {
+            let line = strip_escapes(
+                &task_line(shown_tasks(&[first.clone()], now), now, width, p).expect("a line"),
+            );
+            assert!(!line.starts_with(" ·"), "{width}: {line:?}");
+            assert!(line.starts_with("✓ "), "{width}: {line:?}");
+            assert!(visible_width(&line) <= width, "{width}: {line:?}");
+            assert!(line.contains("cargo"), "{width}: {line:?}");
+        }
+    }
+
+    #[test]
+    fn a_narrow_task_line_cuts_labels_and_still_names_the_first_task() {
+        use crate::ui::render::panel::{strip_escapes, visible_width};
+        let p = &test_theme().palette;
+        let now = 100;
+        let mut first = background_task("t1", "cargo build --all-targets --locked");
+        first.started_at = 0;
+        let mut second = background_task("t2", "cargo test --workspace --locked");
+        second.started_at = 0;
+        for width in [20, 30, 40, 120] {
+            let line = task_line(
+                shown_tasks(&[first.clone(), second.clone()], now),
+                now,
+                width,
+                p,
+            )
+            .expect("a line");
+            assert!(
+                visible_width(&line) <= width,
+                "{width}: too wide: {:?}",
+                strip_escapes(&line)
+            );
+            let plain = strip_escapes(&line);
+            assert!(plain.contains("cargo"), "{width}: {plain:?}");
+        }
+    }
+
+    #[test]
+    fn the_dock_draws_the_task_line_above_the_composer_and_enter_opens_the_tasks() {
+        use crate::model::session::Command;
+        use crate::ui::render::panel::strip_escapes;
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let mut task = background_task("t1", "cargo build");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        task.started_at = (now - 72) * 1000;
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            focus: "main".into(),
+            tasks: vec![task.clone()],
+            ..ViewSnapshot::default()
+        })));
+        for fullscreen in [false, true] {
+            app.fullscreen = fullscreen;
+            let rows: Vec<String> = app
+                .frame((80, 30))
+                .live
+                .iter()
+                .map(|row| strip_escapes(row))
+                .collect();
+            let line = rows
+                .iter()
+                .position(|row| row.contains("cargo build 1m12s"))
+                .unwrap_or_else(|| panic!("{fullscreen}: no task line in {rows:?}"));
+            let composer = rows
+                .iter()
+                .position(|row| row.contains('╭'))
+                .expect("the composer's top border");
+            assert!(line < composer, "{fullscreen}: the line sits above it");
+        }
+
+        app.fullscreen = false;
+        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Enter,
+            Modifiers::NONE,
+        )));
+        assert!(
+            matches!(app.prompt, Some(Prompt::Tasks(_))),
+            "Enter on the line opens /tasks"
+        );
+        assert!(
+            sent.borrow()
+                .iter()
+                .any(|command| matches!(command, Command::TaskHistory { .. })),
+            "the panel reads the Session's task history"
+        );
+    }
+
+    /// The row's end is the pulse's doing: an ended task keeps its place while
+    /// it fades, and the tick that finds it gone asks for the frame that
+    /// erases the row, so the composer never keeps a row nothing draws into.
+    #[test]
+    fn the_pulse_asks_for_the_frame_that_erases_an_ended_task_row() {
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let snapshot = |tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let fading = ended_at(background_task("t1", "cargo build"), (now - 1) * 1000);
+        app.apply(snapshot(vec![fading]));
+        assert!(app.task_line_shown(), "an ended task stays while it fades");
+        assert!(app.tick(), "the pulse repaints the fading row");
+        assert!(app.task_row, "the frame it asked for drew the row");
+
+        // The end is older than the fade: nothing draws the row, and the
+        // pulse still asks for the frame that erases what it last drew. The
+        // pulse runs once a second, so the recorded second is moved back the
+        // way the clock would.
+        let gone = ended_at(
+            background_task("t2", "cargo test"),
+            (now - TASK_FADE) * 1000,
+        );
+        app.apply(snapshot(vec![gone]));
+        assert!(!app.task_line_shown(), "an ended task leaves");
+        app.task_second -= 1;
+        assert!(app.tick(), "the pulse asks for the erasing frame");
+        assert!(!app.task_row, "and then stops asking");
+    }
+
+    /// A task whose end a read of recorded history applied, as the attach
+    /// read and every history page do.
+    fn replayed(
+        mut task: crate::model::view::TaskView,
+        outcome: TaskOutcome,
+    ) -> crate::model::view::TaskView {
+        task = finished(task, outcome);
+        if let Some(finish) = &mut task.finished {
+            finish.replayed = true;
+        }
+        task
+    }
+
+    #[test]
+    fn each_background_task_is_reported_ended_once() {
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let build = |notify: bool| {
+            let mut app = App::new(
+                Box::new(Idle),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            app.notify = notify;
+            app
+        };
+        let snapshot = |tasks: Vec<crate::model::view::TaskView>| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let mut app = build(true);
+        app.apply(snapshot(vec![background_task("t1", "cargo build")]));
+        assert!(app.notifications.is_empty());
+
+        let ended = vec![finished(
+            background_task("t1", "cargo build"),
+            TaskOutcome::Failed,
+        )];
+        app.apply(snapshot(ended.clone()));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo build".into(),
+                outcome: TaskOutcome::Failed,
+            }]
+        );
+
+        app.notifications.clear();
+        app.apply(snapshot(ended));
+        assert!(app.notifications.is_empty(), "{:?}", app.notifications);
+
+        let mut quiet = build(false);
+        quiet.apply(snapshot(vec![background_task("t2", "cargo test")]));
+        quiet.apply(snapshot(vec![finished(
+            background_task("t2", "cargo test"),
+            TaskOutcome::Completed,
+        )]));
+        assert!(quiet.notifications.is_empty(), "the switch is respected");
+    }
+
+    /// A finish a read applied is history: the attach read and every task
+    /// history page replay the ends a Session already recorded, and none of
+    /// them is news. Only an end the live stream carries after attach is,
+    /// whatever snapshot happens to show it first.
+    #[test]
+    fn a_replayed_end_is_history_and_a_live_one_is_news() {
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let snapshot = |tasks: Vec<crate::model::view::TaskView>| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+
+        // The worker publishes an empty or loading snapshot before the
+        // delayed history reply lands.
+        app.apply(snapshot(Vec::new()));
+        assert!(app.notifications.is_empty());
+
+        app.apply(snapshot(vec![replayed(
+            background_task("t1", "already done"),
+            TaskOutcome::Completed,
+        )]));
+        assert!(
+            app.notifications.is_empty(),
+            "a restored end is history: {:?}",
+            app.notifications
+        );
+
+        app.apply(snapshot(vec![
+            replayed(
+                background_task("t1", "already done"),
+                TaskOutcome::Completed,
+            ),
+            finished(background_task("t2", "live now"), TaskOutcome::Stopped),
+        ]));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "live now".into(),
+                outcome: TaskOutcome::Stopped,
+            }],
+            "a stop the live stream carried is one notification"
+        );
+    }
+
+    /// Switching away from a Session and back re-reads its history: those
+    /// ends are replayed and raise nothing, while a task that ends after the
+    /// return still does.
+    #[test]
+    fn returning_to_a_session_reports_none_of_its_ended_tasks_again() {
+        use crate::model::session::SwitchKind;
+        use crate::ui::notify::Event;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        let snapshot = |session: &str, tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: session.into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let ended = replayed(background_task("t1", "cargo build"), TaskOutcome::Completed);
+
+        app.apply(snapshot("s1", vec![background_task("t1", "cargo build")]));
+        app.apply(snapshot(
+            "s1",
+            vec![finished(
+                background_task("t1", "cargo build"),
+                TaskOutcome::Completed,
+            )],
+        ));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo build".into(),
+                outcome: TaskOutcome::Completed,
+            }]
+        );
+
+        app.notifications.clear();
+        app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        app.apply(snapshot(
+            "s2",
+            vec![replayed(
+                background_task("u1", "cargo test"),
+                TaskOutcome::Completed,
+            )],
+        ));
+        assert!(
+            app.notifications.is_empty(),
+            "another Session's history is not news: {:?}",
+            app.notifications
+        );
+
+        app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        app.apply(snapshot("s1", vec![ended.clone()]));
+        assert!(
+            app.notifications.is_empty(),
+            "coming back replays its ends instead of reporting them: {:?}",
+            app.notifications
+        );
+
+        app.apply(snapshot(
+            "s1",
+            vec![
+                ended,
+                finished(background_task("t2", "cargo run"), TaskOutcome::Failed),
+            ],
+        ));
+        assert_eq!(
+            app.notifications,
+            vec![Event::BackgroundFinished {
+                label: "cargo run".into(),
+                outcome: TaskOutcome::Failed,
+            }],
+            "a task that ends after the return still reports"
+        );
+    }
+
+    #[test]
+    fn the_background_count_survives_a_running_turn() {
+        use crate::ui::render::panel::strip_escapes;
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            tasks: vec![
+                background_task("t1", "cargo build"),
+                background_task("t2", "cargo test"),
+            ],
+            ..ViewSnapshot::default()
+        })));
+        let line = strip_escapes(&app.status_line(160));
+        assert!(line.contains("esc interrupt"), "{line}");
+        assert!(line.contains("2 in background · /tasks"), "{line}");
+
+        let docked = app
+            .dock_status(Some("· working…  1s"))
+            .expect("a status corner");
+        let docked = strip_escapes(&docked);
+        assert!(docked.contains("esc interrupt"), "{docked}");
+        assert!(docked.contains("2 in background · /tasks"), "{docked}");
+
+        let mut no_tasks = ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            ..ViewSnapshot::default()
+        };
+        app.apply(Update::Snapshot(Box::new(no_tasks.clone())));
+        let line = strip_escapes(&app.status_line(160));
+        assert!(line.contains("esc interrupt"), "{line}");
+        assert!(!line.contains("in background"), "{line}");
+
+        no_tasks.tasks = vec![background_task("t3", "cargo fmt")];
+        app.apply(Update::Snapshot(Box::new(no_tasks)));
+        assert!(
+            strip_escapes(&app.status_line(160)).contains("1 in background · /tasks"),
+            "a new task counts again"
+        );
+    }
+
     /// A session that keeps every command the interface sends.
     struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<Command>>>);
 
@@ -10526,6 +11298,37 @@ mod tests {
             })
             .unwrap();
         }
+
+        // A background task's end takes the same write: the task runs on the
+        // first snapshot, ends on the next, and the form is the one this
+        // terminal understands.
+        let snapshot = |tasks| {
+            Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                tasks,
+                ..ViewSnapshot::default()
+            }))
+        };
+        let task = background_task("t1", "cargo build");
+        drawn.app.apply(snapshot(vec![task.clone()]));
+        drawn
+            .app
+            .apply(snapshot(vec![finished(task, TaskOutcome::Completed)]));
+        let mut written = String::new();
+        write_notifications(
+            &mut drawn.app.notifications,
+            &terminal(Multiplexer::Tmux, "iTerm.app", "tmux-256color"),
+            |bytes| {
+                written.push_str(std::str::from_utf8(bytes).expect("the form is text"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            written,
+            "\x1bPtmux;\x1b\x1b]9;DIM: Background task finished: cargo build\x07\x1b\\\x07",
+            "a background end: the wrapped form and a bare BEL after it"
+        );
     }
 
     #[test]
@@ -12380,16 +13183,6 @@ mod tests {
     }
 
     fn open_test_report(app: &mut App) -> u64 {
-        app.apply(Update::Reportable {
-            error: crate::report::Captured::observed(
-                "s1",
-                "main",
-                crate::report::Operation::SessionRead,
-                Some("session_closed"),
-                "Could not read conversation state".into(),
-            ),
-            show_error: true,
-        });
         press(app, KeyCode::Char('/'));
         typed(app, "report");
         press(app, KeyCode::Enter);
@@ -12404,10 +13197,85 @@ mod tests {
             "reportId": report_id,
             "plan": {
                 "planId": plan_id, "generation": {"kind": "local"},
-                "evidence": {"unavailable": "no_reference"}, "instructionsStatus": "none"
+                "evidence": {"timeline":{"recent":[],"truncated":false}}, "instructionsStatus": "none"
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn report_targets_the_shown_session_during_a_run_and_keeps_the_home_fallback() {
+        use crate::report::{Action, Captured, Operation, Reply, Request, Target};
+
+        for fullscreen in [false, true] {
+            let (mut app, sent, _home) = asked();
+            app.fullscreen = fullscreen;
+            app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            app.run_command("report", "");
+            assert_eq!(
+                app.notice.as_ref().map(|(text, _)| text.as_str()),
+                Some(t("No session to report."))
+            );
+            app.apply(Update::Reportable {
+                error: Captured::observed(
+                    Operation::SessionRead,
+                    Some("session_closed"),
+                    "Could not read conversation state".into(),
+                ),
+                show_error: true,
+            });
+            open_test_report(&mut app);
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::Report(Request {
+                    action: Action::Prepare(Target::Error(_)),
+                    ..
+                }))
+            ));
+            press(&mut app, KeyCode::Esc);
+
+            app.apply(Update::Switched {
+                session_id: "s2".into(),
+                kind: SwitchKind::Resumed,
+                cwd: Some("/work".into()),
+            });
+            app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s2".into(),
+                running: true,
+                ..ViewSnapshot::default()
+            })));
+            assert!(app.running());
+            let panel = open_test_report(&mut app);
+            assert!(
+                matches!(sent.borrow().last(), Some(Command::Report(Request { action: Action::Prepare(Target::Session(session)), .. })) if session == "s2")
+            );
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Prepared(Some("s2".into()), prepared_report("r2", "p1")),
+            });
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel")
+            };
+            let screen = report.render(90, 20, &app.palette).join("\n");
+            assert!(screen.contains(t("Report this session")));
+            assert!(screen.contains(t("Evidence · No recent session activity")));
+            press(&mut app, KeyCode::Esc);
+
+            app.apply(Update::Switched {
+                session_id: String::new(),
+                kind: SwitchKind::Resumed,
+                cwd: None,
+            });
+            app.run_command("report", "");
+            assert_eq!(
+                app.notice.as_ref().map(|(text, _)| text.as_str()),
+                Some(t("No session to report."))
+            );
+        }
     }
 
     #[test]
@@ -12417,6 +13285,7 @@ mod tests {
         for fullscreen in [false, true] {
             let (mut app, sent, _home) = asked();
             app.fullscreen = fullscreen;
+            app.session_id = "s1".into();
             press(&mut app, KeyCode::Char(' '));
             let answer = selection(&app).expect("selected answer");
             let panel = open_test_report(&mut app);
@@ -12432,7 +13301,7 @@ mod tests {
             assert_eq!(selection(&app), Some(answer));
             assert!(matches!(
                 sent.borrow().last(),
-                Some(Command::ErrorReport(Request { action: Action::Cancel { draft, generation: false }, .. }))
+                Some(Command::Report(Request { action: Action::Cancel { draft, generation: false }, .. }))
                     if draft.report_id == "r1"
             ));
         }
@@ -12440,9 +13309,10 @@ mod tests {
 
     #[test]
     fn report_replans_after_a_failed_generate_and_preserves_options_after_expiry() {
-        use crate::report::{Action, Reply, Request};
+        use crate::report::{Action, Reply, Request, Target};
 
         let (mut app, sent, _home) = asked();
+        app.session_id = "s1".into();
         let panel = open_test_report(&mut app);
         app.apply(Update::ReportReply {
             panel,
@@ -12459,6 +13329,7 @@ mod tests {
         typed(&mut app, "omit timeline");
         press(&mut app, KeyCode::Enter);
         let mut plan = prepared_report("r1", "p3").plan;
+        plan.evidence.timeline = None;
         plan.evidence.unavailable = Some(crate::report::EvidenceUnavailable::Omitted);
         app.apply(Update::ReportReply {
             panel,
@@ -12477,7 +13348,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Generate(draft), .. }))
+            Some(Command::Report(Request { action: Action::Generate(draft), .. }))
                 if draft.plan_id == "p3"
         ));
         app.apply(Update::ReportReply {
@@ -12490,7 +13361,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
                 if draft.report_id == "r1" && instructions == "omit timeline"
         ));
         app.apply(Update::ReportReply {
@@ -12500,20 +13371,25 @@ mod tests {
                 draft_missing: true,
             },
         });
+        app.apply(Update::Switched {
+            session_id: "s2".into(),
+            kind: SwitchKind::Resumed,
+            cwd: Some("/work".into()),
+        });
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Prepare(error), .. }))
-                if error.session == "s1" && error.message == "Could not read conversation state"
+            Some(Command::Report(Request { action: Action::Prepare(Target::Session(session)), .. }))
+                if session == "s1"
         ));
         app.apply(Update::ReportReply {
             panel,
-            reply: Reply::Prepared(None, prepared_report("r2", "p4")),
+            reply: Reply::Prepared(Some("s1".into()), prepared_report("r2", "p4")),
         });
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::ErrorReport(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
-                if draft.report_id == "r2" && draft.session.is_none() && instructions == "omit timeline"
+            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
+                if draft.report_id == "r2" && draft.session.as_deref() == Some("s1") && instructions == "omit timeline"
         ));
     }
 
@@ -12531,6 +13407,7 @@ mod tests {
             (valid, true),
         ] {
             let (mut app, _sent, home) = asked();
+            app.session_id = "s1".into();
             app.cwd_key = home.path().display().to_string();
             let panel = open_test_report(&mut app);
             app.apply(Update::ReportReply {

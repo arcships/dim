@@ -170,8 +170,10 @@ v0.166.0). `Enter` submits when no run is in progress.
 
 ```text
 key                 run idle                     run in progress
-Enter               submit                       queue the draft; empty draft:
-                                                 steer the oldest queued message
+Enter               submit; no draft:            queue the draft; empty draft:
+                    /tasks while the task       steer the oldest queued message;
+                    line shows                  nothing queued: /tasks while the
+                                                task line shows
 Tab                 pick an earlier message      pick an earlier message
                     (fullscreen)                 (fullscreen)
 Shift+Left          —                            empty draft: recall the newest held
@@ -183,6 +185,12 @@ Ctrl+S              —                            draft not empty: steer the dr
 Up / Down           input history                input history
 Home / End          scroll (fullscreen, empty)   scroll (fullscreen, empty)
 ```
+
+Enter on an empty composer opens `/tasks` only after the earlier branches have
+had their say: the shell-run guard in either mode, then the steer of the oldest
+queued message, and only with nothing held. The task line must show, as it does
+while a task runs or an ended one still fades; with nothing in the background
+the key submits nothing and opens nothing.
 
 - A queued message runs after the current run ends, one message per run. A
   steered message joins the current run at its next turn boundary.
@@ -231,7 +239,9 @@ messages in transcript order, then held messages oldest first. Each strip row
 names its state. During a run, `Shift+Left` on an empty draft recalls the newest
 held message subject to the attachment rule above. `Ctrl+S` steers the draft,
 or the oldest held message when the draft is empty; empty Enter does the same.
-Up/Down remain input history outside the panel.
+With nothing held, the empty-composer Enter opens `/tasks` while the task line
+shows, as the [run keys](#run-keys-and-queue) state. Up/Down remain input
+history outside the panel.
 
 ```text
 ┌─ Queue (2) ──────────────────────────────────────────────┐
@@ -1486,7 +1496,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode account PROVIDER` | Print the described account's non-secret state. |
 | `dimcode logout PROVIDER` | Sign the described account out. |
 | `/connect` | List the Providers `provider.management` reports; a described account opens its sign-in or sign-out step, and any other Provider opens the connection form. |
-| `/report` | Open the latest error that offered reporting in this TUI. Save the local report ZIP, see its path, or open a share destination after saving. [Report contract](plugins/Report.md#2-client-interaction). |
+| `/report` | Report the current Session, including during a turn or when no error occurred. Save the local report ZIP, see its path, or open a share destination after saving. [Report contract](plugins/Report.md#2-client-interaction). |
 | `/exit` | Detach and exit from the idle interactive prompt. |
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |

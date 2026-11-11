@@ -93,7 +93,6 @@ flowchart LR
   p37 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p71
   p71 -->|"dim_event_hub::bridge::EventHub"| p75
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p70
-  p37 -->|"dim_app_server::agents::sessions::SessionPermissions"| p70
   p9 -->|"dim_app_server::methods::ManagementMethods"| p70
   p13 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p70
   p18 -->|"dim_app_server::settings::SettingsService"| p70

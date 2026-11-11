@@ -61,10 +61,10 @@ body:
     attributes:
       label: Diagnostics & context · 诊断信息和环境
       description: |
-        If Dim offers to report the error, run `/report` in the TUI and review the generated report before sharing it on GitHub.
+        Run `/report` in the TUI to generate a report for the current session. Review the generated report before sharing it on GitHub.
         If `/report` is unavailable and you installed the Rust alpha via npm, try updating with `npm install -g dimcode-alpha` and reproducing the issue.
 
-        如果 Dim 提示可以上报此错误，请在 TUI 中运行 `/report`，检查生成的报告后再分享到 GitHub。
+        在 TUI 中运行 `/report` 可为当前会话生成报告。检查生成的报告后再分享到 GitHub。
         如果你通过 npm 安装了 Rust alpha 版，但没有 `/report` 命令，可以运行 `npm install -g dimcode-alpha` 更新后尝试复现。
 
         Include relevant details such as your OS or terminal, provider and model, permission mode, enabled plugins, hooks or MCP servers, or client and server versions.

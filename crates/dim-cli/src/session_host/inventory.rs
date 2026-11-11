@@ -80,6 +80,7 @@ impl Worker {
                                 delivery: delivery.clone(),
                             },
                             request.started_at,
+                            true,
                         );
                     }
                     if let Some(line) = self.lines.get_mut(branch) {
@@ -97,6 +98,7 @@ impl Worker {
                                     delivery,
                                 },
                                 request.started_at,
+                                true,
                             );
                         }
                     }

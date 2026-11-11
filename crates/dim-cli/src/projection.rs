@@ -20,8 +20,8 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{
     ApprovalView, CompactionPart, CompactionPartSize, CompactionState, CompactionView,
     FailureDetail, LineCut, LineState, LineView, MemberCard, MemberConversationState, MemberTarget,
-    QueuedInput, RetryView, RowKind, RowTone, TaskFinish, TaskKind, TaskTarget, TaskView, TurnEnd,
-    ViewRow, ViewSnapshot, WorkflowView,
+    QueuedInput, RetryView, RowKind, RowTone, TaskFinish, TaskKind, TaskOutcome, TaskTarget,
+    TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -183,7 +183,18 @@ impl Projection {
         }
     }
 
+    /// Applies an event the live stream carried.
     pub fn apply(&mut self, branch_id: &str, event: &Event) {
+        self.fold(branch_id, event, false);
+    }
+
+    /// Applies an event a read replayed from recorded history: a task it ends
+    /// had already ended before this interface attached.
+    pub fn replay(&mut self, branch_id: &str, event: &Event) {
+        self.fold(branch_id, event, true);
+    }
+
+    fn fold(&mut self, branch_id: &str, event: &Event, replayed: bool) {
         match &event.content {
             EventContent::ToolCall(data) => {
                 self.questions
@@ -351,8 +362,12 @@ impl Projection {
                             ExecStatus::Failed => "Failed",
                             ExecStatus::Cancelled => "Cancelled",
                         },
-                        failed: data.status == ExecStatus::Failed
-                            || data.result.is_error == Some(true),
+                        outcome: match data.status {
+                            ExecStatus::Completed => TaskOutcome::Completed,
+                            ExecStatus::Failed => TaskOutcome::Failed,
+                            ExecStatus::Cancelled => TaskOutcome::Stopped,
+                        },
+                        replayed,
                         text: result_text(&data.result),
                         exit_code: data
                             .result
@@ -385,22 +400,29 @@ impl Projection {
                 self.delegation_started(branch_id, data, &event.id, event.create_at)
             }
             EventContent::CollaborationDelivered(data) => {
-                self.delegation_delivered(branch_id, data, event.create_at)
+                self.delegation_delivered(branch_id, data, event.create_at, replayed)
             }
             EventContent::CollaborationResult(data) => {
-                let (status, failed, text) = match &data.outcome {
-                    CollaborationOutcome::Completed => ("Completed", false, data.text.clone()),
-                    CollaborationOutcome::Failed { reason } => {
-                        ("Failed", true, format!("{reason}\n{}", data.text))
+                let (status, outcome, text) = match &data.outcome {
+                    CollaborationOutcome::Completed => {
+                        ("Completed", TaskOutcome::Completed, data.text.clone())
                     }
-                    CollaborationOutcome::Cancelled { reason } => {
-                        ("Cancelled", false, format!("{reason}\n{}", data.text))
-                    }
+                    CollaborationOutcome::Failed { reason } => (
+                        "Failed",
+                        TaskOutcome::Failed,
+                        format!("{reason}\n{}", data.text),
+                    ),
+                    CollaborationOutcome::Cancelled { reason } => (
+                        "Cancelled",
+                        TaskOutcome::Stopped,
+                        format!("{reason}\n{}", data.text),
+                    ),
                 };
                 let finish = TaskFinish {
                     at: event.create_at,
                     status,
-                    failed,
+                    outcome,
+                    replayed,
                     text,
                     exit_code: None,
                 };
@@ -868,6 +890,7 @@ impl Projection {
         branch_id: &str,
         data: &dim_agent_types::CollaborationDeliveredData,
         started_at: u64,
+        replayed: bool,
     ) {
         let starting = |task: &TaskView| {
             task.branch_id == branch_id
@@ -891,7 +914,8 @@ impl Projection {
                 task.finished = Some(TaskFinish {
                     at: started_at,
                     status: "Failed",
-                    failed: true,
+                    outcome: TaskOutcome::Failed,
+                    replayed,
                     text: serde_json::to_value(error)
                         .expect("typed delivery error serializes")
                         .as_str()
@@ -1191,20 +1215,22 @@ impl Projection {
         })
     }
 
-    /// Adopts a stored run of this Session from `branch_id`.
+    /// Adopts a stored run of this Session from `branch_id`. Every caller
+    /// reads the run's own record, so a run that already ended is history.
     pub fn set_workflow(&mut self, branch_id: &str, run: WorkflowRun) {
         let finished = (!run.state.unfinished()).then(|| {
-            let (status, failed) = match run.state {
-                WorkflowState::Completed => ("Completed", false),
-                WorkflowState::Failed => ("Failed", true),
-                WorkflowState::Stopped => ("Stopped", false),
-                WorkflowState::Interrupted => ("Interrupted", true),
+            let (status, outcome) = match run.state {
+                WorkflowState::Completed => ("Completed", TaskOutcome::Completed),
+                WorkflowState::Failed => ("Failed", TaskOutcome::Failed),
+                WorkflowState::Stopped => ("Stopped", TaskOutcome::Stopped),
+                WorkflowState::Interrupted => ("Interrupted", TaskOutcome::Failed),
                 WorkflowState::Running | WorkflowState::Stopping => unreachable!("terminal"),
             };
             TaskFinish {
                 at: run.ended_at.unwrap_or(run.created_at),
                 status,
-                failed,
+                outcome,
+                replayed: true,
                 text: String::new(),
                 exit_code: None,
             }
@@ -3149,6 +3175,98 @@ mod tests {
         let rows = projection.snapshot().rows;
         let row = rows.iter().find(|row| row.kind == RowKind::Error).unwrap();
         assert_eq!(row.text, "turn failed: context preparation failed");
+    }
+
+    /// Every end the command owner writes arrives as `exec/ended` with a
+    /// status: a timeout, a kill and a non-zero exit are `failed`, and a stop
+    /// is `cancelled`. The status is authoritative, so a stop stays stopped
+    /// even though `ExecProcess::finish_background` marks its result as an
+    /// error, which is the payload the owner writes.
+    #[test]
+    fn a_timed_out_killed_or_non_zero_exit_task_finishes_failed() {
+        let started = |task: &str| {
+            serde_json::json!({
+                "id": format!("started-{task}"),
+                "sequence": 1,
+                "create_at": 1000,
+                "type": "exec",
+                "name": "started",
+                "data": {
+                    "turn_id": "turn", "request_id": "request",
+                    "call_id": task, "task_id": task,
+                    "description": "cargo build",
+                    "output_path": "/server/private/output",
+                },
+            })
+        };
+        for (task, status, result, outcome) in [
+            (
+                "timed-out",
+                "failed",
+                serde_json::json!({"content": "Command timed out.", "isError": true}),
+                TaskOutcome::Failed,
+            ),
+            (
+                "killed",
+                "failed",
+                serde_json::json!({
+                    "content": "Command terminated with SIGKILL.",
+                    "isError": true,
+                    "structuredContent": {"signal": "SIGKILL"},
+                }),
+                TaskOutcome::Failed,
+            ),
+            (
+                "exit-seven",
+                "failed",
+                serde_json::json!({
+                    "content": "Command failed with exit code 7.",
+                    "isError": true,
+                    "structuredContent": {"exitCode": 7},
+                }),
+                TaskOutcome::Failed,
+            ),
+            (
+                "done",
+                "completed",
+                serde_json::json!({"content": "Command finished."}),
+                TaskOutcome::Completed,
+            ),
+            (
+                "stopped",
+                "cancelled",
+                serde_json::json!({
+                    "content": "Command cancelled by user.",
+                    "isError": true,
+                    "structuredContent": {"signal": "SIGTERM"},
+                }),
+                TaskOutcome::Stopped,
+            ),
+        ] {
+            let mut projection = Projection::default();
+            apply(
+                &mut projection,
+                &[
+                    started(task),
+                    serde_json::json!({
+                        "id": format!("ended-{task}"),
+                        "sequence": 2,
+                        "create_at": 2000,
+                        "type": "exec",
+                        "name": "ended",
+                        "data": {"task_id": task, "status": status, "result": result},
+                    }),
+                ],
+            );
+            let snapshot = projection.snapshot();
+            let finish = snapshot.tasks[0]
+                .finished
+                .as_ref()
+                .expect("a finished task");
+            assert_eq!(finish.outcome, outcome, "{task}: {finish:?}");
+            assert_eq!(finish.at, 2000, "{task}: the end's own time");
+            assert!(!finish.replayed, "{task}: the live stream carried the end");
+        }
     }
 
     #[test]
