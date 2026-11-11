@@ -666,6 +666,9 @@ async fn connect_negotiating(
     negotiate: bool,
 ) -> Result<Option<Client>> {
     let mut config = config.clone();
+    // One discarded connection per version from this client's protocol down to
+    // CLIENT_PROTOCOL_FLOOR, each only after the daemon's typed refusal, so the
+    // floor sets the bound.
     loop {
         let mut client = match Client::open(&config, starting).await {
             Ok(client) => client,
