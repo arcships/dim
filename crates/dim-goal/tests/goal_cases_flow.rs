@@ -1244,6 +1244,14 @@ async fn pursuit_13_a_refold_keeps_the_ended_lines_it_folded() {
     let end = env.end_turn("main", "work", "completed");
     let create = next_create(&env, "main", 0).await;
     let evaluator = create.branch.clone();
+    let commands = env.probe.commands("main");
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while commands.get(&evaluator).is_err() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the evaluator publishes before reporting");
     let conclusion = texts::conclusion(
         "main",
         &evaluator,
