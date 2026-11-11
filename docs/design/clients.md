@@ -136,8 +136,9 @@ Earlier transcript is loaded only on user request. Export keeps its full fixed
 prefix. CLI/ACP reconnect catch-up starts from the last consumed cursor; Web replaces each opened transcript with a fresh bounded window.
 
 ```text
-attach -> latest 64-position page -> owner inventories -> draw -> editable
+attach -> latest 64-position page -> draw -> editable
           | no visible row: at most 4 pages total
+       -> owner inventories -> enable their own controls
 /earlier -> 256-position page(s), at most 4 -> prepend older content
 ```
 

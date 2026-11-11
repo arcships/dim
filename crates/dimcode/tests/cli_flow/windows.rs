@@ -85,9 +85,9 @@ fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window
             wire.reply(&attach, attach_record(&attach));
             for page in 0..4 {
                 let request = wire.read(method);
-                let before = head + 1 - page * 256;
-                let first = before - 256;
-                let mut expected = json!({"sessionId":"session","branchId":"main","limit":256});
+                let before = head + 1 - page * 64;
+                let first = before - 64;
+                let mut expected = json!({"sessionId":"session","branchId":"main","limit":64});
                 if page == 0 {
                     expected["latestTurn"] = json!(true);
                 } else {
@@ -96,14 +96,14 @@ fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window
                 }
                 assert_eq!(request["params"], expected);
                 let mut events = match page {
-                    0 => vec![text(head, "latest", "newest-window-text")],
-                    1 => Vec::new(),
+                    0 | 1 => Vec::new(),
                     2 => (first..before).map(|sequence| json!({"id":format!("hidden{sequence}"),
                         "sequence":sequence,"create_at":1,"type":"input","name":"message","data":{"blocks":[]}})).collect(),
-                    _ => vec![text(first, "older", "oldest-window-text")],
+                    _ => vec![text(first, "older", "oldest-window-text"),
+                        text(before-1, "latest", "newest-window-text")],
                 };
-                if display && page == 0 {
-                    events.insert(0, json!({"id":"compact","sequence":head-1,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}));
+                if display && page == 3 {
+                    events.insert(1, json!({"id":"compact","sequence":first+1,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}));
                 }
                 if page == 1 {
                     wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
