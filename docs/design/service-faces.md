@@ -96,11 +96,11 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher；
 
 `workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 118 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
 
-两个 owner API **不进第一批**：它们保留类型化调用。`settings.read` 会新建取消 token、并返回 `SettingsResult` 信封；GoalBranch 需要自己的 stop token，改成数据面会丢取消。`auxiliaryModel.complete` 没有 tools、config 和 cached prefix；PromptSuggestion 克隆的是整轮 `ModelRequest`，换过去是行为变化，不只是形状。它们已有数据兄弟给其他消费者；有 leaf 消费者时再按 §4 的规则扩展。
+这两个 owner API 也进入迁移；typed owner API 只是 binding，数据兄弟才是公开面。`settings.read` 会新建取消 token、并返回 `SettingsResult` 信封；GoalBranch 需要自己的 stop token，改成数据面会丢取消。`auxiliaryModel.complete` 没有 tools、config 和 cached prefix；PromptSuggestion 克隆的是整轮 `ModelRequest`，换过去是行为变化，不只是形状。它们已有数据兄弟给其他消费者；它们也按 #1292 转 data；取消和行为差异是操作面要保留的语义，不是不转的理由。
 
 ### 3.3 所有者 API，已有数据兄弟
 
-本组统一 reason `owner-api`。
+本组统一迁移标签 `owner-api`；数据兄弟是公开面，typed owner API 是 binding。
 
 | 名字 | 数据兄弟 | 说明 |
 | --- | --- | --- |
@@ -141,29 +141,29 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher；
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `agentLoop` | branch | Loop | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `loopState` | branch | Loop | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `modelProvider` | branch | ModelProvider | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `prompt` | branch | Prompt | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `contextPreparation` | branch | ContextPreparation | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `toolBinding` | branch | ToolBinding | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `toolExecutor` | branch | ToolExecutor | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `branchOpening` | branch | BranchScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `configurationPublisher` | branch | ContextPreparation | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `configureControl` | branch | Prompt | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `fileReads` | branch | FileReads | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `branchLine` | branch | BranchLine | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `submitChecks` | session | InputMethods | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `commandRulesHost` | session | CommandRules | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `promptHost` | session | PromptRegistry | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `promptRegistry` | session | PromptRegistry | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `initialPromptConfiguration` | session | PromptRegistry | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `historyRenderer` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `contextModelHost` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `prepareModelHost` | session | PrepareModelHost | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `prepareContextHost` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
-| `faultReporter` | session | SessionScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
+| `agentLoop` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
+| `loopState` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
+| `modelProvider` | branch | ModelProvider | hot-path | 待迁移；按 #1292 定义操作面 |
+| `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
+| `contextPreparation` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
+| `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
+| `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
+| `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
+| `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
+| `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
+| `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
+| `branchLine` | branch | BranchLine | hot-path | 待迁移；按 #1292 定义操作面 |
+| `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
+| `commandRulesHost` | session | CommandRules | hot-path | 待迁移；按 #1292 定义操作面 |
+| `promptHost` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
+| `promptRegistry` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
+| `initialPromptConfiguration` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
+| `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
+| `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
+| `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
+| `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
+| `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
+| `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 
 ### 3.6 入口、secret 与宿主资源：仍需 data face
 原因 `control`（入口/控制面）、`secret`（凭据/token）或 `host-resource`（FS 索引、活进程）。`managedProviders` 的搜索走新的 `managedSearch`；账号与 token 仍留在这个 internal 名字上。
@@ -197,24 +197,24 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher；
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `eventSubscriptions` | process | eventhub | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `sessionLanguage` | session | PromptSources | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `selectableModelsHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `modelSelectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `modalityConnectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `worktreeAssociations` | process | SessionStore | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `listenAddresses` | process | Transport | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `credentialVariablesHost` | process | root | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `reservedMethods` | process | — | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `agentConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `skillsConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `sessionClientsHost` | process | Connection | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 有 leaf 消费者时加数据面 |
+| `eventSubscriptions` | process | eventhub | legacy-no-consumer | 按 #1292 定义操作面 |
+| `sessionLanguage` | session | PromptSources | legacy-no-consumer | 按 #1292 定义操作面 |
+| `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
+| `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 按 #1292 定义操作面 |
+| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
+| `selectableModelsHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
+| `modelSelectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
+| `modalityConnectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
+| `worktreeAssociations` | process | SessionStore | legacy-no-consumer | 按 #1292 定义操作面 |
+| `listenAddresses` | process | Transport | legacy-no-consumer | 按 #1292 定义操作面 |
+| `credentialVariablesHost` | process | root | legacy-no-consumer | 按 #1292 定义操作面 |
+| `reservedMethods` | process | — | legacy-no-consumer | 按 #1292 定义操作面 |
+| `agentConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
+| `collaborationConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
+| `skillsConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
+| `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 按 #1292 定义操作面 |
+| `sessionClientsHost` | process | Connection | legacy-no-consumer | 按 #1292 定义操作面 |
+| `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 第一批改造（#1292）
 
@@ -313,7 +313,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 ## 5. 验证
 
-- `xtask check`：双向测试（dispatcher 未 shared 失败；shared 无 dispatcher 失败，两个外部名字除外；shared+reason 失败；reason 不在闭集失败）。
+- `xtask check`：双向测试（dispatcher 未 shared 失败；shared 无 dispatcher 失败，目标没有例外；shared+reason 失败；reason 不在闭集失败）。
 - `xtask graph`：catalog 的 `face` 列与真实装配一致；`catalog.md` 的 diff 作为评审材料。
 - 每个服务：现有 flow 测试 + 一个 loopback session 的跨边界用例；不新增 mock-only 测试。
 - 数量：不改 `cargo test` 的总量要求；按受影响 crate 跑，最终 `cargo test --workspace --locked`。
@@ -322,15 +322,15 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 ## 6. 风险与开放问题
 
 1. **Channel 单条消息上限**：`sessionFiles.put` 的 16 MiB 可能超过限制。先测；超了就分块，不降低上限。
-2. **secret**：`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 保持 internal；数据面只暴露操作，不暴露值。
+2. **secret**：secret 的值留在 owner；`providerService`、`mcpAuth`、OAuth 服务、`managedProviders` 仍要有 data face，只暴露操作，不返回值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
 5. **legacy 标记**：当前 internal 名字全部是迁移待办。`legacy-no-consumer` 只是状态，不是永久 internal；目标目录里没有 internal。
-6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
+6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是当前仅有的两个 `shared-no-dispatcher` 待补 dispatcher，不是永久例外。
 
 ## 7. 交付顺序
 
-1. **#1289**：`Faces`、`AgentBuilder::internal`、catalog `face`、双向 `xtask check`、leaf 拒绝、`managementMethods` 注册顺序、`localId` dispatcher；`loaderService`/`pluginMounter` 作为两个外部 `shared-no-dispatcher` 例外。
+1. **#1289**：`Faces`、`AgentBuilder::internal`、catalog `face`、双向 `xtask check`、leaf 拒绝、`managementMethods` 注册顺序、`localId` dispatcher；`loaderService`/`pluginMounter` 两个待补 dispatcher。
 2. **#1300**：按 §3 的分组在 catalog 里补齐 reason；`xtask graph` 的 diff 就是盘点结果。此 PR 不改服务。
 3. **#1292**：把所有名字迁移成 data face。先做 `scheduleJobs`、`wakeups`、`sessionFiles`、`managedSearch`，再按 owner 铺开；没有“确实不能跨”的永久例外，只有还没做的工作。`workflowRuns` 已是数据面，只核对。
 4. 每项都带现有 flow 测试；不新增适配层，不写第二份逻辑。
