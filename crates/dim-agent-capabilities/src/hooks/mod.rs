@@ -10,8 +10,6 @@ mod runner;
 mod sources;
 
 pub(crate) use runner::HooksRuntime;
-#[cfg(feature = "testing")]
-pub use runner::set_rebuild_page_delay;
 pub use runner::{HooksBranchPlugin, HooksSessionPlugin};
 
 pub use document::{

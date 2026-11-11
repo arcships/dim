@@ -12091,8 +12091,7 @@
         "path runner::HooksSessionPlugin::new",
         "use runner::HooksBranchPlugin",
         "use runner::HooksRuntime",
-        "use runner::HooksSessionPlugin",
-        "use runner::set_rebuild_page_delay"
+        "use runner::HooksSessionPlugin"
       ]
     },
     {
@@ -12213,6 +12212,7 @@
       "references": [
         "path HostError",
         "path HostError::Cancelled",
+        "path HostError::failed",
         "path HostFuture",
         "use crate::host::HostError",
         "use crate::host::HostFuture"
@@ -12267,17 +12267,17 @@
     },
     {
       "from": "dim_agent_capabilities::hooks::runner",
-      "to": "dim_agent_capabilities::tool_registry",
+      "to": "dim_agent_capabilities::tool_executor",
       "references": [
-        "path ToolRegistry",
-        "use crate::tool_registry::ToolRegistry"
+        "path crate::tool_executor::is_reload_settled"
       ]
     },
     {
       "from": "dim_agent_capabilities::hooks::runner",
-      "to": "dim_agent_runtime::assembly",
+      "to": "dim_agent_capabilities::tool_registry",
       "references": [
-        "path dim_agent_runtime::opening_advanced"
+        "path ToolRegistry",
+        "use crate::tool_registry::ToolRegistry"
       ]
     },
     {
@@ -12315,7 +12315,10 @@
       "from": "dim_agent_capabilities::hooks::runner",
       "to": "dim_agent_runtime::error",
       "references": [
-        "path dim_agent_runtime::Result"
+        "path AgentError::Storage",
+        "path AgentError::fault",
+        "path dim_agent_runtime::Result",
+        "use dim_agent_runtime::AgentError"
       ]
     },
     {
@@ -12339,10 +12342,17 @@
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
         "path QueryFilter::And",
+        "path QueryFilter::In",
+        "path QueryOperand::Field",
+        "path QueryOutput::Exists",
         "path QueryOutput::Rows",
         "path QueryPage",
+        "path QueryPick::First",
+        "path QueryPick::Last",
+        "path QuerySelect::Exists",
         "path QuerySelect::Fields",
         "path QuerySpec",
+        "path QueryValue",
         "path QueryValue::Elements",
         "path QueryValue::Missing",
         "path QueryValue::Value",
@@ -12352,6 +12362,7 @@
         "use dim_agent_runtime::QueryOperand",
         "use dim_agent_runtime::QueryOutput",
         "use dim_agent_runtime::QueryPage",
+        "use dim_agent_runtime::QueryPick",
         "use dim_agent_runtime::QuerySelect",
         "use dim_agent_runtime::QuerySpec",
         "use dim_agent_runtime::QueryValue",
@@ -12368,13 +12379,19 @@
     },
     {
       "from": "dim_agent_capabilities::hooks::runner",
+      "to": "dim_agent_types::checkpoint",
+      "references": [
+        "path TimelinePosition",
+        "use dim_agent_types::TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::runner",
       "to": "dim_agent_types::content",
       "references": [
         "path ContentBlock::Image",
         "path ContentBlock::Text",
-        "path ToolContent",
-        "use dim_agent_types::ContentBlock",
-        "use dim_agent_types::ToolContent"
+        "use dim_agent_types::ContentBlock"
       ]
     },
     {
@@ -12382,22 +12399,16 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
-        "path ApprovalCancelledData",
         "path ApprovalDecision",
         "path ApprovalDecision::Allow",
         "path ApprovalDecision::Deny",
         "path ApprovalRequestData",
-        "path ApprovalRespondData",
         "path BranchSource::Tool",
         "path EventKind::ApprovalCancelled",
         "path EventKind::ApprovalRequest",
         "path EventKind::ApprovalRespond",
-        "path EventKind::ContextConfigured",
         "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
-        "path EventKind::InputMessage",
         "path EventKind::StopInterrupt",
-        "path EventKind::ToolCall",
         "path EventKind::ToolResult",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
@@ -12408,19 +12419,17 @@
         "path InputMode::Append",
         "path InputMode::Queue",
         "path InputMode::Steer",
-        "path ToolCallResult",
+        "path ToolResultData",
         "path UserInput",
         "use dim_agent_types::AgentEvent",
-        "use dim_agent_types::ApprovalCancelledData",
         "use dim_agent_types::ApprovalDecision",
         "use dim_agent_types::ApprovalRequestData",
-        "use dim_agent_types::ApprovalRespondData",
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::InputBlock",
         "use dim_agent_types::InputMessageData",
         "use dim_agent_types::InputMode",
-        "use dim_agent_types::ToolCallResult",
+        "use dim_agent_types::ToolResultData",
         "use dim_agent_types::TurnOutcome",
         "use dim_agent_types::UserInput"
       ]
@@ -12439,7 +12448,8 @@
       "from": "dim_agent_capabilities::hooks::runner",
       "to": "dim_agent_types::tool",
       "references": [
-        "path dim_agent_types::ToolCall"
+        "path ToolCall",
+        "use dim_agent_types::ToolCall"
       ]
     },
     {
@@ -12463,7 +12473,6 @@
       "from": "dim_agent_capabilities::hooks::runner::tests",
       "to": "dim_agent_capabilities::hooks::runner",
       "references": [
-        "path FOLLOWED_EVENTS",
         "path HookResult",
         "path HookResult::Blocked",
         "path HookResult::Failed",
@@ -12472,7 +12481,6 @@
         "path HooksRuntime",
         "path Pending::default",
         "path PromptDecision::Context",
-        "path View::default",
         "path approval_point",
         "path contribution_of",
         "path failed",
@@ -12537,76 +12545,12 @@
     },
     {
       "from": "dim_agent_capabilities::hooks::runner::tests",
-      "to": "dim_agent_types::content",
-      "references": [
-        "use dim_agent_types::ContentBlock"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::hooks::runner::tests",
       "to": "dim_agent_types::events",
       "references": [
-        "path AgentEvent",
         "path ApprovalCallData",
-        "path ApprovalCancelledData",
-        "path ApprovalDecision::Allow",
         "path ApprovalRequestData",
-        "path ApprovalRespondData",
         "path BranchSource::Host",
-        "path EventKind",
-        "path EventKind::ApprovalCancelled",
-        "path EventKind::ApprovalRequest",
-        "path EventKind::ApprovalRespond",
-        "path EventKind::ContextConfigured",
-        "path EventKind::InputConsumed",
-        "path EventKind::InputDeleted",
-        "path EventKind::InputMessage",
-        "path EventKind::StopInterrupt",
-        "path EventKind::ToolCall",
-        "path EventKind::ToolResult",
-        "path EventKind::TurnEnd",
-        "path EventKind::TurnStart",
-        "path InputConsumedData",
-        "path InputDeletedData",
-        "path InputMessageData",
-        "path InputMessageData::default",
-        "path InputMode::Queue",
-        "path InterruptScope::Branch",
-        "path StopInterruptData",
-        "path ToolCallData",
-        "path ToolResultData",
-        "path TurnEndData",
-        "path TurnOutcome::Completed",
-        "path TurnStartData",
-        "path UserInput",
-        "use dim_agent_types::ApprovalCallData",
-        "use dim_agent_types::InputConsumedData",
-        "use dim_agent_types::InputDeletedData",
-        "use dim_agent_types::InterruptScope",
-        "use dim_agent_types::StopInterruptData",
-        "use dim_agent_types::ToolCallData",
-        "use dim_agent_types::ToolResultData",
-        "use dim_agent_types::TurnEndData",
-        "use dim_agent_types::TurnStartData",
-        "use dim_agent_types::UserInput"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::hooks::runner::tests",
-      "to": "dim_agent_types::prompt",
-      "references": [
-        "path ContextConfiguredData",
-        "path ModelConfiguration",
-        "use dim_agent_types::ContextConfiguredData",
-        "use dim_agent_types::ModelConfiguration"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::hooks::runner::tests",
-      "to": "dim_agent_types::tool",
-      "references": [
-        "use dim_agent_types::ToolCall",
-        "use dim_agent_types::ToolResult"
+        "use dim_agent_types::ApprovalCallData"
       ]
     },
     {
