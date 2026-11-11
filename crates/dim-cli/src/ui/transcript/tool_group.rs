@@ -380,11 +380,7 @@ fn project(
         first.text = capitalize(&first.text);
     }
     if !children.is_empty() {
-        let calls = if children.len() == 1 {
-            "1 tool call".to_owned()
-        } else {
-            format!("{} tool calls", children.len())
-        };
+        let calls = counted(children.len(), TOOL_CALL);
         header.push(span(format!(" · {calls}"), Tone::Muted));
     }
     let started = items.iter().filter(|item| !item.rejected()).count();
@@ -408,29 +404,31 @@ fn project(
         let open = choices
             .and_then(|choices| choices.get(&id).copied())
             .unwrap_or(detail != Detail::Collapsed);
+        let mut body = Vec::new();
+        let single_program = roots.len() == 1 && roots[0].section() == Section::Program;
+        let parent = single_program
+            .then(|| {
+                rows.iter()
+                    .find(|row| row.parent_call_id.is_none())
+                    .and_then(|row| row.call_id.as_deref())
+            })
+            .flatten();
+        append_interactive(&mut body, &items, rows, parent, 2, detail, choices);
+        if single_program && children.is_empty() && state == State::Running {
+            body.push(body_line(
+                4,
+                t("Waiting for result…"),
+                Tone::Muted,
+                Overflow::Wrap,
+            ));
+        } else if single_program && state == State::Failed {
+            append_error(&mut body, roots[0].call(), 4);
+        }
         let mut first = header_line(0, mark, header);
-        first.disclosure = Some((id.clone(), open));
+        first.disclosure = (!body.is_empty()).then_some((id.clone(), open));
         let mut expanded = vec![first];
         if open {
-            let single_program = roots.len() == 1 && roots[0].section() == Section::Program;
-            let parent = single_program
-                .then(|| {
-                    rows.iter()
-                        .find(|row| row.parent_call_id.is_none())
-                        .and_then(|row| row.call_id.as_deref())
-                })
-                .flatten();
-            append_interactive(&mut expanded, &items, rows, parent, 2, detail, choices);
-            if single_program && children.is_empty() && state == State::Running {
-                expanded.push(body_line(
-                    4,
-                    t("Waiting for result…"),
-                    Tone::Muted,
-                    Overflow::Wrap,
-                ));
-            } else if single_program && state == State::Failed {
-                append_error(&mut expanded, roots[0].call(), 4);
-            }
+            expanded.extend(body);
         }
         return ToolGroup {
             state,
@@ -665,10 +663,13 @@ fn append_interactive(
                             }
                         }
                     } else if matches!(item, Item::Program { .. }) {
-                        header.spans = vec![span(
-                            format!("{} · {children} tool calls", t("Ran code")),
-                            Tone::Text,
-                        )];
+                        header.spans = phrase(PhraseKey::Program, &[item], true);
+                        if children > 0 {
+                            header.spans.push(span(
+                                format!(" · {}", counted(children, TOOL_CALL)),
+                                Tone::Muted,
+                            ));
+                        }
                     }
                 }
                 if !matches!(item, Item::Program { .. }) {
@@ -1164,7 +1165,12 @@ fn edit_header(members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
         spans.push(span(counted(paths.len(), FILE), Tone::Text));
     }
     let summary = format_counts(added, removed);
-    if !summary.is_empty() {
+    if !summary.is_empty()
+        && (!recorded
+            || members
+                .iter()
+                .all(|item| item.call().state != State::Done || item.call().diff.is_some()))
+    {
         spans.push(span(" (", Tone::Muted));
         spans.push(span(summary, Tone::Text));
         spans.push(span(")", Tone::Muted));
@@ -1840,6 +1846,7 @@ const SEARCH: Noun = ("1 search", "{count} searches");
 const COMMAND: Noun = ("1 command", "{count} commands");
 const TASK: Noun = ("1 task", "{count} tasks");
 const TOOL: Noun = ("1 tool", "{count} tools");
+const TOOL_CALL: Noun = ("1 tool call", "{count} tool calls");
 const AGENT: Noun = ("1 agent", "{count} agents");
 const DELEGATION: Noun = ("1 delegation rejected", "{count} delegations rejected");
 

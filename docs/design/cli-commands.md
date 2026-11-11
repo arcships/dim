@@ -67,6 +67,8 @@ its content column. New files compare empty to their recorded contents;
 overwrites compare the operation's actual before/after, never a later disk
 read. Missing historical diffs say comparison is unavailable. Running or failed
 calls do not present proposed changes as applied. Existing output budgets remain.
+Batch change totals are shown only when every completed file operation has a
+recorded comparison; an omitted comparison must not make a partial total look complete.
 
 Pending calls retain an animated activity mark and a `Running…` title status even
 when their details are closed. Open command details show available output, or

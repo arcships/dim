@@ -12043,6 +12043,177 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_codemode_headers_match_state_children_and_available_details() {
+        use crate::ui::render::panel::strip_escapes;
+
+        let call = |id: &str, parent: Option<&str>, name: &str, state: &str| {
+            let mut row = (*message(false)).clone();
+            row.kind = RowKind::ToolCall;
+            row.row_id = id.into();
+            row.call_id = Some(id.into());
+            row.batch = Some("code-request".into());
+            row.parent_call_id = parent.map(str::to_owned);
+            row.tool_name = Some(name.into());
+            row.tool_input = Some(serde_json::json!({"command":"echo child"}));
+            row.pending = state == "running";
+            row.result_is_error = state == "failed";
+            row.result_text = (state != "running").then(|| "code result".into());
+            std::sync::Arc::new(row)
+        };
+        let visible_rows = |app: &mut App| {
+            let frame = app.frame((96, 40));
+            let mut rows = Vec::new();
+            for index in 0..app.len() {
+                for (row, line) in app.rows(index, 96).into_iter().enumerate() {
+                    rows.push((Some(app.dropped() + index), row, line));
+                }
+            }
+            rows.extend(
+                frame
+                    .live
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, line)| (None, row, line)),
+            );
+            rows
+        };
+        for state in ["done", "running", "failed"] {
+            let mut drawn = attached();
+            drawn.app.set_fullscreen(true);
+            show(&mut drawn, vec![call("program-a", None, "codemode", state)]);
+            let rows = visible_rows(&mut drawn.app);
+            let (block, row) = rows
+                .iter()
+                .find_map(|(block, row, line)| {
+                    strip_escapes(line)
+                        .contains("code")
+                        .then_some((*block, *row))
+                })
+                .unwrap();
+            assert_eq!(
+                drawn.app.disclosure(block, 96, row).is_some(),
+                state != "done"
+            );
+            assert_eq!(drawn.app.click(block, row, 96), state != "done");
+            if state != "done" {
+                let rendered = strip_escapes(
+                    &visible_rows(&mut drawn.app)
+                        .into_iter()
+                        .map(|(_, _, line)| line)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                assert!(
+                    rendered.contains(if state == "running" {
+                        "Waiting for result"
+                    } else {
+                        "code result"
+                    }),
+                    "{rendered}"
+                );
+            }
+        }
+        for state in ["done", "running"] {
+            for children in [0, 1, 2] {
+                let mut drawn = attached();
+                drawn.app.set_fullscreen(true);
+                drawn.app.tool_detail = Detail::Expanded;
+                let mut rows = vec![
+                    call("program-a", None, "codemode", state),
+                    call("program-b", None, "codemode", "done"),
+                ];
+                for child in 0..children {
+                    rows.push(call(
+                        &format!("child-{child}"),
+                        Some("program-a"),
+                        "exec",
+                        "done",
+                    ));
+                }
+                show(&mut drawn, rows);
+                let rows = visible_rows(&mut drawn.app);
+                let header = rows.iter().find_map(|(block, row, line)| {
+                    drawn
+                        .app
+                        .disclosure(*block, 96, *row)
+                        .filter(|key| key.contains("call:program-a"))
+                        .map(|_| strip_escapes(line))
+                });
+                if children == 0 && state == "done" {
+                    assert!(header.is_none());
+                } else {
+                    let header = header.unwrap();
+                    assert!(
+                        header.contains(if state == "running" {
+                            "Running code"
+                        } else {
+                            "Ran code"
+                        }),
+                        "{header}"
+                    );
+                    if children > 0 {
+                        assert!(
+                            header.contains(if children == 1 {
+                                "1 tool call"
+                            } else {
+                                "2 tool calls"
+                            }),
+                            "{header}"
+                        );
+                        assert!(!header.contains("1 tool calls"), "{header}");
+                    } else {
+                        assert!(!header.contains("tool calls"), "{header}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_file_totals_require_all_completed_comparisons() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for complete in [false, true] {
+            let mut drawn = attached();
+            drawn.app.set_fullscreen(true);
+            drawn.app.tool_detail = Detail::Expanded;
+            let rows = ["first.rs", "second.rs"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let mut row = (*message(false)).clone();
+                    row.kind = RowKind::ToolCall;
+                    row.row_id = path.into();
+                    row.call_id = Some(path.into());
+                    row.batch = Some("write-request".into());
+                    row.tool_name = Some("write".into());
+                    row.tool_input = Some(serde_json::json!({"path":path}));
+                    row.result_text = Some("Wrote file".into());
+                    row.diff = (complete || index == 0)
+                        .then(|| "@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
+                    std::sync::Arc::new(row)
+                })
+                .collect();
+            show(&mut drawn, rows);
+            let _ = drawn.app.frame((96, 40));
+            let rows = drawn.app.reflow_history(96);
+            let rendered = strip_escapes(&rows.join("\n"));
+            let header = rendered
+                .lines()
+                .find(|line| line.contains("Changed 2 files"))
+                .unwrap();
+            assert_eq!(header.contains("(+4 -2)"), complete, "{rendered}");
+            assert_eq!(header.contains('('), complete, "{rendered}");
+            assert!(rendered.contains("Write first.rs +2 −1"), "{rendered}");
+            assert_eq!(
+                rendered.contains("comparison is unavailable"),
+                !complete,
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn settings_keep_tool_and_thinking_details_independent() {
         use crate::ui::render::panel::strip_escapes;
 
