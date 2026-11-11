@@ -355,6 +355,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Suggestions" => "候補",
         "Skills" => "スキル",
         "Skill loaded: {name}" => "スキル読み込み：{name}",
+        "Hook context · {count} line" => "フックのコンテキスト · {count} 行",
+        "Hook context · {count} lines" => "フックのコンテキスト · {count} 行",
         "Commands" => "コマンド",
         "Command Palette" => "コマンドパレット",
         "No matches" => "一致なし",

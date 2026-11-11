@@ -74,7 +74,7 @@ No plugin loader, lifecycle registry or per-Session daemon relay is added. The h
 
 The gateway creates ordinary interactive Sessions (`session.create` omits `interactive`), then attaches through RPC. An existing Session keeps its stored configuration. Each Session has a single preparation/runtime slot, even across concurrent load/resume calls.
 
-Loading fixes a native history head, reads pages using the native `nextAfter`/`done`, merges buffered live events by branch sequence and sends replay before the ACP response. Resume rebuilds the same projection without replaying old messages. Raw-only and deleted inputs do not become ordinary user messages. Title revisions and progress snapshots are handled by their own public contracts, since they have no durable event sequence. [Plan §5.2](../acp-gateway-implementation.md#52-固定头与-live-合流) owns the algorithm.
+Loading fixes a native history head, reads pages using the native `nextAfter`/`done`, merges buffered live events by branch sequence and sends replay before the ACP response. Resume rebuilds the same projection without replaying old messages. Raw-only and deleted inputs do not become ordinary user messages, and neither does context a capability appended after the operator's words: a `dim-hooks` block is stored, exported and read by the model, but the gateway replays no `user_message_chunk` for it, so the editor's message stays what the operator sent. A loaded Skill keeps its one line. Title revisions and progress snapshots are handled by their own public contracts, since they have no durable event sequence. [Plan §5.2](../acp-gateway-implementation.md#52-固定头与-live-合流) owns the algorithm.
 
 ### 4.2 Prompt and cancellation
 
