@@ -81,7 +81,7 @@ impl Branch {
     /// [`Self::input`], also saying whether this call wrote the input. The
     /// append under the commit lock decides, so concurrent duplicates cannot
     /// both answer [`InputCommit::Written`].
-    pub async fn input_commit(
+    pub(crate) async fn input_commit(
         &self,
         data: InputMessageData,
     ) -> Result<(Arc<AgentEvent>, InputCommit)> {
