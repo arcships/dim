@@ -160,6 +160,10 @@ pub enum SessionsScope {
 
 pub enum Command {
     Report(crate::report::Request),
+    CompactionDetails {
+        projection_id: u64,
+        targets: std::collections::BTreeSet<crate::model::view::CompactionTarget>,
+    },
     Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft(Vec<DraftPart>, SubmitMode),

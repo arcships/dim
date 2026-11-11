@@ -53,6 +53,7 @@ pub(super) struct StopBatch {
 impl Worker {
     /// The replacement releases this attachment after creating or finding its Session.
     pub(super) fn invalidate_projection(&mut self) -> String {
+        self.compaction_targets(Default::default());
         self.release_members();
         self.projection_id += 1;
         let mut attached_session = std::mem::take(&mut self.session_id);
@@ -65,6 +66,8 @@ impl Worker {
         self.session_title = None;
         self.title_revision = 0;
         self.last_usage = None;
+        self.context_request = None;
+        self.context_stale = false;
         self.cursors.clear();
         self.focus = "main".into();
         self.side = None;
@@ -332,7 +335,14 @@ impl Worker {
         } else {
             (
                 ReadStage::History,
-                "session.history",
+                if self
+                    .client
+                    .supports(&["session.history.display", "session.history.detail"])
+                {
+                    "session.history.display"
+                } else {
+                    "session.history"
+                },
                 self.task_history[&branch_id]
                     .window
                     .params(&self.session_id, &branch_id),
@@ -461,8 +471,15 @@ impl Worker {
             .get_mut(&request.branch_id)
             .expect("current history");
         let result = result.map_err(|error| error.to_string()).and_then(|value| {
-            let page = serde_json::from_value(value)
-                .map_err(|error| format!("Invalid history reply: {error}"))?;
+            let page = if self
+                .client
+                .supports(&["session.history.display", "session.history.detail"])
+            {
+                serde_json::from_value::<dim_client::wire::DisplayPage>(value).map(Into::into)
+            } else {
+                serde_json::from_value(value)
+            }
+            .map_err(|error| format!("Invalid history reply: {error}"))?;
             history.window.push(page).map_err(|error| error.to_string())
         });
         match result {

@@ -36,6 +36,12 @@ pub enum Block {
     /// A shell-mode run: recorded (`!`) from the transcript, private (`!!`)
     /// from the terminal alone.
     Shell(ShellRun),
+    /// Context a hook injected after the operator's words: one muted row, and
+    /// its body when the detail setting is expanded.
+    HookContext {
+        body: String,
+        expanded: bool,
+    },
     Assistant(String),
     /// A settled thought: one summary row, or the whole text when expanded.
     Thinking {
@@ -49,7 +55,9 @@ pub enum Block {
     /// summary sits behind the disclosure.
     Compaction {
         state: CompactionState,
-        text: String,
+        text: std::sync::Arc<str>,
+        detail: Option<crate::model::view::CompactionDetail>,
+        target: Option<crate::model::view::CompactionTarget>,
         insufficient: Vec<CompactionPartSize>,
         expanded: bool,
     },
@@ -110,6 +118,10 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             },
             Block::Shell,
         ),
+        RowKind::HookContext => Block::HookContext {
+            body: row.text.clone(),
+            expanded: detail == Detail::Expanded,
+        },
         RowKind::AssistantMessage => Block::Assistant(row.text.clone()),
         RowKind::Thinking => Block::Thinking {
             text: row.text.clone(),
@@ -121,6 +133,8 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             Some(compaction) => Block::Compaction {
                 state: compaction.state,
                 text: compaction.text.clone(),
+                detail: compaction.detail.clone(),
+                target: None,
                 insufficient: compaction.insufficient.clone(),
                 expanded: detail == Detail::Expanded,
             },
@@ -210,6 +224,7 @@ mod tests {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
         }
     }
@@ -718,6 +733,7 @@ mod tests {
         ] {
             let mut completed = row(RowKind::Compaction, "");
             completed.compaction = Some(CompactionView {
+                detail: None,
                 state: CompactionState::Completed,
                 text: text.into(),
                 insufficient: Vec::new(),
@@ -760,8 +776,9 @@ mod tests {
                 };
                 let mut completed = row(RowKind::Compaction, "");
                 completed.compaction = Some(CompactionView {
+                    detail: None,
                     state: CompactionState::Completed,
-                    text: content,
+                    text: content.into(),
                     insufficient: Vec::new(),
                 });
                 let rendered = compaction_rows(&shared(&[completed]), Detail::Expanded);

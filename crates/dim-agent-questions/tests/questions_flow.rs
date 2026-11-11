@@ -524,8 +524,12 @@ async fn answers_and_declines_become_the_results_the_model_reads() {
     assert!(
         events
             .iter()
-            .all(|event| !matches!(event.kind, EventKind::Extension(_))),
-        "Questions writes no events"
+            .filter(|event| matches!(event.kind, EventKind::Extension(_)))
+            .all(|event| matches!(
+                event.kind.key(),
+                "input-queue/node" | "input-queue/recovered" | "prompt-state/recovered"
+            )),
+        "Questions adds no extension facts beyond queue and prompt recovery"
     );
     fixture.shutdown().await;
 }

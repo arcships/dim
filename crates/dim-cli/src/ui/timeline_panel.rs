@@ -258,6 +258,7 @@ mod tests {
             member: None,
             cut: Some(1),
             line: None,
+            parent_row: None,
             compaction: None,
         })
     }

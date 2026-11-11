@@ -200,6 +200,7 @@ const zhCN: Messages = {
   "message.collapse": "收起",
   "message.copy": "复制整个消息",
   "message.skillLoaded": "已加载技能：{name}",
+  "message.hookContext": "钩子上下文",
   "message.expand": "展示全部",
   "message.quote": "引用到输入框",
   "newThread.pathLabel": "目录的绝对路径",

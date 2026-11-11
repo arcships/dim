@@ -163,13 +163,22 @@ async fn a_fork_copies_main_through_a_rest_point_and_starts_nothing() {
     assert_eq!(encode(&copied[..at as usize]), encode(&prefix));
     let tail = &copied[at as usize..];
     assert_eq!(tail[0].kind.key(), "session/forked");
-    assert_eq!(tail[1].kind.key(), "branch/resume");
+    assert_eq!(
+        tail.iter()
+            .filter(|event| matches!(event.kind, EventKind::BranchResume(_)))
+            .count(),
+        1
+    );
     assert_eq!(failed_creations(tail), children, "{:?}", keys(tail));
     assert_eq!(
         tail.iter()
             .filter(|event| {
                 !matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_none())
                     && !matches!(event.kind, EventKind::InputApplied(_))
+                    && !matches!(
+                        event.kind.key(),
+                        "input-queue/node" | "input-queue/recovered" | "prompt-state/recovered"
+                    )
             })
             .count(),
         2 + children.len(),

@@ -365,7 +365,7 @@ async fn a_tool_call_or_operator_input_resets_the_streak() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reload_keeps_the_streak_and_decides_the_turn_end_once() {
+async fn a_reload_drops_the_streak_and_explicit_resume_starts_at_zero() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-streak").await;
     let (objective, status) = texts::legacy_set_blocks("main", "ship it");
@@ -435,26 +435,25 @@ async fn a_reload_keeps_the_streak_and_decides_the_turn_end_once() {
         3,
         "the restore repeats no decision"
     );
-    let second = env.writes("main").await[2].clone();
-    let end = env.turn("main", &[&second]);
-    let third = env
-        .wait_for("main", r#"kind="continuation" count="3""#)
+    assert_eq!(
+        env.goal("get", serde_json::json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "paused"
+    );
+    let old = env.writes("main").await[2].clone();
+    env.turn("main", &[&old]);
+    assert_eq!(env.settled("main").await.len(), 3);
+    env.goal("resume", serde_json::json!({})).await.unwrap();
+    let resume = env.wait_for("main", r#"op="resume""#).await;
+    let end = env.turn("main", &[&resume]);
+    let first = env
+        .wait_for(
+            "main",
+            &format!(r#"kind="continuation" count="1" after="{}""#, end.sequence),
+        )
         .await;
     assert_eq!(
-        third.text,
-        texts::continuation("main", 3, None, 2, end.sequence)
-    );
-    let end = env.turn("main", &[&third]);
-    let pause = env.wait_for("main", r#"reason="no_progress""#).await;
-    assert_eq!(
-        pause.text,
-        texts::automatic_pause(
-            "main",
-            "ship it",
-            "no_progress",
-            "the goal made no tool call in its last 3 continued turns",
-            end.sequence
-        )
+        first.text,
+        texts::continuation("main", 1, None, 0, end.sequence)
     );
     env.close().await;
 }
@@ -538,7 +537,7 @@ async fn a_cancelled_background_end_takes_the_deferred_decision_once() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reload_with_an_open_background_task_defers_the_end_once() {
+async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-open-task").await;
     let (objective, status) = texts::legacy_set_blocks("main", "ship it");
@@ -611,7 +610,7 @@ async fn a_reload_with_an_open_background_task_defers_the_end_once() {
             output_path: "/dev/null".into(),
         }),
     );
-    let end = seed.append("main", turn_end_with("t2", "completed"));
+    seed.append("main", turn_end_with("t2", "completed"));
     seed.finish().await;
 
     let env = env.restore_seeded("load-open-task").await;
@@ -621,17 +620,14 @@ async fn a_reload_with_an_open_background_task_defers_the_end_once() {
         "the open task defers the end"
     );
     env.exec_ended("main", "task-1", "cancelled");
-    let second = env
-        .wait_for("main", r#"kind="continuation" count="2""#)
-        .await;
     assert_eq!(
-        second.text,
-        texts::continuation("main", 2, None, 0, end.sequence)
+        env.goal("get", serde_json::json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "paused"
     );
     assert_eq!(
         env.settled("main").await.len(),
-        3,
-        "the restored open task is decided once"
+        2,
+        "ending an old task does not restart the Goal"
     );
     env.close().await;
 }

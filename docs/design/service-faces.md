@@ -151,6 +151,7 @@ catalog 现在 118 个名字：27 data、89 internal、2 shared-no-dispatcher。
 | `modelProvider` | branch | ModelProvider | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `prompt` | branch | Prompt | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `contextPreparation` | branch | ContextPreparation | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
+| `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；公开统计经 `session.context.usage` 读取 |
 | `toolBinding` | branch | ToolBinding | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
 | `branchOpening` | branch | BranchScope | hot-path | 留宿主；有 leaf 消费者时再加数据面 |
