@@ -42,10 +42,19 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Architecture and ownership](architecture/README.md)
 - [Architecture decisions](adr/README.md)
 - [ADR 022 — Timeline 属性查询与正文重建](adr/022-event-property-queries.md)（中文）：目标 API 与模块结构、属性查询、业务状态恢复和正文释放
+- [ADR 023 — 上下文用量由独立分支部件维护](adr/023-context-usage.md)（中文）：ContextUsage 的职责、增量统计、服务商校准及后续设计边界
+- [Resume：按业务对象设计计算与读取](design/resume-read-design.md)（中文，草案）：usage、输入队列、Prompt、显示详情、SQL 执行和恢复校验的分项设计与成本验收
+- [当前状态字段索引](design/appserver/timeline-state-read-indexes.md)（中文，草案）：现有API缺口、完整索引键、源位置前驱和SQL扫描验收
+- [状态保存与恢复读取](design/owner-state-indexed-reads.md)（中文，草案）：按业务对象决定持久化；当前队列点查、Prompt有效引用、Usage数字和真实流程读写数量
+- [Timeline 数组元素查询](design/timeline-array-rows.md)（中文，草案）：元素行、原下标、固定范围与按身份取值
+- [Timeline 未完成成员索引](design/appserver/timeline-member-index.md)（中文，草案）：版本集合、同事务维护、分页和新增读写成本
+- [Timeline 身份与恢复操作查询](design/appserver/timeline-identity-reads.md)（中文，草案）：ID 定位、模型/压缩未完成集合及索引验收
+- [Session 显示读取](design/appserver/session-display-read.md)（中文，草案）：显示摘要、按需详情、能力协商、实时流与有界分块
 - [Timeline 属性查询与消费端改造](design/timeline-property-query.md)（中文）：查询契约、SQL 与内容解码、恢复和请求构造的修改方案
 - [Timeline read consumers and page execution](design/timeline-read-followups.md): bounded Web windows, title/activity field reads and cumulative SQL page costs
 - [输入、轮次及活动输出的当前状态读取](design/input-state-read.md)：输入队列、轮次身份和输出字符水位
 - [Goal 属性查询与状态恢复](design/plugins/Goal-property-queries.md)（中文）：统一状态记录下的查询对象、状态来源、剩余遍历和删除重算提案
+- [Goal 状态结果读取](design/plugins/Goal-state-read.md)（中文，草案）：完整目标业务状态；运行只在内存，重载暂停，不恢复旧执行
 - [Rust agent design documents](architecture/README.md#design-documents)
 - [Owner-independent Timeline instances](design/collaboration-timeline.md) (#335)
 - [Timeline branches](design/timeline-branches.md): what branches are for, branch versus member and fork, messages between lines, identity across compaction, ending a line (#427)（[中文](zh/design/timeline-branches.md)）
@@ -105,7 +114,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Keyed blocks: the session.keys read](design/appserver/keyed-blocks.md) (#958)（[中文](zh/design/appserver/keyed-blocks.md)）
 - [SessionStore title metadata](design/appserver/session-title-metadata.md)（[中文](zh/design/appserver/session-title-metadata.md)）
 - [Restore-scoped shared history read](design/appserver/restore-shared-read.md) (#193)（[中文](zh/design/appserver/restore-shared-read.md)）
-- [Restore validation reuse](design/appserver/restore-validation.md) (#601)
+- [Native Session restore read boundary](design/appserver/restore-validation.md) (#1320): directory admission and validation of selected content
 - [Cold first session.attach](design/appserver/cold-attach-profile.md) (#713)
 - [Idle Session unload](design/appserver/idle-unload.md) (#126, #331)（[中文](zh/design/appserver/idle-unload.md)）
 - [Request delta storage](design/appserver/request-delta-storage.md) (#193)（[中文](zh/design/appserver/request-delta-storage.md)）

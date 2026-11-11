@@ -1002,6 +1002,12 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
              DROP TABLE timeline_text;
              DROP TABLE timeline_text_fts;
              DROP TABLE timeline_text_tails;
+             DROP TABLE timeline_array_elements;
+                 DROP TABLE timeline_output_ids;
+             DROP TABLE timeline_member_roots;
+             DROP TABLE timeline_member_origins;
+             DROP TABLE timeline_member_terminals;
+             DROP TABLE timeline_member_nodes;
              DROP TABLE agent_store_format;
              CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23));
              INSERT INTO agent_store_format VALUES (23);",

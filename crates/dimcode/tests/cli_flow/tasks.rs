@@ -731,16 +731,29 @@ fn tui_task_inventory_discards_old_pages_and_queued_retries_after_resuming_the_s
             "through":1,"nextAfter":1,"done":true}),
         );
         state(wire, "child");
-        child_inventory(
-            wire,
-            "child",
-            json!([pending_command(
-                "fresh-child",
-                1,
-                2000,
-                "fresh child command"
-            )]),
-        );
+        let mut complete = std::collections::HashSet::new();
+        while complete.len() < 2 {
+            let request = wire.frame();
+            let branch = request["params"]["branchId"].as_str().unwrap();
+            assert!(["main", "child"].contains(&branch), "obsolete inventory: {request}");
+            let through = if branch == "main" { 1 } else { 8 };
+            let result = match request["method"].as_str().unwrap() {
+                "session.input.pending" => json!({"branchId":branch,"through":through,"inputs":[],"next":null}),
+                "session.exec.pending" => {
+                    let (id, label) = if branch == "main" { ("fresh-main", "fresh main command") } else { ("fresh-child", "fresh child command") };
+                    json!({"branchId":branch,"through":through,"tasks":[pending_command(id,1,2000,label)],"next":null})
+                }
+                "session.turn.get" => {
+                    if request["params"].get("through").is_some() {
+                        complete.insert(branch.to_owned());
+                    }
+                    json!({"branchId":branch,"through":through,"turn":null,"output":null})
+                }
+                method => panic!("unexpected current inventory request: {method}"),
+            };
+            wire.reply(&request, result);
+        }
+        wire.event(2,"text",json!({"turn_id":"fresh","request_id":"fresh","delta":"fresh inventories settled"}));
         let mut stops = Vec::new();
         for _ in 0..2 {
             let stop = wire.read("session.exec.stop");
@@ -791,6 +804,7 @@ fn tui_task_inventory_discards_old_pages_and_queued_retries_after_resuming_the_s
     );
     terminal.write(b"\r");
     terminal.until("resumed session");
+    terminal.until("fresh inventories settled");
     terminal.write(b"/tasks\r");
     terminal.until("fresh child command");
     assert!(
@@ -947,20 +961,22 @@ fn tui_task_controls_queued_before_a_replacement_never_retarget_it() {
         let main = wire.read("session.history");
         wire.reply(
             &main,
-            json!({"events":[command("old",1,1000,"old attachment command")],
-            "through":1,"nextAfter":1,"done":true}),
+            json!({"events":[],"through":0,"nextAfter":0,"done":true}),
         );
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
-        let usage = wire.read("session.context.usage");
+        event(
+            wire,
+            "main",
+            command("old", 1, 1000, "old attachment command"),
+        );
+        let catalog = wire.read("provider.list");
         ready.send(()).unwrap();
         control.recv_timeout(Duration::from_secs(10)).unwrap();
-        wire.reply(
-            &usage,
-            json!({"contextWindow":2000,"outputTokens":100,"thresholdTokens":1500,
-            "estimatedInputTokens":50,"baselineSource":"fixture"}),
-        );
+        wire.reply(&catalog, json!({"providers":[]}));
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
         // `/new` goes home without a Session; the queued stop reaches nothing.
         let mut line = String::new();
         assert_eq!(
@@ -971,9 +987,11 @@ fn tui_task_controls_queued_before_a_replacement_never_retarget_it() {
     });
     let mut terminal = Terminal::resume_tui(home.command());
     terminal.until("test / model");
-    terminal.write(b"/usage\r");
+    terminal.write(b"/tasks\r");
+    terminal.until("old attachment command");
+    terminal.write(b"\x1b[27u/models\r");
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
-    terminal.write(b"/new\r/tasks\r\x18queued-proof");
+    terminal.write(b"\x1b[27u/new\r/tasks\r\x18queued-proof");
     terminal.until("No matching tasks.");
     proceed.send(()).unwrap();
     terminal.until("Task attachment changed; reopen the panel before stopping work");
@@ -1554,11 +1572,13 @@ fn tui_main_history_failure_is_visible_and_disables_submission() {
             } else {
                 wire.send(json!({"jsonrpc":"2.0","id":history["id"],"error":{"code":-32000,"message":"main store unreadable","data":{"appError":"storage_failed"}}}));
             }
-            wire.no_context();
             while let Some(line) = wire.trailing_request() {
                 let request:Value=serde_json::from_str(&line).unwrap();
-                assert_eq!(request["method"],"account.providers","failed main history must not accept a hidden turn: {line}");
-                wire.reply(&request,json!([]));
+                match request["method"].as_str().unwrap() {
+                    "session.context.usage" => assert_eq!(request["params"],json!({"sessionId":"session","branchId":"main"})),
+                    "account.providers" => wire.reply(&request,json!([])),
+                    _ => panic!("failed main history must not accept a hidden turn: {line}"),
+                }
             }
         });
         let mut launch = home.command();

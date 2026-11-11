@@ -344,11 +344,50 @@ impl ModelDriver for ReportedPrompt {
 async fn recovery_compares_the_provider_baseline_estimate_with_the_input_budget() {
     tokio::time::timeout(Duration::from_secs(10), async {
         for (prompt, recovers) in [(4_000., true), (2_000., false)] {
-            let agent = MinimalHost::start(&builder(Arc::new(ReportedPrompt(prompt))))
+            let store = Arc::new(MemoryTimelineStore::default());
+            store
+                .create_session("provider-recovery", &SessionConfig::default())
                 .await
                 .unwrap();
+            let timeline = Timeline::new(
+                Ctx::root().unwrap(),
+                TimelineKey {
+                    session_id: "provider-recovery".into(),
+                    branch_id: "main".into(),
+                },
+                vec![],
+                store.clone(),
+            );
+            timeline
+                .append(
+                    EventKind::ContextConfigured(ContextConfiguredData {
+                        timeline: "main".into(),
+                        revision: "fixture".into(),
+                        previous: None,
+                        prompt: None,
+                        settings: Box::new(ModelConfiguration {
+                            provider_id: "mock".into(),
+                            model_id: "echo".into(),
+                            capability_snapshot: None,
+                            tools: Some(vec![]),
+                            tool_sources: vec![],
+                            config: None,
+                            metadata: None,
+                        }),
+                        system: None,
+                        system_source: None,
+                    })
+                    .into(),
+                )
+                .unwrap();
+            dim_agent_runtime::core::close_timeline(&timeline)
+                .await
+                .unwrap();
+            let mut profile = builder(Arc::new(ReportedPrompt(prompt)));
+            profile.timeline_store(store);
+            let agent = MinimalHost::start(&profile).await.unwrap();
             let session = agent
-                .create_session(SessionConfig::default())
+                .restore_session("provider-recovery".into())
                 .await
                 .unwrap();
             for text in ["x".repeat(1_500), "second".into()] {

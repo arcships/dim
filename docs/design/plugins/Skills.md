@@ -472,8 +472,10 @@ trip, and no AgentLoop change. The design is:
   context (Hooks A.6.2). A reader that wants the operator's words alone leaves it out the same
   way, as SessionTitle's title text does ([SessionTitle §0.1](SessionTitle.md#01-fields-read-for-one-title-attempt)).
 - **Clients show one line.** A text block of an operator input's `user` content that is not the
-  first block and starts with `<dim-skill name="` is shown as one line naming the loaded Skill,
-  never as its text ([clients](../clients.md)). The ACP gateway applies the same rule when it
+  first block and that `dim_agent_types::markup::runtime_element` names `dim-skill` is shown as
+  one line naming the loaded Skill, never as its text ([clients](../clients.md)); the same
+  predicate tells a `dim-hooks` block beside it apart, which a client shows as its own row
+  (Hooks §3.3). The ACP gateway applies the same rule when it
   replays an input to the editor on `session/load` and on a history read. A prefill for edit or
   fork takes the operator's text only, so resending does not load the Skill twice. Export keeps
   the raw record.

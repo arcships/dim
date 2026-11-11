@@ -270,6 +270,7 @@ impl From<AgentError> for SessionsError {
             AgentError::UnknownBranch(_) => Self::BranchMissing { message },
             AgentError::BranchEnded(_) => Self::BranchEnded { message },
             AgentError::Reloading(_) => Self::Reloading { message },
+            AgentError::PublicationUnknown(_) => Self::PublicationUnknown { message },
             AgentError::InvalidInput(_) => Self::Rejected { message },
             AgentError::AmbiguousSubmission(_) => Self::Ambiguous { message },
             _ => Self::Failed { message },

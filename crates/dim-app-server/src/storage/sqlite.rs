@@ -16,7 +16,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 38;
+pub const FORMAT: u32 = 41;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -55,7 +55,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 38))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 41))",
     ),
     (
         "settings_documents",
@@ -123,19 +123,31 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "timeline_events_requests",
-        "CREATE INDEX timeline_events_requests ON timeline_events(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence)",
+        "CREATE INDEX timeline_events_requests ON timeline_events(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence) WHERE coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')) IS NOT NULL",
     ),
     (
         "timeline_events_inputs",
-        "CREATE INDEX timeline_events_inputs ON timeline_events(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence)",
+        "CREATE INDEX timeline_events_inputs ON timeline_events(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence) WHERE json_extract(body,'$.record.event.data.input_id') IS NOT NULL",
     ),
     (
         "timeline_events_users",
-        "CREATE INDEX timeline_events_users ON timeline_events(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence)",
+        "CREATE INDEX timeline_events_users ON timeline_events(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence) WHERE json_type(body,'$.record.event.data.user') IS NOT NULL",
     ),
     (
         "timeline_input_submissions",
         "CREATE INDEX timeline_input_submissions ON timeline_events(session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), sequence) WHERE kind = 'input/message'",
+    ),
+    (
+        "timeline_events_turns",
+        "CREATE INDEX timeline_events_turns ON timeline_events(session_id,branch_id,kind,coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')),sequence) WHERE coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')) IS NOT NULL",
+    ),
+    (
+        "timeline_events_scopes",
+        "CREATE INDEX timeline_events_scopes ON timeline_events(session_id,branch_id,kind,json_extract(body,'$.record.event.data.scope.kind'),json_extract(body,'$.record.event.data.scope.timeline'),json_extract(body,'$.record.event.data.scope.id'),json_extract(body,'$.record.event.data.status'),sequence) WHERE kind='context/scope'",
+    ),
+    (
+        "timeline_events_source_positions",
+        "CREATE INDEX timeline_events_source_positions ON timeline_events(session_id,branch_id,kind,json_extract(body,'$.record.event.data.epoch'),json_extract(body,'$.record.event.data.current.at.branch'),json_extract(body,'$.record.event.data.current.at.sequence'),sequence) WHERE kind='context-usage/recovered'",
     ),
     (
         "timeline_events_context",
@@ -206,10 +218,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
-/// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
-/// recognize a store older than v30.
 const SESSION_OWNERS_BEFORE_V38: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))";
 const V38_SESSION_OWNERS: &str = "DROP INDEX session_owners_by_agent;\nALTER TABLE session_owners RENAME TO session_owners_v37;\nCREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)));\nINSERT INTO session_owners SELECT session_id, agent_id, protocol_version FROM session_owners_v37;\nDROP TABLE session_owners_v37;\nCREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);";
+/// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
+/// recognize a store older than v30.
 const AGENT_SESSIONS_BEFORE_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
 /// The text of `timeline_events` before v31 adds the two reading switches.
 const TIMELINE_EVENTS_BEFORE_V31: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
@@ -231,7 +243,7 @@ ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 24] = [
+const UPGRADES: [(u32, &[&str]); 27] = [
     (
         13,
         &[
@@ -316,11 +328,28 @@ const UPGRADES: [(u32, &[&str]); 24] = [
             "timeline_text_tails",
         ],
     ),
-    // v37: the optional event-envelope `parent_call_id` and child tool-call
-    // batch semantics; the marker only.
-    (36, &[]),
-    // v38: protocol v4 child batches store their connection version.
+    (
+        36,
+        &[
+            "timeline_member_nodes",
+            "timeline_member_roots",
+            "timeline_member_origins",
+            "timeline_member_terminals",
+        ],
+    ),
     (37, &[]),
+    (38, &["timeline_array_elements"]),
+    (
+        39,
+        &[
+            "timeline_output_ids",
+            "timeline_output_ids_by_position",
+            "timeline_events_turns",
+            "timeline_events_scopes",
+            "timeline_events_source_positions",
+        ],
+    ),
+    (40, &[]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -334,6 +363,9 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
     SCHEMA
         .iter()
         .chain(super::text::SCHEMA)
+        .chain(super::members::SCHEMA)
+        .chain(super::arrays::SCHEMA)
+        .chain(super::identities::SCHEMA)
         .copied()
         .chain(
             LEGACY_INDEXES
@@ -351,10 +383,37 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
-                "session_owners" if version < 38 => SESSION_OWNERS_BEFORE_V38.to_owned(),
+                "session_owners" if version < 41 => SESSION_OWNERS_BEFORE_V38.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
                 "timeline_events" if version < 31 => TIMELINE_EVENTS_BEFORE_V31.to_owned(),
+                "timeline_events_requests" | "timeline_events_inputs" | "timeline_events_users"
+                    if version < 38 =>
+                {
+                    sql.split(" WHERE ")
+                        .next()
+                        .expect("index definition")
+                        .to_owned()
+                }
                 _ => sql.to_owned(),
+            };
+            (name, sql)
+        })
+        .collect()
+}
+
+fn main_schema(version: u32) -> Vec<(&'static str, String)> {
+    schema_of(36)
+        .into_iter()
+        .map(|(name, sql)| {
+            let sql = match name {
+                "agent_store_format" => format_table(version),
+                "session_owners" if version == 38 => SCHEMA
+                    .iter()
+                    .find(|(name, _)| *name == "session_owners")
+                    .expect("owner schema")
+                    .1
+                    .to_owned(),
+                _ => sql,
             };
             (name, sql)
         })
@@ -427,6 +486,11 @@ fn known_format(actual: &[(String, String)]) -> Option<u32> {
     std::iter::once(FORMAT)
         .chain(UPGRADES.iter().map(|(from, _)| *from))
         .find(|version| same_schema(actual, schema_of(*version)))
+        .or_else(|| {
+            [37, 38]
+                .into_iter()
+                .find(|version| same_schema(actual, main_schema(*version)))
+        })
 }
 /// The rows of the format marker table.
 fn markers(connection: &Connection) -> Result<Vec<i64>> {
@@ -879,7 +943,13 @@ impl SqliteStorage {
         };
         let mut upgraded_from = None;
         if actual.is_empty() {
-            for (_, sql) in SCHEMA.iter().chain(super::text::SCHEMA) {
+            for (_, sql) in SCHEMA
+                .iter()
+                .chain(super::text::SCHEMA)
+                .chain(super::members::SCHEMA)
+                .chain(super::arrays::SCHEMA)
+                .chain(super::identities::SCHEMA)
+            {
                 connection.execute_batch(sql).map_err(storage)?;
             }
             connection
@@ -921,7 +991,16 @@ impl SqliteStorage {
                         .map_err(storage)?;
                     progress.report(true);
                 }
-                for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= version) {
+                let upgrade_from = if version >= 37
+                    && !actual
+                        .iter()
+                        .any(|(name, _)| name == "timeline_member_nodes")
+                {
+                    36
+                } else {
+                    version
+                };
+                for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= upgrade_from) {
                     if *from == 26 {
                         connection.execute_batch(V27_COLUMNS).map_err(storage)?;
                     }
@@ -958,6 +1037,9 @@ impl SqliteStorage {
                     for (_, sql) in SCHEMA
                         .iter()
                         .chain(super::text::SCHEMA)
+                        .chain(super::members::SCHEMA)
+                        .chain(super::arrays::SCHEMA)
+                        .chain(super::identities::SCHEMA)
                         .filter(|(name, _)| added.contains(name))
                     {
                         connection.execute_batch(sql).map_err(storage)?;
@@ -968,10 +1050,41 @@ impl SqliteStorage {
                     if *from == 35 {
                         super::text::backfill(&connection)?;
                     }
-                    if *from == 37 {
+                    if *from == 40
+                        && actual.iter().any(|(name, sql)| {
+                            name == "session_owners" && sql == SESSION_OWNERS_BEFORE_V38
+                        })
+                    {
                         connection
                             .execute_batch(V38_SESSION_OWNERS)
                             .map_err(storage)?;
+                    }
+                    if *from == 36 {
+                        super::members::backfill(&connection)?;
+                    }
+                    if *from == 37 && upgrade_from >= 36 {
+                        super::text::restrict_coverage(&connection)?;
+                        for (name, sql) in SCHEMA.iter().filter(|(name, _)| {
+                            matches!(
+                                *name,
+                                "timeline_events_requests"
+                                    | "timeline_events_inputs"
+                                    | "timeline_events_users"
+                            )
+                        }) {
+                            connection
+                                .execute_batch(&format!("DROP INDEX {name}; {sql}"))
+                                .map_err(storage)?;
+                        }
+                    }
+                    if *from == 39 {
+                        super::identities::backfill(&connection)?;
+                        if upgrade_from >= 37 {
+                            super::members::backfill_v40(&connection)?;
+                        }
+                    }
+                    if *from == 38 {
+                        super::arrays::backfill(&connection)?;
                     }
                     if *from == 24 {
                         connection

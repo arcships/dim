@@ -115,6 +115,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `configurationPublisher` | branch | ContextPreparation | internal(hot-path) | — |
 | `configureControl` | branch | Prompt | internal(hot-path) | — |
 | `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
+| `contextUsage` | branch | ContextUsage | internal(hot-path) | — |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |
 | `inputQueue` | branch | InputQueue | internal(object) | — |
@@ -141,6 +142,7 @@ The parts that inject `dispatcher` or `timeline` ([plugin contract §6](../../..
 | BranchLine | branch | `dispatcher`, `timeline` |
 | CollaborationTimeline | branch | `dispatcher`, `timeline` |
 | ContextPreparation | branch | `dispatcher`, `timeline` |
+| ContextUsage | branch | `dispatcher`, `timeline` |
 | EnvironmentClientsBranch | branch | `timeline` |
 | FileReads | branch | `timeline` |
 | GoalBranch | branch | `dispatcher`, `timeline` |

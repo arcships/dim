@@ -1,7 +1,10 @@
+mod arrays;
 mod catalog;
 mod codec;
 mod export;
 mod files;
+mod identities;
+mod members;
 mod metadata;
 mod query;
 mod sqlite;
@@ -15,6 +18,8 @@ pub use codec::NodeLoads;
 pub use dim_agent_capabilities::file_access::WorktreeDirectory;
 pub use export::export_timeline;
 pub use files::MAX_SESSION_FILE_BYTES;
+pub use identities::initialize_session_output_id_index;
+pub use members::initialize_session_member_index;
 #[cfg(feature = "testing")]
 pub use metadata::testing;
 pub use metadata::{MetadataError, SessionMetadata, Title, TitleFields, TitleSource};
