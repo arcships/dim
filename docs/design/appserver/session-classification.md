@@ -12,13 +12,15 @@ App Server reads over it. No Session or branch part. Rules: [design rules §4](.
 
 A picker cannot tell a user's own conversation from a Session an editor created over ACP or from a Session Dim created
 for its own work. After a large legacy import the last kind is most of the list, and most of those rows carry the same
-delegation prompt as their preview, so `/resume` reads as one repeated conversation.
+delegation prompt as their preview, so `/resume` reads as one repeated conversation. A Session a saved configuration
+launched has no class of its own either, so a client cannot list exactly those without also listing every Collaboration
+member and every Workflow stage (#1421).
 
-The Session record gains one creation-only field, `origin`, with four values: `client`, `acp`, `internal` and
-`unknown`. The entry that creates a Session writes it in the creation transaction. The parent of a child Session is
+The Session record gains one creation-only field, `origin`, with five values: `client`, `acp`, `internal`, `unknown` and
+`automation`. The entry that creates a Session writes it in the creation transaction. The parent of a child Session is
 the leader link the store already keeps. Three reads report both — `session.attach`, `session.summaries`, `session.catalog` — and
-only `session.catalog` can drop whole classes: `withInternal` and `withAcpSessions`, both off by
-default, applied before the page boundary. A picker that turns neither on lists conversations, which is what the legacy
+only `session.catalog` can drop whole classes: `withInternal`, `withAcpSessions` and `withAutomationSessions`, all off by
+default, applied before the page boundary. A picker that turns none on lists conversations, which is what the legacy
 picker did.
 
 - **One field, one writer.** Creation fixed; a later client attachment never relabels a Session.
@@ -29,7 +31,8 @@ picker did.
 ## 2. Scope and non-goals
 
 This page owns the type of the origin and its meaning, which creation entry writes which value, the two protocol
-fields that report it, the `session.create {origin}` parameter, the two discovery markers, and what a client must do with them.
+fields that report it, the `session.create {origin}` and `sessions.launch {origin}` parameters, the three discovery
+markers, and what a client must do with them.
 
 It does not own:
 
@@ -48,14 +51,20 @@ It does not own:
 | --- | --- |
 | `client` | A client asked for a conversation Session through `session.create` and declared no more specific origin |
 | `acp` | An editor created it over ACP (`session/new`), which sends `session.create {origin: "acp"}` |
-| `internal` | Dim created it for its own work: a Collaboration member, whose leader is its parent, or a Session a process plugin launched through `sessions.launch` |
+| `internal` | Dim created it for its own work and the creating entry declared no automation purpose: a Collaboration member, whose leader is its parent, or a Session a process plugin launched through `sessions.launch` without `origin` |
 | `unknown` | The store does not record it: the Session predates the field, or an import did not map the source's provenance |
+| `automation` | Dim created it to run work a saved configuration schedules, with no person present: a Session `sessions.launch` created because its caller declared `origin: "automation"`, which only Scheduler's launch target does (#1421) |
 
 `internal` is the class [#557](https://github.com/arcships/dim/issues/557) calls *child Sessions*. The value is not named
 `child` because a child needs a parent and internal work need not have one: a Collaboration member has a leader and
 reports `parentSessionId`, while a Session a process plugin launched is internal work with no parent. The two facts are
 separate fields, so a client that wants the issue's child reads `origin: "internal"` together with a present
 `parentSessionId`; a client that hides child Sessions sends neither the internal class nor the ACP class.
+
+`automation` names a **purpose**, not a plugin: it says no person is present and a saved configuration started the work,
+so the App Server does not depend on which plugin launched. `internal` and `automation` are two classes, not one released
+by the other's filter: a Workflow stage stays `internal` because its launch declares nothing, and listing launched
+Sessions never lists members or stages.
 
 The origin is recorded once, in the creation transaction, and is fixed for the Session's life. It is not derived from
 the connection's `clientKind` (a connection is not durable), from `interactive` (a runtime property a client may set),
@@ -84,7 +93,8 @@ of an imported historical Session clears that Session's catalog link and preserv
 | `session.create {origin: "acp"}`, from AcpGateway's `session/new` | `acp` | none |
 | `session.fork` | `client`, never copied from the source | none |
 | Collaboration member creation | `internal` | the leader |
-| `sessions.launch` | `internal` | none |
+| `sessions.launch` without `origin` | `internal` | none |
+| `sessions.launch {origin: "automation"}`, from Scheduler's launch target | `automation` | none |
 | Native store v30 upgrade | `internal` where a leader link is stored, else `unknown` | as stored |
 | Migration | `unknown`, or a mapped legacy value | the translated parent id when the source recorded one and that Session was imported; a parent that was deferred, failed or is absent from the store leaves the link absent, so the child still lists as `internal` without one |
 
@@ -104,38 +114,58 @@ does not carry over, and an ACP-origin Session's fork is not itself an ACP Sessi
 | --- | --- |
 | `session.attach` | Reports both, from one indexed row read of `agent_sessions` for protocol v3 (the title read it already does is on another table); applies no visibility filter |
 | `session.summaries` | Reports both; applies no visibility filter, so its contents do not change |
-| `session.catalog` | Reports both; applies the two filters of §3.5 |
+| `session.catalog` | Reports both; applies the three filters of §3.5 |
 
 A client that opens a known Session by id therefore reads the class and the parent from the attach reply, without a
 catalog read and without the Session being listed.
 
 ### 3.4 `session.create {origin}`
 
-`session.create` accepts `origin?: "client" | "acp"`; absent means `client`. `internal` and `unknown` are refused as
-`invalid_params`: a client does not create Dim's internal work and cannot declare provenance it does not have. The
+`session.create` accepts `origin?: "client" | "acp"`; absent means `client`. `internal`, `unknown` and `automation` are refused as
+`invalid_params`: a client does not create Dim's internal work and cannot declare provenance it does not have. An
+automation Session is declared only through `sessions.launch`, never by a client. The
 parameter is sent only when the daemon advertises `session.create.origin`, because an older daemon rejects unknown
 create parameters; a client that sends it blind fails its whole creation.
+
+`sessions.launch` accepts `origin?: "automation"` beside its other fields
+([sessions service](sessions-service.md#61-launchrequest)): a closed enum of one value, so a caller names a purpose the
+App Server owns rather than a free-form visibility. Absence keeps `internal`, which is what a caller that sends nothing
+gets. Any other value is the service's shape error, `rejected`.
 
 `session.fork` takes no such parameter: a fork is the forking client's Session (§3.2).
 
 ### 3.5 Catalog visibility
 
-The two filters are query parameters of [`session.catalog`](session-catalog.md#31-sessioncatalog), which owns their
+The three filters are query parameters of [`session.catalog`](session-catalog.md#31-sessioncatalog), which owns their
 names, defaults, cursor digest and page boundary. This page defines what they select:
 
 | Filter | Default | Effect when `false` |
 | --- | --- | --- |
 | `withAcpSessions` | `false` | Rows whose origin is `acp` are not listed |
 | `withInternal` | `false` | Rows whose origin is `internal` are not listed |
+| `withAutomationSessions` | `false` | Rows whose origin is `automation` are not listed |
 
 `client` and `unknown` are always listed. An imported conversation whose provenance was not mapped must not disappear
 from the picker: `unknown` is what the store knows, and hiding it would delete a user's history from the only list they
 have.
 
-`query`, `cwd`, `withPreview` and the order are unchanged and never read the origin; the two filters are additional
+Each filter selects its own class and no other. Over the five origins:
+
+| Origin | neither | `withAutomationSessions` | `withInternal` | both |
+| --- | --- | --- | --- | --- |
+| `client` | listed | listed | listed | listed |
+| `unknown` | listed | listed | listed | listed |
+| `acp` | dropped | dropped | dropped | dropped |
+| `internal` | dropped | dropped | listed | listed |
+| `automation` | dropped | listed | dropped | listed |
+
+`withAcpSessions` composes identically and independently. `automation` is not a sub-value released by `withInternal`:
+`withInternal: true` does not list `automation` rows, and `withAutomationSessions: true` does not list members or stages.
+
+`query`, `cwd`, `withPreview` and the order are unchanged and never read the origin; the three filters are additional
 conditions of the same query, so they compose with a search and apply before the same page boundary.
 
-A client that only wants to page every Session sends both filters `true`. A daemon that does not advertise
+A client that only wants to page every Session sends all three filters `true`. A daemon that does not advertise
 `session.catalog.origins` lists every Session as before, which is what a client of that daemon shows.
 
 ### 3.6 Cost of a listing
@@ -147,7 +177,7 @@ A filtered page adds no read and decodes nothing:
 - A filter prunes rows while the query walks its activity index, and the page stops after `limit + 1` matches. So a page
   costs one page plus the rows it skips: a store that is mostly internal pays one extra row visit per hidden row, and a
   row visit is a column read.
-- No new index. The two switches select two values of one column in four combinations; a partial index serves one
+- No new index. The three switches select values of one column in eight combinations; a partial index serves one
   combination and is maintained by every commit that moves `updated_at_ms`, the cost [#596](https://github.com/arcships/dim/issues/596)
   removed an index for. If the implementation's measurement shows skipped rows matter on a real imported store, that is
   a measurement and a decision of its own, not an index added silently.
@@ -157,14 +187,18 @@ A filtered page adds no read and decodes nothing:
 | Case | Reply |
 | --- | --- |
 | `session.create {origin}` outside `client` and `acp` | `invalid_params` |
-| `withInternal` or `withAcpSessions` not a boolean | `invalid_params`, from parameter decoding |
+| `sessions.launch {origin}` outside `automation` | `rejected`, the service's shape error |
+| `sessions.launch {title}` that is not a string | `rejected`, the service's shape error |
+| `withInternal`, `withAcpSessions` or `withAutomationSessions` not a boolean | `invalid_params`, from parameter decoding |
 | A catalog cursor taken under one filter set and replayed under another | `invalid_params` ([catalog](session-catalog.md#32-order-cursor-and-paging)) |
 | A stored origin this build does not know | Cannot reach a reply: the column's `CHECK` and the store's exact-schema gate make it a refused store, not a row read with a fallback |
 
 ### 3.8 Client requirements
 
 - **Default request.** The picker sends `withInternal: false` (or omits it) and `withAcpSessions` from its preference,
-  and sends either only when `session.catalog.origins` is advertised.
+  and sends either only when `session.catalog.origins` is advertised. A client that lists automation Sessions sends
+  `withAutomationSessions: true` only when `session.catalog.automation` is advertised too, and labels the row by the
+  origin it reports.
 - **Preference.** "Show ACP sessions" is a persisted client preference, off by default, saved with the client's other
   interface switches (in the CLI, `config.json` through `/settings`). It is not a daemon setting and not stored on a
   Session; a client that migrates its own legacy settings carries its own value over, and the default otherwise.
@@ -197,10 +231,10 @@ Parent: Update cache      shown where a client lists internal rows
 | --- | --- |
 | Protocol version | No bump. Both filters and both fields are optional additions; a client that sends neither gets the top-level view, which is the change this issue asks for |
 | Protocol v1 and v2 | No Session listing is served: `session.summaries` and the catalog are v3 methods |
-| Older daemons | A client sends `origin` and the two filters only when the marker is advertised, so its request stays valid against a daemon that rejects unknown parameters |
+| Older daemons | A client sends `origin` and the three filters only when the matching marker is advertised, so its request stays valid against a daemon that rejects unknown parameters |
 | Older clients | A v3 client that predates the filters lists conversations from a new daemon, and labels nothing; it sees fewer rows than before and no wrong ones |
 | `session.summaries` | Lists every Session as before, now with the two fields on each item; ACP's `session/list` is unchanged |
-| Existing stores | v30 is one-way; a v29 daemon refuses the store at startup as it refuses any later format. The upgrade hides exactly the rows whose leader link it records, and leaves every other row visible as `unknown` |
+| Existing stores | v30 is one-way; a v29 daemon refuses the store at startup as it refuses any later format. The upgrade hides exactly the rows whose leader link it records, and leaves every other row visible as `unknown`. v39 is one-way too, and it reclassifies nothing: a Session a launch created before it stays `internal`, so it stays hidden by default |
 | Existing Sessions | No Session is reclassified later by a read, a title change, a model change or an attachment |
 
 ## 4. Events and state
@@ -209,7 +243,7 @@ This part writes no event, owns no Session or branch state and adds nothing to t
 
 | State | Owner | Written | Rebuilt |
 | --- | --- | --- | --- |
-| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown` |
+| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown`; the v39 step widens the column's value set and reclassifies nothing |
 | `agent_sessions.leader_session_id` | same | Collaboration member creation ([#593](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)), Migration parent mapping, or deletion of a historical Session's parent | As stored |
 
 The class is display data for pickers. [Design rules §4 rule 9](../architecture/rust-agent/principles.md) keeps it out of
@@ -220,10 +254,10 @@ the Timeline and out of the model's context; a Session's origin also never reach
 | Dependency | What this part requires |
 | --- | --- |
 | SessionStore's stored Session record | The `origin` column, written by the creation transaction, and the stored leader link; read by the directory, the catalog and the attach record |
-| Agents' creation entries | Each passes the value it owns: `session.create` passes `client` or the declared `acp`, Collaboration passes `internal` with the leader, `sessions.launch` passes `internal` |
+| Agents' creation entries | Each passes the value it owns: `session.create` passes `client` or the declared `acp`, Collaboration passes `internal` with the leader, `sessions.launch` passes `internal`, or `automation` when its caller declares it |
 | Agents' `session_record` (attach) | One indexed row read of the Session's creation record for protocol v3 |
-| [Client Session catalog](session-catalog.md) | Applies `withInternal` and `withAcpSessions` in its query before the page boundary and keeps both out of `session.summaries` |
-| Rpc discovery (`hello.features`) | Advertises `session.create.origin` beside `session.create`, and `session.catalog.origins` beside `session.catalog` |
+| [Client Session catalog](session-catalog.md) | Applies `withInternal`, `withAcpSessions` and `withAutomationSessions` in its query before the page boundary and keeps all three out of `session.summaries` |
+| Rpc discovery (`hello.features`) | Advertises `session.create.origin` beside `session.create`, `session.catalog.origins` beside `session.catalog`, and `session.catalog.automation` beside both |
 | [AcpGateway](../plugins/AcpGateway.md) | Declares `acp` on `session/new` |
 | [Migration](../plugins/Migration.md) | Writes the mapped origin or `unknown` when importing a Session |
 
@@ -237,6 +271,7 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
 | A.5 says ACP Session display is unsupported for want of a durable client-origin field | The field now exists | `session/new` sends `origin`, and A.5 describes the field | With the implementation | AcpGateway |
 | `/resume` has no class labels and no ACP switch; `/settings` lists ACP display as unsupported | The reply carries no class | Filters, labels and the client preference of §3.8 | With the implementation | CLI, then [clients](../clients.md) |
 | `sessions.launch` creates a Session whose origin is `internal` | Its contract states no creation record | One row in §6.1 of the sessions service | With the implementation | Agents |
+| A Scheduler launch has no listable class | `sessions.launch` declares `internal` for every caller, so a picker cannot list exactly those | The `origin` parameter of §3.4 and the `automation` class | With this change (#1421) | Scheduler, then a client that lists them |
 
 ## 7. Rule check
 
@@ -257,14 +292,16 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
 
 ## 8. Binding appendix
 
-- `SessionOrigin` — `client`, `acp`, `internal`, `unknown`, serde lowercase, one definition in the protocol crate, decoded
-  from the store column into the same type.
+- `SessionOrigin` — `client`, `acp`, `internal`, `unknown`, `automation`, serde lowercase, one definition in the
+  protocol crate, decoded from the store column into the same type. `LaunchOrigin` is the closed set a
+  `sessions.launch` caller may declare: `automation` alone.
 - `SessionInfo.origin: Option<SessionOrigin>` and `SessionInfo.parent_session_id: Option<String>`, both
   `skip_serializing_if = "Option::is_none"`, filled only for protocol v3.
-- `Create.origin: Option<SessionOrigin>`; the RPC boundary refuses the two values a client may not declare.
-- `Catalog.with_acp_sessions: bool` and `Catalog.with_internal: bool`, default `false`, both in the cursor digest;
-  `session.summaries` reads the same store query with both set to `true`.
-- `hello.features` names: `session.create.origin`, `session.catalog.origins`.
+- `Create.origin: Option<SessionOrigin>`; the RPC boundary refuses the three values a client may not declare.
+- `LaunchRequest.origin: Option<LaunchOrigin>`; `SessionOrigin::Automation` when it is declared, `Internal` otherwise.
+- `Catalog.with_acp_sessions`, `Catalog.with_internal` and `Catalog.with_automation_sessions`: `bool`, default `false`,
+  each in the cursor digest; `session.summaries` reads the same store query with all three set to `true`.
+- `hello.features` names: `session.create.origin`, `session.catalog.origins`, `session.catalog.automation`.
 - Store spelling: `agent_sessions.origin` and the existing `agent_sessions.leader_session_id`; the format decision is in
   [the storage page](native-storage-format.md#557-v30-格式决定).
 
@@ -280,24 +317,28 @@ Format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
 | D6 | The creation transaction writes the origin once | Reclassifying an existing Session on import retry or attachment | Creation provenance is fixed when the native Session is created |
 | D7 | `session.summaries` reports the fields but filters nothing | Applying the same filters there | It is not the picker: `session.summaries` is the fallback list of older clients and the source of ACP's `session/list`, and it has no page boundary to keep |
 | D8 | No parent filter and no children listing | A `parent` filter on the catalog | A live team comes from Collaboration's Team status, and a historical child is reachable by id and by `withInternal`; a parent filter would be an unused method surface until a client asks for it |
-| D9 | No new index | A partial index per hidden class | Two independent switches need two indexes, each maintained by every commit that moves `updated_at_ms`; the filtered page is bounded by the page plus the rows it skips ([#596](https://github.com/arcships/dim/issues/596)) |
+| D9 | No new index | A partial index per hidden class | Independent switches need an index each, every one maintained by every commit that moves `updated_at_ms`; the filtered page is bounded by the page plus the rows it skips ([#596](https://github.com/arcships/dim/issues/596)) |
+| D10 | A distinct `automation` origin, declared by the launch's caller | A boolean visibility flag on the launch; Agents inferring the class from caller identity; reclassifying existing `internal` rows | The origin axis records who created a Session and why it exists, not which plugin called, so the App Server takes no dependency on Scheduler's identity. A visibility boolean is display state stored as provenance (D1). The call carries no caller identity, so nothing can be inferred. Reclassifying would also relabel every Workflow stage and every Session left by a lost launch reply, inventing provenance the store does not record (D3, D6) |
 
 ## 10. Acceptance (flow tests)
 
 - A Collaboration leader and its member: the member lists as `internal` with `parentSessionId` equal to the leader and
   is absent from a default catalog page; `withInternal: true` lists it; attaching to it by id reports the same two
   fields without a catalog read.
-- A Session created through `sessions.launch` lists as `internal` with no parent and is absent by default.
+- A Session created through `sessions.launch` without `origin` lists as `internal` with no parent and is absent by default;
+  one launched with `origin: "automation"` lists as `automation`, absent by default and present under
+  `withAutomationSessions: true`, and under neither `withInternal` alone.
 - A Session created with `session.create {origin: "acp"}` lists as `acp` and is absent by default; with
   `withAcpSessions: true` it is listed and labelled; a client that attaches to it afterwards does not change its origin;
   a fork of it lists as `client`.
 - A client-created Session lists as `client`, and a Session imported with no mapping lists as `unknown`; both are on the
   default first page.
 - `session.create {origin: "internal"}` is `invalid_params`; so is `"unknown"` and any other value.
+- `sessions.launch {origin}` outside `automation` is `rejected`, and so is a `title` that is not a string.
 - Filters apply before the page boundary: with 60 internal Sessions newer than 50 conversations, a 50-row page holds 50
   conversations, and paging by the returned cursor returns the rest exactly once in the stated order.
 - A cursor taken under `withAcpSessions: true` and replayed with `false` is `invalid_params`; the same for
-  `withInternal`. A cursor taken with both flags takes its page correctly.
+  `withInternal` and `withAutomationSessions`. A cursor taken with several flags takes its page correctly.
 - `session.summaries` still returns every stored Session, including internal and ACP ones, with the two new fields.
 - Protocol v2 has no Session listing; v3 `session.summaries` items carry both fields.
 - A v29 store with one member Session and one ordinary Session upgrades to v30 with the member reading `internal` and

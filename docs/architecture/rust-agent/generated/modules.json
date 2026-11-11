@@ -23165,6 +23165,8 @@
         "path Empty",
         "path PROTOCOL_VERSION",
         "path SessionId",
+        "path SessionOrigin",
+        "path SessionOrigin::Automation",
         "path SessionOrigin::Internal",
         "path session_cwd",
         "use crate::protocol::Empty",
