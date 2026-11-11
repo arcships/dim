@@ -1,6 +1,7 @@
 //! Model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => "详情不可用；收起后展开重试",
         "The response above is incomplete." => "以上响应不完整。",
         "Could not reach the provider, or the connection dropped" => "无法连接提供方，或连接中断",
         "The provider is rate limiting requests" => "提供方正在限流",

@@ -148,7 +148,12 @@ async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit()
             && failure.kind == ModelFailureKind::OutputLimit
             && failure.reason.as_deref().is_some_and(|reason| reason.contains("max_tokens")))));
     assert!(matches!(
-        &history.last().unwrap().kind,
+        &history
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Failed { .. },
             ..
@@ -172,7 +177,12 @@ async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit()
     session.idle("main").await.unwrap();
     let history = chain_events(&session, "main", ..).await.unwrap();
     assert!(matches!(
-        &history.last().unwrap().kind,
+        &history
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -427,7 +437,7 @@ async fn stop_waits_for_native_cleanup_and_keeps_a_real_success() {
         assert!(cleaned.load(Ordering::SeqCst));
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ToolResult(data) if data.results[0].result.content == ToolContent::Text("native operation succeeded".into()) && data.results[0].result.is_error.is_none())));
-        assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Cancelled { .. }, .. })));
+        assert!(matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Cancelled { .. }, .. })));
         agent.close().await.unwrap();
     }).await.unwrap();
 }
@@ -493,7 +503,9 @@ async fn invalid_model_stream_is_cancelled_and_drained_before_settlement() {
             chain_events(&session, "main", ..)
                 .await
                 .unwrap()
-                .last()
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
                 .unwrap()
                 .kind,
             EventKind::TurnEnd(TurnEndData {
@@ -1544,7 +1556,7 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
                         "{outcomes:?}"
                     );
                     assert!(matches!(
-                        &events.last().unwrap().kind,
+                        &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                         EventKind::TurnEnd(TurnEndData {
                             outcome: TurnOutcome::Cancelled { reason },
                             ..
@@ -1558,7 +1570,7 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
                         EventKind::InputConsumed(data) if Some(&data.input_id) == steered.as_ref()
                     )));
                     assert!(matches!(
-                        &events.last().unwrap().kind,
+                        &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                         EventKind::TurnEnd(TurnEndData {
                             outcome: TurnOutcome::Completed { .. },
                             ..
@@ -2823,10 +2835,9 @@ async fn open_turn(session: &dim_agent_runtime::Session) -> String {
         .expect("a started turn")
 }
 
-/// Waits until the dispatcher has handled every committed event.
-async fn dispatched_past(session: &dim_agent_runtime::Session, sequence: u64) {
+async fn queue_consumed_through(session: &dim_agent_runtime::Session, sequence: u64) {
     let mut dispatch = session.dispatch_watch("main").unwrap();
-    while dispatch.borrow().sequence < sequence {
+    while dispatch.borrow_and_update().sequence < sequence {
         dispatch.changed().await.unwrap();
     }
 }
@@ -2890,7 +2901,7 @@ async fn a_handover_input_is_held_without_being_applied_or_counted() {
             .submit("operator next".into(), InputMode::Queue, "main")
             .await
             .unwrap();
-        dispatched_past(&session, queued.sequence).await;
+        queue_consumed_through(&session, queued.sequence).await;
         assert_eq!(
             session
                 .get::<InputSnapshot>("main")
@@ -2903,7 +2914,7 @@ async fn a_handover_input_is_held_without_being_applied_or_counted() {
             .input(handover_input("handover text", &turn, "request-1"), "main")
             .await
             .unwrap();
-        dispatched_past(&session, handover.sequence).await;
+        queue_consumed_through(&session, handover.sequence).await;
         assert_eq!(
             session
                 .get::<InputSnapshot>("main")
@@ -2956,7 +2967,7 @@ async fn a_handover_input_is_deleted_at_its_turn_end_and_never_reaches_the_model
             .input(handover_input("handover text", &turn, "request-1"), "main")
             .await
             .unwrap();
-        dispatched_past(&session, handover.sequence).await;
+        queue_consumed_through(&session, handover.sequence).await;
         release.notify_one();
         deleted(&session, &handover.id).await;
         session.idle("main").await.unwrap();
@@ -3098,7 +3109,7 @@ async fn a_consumed_handover_input_is_not_deleted_at_turn_end() {
             .input(handover_input("handover text", &turn, "request-1"), "main")
             .await
             .unwrap();
-        dispatched_past(&session, handover.sequence).await;
+        queue_consumed_through(&session, handover.sequence).await;
         let timeline = slot.lock().unwrap().clone().expect("the branch Timeline");
         let consumed = timeline
             .append(
@@ -3108,7 +3119,7 @@ async fn a_consumed_handover_input_is_not_deleted_at_turn_end() {
                 .into(),
             )
             .unwrap();
-        dispatched_past(&session, consumed.sequence).await;
+        queue_consumed_through(&session, consumed.sequence).await;
         release.notify_one();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
@@ -3151,12 +3162,12 @@ async fn a_held_handover_input_does_not_steal_the_next_queued_input() {
             .input(handover_input("handover text", &turn, "request-1"), "main")
             .await
             .unwrap();
-        dispatched_past(&session, handover.sequence).await;
+        queue_consumed_through(&session, handover.sequence).await;
         let operator = session
             .submit("operator next".into(), InputMode::Queue, "main")
             .await
             .unwrap();
-        dispatched_past(&session, operator.sequence).await;
+        queue_consumed_through(&session, operator.sequence).await;
         release.notify_one();
         deleted(&session, &handover.id).await;
         session.idle("main").await.unwrap();
@@ -3263,7 +3274,7 @@ async fn a_withdrawn_handover_input_is_deleted_once() {
             .input(handover_input("handover text", &turn, "request-1"), "main")
             .await
             .unwrap();
-        dispatched_past(&session, handover.sequence).await;
+        queue_consumed_through(&session, handover.sequence).await;
         let queue = session.service::<InputQueue>("main").unwrap();
         let reply = queue
             .withdraw(
@@ -3433,6 +3444,80 @@ async fn a_session_switched_to_a_text_only_model_sends_image_placeholders() {
 const TOOL_IMAGE: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
 
+#[tokio::test]
+async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = MinimalHost::start(&builder(
+        Arc::new(RecordingModel(requests.clone())),
+        Arc::new(Screenshot(true)),
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig {
+            model: model_with_vision("text-only", false),
+            tools: Some(vec!["shot".into()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    session
+        .submit("keep this answer".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    session
+        .submit("tool:shot {}".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let sent = requests.lock().unwrap().last().unwrap().clone();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let stored = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(call) => Some(call.request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!Arc::ptr_eq(&sent, &stored));
+    assert_eq!(sent.messages.len(), stored.messages.len());
+    let mut replaced = 0;
+    for (before, after) in stored.messages.iter().zip(&sent.messages) {
+        if before == after {
+            assert!(Arc::ptr_eq(before, after), "unchanged messages stay shared");
+            continue;
+        }
+        replaced += 1;
+        let MessageContent::Parts(parts) = &after.content else {
+            panic!("tool results contain parts")
+        };
+        let [MessagePart::ToolResult { content, .. }] = parts.as_slice() else {
+            panic!("one tool result is adapted")
+        };
+        assert_eq!(
+            content,
+            &ToolContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "screenshot".into()
+                },
+                ContentBlock::Text {
+                    text: "[Image omitted: the current model does not accept images.]".into()
+                }
+            ])
+        );
+    }
+    assert_eq!(replaced, 1);
+    assert!(events.iter().any(|event| matches!(&event.kind,
+        EventKind::ToolResult(data) if data.results.iter().any(|result| matches!(
+            &result.result.content,
+            ToolContent::Blocks(blocks) if blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))
+        ))
+    )));
+    agent.close().await.unwrap();
+}
+
 /// A tool whose result is a text block, with or without a PNG block after it.
 struct Screenshot(bool);
 impl ToolDriver for Screenshot {
@@ -3550,7 +3635,12 @@ async fn tool_result_estimates(image: bool) -> Vec<f64> {
     let events = chain_events(&session, "main", ..).await.unwrap();
     assert!(
         matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Completed { .. },
                 ..

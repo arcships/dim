@@ -5,7 +5,7 @@ use dim_agent_types::{BranchCreateAt, BranchSource, EventKind, InputMode};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_transports_encode_the_v1_branch_create_boundary_live() {
-    for ws in [false, true] {
+    for (ws, advance) in [(false, false), (true, false), (false, true), (true, true)] {
         let (server, agent) = launch_with_agent(Arc::new(MockTools), ServerConfig::default()).await;
         let mut live = Client::new(&server, ws).await;
         let created = live.rpc("session.create", create(json!(["echo"]))).await;
@@ -23,6 +23,11 @@ async fn both_transports_encode_the_v1_branch_create_boundary_live() {
         let live_after = session.sequence("main").unwrap();
         session.idle("main").await.unwrap();
         let high = session.sequence("main").unwrap();
+        if advance {
+            session
+                .interrupt("main", "after the fixed cut".into())
+                .unwrap();
+        }
         let child = session
             .branch(
                 "main".into(),
@@ -45,7 +50,9 @@ async fn both_transports_encode_the_v1_branch_create_boundary_live() {
             .find(|event| matches!(&event.kind, EventKind::BranchCreate(data) if data.branch == child))
             .unwrap();
         assert!(
-            matches!(&create.kind, EventKind::BranchCreate(data) if data.at == BranchCreateAt::Create {} && data.branch == child)
+            matches!(&create.kind, EventKind::BranchCreate(data) if data.branch == child
+                && ((!advance && data.at == BranchCreateAt::Create {}) || data.at == BranchCreateAt::Sequence { sequence: high })),
+            "a fixed cut either names the current tail or retains its sequence when later facts advance it: {create:?}"
         );
         let through_create: Vec<_> = events
             .iter()

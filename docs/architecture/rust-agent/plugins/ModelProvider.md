@@ -16,6 +16,10 @@ place, an image the request cannot carry gets the other placeholder, and every
 other image is sent as is. The decision changes the request only; the adopted
 input, the Timeline and the stored tool result never change.
 
+The adapter selects replacements before copying content. An unchanged request
+keeps its Arc without cloning text, thinking, tool arguments or result blocks.
+When images change, only those messages are copied; other messages stay shared.
+
 ## Dependencies
 
 | Service | Purpose |

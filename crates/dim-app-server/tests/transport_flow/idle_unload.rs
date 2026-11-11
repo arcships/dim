@@ -752,7 +752,7 @@ fn stored_heads(store: &Store, id: &str) -> std::collections::BTreeMap<String, u
 /// or anything else; the Session stays in `session.summaries`; and the restore
 /// adds only a `branch/resume` to each branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_unload_writes_nothing_and_the_restore_only_resumes() {
+async fn an_unload_writes_nothing_and_the_restore_only_records_housekeeping() {
     let store = Store::new();
     let loads = Loads::default();
     let Served {
@@ -832,9 +832,12 @@ async fn an_unload_writes_nothing_and_the_restore_only_resumes() {
             .unwrap()
             .iter()
             .filter(|event| {
-                !(event["type"] == "input"
+                !((event["type"] == "input"
                     && ((event["name"] == "applied" && event["data"]["mode"] == "append")
                         || (event["name"] == "message" && event["data"]["user"].is_null())))
+                    || (event["type"] == "input-queue"
+                        && matches!(event["name"].as_str(), Some("node" | "recovered")))
+                    || (event["type"] == "prompt-state" && event["name"] == "recovered"))
             })
             .map(|event| format!("{}/{}", event["type"], event["name"]).replace('"', ""))
             .collect();

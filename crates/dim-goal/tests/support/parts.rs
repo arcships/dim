@@ -1133,6 +1133,15 @@ impl Env {
         self.session.id()
     }
 
+    pub async fn restore_failure(&self, id: &str) -> dim_agent_runtime::AgentError {
+        self.host
+            .agent()
+            .restore_session(id.to_owned())
+            .await
+            .err()
+            .expect("invalid durable recovery state must fail the Session restore")
+    }
+
     /// Starts a second Session record `id` in the shared store, to be filled
     /// before anything loads it: the history a restore replays.
     pub async fn seed_new(&self, id: &str) -> Seed {

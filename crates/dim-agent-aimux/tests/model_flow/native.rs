@@ -2391,7 +2391,7 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
             }, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{kind}: {:?}", events.iter().filter_map(|e| if let EventKind::ModelOutputEnd(data)=&e.kind{Some(&data.outcome)}else{None}).collect::<Vec<_>>());
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{kind}: {:?}", events.iter().filter_map(|e| if let EventKind::ModelOutputEnd(data)=&e.kind{Some(&data.outcome)}else{None}).collect::<Vec<_>>());
             assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta=="finished")));
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(),2,"{kind}");
@@ -2653,7 +2653,11 @@ async fn explicit_system_breakpoints_stay_within_the_four_breakpoint_limit() {
                 .unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            let last = &events.last().unwrap().kind;
+            let last = &events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind;
             if breaks < 5 {
                 assert!(
                     matches!(
@@ -2775,7 +2779,11 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
                 matches!(
-                    events.last().unwrap().kind,
+                    events
+                        .iter()
+                        .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                        .unwrap()
+                        .kind,
                     EventKind::TurnEnd(TurnEndData {
                         outcome: TurnOutcome::Completed { .. },
                         ..
@@ -3034,7 +3042,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             // The reply completes and commits its complete content.
-            assert!(matches!(events.last().unwrap().kind,EventKind::TurnEnd(TurnEndData{outcome:TurnOutcome::Completed{..},..})),"{kind}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,EventKind::TurnEnd(TurnEndData{outcome:TurnOutcome::Completed{..},..})),"{kind}");
             assert!(events.iter().any(|event|matches!(&event.kind,EventKind::ModelContent(_))),"{kind}");
             if kind == "anthropic" {
                 let host = agent.root().get::<ModelHost>().unwrap();
@@ -3078,7 +3086,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             assert!(!events.iter().any(|event| matches!(event.kind, EventKind::ToolUse(_))), "{kind}: {prompt}");
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(data.outcome, ModelOutputOutcome::Failed { .. }))), "{kind}: {prompt}");
             assert!(!events.iter().any(|event| matches!(&event.kind, EventKind::ModelContent(_) | EventKind::ToolCall(_) | EventKind::ModelUsage(_)) || matches!(&event.kind, EventKind::ToolResult(data) if data.call_event_id.is_some())), "{kind}: {prompt}");
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { .. }, .. })), "{kind}: {prompt}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { .. }, .. })), "{kind}: {prompt}");
             assert_eq!(server.endpoint.requests.lock().unwrap().len(), 1);
             agent.close().await.unwrap();
             server.close().await;
@@ -3092,7 +3100,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             let events = chain_events(&session, "main", ..).await.unwrap();
             let visible: String = events.iter().filter_map(|event| match &event.kind { EventKind::Text(data) => Some(data.delta.as_str()), _ => None }).collect();
             assert_eq!(visible, "Cannot comply.");
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
             session.submit("follow-up".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let requests = server.endpoint.requests.lock().unwrap().clone();
@@ -3112,7 +3120,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{prompt}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{prompt}");
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(), 2);
             let model = requests[1].2["contents"].as_array().unwrap().iter().find(|item| item["role"] == "model").unwrap();
@@ -3204,14 +3212,14 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         assert_eq!(claude.endpoint.requests.lock().unwrap().len(), 2);
         let selection = |provider_id: &str| {
@@ -3252,14 +3260,14 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         let requests = chat.endpoint.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 1);
@@ -3288,14 +3296,14 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         let requests = claude.endpoint.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3);
@@ -3482,7 +3490,7 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
-                matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{kind}: {:?}",
                 events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect::<Vec<_>>()
             );
@@ -3554,7 +3562,7 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
             session.submit("another".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             assert!(
-                matches!(chain_events(&session, "main", ..).await.unwrap().last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(chain_events(&session, "main", ..).await.unwrap().iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{kind}: a later turn also completes"
             );
             agent.close().await.unwrap();
@@ -3583,7 +3591,7 @@ async fn a_model_without_image_input_gets_the_placeholder_in_a_tool_result() {
         session.submit("call the tool".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
-        assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+        assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
         for content in tool_result_events(&events) {
             assert!(
                 matches!(content, ToolContent::Blocks(blocks) if blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))),
@@ -4327,7 +4335,11 @@ async fn gemini_signature_after_unsigned_text_signs_that_text_and_replays() {
     let events = chain_events(&session, "main", ..).await.unwrap();
     assert!(
         matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Completed { .. },
                 ..

@@ -627,15 +627,31 @@ pub async fn first_user_text(session: &Session, branch: &str) -> String {
     let tree = session
         .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
         .unwrap();
+    let mut last = String::new();
     for _ in 0..750 {
-        let Ok(through) = session.sequence(branch) else {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            continue;
+        let through = match session.sequence(branch) {
+            Ok(through) => through,
+            Err(error) => {
+                last = error.to_string();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
         };
-        let Ok(events) = tree.page(branch.into(), 0, 4096, through).await else {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            continue;
+        let events = match tree.page(branch.into(), 0, 4096, through).await {
+            Ok(events) => events,
+            Err(error) => {
+                last = error.to_string();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
         };
+        last = format!(
+            "head {through}, kinds {:?}",
+            events
+                .iter()
+                .map(|event| event.kind.key())
+                .collect::<Vec<_>>()
+        );
         for event in events {
             if let EventKind::InputMessage(data) = &event.kind
                 && let Some(user) = &data.user
@@ -646,7 +662,7 @@ pub async fn first_user_text(session: &Session, branch: &str) -> String {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!("no user input on {branch}")
+    panic!("no user input on {branch}: {last}")
 }
 
 /// Every tool result text on `branch`, with whether it was an error.

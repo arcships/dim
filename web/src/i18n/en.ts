@@ -198,6 +198,7 @@ const en = {
   "message.collapse": "Collapse message",
   "message.copy": "Copy entire message",
   "message.skillLoaded": "Skill loaded: {name}",
+  "message.hookContext": "Hook context",
   "message.expand": "Show full message",
   "message.quote": "Quote in the composer",
   "newThread.pathLabel": "Absolute directory path",

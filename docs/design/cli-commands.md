@@ -43,7 +43,7 @@ for that group only. A member's summary row still opens its conversation.
 only expanded shows a compaction's summary body. Thinking details controls both streaming and completed thoughts,
 including the line side panel. Changing either setting updates its retained
 history and live content without changing the other setting. Scrollback already
-written to the terminal remains append-only; fullscreen redraws retained history.
+written to the terminal remains append-only; fullscreen redraws retained history. A hook context's body follows the same rule: collapsed and summary keep it closed, only expanded opens it, and a click on the row toggles that row alone.
 
 ## Command menu
 
@@ -213,6 +213,15 @@ Enter steers it and `x` deletes it through the existing withdrawal operation.
 Only held messages can change; `notHeld` is a notice, not a failed run. Esc
 closes the panel without interrupting. Committed events refresh the panel,
 and changing attachment or shown line closes it.
+Once a queued message's steer, delete or recall request succeeds, further queue
+actions for that input issue no RPC while its committed events catch up with the
+client projection. The first suppressed action reports that the message has
+already left the queue, unless the acknowledgement already reported `notHeld`;
+later repeats add no notice. Tracking ends when the input leaves the projection
+or the attachment is reset. Actions on inputs the projection no longer holds do
+nothing. A failed request leaves the held input available for retry.
+With an empty draft and no held messages, Enter retains the task-line shortcut
+defined in [Run keys and queue](#run-keys-and-queue).
 
 The panel advertises steer and delete only when the selected message is held.
 An applied-only strip offers `/queue` to view the messages, not held-only edit

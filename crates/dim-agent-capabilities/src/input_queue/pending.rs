@@ -1,6 +1,10 @@
 use super::*;
-use dim_agent_runtime::{QueryComparison, QueryCursor};
+use dim_agent_runtime::{
+    QueryComparison, QueryCursor, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
+    QuerySpec, QueryValue, TimelineQuery, TimelineQueryScope,
+};
 use serde_json::{Value, json};
+use std::num::NonZeroU64;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
