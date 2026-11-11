@@ -1,8 +1,10 @@
 # Timeline 属性查询与消费端改造
 
 Scope: Timeline 读取机制，以及状态恢复、请求构造对它的使用。
-决策依据：[ADR 022](../adr/022-event-property-queries.md)。本文细化该提案的接口和修改方案，不表示这些接口已可用。
+决策依据：[ADR 022](../adr/022-event-property-queries.md)。本文定义查询接口和执行约定。
 相关问题：[#1147](https://github.com/arcships/dim/issues/1147)。既有 issue、PR 的范围不由本文自动扩大。
+
+相关设计：[数组下标点读](timeline-array-rows.md)复用既有 Fields 路径；[成员索引](appserver/timeline-member-index.md)定义反关联索引；[状态结果](owner-state-indexed-reads.md)区分各owner的业务保存与运行内存。不增加 QuerySpec.rows 或通用状态 CRUD。
 
 ## 1. 修改范围
 
@@ -173,22 +175,22 @@ MemoryTimelineStore 执行同一份表达式。它可以扫描已经持有的事
 | ModelProvider | 按 `turn_id`、`request_id` 查无 output-end 的调用，再读取这些调用的 tool-use-start 标识及参数完成状态；另读 steer、interrupt 与轮次控制字段。 | 结算字段及控制状态；结算函数改收这些字段，不再要求整个 `ModelCallData.request`。 |
 | ToolExecutor | 按 `ToolResult.call_event_id` 排除已结束的 ToolCall，再选剩余项的 turn、request、call 标识；另读 interrupt 与轮次控制字段。 | 取消结果所需标识及中断状态；不恢复工具参数并重新执行。 |
 | ContextPreparation | 查未完成的 prepare、自动 compaction-start，以及相关控制事实。 | 准备和取消状态；不恢复历史模型请求。 |
-| InputQueue | 按顺序读取入队、替换、撤回、交接和轮次控制字段，推进自己的状态。正文只读取最终仍持有的输入。 | 队列和仍欠缺的决定；不能简化为“输入减去 consumed”。 |
+| InputQueue | 按当前输入成员、每项applied/withdraw及最新turn/interrupt读取；不重放八类历史，不保存完整队列快照。 | 队列和仍欠缺的决定；不能简化为“输入减去 consumed”。 |
 | Loop | 查询已 applied、未 consumed 的输入；分别恢复当前轮次及未完成压缩的控制状态。 | 待消费输入和当前执行状态。输入可能早于本轮开始，不能统一从最近 turn-start 截断。 |
 | Prompt、Permission、Wait 等 | 按各自契约查询最新记录、按键最新记录或未完成项；存在多步决定时继续有序处理所需字段。 | 当前有效配置或等待状态。 |
 | BranchLine、Hooks、Collaboration | 用现有状态机逐页消费所需字段；只有能证明旧事实不再影响决定时才收紧起点。 | 各自的业务状态，不额外保留事件列表。 |
-| Goal | 按 [Goal 读取设计](plugins/Goal-property-queries.md)分别查询 Goal 标记候选、当前轮次、未完成集合和已发布 key，不把原 13 类事件整体改成字段重放。 | 当前目标、控制状态和仍相关的评估；标记文本保留必要的顺序计算。 |
+| Goal | 按 [Goal 状态设计](plugins/Goal-state-read.md)索引读取最后一个完整业务状态；未结束则在内存暂停，不恢复执行。旧格式仅按兼容设计读取目标定义。 | 当前目标、judge 和有效状态；次数、轮次和评估是本实例内存，不重建旧控制流。 |
 | BackgroundExec | 从生命周期字段恢复任务目录；未结束任务结算，缺少通知交接的终态继续处理。 | 契约要求的任务目录，包括仍需展示的已结束任务，不能全部删掉。 |
 
 可以直接关联求集合的，返回集合；需要按顺序推进状态的，保留状态机。后一种方式仍须做到只读必要字段、逐页消费。不能为了消除所有遍历，再新增一套通用业务状态计算器。
 
 恢复所写的结算事实仍经过 Timeline 和 Dispatcher。新查询接口不重放网络请求、工具、Hook 或子进程，也不改变恢复与实时事件的交接。
 
-### 5.1 Goal 的读取与重算
+### 5.1 Goal 的读取与终止
 
-业务字段、查询条件、状态对应表、保留的遍历和删除流程统一由 [Goal 属性查询与状态恢复](plugins/Goal-property-queries.md)定义。该设计以统一状态记录契约为前提，保留原子写入、补偿及恢复校正规则；最新已发布块不替代完整运行状态。
+[Goal 状态设计](plugins/Goal-state-read.md)定义 goal/state、内存执行、异常终止和加载暂停。加载不查询旧轮次、续行、任务或评估，不使用 source_through 推进 Goal 恢复；只恢复目标定义和有效暂停/结束状态。活 get 读内存，不能等待新的持久状态记录。
 
-机制侧仍只接受通用查询，不解析 Goal 文本。Goal 提出的首元素字段访问需求见其机制需求表；未被查询合同定义和实现的路径不能视为现有 API。行数分页不承诺字节上限，Goal 的页大小需按其读取对象分别实测。
+[旧格式与删除](plugins/Goal-property-queries.md)只处理必要的目标定义解释和业务回滚；其实际候选成本单列，不作为新格式普通加载的回退。Store 只执行现有 kind/位置及身份查询，不解析 Goal 文本或新增 Goal 状态接口。
 
 ## 6. 本次模型请求怎么构造
 
@@ -247,7 +249,7 @@ Recall 的搜索答案是既有渲染规则得到的 thing 正文，不是事件
 
 这个条件只能正向组合，不能放在 `Not` 内。它不改变普通字段条件、排序、分页和截止位置的含义。没有对应索引的存储可以保留所有候选；SQLite 对已建索引的属性使用 FTS5。没有索引的属性、不能安全索引的词、跨祖先段的拼接和未持久化尾部保留完整候选路径。
 
-SQLite 建立两种属性索引：`data`（单事件），以及按 `kind`、`data.request_id` 分组的 `data.delta`。索引不保存正文：元数据表保存事件位置、属性名和分组键，contentless FTS5 表只保存 trigram 倒排项。`data` 的历史请求和压缩正文不进入索引，读取它们时仍返回候选。`data.delta` 在写入新片段时连同前 199 个字符建立倒排项，因此长度不超过 200 的 ASCII 词跨片段时仍有候选。每个词的 trigram 只要求同时出现，顺序和正文命中仍由 Recall 验证。
+SQLite 建立两种属性索引：`data`（单事件），以及按 `kind`、`data.request_id` 分组的 `data.delta`。索引不保存正文：元数据表保存事件位置、属性名和分组键，contentless FTS5 表只保存 trigram 倒排项。`data` 按[原生存储格式](appserver/native-storage-format.md#v38收窄全文与关联索引的写入范围)的覆盖范围建立索引；历史请求、压缩正文和不透明扩展事实不进入索引，查询这些类型时仍保留候选。`data.delta` 在写入新片段时连同前 199 个字符建立倒排项，因此长度不超过 200 的 ASCII 词跨片段时仍有候选。每个词的 trigram 只要求同时出现，顺序和正文命中仍由 Recall 验证。
 
 首版索引只排除由 3–200 个 ASCII 字母组成的词。其他词不用于排除候选；混合查询可以使用其中安全的词缩小范围。索引更新与事件批次在同一 SQLite 事务中提交，合并物理输出行仍逐个登记逻辑事件。Session 复制按复制后的事实重建索引，删除同时删除索引。旧库在格式升级事务内回填，失败时连同格式标记一并回滚。
 

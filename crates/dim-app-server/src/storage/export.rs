@@ -5,7 +5,7 @@ use super::{
     SqliteStorage,
     codec::{CONTENT_BUDGET, Reader},
     sqlite::error,
-    timeline::{read_directory, read_range, validate_session},
+    timeline::{read_directory, read_range},
 };
 use dim_agent_runtime::{BranchRecord, Result, TimelineKey, TimelineTrace};
 use dim_agent_types::AgentEvent;
@@ -44,8 +44,8 @@ enum Line<'a> {
 }
 
 /// Writes `session`'s whole Timeline in the database at `path` to `out`,
-/// without changing the database. Nothing is written when the database,
-/// its format or the Session's Timeline is rejected.
+/// without changing the database. A failed read leaves an incomplete stream
+/// without its terminal record.
 pub async fn export_timeline(path: PathBuf, session: &str, out: &mut impl Write) -> Result<()> {
     let (db, format) = SqliteStorage::open_read_only(path)?;
     let written = write(&db, format, session, out).await;
@@ -77,11 +77,8 @@ async fn write(
             db.path.display()
         )));
     }
-    // Export rebuilds every request body in the preflight and checks its
-    // hash, so a damaged body is refused before the first line is written.
     let mut reader = Reader::new(CONTENT_BUDGET);
-    let directory = read_directory(db, session).await?;
-    let branches = validate_session(db, session, &directory, &mut reader).await?;
+    let branches = read_directory(db, session).await?;
     line(
         out,
         &Line::Header {
@@ -107,9 +104,25 @@ async fn write(
             branch_id: branch.info.id.clone(),
         };
         let mut next = 1;
+        let mut expected = 1;
+        let mut batch_end = 0;
         while next <= branch.sequence {
             let last = branch.sequence.min(next + PAGE - 1);
             for record in read_range(db, &mut reader, &key, next..=last, false).await? {
+                let sequence = record.event.sequence;
+                if sequence != expected {
+                    return Err(error("Timeline export contains a sequence gap"));
+                }
+                if batch_end < sequence {
+                    batch_end = record.batch_end;
+                }
+                if record.batch_end != batch_end
+                    || batch_end < sequence
+                    || batch_end > branch.sequence
+                {
+                    return Err(error("Timeline export contains an invalid batch boundary"));
+                }
+                expected += 1;
                 line(
                     out,
                     &Line::Event {
@@ -122,6 +135,9 @@ async fn write(
                 events += 1;
             }
             next = last + 1;
+        }
+        if expected != branch.sequence + 1 || batch_end != branch.sequence {
+            return Err(error("Timeline export does not reach the branch head"));
         }
     }
     line(

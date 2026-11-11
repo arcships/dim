@@ -18,7 +18,7 @@ jobs:
     # Self-hosted runners keep state between jobs, so they run only code from branches of this
     # repository; fork pull requests skip every job and fail ci-ok. See docs/release/README.md.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, windows, x64]
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.groups.outputs.rust }}
@@ -261,7 +261,7 @@ jobs:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
     needs: [changes, dependencies, windows-cli, verify, acp-registry]
     if: always()
-    runs-on: [self-hosted, windows, x64]
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       # A skipped changes job means a fork pull request, which this workflow does not verify.

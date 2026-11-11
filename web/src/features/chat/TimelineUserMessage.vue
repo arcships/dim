@@ -5,7 +5,7 @@ import { Check, ChevronDown, Copy, GitBranch, Quote } from "lucide-vue-next"
 import { copyText } from "../../clipboard"
 import { formatTimelineTimestamp } from "./timeline-time"
 
-const props = defineProps<{ text: string; skills?: string[]; at: number; quotable: boolean; branchable: boolean }>()
+const props = defineProps<{ text: string; skills?: string[]; hooks?: number; at: number; quotable: boolean; branchable: boolean }>()
 const emit = defineEmits<{ quote: [text: string]; branch: [text: string] }>()
 const { t, locale } = useI18n()
 const content = ref<HTMLElement>()
@@ -44,6 +44,7 @@ async function copy(): Promise<void> {
     <div v-if="skills?.length" class="user-skills">
       <div v-for="skill in skills" :key="skill" class="user-skill">{{ t("message.skillLoaded", { name: skill }) }}</div>
     </div>
+    <div v-for="hook in hooks ?? 0" :key="hook" class="user-hook">{{ t("message.hookContext") }}</div>
     <div class="user-actions">
       <span class="user-sent-time timestamp">{{ sentTime }}</span>
       <button class="ui-icon-button" data-variant="ghost" data-size="sm" type="button" v-tooltip="t('message.copy')" :aria-label="t('message.copy')" @click="copy">
@@ -71,7 +72,7 @@ async function copy(): Promise<void> {
 .user-bubble-expand svg.is-expanded { transform: rotate(180deg); }
 .user-actions { display: flex; height: var(--control-sm); align-items: center; gap: var(--space-1); color: var(--muted-foreground); opacity: 0; transition: opacity var(--duration-hover) ease; }
 .user-message:hover .user-actions, .user-message:focus-within .user-actions { opacity: 1; }
-.user-skill { color: var(--muted-foreground); font-size: var(--text-xs); }
+.user-skill, .user-hook { color: var(--muted-foreground); font-size: var(--text-xs); }
 .user-sent-time { margin-right: var(--space-1); white-space: nowrap; }
 .is-copied { color: var(--success); }
 @media (hover: none) { .user-actions { opacity: 1; } }

@@ -1,23 +1,17 @@
-//! The `goal.test.mjs` load cases: a Session that already carries history is
-//! restored, and Goal rebuilds its fold and takes the decisions the previous
-//! generation owed before any live fact.
 mod support;
-
-use std::sync::Arc;
-use std::time::Duration;
 
 use dim_agent_capabilities::history::{HistoryRenderer, context_messages, summary_message};
 use dim_agent_runtime::{BranchOptions, TimelineQueryDirection};
 use dim_agent_types::{
     BranchCreateAt, BranchCreateData, BranchSource, ContextCompactionData, ContextCompactionResult,
-    InputMode,
 };
+use dim_agent_types::{EventKind, ExtensionEvent, InputConsumedData, InputMode};
+use serde_json::json;
+use std::time::Duration;
 use support::parts::*;
 use support::texts;
 use tokio_util::sync::CancellationToken;
 
-/// One seeded evaluation: the set, the worker's completed request and the
-/// evaluator's creation, as the main branch wrote them.
 fn seed_evaluation(seed: &mut Seed, evaluator: &str) -> (u64, u64) {
     let (objective, status) = texts::legacy_evaluator_set_blocks("main", "ship it");
     let set = seed.append(
@@ -106,75 +100,232 @@ fn pause(seed: &mut Seed) {
     );
 }
 
-/// Polls until `branch` has an end fact from `source`.
-async fn wait_ended(env: &Env, branch: &str, source: BranchSource) {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            if env
-                .ended(branch)
-                .await
-                .iter()
-                .any(|end| end.source == source)
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the line ends");
+async fn states(env: &Env) -> Vec<serde_json::Value> {
+    env.all_events("main")
+        .await
+        .into_iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::Extension(data) if data.key() == "goal/state" => Some(data.data().clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn state(objective: Option<&str>, status: serde_json::Value) -> EventKind {
+    EventKind::Extension(ExtensionEvent::new("goal","state",json!({"schema":"goal-state/v1","operation":if objective.is_some(){"set"}else{"clear"},"objective":objective,"state":status,"judge":"model","input_id":null})).unwrap())
 }
 
 #[tokio::test]
-async fn e2_a_load_ends_a_settled_evaluator_once_unless_its_end_is_recorded() {
-    // The previous generation superseded the evaluation but never recorded
-    // the end: the rebuild owes it.
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-settled").await;
-    let (evaluation, _) = seed_evaluation(&mut seed, "eval");
-    pause(&mut seed);
-    seed.finish().await;
-    let env = env.restore_seeded("load-settled").await;
-    wait_ended(
-        &env,
+async fn a_new_owner_pauses_an_unclosed_goal_without_writing_or_replaying_work() {
+    let env = Env::start_refusing().await;
+    let mut seed = env.seed_new("unclosed").await;
+    seed.append("main", state(Some("ship it"), json!({"kind":"active"})));
+    let old = seed.append(
         "main",
-        BranchSource::Host {
-            operation_id: format!("goal:evaluate:{evaluation}"),
-        },
-    )
-    .await;
-    assert_eq!(env.ended("main").await.len(), 1, "the end is written once");
-    assert_eq!(
-        env.settled("main").await.len(),
-        3,
-        "the load writes no pause or continuation"
+        message(
+            vec![raw(
+                &texts::continuation("main", 4, None, 1, 1),
+                None,
+                false,
+            )],
+            InputMode::Queue,
+        ),
     );
-    env.close().await;
-
-    // The end already in history is not written twice.
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-recorded").await;
-    let (evaluation, _) = seed_evaluation(&mut seed, "eval");
-    pause(&mut seed);
-    seed.append(
+    seed.append("main", turn_end_with("old", "completed"));
+    seed.finish().await;
+    let before = env.reads().len();
+    let env = env.restore_seeded("unclosed").await;
+    let read = env.goal("get", json!({})).await.unwrap();
+    assert_eq!(read["goal"]["objective"], "ship it");
+    assert_eq!(
+        read["goal"]["status"],
+        json!({"kind":"paused","reason":"interrupted_reload"})
+    );
+    assert_eq!(states(&env).await.len(), 1);
+    assert_eq!(env.settled("main").await.len(), 1);
+    assert!(env.reads()[before..].iter().all(|query|!matches!(&query.select,dim_agent_runtime::QuerySelect::Fields {fields} if fields.iter().any(|field|field=="data.blocks"))));
+    env.emit(
         "main",
-        dim_agent_types::EventKind::BranchEnded(dim_agent_types::BranchEndedData {
-            branch: "eval".into(),
-            end_event: 0,
-            source: BranchSource::Host {
-                operation_id: format!("goal:evaluate:{evaluation}"),
-            },
-            ancestor: None,
+        EventKind::InputConsumed(InputConsumedData {
+            input_id: old.id.clone(),
         }),
     );
-    seed.finish().await;
-    let env = env.restore_seeded("load-recorded").await;
+    env.turn_ids("main", &[]);
     assert_eq!(
-        env.settled("main").await.len(),
-        3,
-        "an end already in history is not written twice"
+        states(&env).await.len(),
+        1,
+        "late old events do not save recovery or restart execution"
     );
-    assert_eq!(env.ended("main").await.len(), 1);
+    env.goal("resume", json!({})).await.unwrap();
+    let resume = env.wait_for("main", r#"op="resume""#).await;
+    let end = env.turn("main", &[&resume]);
+    let continuation = env
+        .wait_for("main", r#"kind="continuation" count="1""#)
+        .await;
+    assert_eq!(
+        continuation.text,
+        texts::continuation("main", 1, None, 0, end.sequence)
+    );
+    assert_eq!(states(&env).await.len(), 2);
+    env.close().await;
+}
+
+#[tokio::test]
+async fn only_goal_business_changes_save_state() {
+    let env = Env::start_refusing().await;
+    let ordinary = env.emit("main", user("ordinary chat", InputMode::Queue));
+    env.turn_ids("main", &[&ordinary.id]);
+    assert!(states(&env).await.is_empty());
+    let goal = env.set("ship it").await;
+    let mut driver = goal;
+    for count in 1..=2 {
+        let end = env.turn("main", &[&driver]);
+        driver = env
+            .wait_for("main", &format!(r#"kind="continuation" count="{count}""#))
+            .await;
+        assert_eq!(
+            driver.text,
+            texts::continuation("main", count, None, count - 1, end.sequence)
+        );
+    }
+    assert_eq!(states(&env).await.len(), 1);
+    env.tool("main", json!({"status":"completed","summary":"done"}))
+        .await;
+    assert_eq!(
+        env.goal("get", json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "completed"
+    );
+    let saved = states(&env).await;
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[0]["objective"], "ship it");
+    assert_eq!(saved[1]["objective"], "ship it");
+    assert_eq!(saved[1]["state"], json!({"kind":"completed","text":"done"}));
+    assert!(env.all_events("main").await.iter().all(|event|!matches!(&event.kind,EventKind::Extension(data) if matches!(data.key(),"goal/recovered"|"goal/driving-node"|"goal/input-boundary"))));
+    let queries = env.reads().len();
+    env.goal("get", json!({})).await.unwrap();
+    assert_eq!(env.reads().len(), queries);
+    assert_eq!(states(&env).await.len(), 2);
+    env.close().await;
+}
+
+#[tokio::test]
+async fn graceful_unload_saves_one_pause_and_reload_preserves_it() {
+    let env = Env::start_refusing().await;
+    env.set("ship it").await;
+    let env = env.restore().await;
+    let read = env.goal("get", json!({})).await.unwrap();
+    assert_eq!(
+        read["goal"]["status"],
+        json!({"kind":"paused","reason":"interrupted_unload"})
+    );
+    let saved = states(&env).await;
+    assert_eq!(saved.len(), 2);
+    assert_eq!(saved[1]["operation"], "pause");
+    let env = env.restore().await;
+    assert_eq!(states(&env).await.len(), 2);
+    env.close().await;
+}
+
+#[tokio::test]
+async fn finished_and_cleared_goals_load_without_new_facts() {
+    for (name, objective, status, kind) in [
+        (
+            "paused",
+            Some("ship it"),
+            json!({"kind":"paused","text":"user"}),
+            "paused",
+        ),
+        (
+            "completed",
+            Some("ship it"),
+            json!({"kind":"completed","text":"done"}),
+            "completed",
+        ),
+        (
+            "blocked",
+            Some("ship it"),
+            json!({"kind":"blocked","text":"needs credentials"}),
+            "blocked",
+        ),
+        ("clear", None, json!({"kind":"none"}), "none"),
+    ] {
+        let env = Env::start().await;
+        let mut seed = env.seed_new(name).await;
+        seed.append("main", state(objective, status));
+        seed.finish().await;
+        let env = env.restore_seeded(name).await;
+        let read = env.goal("get", json!({})).await.unwrap();
+        if kind == "none" {
+            assert!(read["goal"].is_null());
+        } else {
+            assert_eq!(read["goal"]["status"]["kind"], kind);
+        }
+        assert_eq!(states(&env).await.len(), 1);
+        assert!(env.settled("main").await.is_empty());
+        env.close().await;
+    }
+}
+
+#[tokio::test]
+async fn an_invalid_latest_business_state_never_uses_an_older_one() {
+    for case in ["schema", "objective", "field"] {
+        let env = Env::start().await;
+        let mut seed = env.seed_new(case).await;
+        seed.append(
+            "main",
+            state(Some("valid older goal"), json!({"kind":"active"})),
+        );
+        let EventKind::Extension(valid) =
+            state(Some("invalid latest goal"), json!({"kind":"active"}))
+        else {
+            unreachable!()
+        };
+        let mut invalid = valid.data().clone();
+        match case {
+            "schema" => invalid["schema"] = json!("goal-state/future"),
+            "objective" => invalid["objective"] = json!(17),
+            "field" => {
+                invalid.as_object_mut().unwrap().remove("state");
+            }
+            _ => unreachable!(),
+        };
+        seed.append(
+            "main",
+            EventKind::Extension(ExtensionEvent::new("goal", "state", invalid).unwrap()),
+        );
+        seed.finish().await;
+        let error = tokio::time::timeout(Duration::from_secs(15), env.restore_failure(case))
+            .await
+            .unwrap();
+        assert!(error.to_string().contains("Goal"), "{case}: {error}");
+        env.close().await;
+    }
+}
+
+#[tokio::test]
+async fn obsolete_execution_snapshots_do_not_override_the_business_state() {
+    let env = Env::start().await;
+    let mut seed = env.seed_new("obsolete").await;
+    seed.append(
+        "main",
+        state(Some("ship it"), json!({"kind":"paused","text":"user"})),
+    );
+    for name in ["recovered", "driving-node", "input-boundary"] {
+        seed.append(
+            "main",
+            EventKind::Extension(
+                ExtensionEvent::new("goal", name, json!({"schema":"unknown obsolete cache"}))
+                    .unwrap(),
+            ),
+        );
+    }
+    seed.finish().await;
+    let env = env.restore_seeded("obsolete").await;
+    assert_eq!(
+        env.goal("get", json!({})).await.unwrap()["goal"]["status"],
+        json!({"kind":"paused","reason":"user"})
+    );
+    assert_eq!(states(&env).await.len(), 1);
     env.close().await;
 }
 
@@ -207,317 +358,6 @@ async fn e2_an_evaluation_whose_creation_failed_has_no_evaluator_to_end() {
         "the load writes no evaluation_failed pause"
     );
     let _ = evaluation;
-    env.close().await;
-}
-
-#[tokio::test]
-async fn e2_a_restored_evaluator_already_asked_writes_no_further_follow_up() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-asked").await;
-    let (evaluation, _) = seed_evaluation(&mut seed, "eval");
-    for turn in ["t1", "t2"] {
-        seed.append(
-            "eval",
-            dim_agent_types::EventKind::TurnStart(dim_agent_types::TurnStartData {
-                turn_id: turn.into(),
-            }),
-        );
-        seed.append(
-            "eval",
-            dim_agent_types::EventKind::ModelStart(dim_agent_types::StepData {
-                turn_id: turn.into(),
-                request_id: format!("{turn}-r"),
-            }),
-        );
-        seed.append(
-            "eval",
-            dim_agent_types::EventKind::Text(dim_agent_types::DeltaData {
-                turn_id: turn.into(),
-                request_id: format!("{turn}-r"),
-                delta: "still checking".into(),
-            }),
-        );
-        seed.append(
-            "eval",
-            dim_agent_types::EventKind::TurnEnd(dim_agent_types::TurnEndData {
-                turn_id: turn.into(),
-                outcome: dim_agent_types::TurnOutcome::Completed {
-                    reason: "stop".into(),
-                },
-            }),
-        );
-    }
-    seed.finish().await;
-
-    let env = env.restore_seeded("load-asked").await;
-    assert_eq!(
-        env.writes("eval").await.len(),
-        1,
-        "the restored evaluator carries only its inherited clear"
-    );
-    let pending = env.pending_inputs("eval").await;
-    let pending: Vec<&str> = pending.iter().map(String::as_str).collect();
-    env.turn_steps(
-        "eval",
-        "t3",
-        &pending,
-        "completed",
-        &[("r3", &["done, I think"])],
-    );
-    let needle = format!(r#"count="1" after="{evaluation}" evaluation="{evaluation}""#);
-    let continuation = env.wait_for("main", &needle).await;
-    assert_eq!(
-        continuation.text,
-        texts::evaluated_continuation("main", 1, None, 0, evaluation, evaluation)
-    );
-    assert_eq!(
-        env.writes("eval").await.len(),
-        1,
-        "no further follow-up after a reload"
-    );
-    env.close().await;
-}
-
-#[tokio::test]
-async fn pursuit_6_a_turn_end_already_in_the_restored_evaluator_history_reports_nothing() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-turn").await;
-    let (_, _) = seed_evaluation(&mut seed, "eval");
-    seed.append(
-        "eval",
-        dim_agent_types::EventKind::TurnStart(dim_agent_types::TurnStartData {
-            turn_id: "t1".into(),
-        }),
-    );
-    seed.append(
-        "eval",
-        dim_agent_types::EventKind::ModelStart(dim_agent_types::StepData {
-            turn_id: "t1".into(),
-            request_id: "r1".into(),
-        }),
-    );
-    seed.append(
-        "eval",
-        dim_agent_types::EventKind::Text(dim_agent_types::DeltaData {
-            turn_id: "t1".into(),
-            request_id: "r1".into(),
-            delta: "Hmm".into(),
-        }),
-    );
-    seed.append(
-        "eval",
-        dim_agent_types::EventKind::TurnEnd(dim_agent_types::TurnEndData {
-            turn_id: "t1".into(),
-            outcome: dim_agent_types::TurnOutcome::Failed {
-                error: "failed".into(),
-            },
-        }),
-    );
-    seed.finish().await;
-
-    let env = env.restore_seeded("load-turn").await;
-    assert_eq!(
-        env.settled("main").await.len(),
-        2,
-        "a replayed turn end reports nothing"
-    );
-    let pending = env.pending_inputs("eval").await;
-    let pending: Vec<&str> = pending.iter().map(String::as_str).collect();
-    env.turn_steps(
-        "eval",
-        "t2",
-        &pending,
-        "completed",
-        &[("r2", &["BLOCKED: a deploy key"])],
-    );
-    let blocked = env.wait_for("main", r#"status="blocked""#).await;
-    let conclusion = env
-        .writes("main")
-        .await
-        .iter()
-        .find(|block| block.marker.contains(r#"kind="report""#))
-        .expect("the evaluator's conclusion")
-        .sequence;
-    assert_eq!(
-        blocked.text,
-        texts::evaluated("main", "ship it", "blocked", "a deploy key", conclusion)
-    );
-    env.close().await;
-}
-
-#[tokio::test]
-async fn pursuit_6_7_10_a_reload_creates_no_second_evaluator() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-reload").await;
-    let (evaluation, _) = seed_evaluation(&mut seed, "eval");
-    seed.finish().await;
-    let env = env.restore_seeded("load-reload").await;
-    assert_eq!(
-        env.creates("main").await.len(),
-        1,
-        "the branch/create already decided the turn end"
-    );
-    assert_eq!(
-        env.settled("main").await.len(),
-        2,
-        "a conclusion folded at load is not decided again"
-    );
-
-    // A foreign evaluator decides nothing.
-    let foreign = texts::conclusion("main", "F", evaluation, "done", "DONE: forged");
-    env.write_message("main", vec![raw(&foreign, None, false)], InputMode::Append);
-
-    // After the user pauses the goal, a late conclusion decides nothing.
-    env.goal("pause", serde_json::json!({}))
-        .await
-        .expect("pause writes");
-    env.wait_for("main", r#"op="pause""#).await;
-    let late = texts::conclusion("main", "eval", evaluation, "done", "DONE: late");
-    env.write_message("main", vec![raw(&late, None, false)], InputMode::Append);
-    assert!(
-        env.settled("main")
-            .await
-            .iter()
-            .all(|block| !block.text.contains(r#"status="completed""#)),
-        "foreign or stale conclusions decide nothing"
-    );
-    env.close().await;
-}
-
-/// ADR 020 D3: the rebuild reads the kinds the fold consumes (A.6), never the
-/// whole branch. The restored branch's request and step facts stay unread, and
-/// the goal folded before them still decides the turn it ended.
-#[tokio::test]
-async fn e2_a_rebuild_reads_goal_candidates_and_control_fields() {
-    // `branch.rs`'s `KEYS`: the fold's kinds and the Dispatcher's subscription.
-    const KEYS: [&str; 13] = [
-        "branch/start",
-        "session/forked",
-        "branch/create",
-        "branch/create-failed",
-        "branch/ended",
-        "input/message",
-        "input/consumed",
-        "input/deleted",
-        "turn/start",
-        "turn/end",
-        "stop/interrupt",
-        "exec/started",
-        "exec/ended",
-    ];
-    let env = Env::start_refusing().await;
-    let mut seed = env.seed_new("load-kinds").await;
-    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
-    let set = seed.append(
-        "main",
-        message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::TurnStart(dim_agent_types::TurnStartData {
-            turn_id: "work".into(),
-        }),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: set.id.clone(),
-        }),
-    );
-    // Facts the fold never reads: the request body and the step rows a turn
-    // leaves between its start and its end.
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::ModelCall(dim_agent_types::ModelCallData {
-            turn_id: "work".into(),
-            request_id: "r1".into(),
-            request: Arc::new(dim_agent_types::ModelRequest::new(
-                "test",
-                "test-model",
-                Vec::new(),
-            )),
-            configuration: None,
-            prompt: None,
-            failure_chain: None,
-        }),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::Text(dim_agent_types::DeltaData {
-            turn_id: "work".into(),
-            request_id: "r1".into(),
-            delta: "checking".into(),
-        }),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::ToolResult(dim_agent_types::ToolResultData {
-            turn_id: "work".into(),
-            request_id: "r1".into(),
-            call_event_id: None,
-            results: Vec::new(),
-        }),
-    );
-    let end = seed.append(
-        "main",
-        dim_agent_types::EventKind::TurnEnd(dim_agent_types::TurnEndData {
-            turn_id: "work".into(),
-            outcome: dim_agent_types::TurnOutcome::Completed {
-                reason: "stop".into(),
-            },
-        }),
-    );
-    seed.finish().await;
-
-    let env = env.restore_seeded("load-kinds").await;
-    // The continuation the goal owes the ended turn proves the rebuild folded
-    // the goal block and its status, which sit before the noise.
-    let continuation = env.wait_for("main", r#"kind="continuation""#).await;
-    assert_eq!(
-        continuation.text,
-        texts::continuation("main", 1, None, 0, end.sequence),
-        "the fold is the one the kinds behind the noise leave"
-    );
-    let events = env.all_events("main").await;
-    let kinds: Vec<&str> = events.iter().map(|event| event.kind.key()).collect();
-    for kind in ["model/call", "step/text", "step/tool-result"] {
-        assert!(kinds.contains(&kind), "the history holds {kind}: {kinds:?}");
-    }
-
-    let reads = env.reads();
-    assert!(
-        reads
-            .iter()
-            .all(|read| !read.kinds.iter().map(String::as_str).eq(KEYS)),
-        "no full-kind event replay: {reads:?}"
-    );
-    let controls: Vec<_> = reads
-        .iter()
-        .filter(|read| read.kinds == ["turn/end"])
-        .collect();
-    assert!(!controls.is_empty(), "restore reads the ending turn");
-    assert!(controls.iter().all(|read| matches!(&read.select, dim_agent_runtime::QuerySelect::Fields { fields } if fields == &["position.sequence", "data.turn_id", "data.status"])), "turn errors and reasons are not restored: {controls:?}");
-    assert!(reads.iter().any(|read| matches!(&read.select, dim_agent_runtime::QuerySelect::Fields { fields } if fields == &["position.sequence", "id", "data.submission_id", "data.blocks"])), "Goal candidates carry explicit fields: {reads:?}");
-    let scan: Vec<String> = ["input/message"]
-        .iter()
-        .map(|kind| (*kind).to_owned())
-        .collect();
-    let probes: Vec<Read> = env
-        .reads()
-        .into_iter()
-        .filter(|read| read.kinds == scan)
-        .collect();
-    assert!(
-        !probes.is_empty(),
-        "the rebuild probes for a goal before folding: {:?}",
-        env.reads()
-    );
     env.close().await;
 }
 
@@ -605,228 +445,7 @@ async fn e2_an_inherited_check_skips_unrelated_inputs() {
 
 /// D3: a change trigger the previous generation never answered is answered
 /// once at load, naming the trigger; the next load writes nothing more.
-#[tokio::test]
-async fn e2_a_load_answers_an_unanswered_change_once() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-unanswered").await;
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: None,
-            create_event: None,
-        }),
-    );
-    let set = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::set("main", "ship it"), None, false)],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::set_state(
-                    "main",
-                    "ship it",
-                    &texts::Answer::After(set.sequence),
-                    false,
-                ),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let pause = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::pause("main"), None, false)],
-            InputMode::Append,
-        ),
-    );
-    seed.finish().await;
 
-    let env = env.restore_seeded("load-unanswered").await;
-    let record = env
-        .wait_for(
-            "main",
-            &format!(
-                r#"kind="state" status="paused" reason="user" after="{}""#,
-                pause.sequence
-            ),
-        )
-        .await;
-    assert_eq!(
-        record.text,
-        texts::paused(
-            "main",
-            "ship it",
-            "user",
-            "",
-            &texts::Answer::After(pause.sequence),
-            false
-        )
-    );
-    let writes = env.settled("main").await;
-    assert_eq!(
-        writes
-            .iter()
-            .filter(|block| block.marker.contains(r#"kind="state""#))
-            .count(),
-        2,
-        "the answered change and the one answered at load: {writes:#?}"
-    );
-
-    env.close().await;
-
-    // A history whose newest record already answers the pause answers nothing
-    // when it loads.
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-answered").await;
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: None,
-            create_event: None,
-        }),
-    );
-    let set = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::set("main", "ship it"), None, false)],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::set_state(
-                    "main",
-                    "ship it",
-                    &texts::Answer::After(set.sequence),
-                    false,
-                ),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let pause = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::pause("main"), None, false)],
-            InputMode::Append,
-        ),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::paused(
-                    "main",
-                    "ship it",
-                    "user",
-                    "",
-                    &texts::Answer::After(pause.sequence),
-                    false,
-                ),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    seed.finish().await;
-    let env = env.restore_seeded("load-answered").await;
-    let writes = env.settled("main").await;
-    assert_eq!(
-        writes
-            .iter()
-            .filter(|block| block.marker.contains(r#"kind="state""#))
-            .count(),
-        2,
-        "a load repeats no answer: {writes:#?}"
-    );
-    env.close().await;
-}
-
-/// D5: an old two-key history reads by the old rules, is not backfilled at
-/// load, and its first answered change writes the state record.
-#[tokio::test]
-async fn e2_an_old_history_answers_its_first_change_with_a_state_record() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-old").await;
-    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
-    let set = seed.append(
-        "main",
-        message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: set.id.clone(),
-        }),
-    );
-    seed.finish().await;
-
-    let env = env.restore_seeded("load-old").await;
-    let before = env.settled("main").await;
-    assert_eq!(before.len(), 1, "no backfill at load: {before:#?}");
-    // The old keys still read: a turn end continues the goal.
-    let end = env.turn_ids("main", &[]);
-    let continuation = env.wait_for("main", r#"kind="continuation""#).await;
-    assert_eq!(
-        continuation.text,
-        texts::continuation("main", 1, None, 0, end.sequence)
-    );
-
-    // The first change answered after the upgrade writes the record.
-    env.goal("pause", serde_json::json!({}))
-        .await
-        .expect("pause writes");
-    let pause = env.wait_for("main", r#"op="pause" reason="user""#).await;
-    let record = env
-        .wait_for(
-            "main",
-            &format!(
-                r#"kind="state" status="paused" reason="user" trigger="{}""#,
-                pause.submission_id.as_deref().unwrap()
-            ),
-        )
-        .await;
-    assert_eq!(
-        record.text,
-        texts::paused(
-            "main",
-            "ship it",
-            "user",
-            "",
-            &texts::trigger(&pause),
-            false
-        )
-    );
-    let input = env
-        .written_input("main", r#"kind="state" status="paused""#)
-        .await;
-    let dim_agent_types::InputBlock::Raw { key, .. } = &input.blocks[0];
-    assert_eq!(key.as_deref(), Some("goal:state"));
-    env.close().await;
-}
-
-/// R1: the first state record written on an old history retires the old keys
-/// in its own input, so the keyed baseline — what `session.keys` lists and a
-/// compaction copies — holds only the record, and the next request after a
-/// compaction carries the paused state and no old block.
 #[tokio::test]
 async fn e2_the_first_state_record_retires_the_old_keys() {
     let env = Env::start().await;
@@ -973,6 +592,7 @@ async fn e2_the_first_state_record_retires_the_old_keys() {
 /// D4: a branch whose own segment carries no Goal block rebuilds without the
 /// full fold: the probes read the opening and the inputs, and none of the 13
 /// kinds is read.
+
 #[tokio::test]
 async fn e2_a_branch_without_a_goal_skips_the_full_fold() {
     let env = Env::start_refusing().await;
@@ -1022,6 +642,7 @@ async fn e2_a_branch_without_a_goal_skips_the_full_fold() {
 /// record; the old-key retires in the same input belong to its statement. A
 /// reload whose newest Goal input is one takes the cheap path, not the full
 /// fold.
+
 #[tokio::test]
 async fn e2_a_start_clear_with_old_key_retires_skips_the_full_fold() {
     let env = Env::start_refusing().await;
@@ -1081,493 +702,7 @@ async fn e2_a_start_clear_with_old_key_retires_skips_the_full_fold() {
 /// immediately before it in the same atomic batch. The scan classifies the
 /// pair by the record, so the branch's own history still reads as no goal and
 /// the rebuild keeps the cheap path.
-#[tokio::test]
-async fn e2_a_clear_batch_takes_the_cheap_rebuild_unless_its_trigger_was_deleted() {
-    for withdrawn in [false, true] {
-        let env = Env::start_refusing().await;
-        let mut seed = env.seed_new("load-clear-batch").await;
-        seed.append(
-            "main",
-            dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-                parent: None,
-                create_event: None,
-            }),
-        );
-        let set = seed.append(
-            "main",
-            message(
-                vec![raw(&texts::set("main", "ship it"), None, false)],
-                InputMode::Queue,
-            ),
-        );
-        seed.append(
-            "main",
-            message(
-                vec![raw(
-                    &texts::set_state(
-                        "main",
-                        "ship it",
-                        &texts::Answer::After(set.sequence),
-                        false,
-                    ),
-                    Some("goal:state"),
-                    false,
-                )],
-                InputMode::Append,
-            ),
-        );
-        let record = dim_agent_types::EventKind::InputMessage(dim_agent_types::InputMessageData {
-            handover: None,
-            submission_id: Some("test:clear-record".into()),
-            user: None,
-            blocks: vec![raw(
-                &texts::cleared("main", &texts::Answer::Trigger("test:clear".into())),
-                Some("goal:state"),
-                true,
-            )],
-            mode: Some(InputMode::Append),
-        });
-        let trigger = dim_agent_types::EventKind::InputMessage(dim_agent_types::InputMessageData {
-            handover: None,
-            submission_id: Some("test:clear".into()),
-            user: None,
-            blocks: vec![raw(&texts::clear("main"), None, false)],
-            mode: Some(InputMode::Append),
-        });
-        let batch = seed.append_batch("main", vec![record, trigger]);
-        if withdrawn {
-            seed.append(
-                "main",
-                dim_agent_types::EventKind::InputDeleted(dim_agent_types::InputDeletedData {
-                    input_id: batch[1].id.clone(),
-                }),
-            );
-        }
-        seed.finish().await;
 
-        let before = env.reads().len();
-        let env = env.restore_seeded("load-clear-batch").await;
-        if withdrawn {
-            env.settled("main").await;
-            let keys = env.keys("main").await;
-            assert_eq!(
-                keys.len(),
-                1,
-                "the withdrawn clear restores one live Goal key"
-            );
-            assert_eq!(keys[0].0, "goal:state");
-            assert!(
-                keys[0].1.contains("ship it") && keys[0].1.contains(r#"status="active""#),
-                "the withdrawn clear cannot erase the previous goal: {keys:?}"
-            );
-            assert_eq!(
-                env.writes("main").await.len(),
-                5,
-                "restore writes one compensating state record"
-            );
-            let env = env.restore().await;
-            assert_eq!(
-                env.writes("main").await.len(),
-                5,
-                "a second restore writes nothing"
-            );
-            env.close().await;
-            continue;
-        }
-        assert_eq!(
-            env.writes("main").await.len(),
-            4,
-            "the set and its record, the clear's record and its trigger; the rebuild writes nothing"
-        );
-        let reads = env.reads();
-        let reads = &reads[before..];
-        let full: Vec<&Read> = reads
-            .iter()
-            .filter(|read| matches!(read.select, dim_agent_runtime::QuerySelect::Events))
-            .collect();
-        assert!(full.is_empty(), "the full fold never runs: {full:?}");
-        let scan = ["input/message"]
-            .iter()
-            .map(|kind| (*kind).to_owned())
-            .collect::<Vec<_>>();
-        assert!(
-            reads.iter().any(|read| read.kinds == scan),
-            "the rebuild probes the newest Goal block: {reads:?}"
-        );
-        env.close().await;
-    }
-}
-
-/// R6.1: a deletion whose compensating record never committed. The fold
-/// recomputes to the state before the withdrawn change while the newest
-/// published `goal:state` block still names it. The rebuild restates the
-/// fold's state once, the keyed read a client uses shows it, and a second load
-/// writes nothing.
-#[tokio::test]
-async fn e3_a_rebuild_restates_the_state_a_deletion_left_published() {
-    const KEYS: [&str; 13] = [
-        "branch/start",
-        "session/forked",
-        "branch/create",
-        "branch/create-failed",
-        "branch/ended",
-        "input/message",
-        "input/consumed",
-        "input/deleted",
-        "turn/start",
-        "turn/end",
-        "stop/interrupt",
-        "exec/started",
-        "exec/ended",
-    ];
-    let env = Env::start_refusing().await;
-    let mut seed = env.seed_new("load-reconcile").await;
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: None,
-            create_event: None,
-        }),
-    );
-    let first = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::set("main", "first"), None, false)],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::set_state(
-                    "main",
-                    "first",
-                    &texts::Answer::After(first.sequence),
-                    false,
-                ),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let second = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::edit("main", "second"), None, false)],
-            InputMode::Append,
-        ),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::edit_state(
-                    "main",
-                    "second",
-                    &texts::Answer::After(second.sequence),
-                    false,
-                ),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    // The deletion of the second change's trigger. A live branch answers it
-    // with a compensating record; this history stops before that record
-    // commits.
-    let deletion = seed.append(
-        "main",
-        dim_agent_types::EventKind::InputDeleted(dim_agent_types::InputDeletedData {
-            input_id: second.id.clone(),
-        }),
-    );
-    seed.finish().await;
-
-    let before = env.reads().len();
-    let env = env.restore_seeded("load-reconcile").await;
-    env.settled("main").await;
-    let first_state = texts::restated("main", "first", deletion.sequence, false);
-    let keys = env.keys("main").await;
-    assert_eq!(keys.len(), 1, "one live key: {keys:?}");
-    assert_eq!(keys[0].0, "goal:state");
-    assert_eq!(
-        keys[0].1, first_state,
-        "the published block states the recomputed state, not the withdrawn one"
-    );
-    let writes = env.writes("main").await;
-    assert_eq!(
-        writes.len(),
-        5,
-        "exactly one new record over the four seeded inputs: {writes:#?}"
-    );
-    let reads = env.reads();
-    let reads = &reads[before..];
-    let full: Vec<&Read> = reads
-        .iter()
-        .filter(|read| read.kinds.iter().map(String::as_str).eq(KEYS))
-        .collect();
-    assert!(
-        full.is_empty(),
-        "deletion restores properties, not the complete event fold: {reads:?}"
-    );
-    let scan = ["input/message"]
-        .iter()
-        .map(|kind| (*kind).to_owned())
-        .collect::<Vec<_>>();
-    assert!(
-        reads
-            .iter()
-            .any(|read| read.kinds == scan && read.direction == TimelineQueryDirection::Descending),
-        "the scan classified the deletion's branch: {reads:?}"
-    );
-
-    // It settles once: the published block now agrees with the fold.
-    let env = env.restore().await;
-    assert_eq!(
-        env.writes("main").await.len(),
-        5,
-        "a second load writes nothing"
-    );
-    let keys = env.keys("main").await;
-    assert_eq!(keys[0].1, first_state, "and the state still holds");
-    env.close().await;
-}
-
-/// R7.1: a restatement yields to the record a later decision writes. The
-/// loaded history carries a lost compensation — the newest published
-/// `goal:state` names a change whose trigger was deleted and no record
-/// followed — and a `continue` conclusion the settle pass still owes. The
-/// rebuild restates the recomputed state; the paused end of the background
-/// task then settles the conclusion over the limit, and the pause record it
-/// writes is the one the keyed read serves. The restatement neither claims
-/// the rebuild's cutoff as the newest `after` (which would drop the pause)
-/// nor publishes the pre-pause state over it, and a second load writes
-/// nothing.
-#[tokio::test]
-async fn e3_a_restatement_yields_to_the_record_a_later_decision_writes() {
-    let env = Env::start_refusing().await;
-    // The history already used its one continuation: the settle pass decides
-    // the deferred conclusion as a pause, which is a state record.
-    env.set_limit(1);
-    let mut seed = env.seed_new("load-restate-yields").await;
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: None,
-            create_event: None,
-        }),
-    );
-    let set = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::evaluator_set("main", "ship it"), None, false)],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: set.id.clone(),
-        }),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::set_state("main", "ship it", &texts::Answer::After(set.sequence), true),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let edit = seed.append(
-        "main",
-        message(
-            vec![raw(&texts::edit("main", "second"), None, false)],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: edit.id.clone(),
-        }),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::edit_state("main", "second", &texts::Answer::After(edit.sequence), true),
-                Some("goal:state"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::TurnStart(dim_agent_types::TurnStartData {
-            turn_id: "work".into(),
-        }),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::ExecStarted(dim_agent_types::ExecStartedData {
-            turn_id: "work".into(),
-            request_id: "request".into(),
-            call_id: "call-1".into(),
-            task_id: "task-1".into(),
-            description: "background work".into(),
-            output_path: "/dev/null".into(),
-        }),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::legacy_report("main", "completed", "all tests pass"),
-                Some("goal:status"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let end = seed.append("main", turn_end_with("work", "completed"));
-    // The continuation the completed turn end wrote, already used: the limit
-    // the settle pass reads leaves the deferred conclusion a pause.
-    let continuation = seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::continuation("main", 1, Some(1), 0, end.sequence),
-                None,
-                false,
-            )],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: continuation.id.clone(),
-        }),
-    );
-    let create = seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchCreate(BranchCreateData {
-            at: BranchCreateAt::Sequence {
-                sequence: end.sequence,
-            },
-            source: BranchSource::Host {
-                operation_id: format!("goal:evaluate:{}", end.sequence),
-            },
-            branch: "eval".into(),
-            prompt: texts::evaluator_prompt("main", end.sequence, "ship it", "all tests pass"),
-        }),
-    );
-    seed.append(
-        "eval",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: Some("main".into()),
-            create_event: Some(create.sequence),
-        }),
-    );
-    seed.append(
-        "eval",
-        message(vec![raw("line work", None, false)], InputMode::Queue),
-    );
-    let conclusion = seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::conclusion(
-                    "main",
-                    "eval",
-                    end.sequence,
-                    "continue",
-                    "CONTINUE:\n- still missing",
-                ),
-                None,
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    // The second change's trigger is deleted and no record follows: the fold
-    // recomputes to the first goal while the published block still names it.
-    let deletion = seed.append(
-        "main",
-        dim_agent_types::EventKind::InputDeleted(dim_agent_types::InputDeletedData {
-            input_id: edit.id.clone(),
-        }),
-    );
-    seed.finish().await;
-
-    let env = env.restore_seeded("load-restate-yields").await;
-    let before = env.settled("main").await;
-    assert!(
-        before
-            .iter()
-            .any(|block| block.text == texts::restated("main", "ship it", deletion.sequence, true)),
-        "the load restates the recomputed state: {before:#?}"
-    );
-
-    // The background task's cancelled end settles the branch: the deferred
-    // conclusion is decided over the limit and writes its pause record.
-    env.exec_ended("main", "task-1", "cancelled");
-    let pause = env.wait_for("main", r#"reason="limit""#).await;
-    assert_eq!(
-        pause.text,
-        texts::evaluated_pause(
-            "main",
-            "ship it",
-            "limit",
-            "the automatic continuation limit was reached",
-            conclusion.sequence,
-        ),
-        "the restatement yields to the record the later decision writes"
-    );
-    let keys = env.keys("main").await;
-    assert_eq!(keys.len(), 1, "one live key: {keys:?}");
-    assert_eq!(keys[0].0, "goal:state");
-    assert_eq!(
-        keys[0].1, pause.text,
-        "the published block states the conclusion's outcome"
-    );
-    let writes = env.settled("main").await.len();
-
-    // It settles once: the published block now agrees with the fold.
-    let env = env.restore().await;
-    assert_eq!(
-        env.writes("main").await.len(),
-        writes,
-        "a second load writes nothing"
-    );
-    assert_eq!(
-        env.keys("main").await[0].1,
-        pause.text,
-        "and the state still holds"
-    );
-    env.close().await;
-}
-
-/// R6.2: a change issued while the branch part is still rebuilding waits for
-/// the rebuild and the facts it held, so its record states the change applied
-/// to the complete fold.
-///
-/// The change is a `goal_update` call: `session.goal.*` checks the tree first
-/// (`crates/dim-goal/src/session.rs:164`), so it refuses a branch that is still
-/// building, while the tool reaches the Owner directly
-/// (`crates/dim-goal/src/session.rs:217`). The child line is opened without
-/// waiting for the create, and its Goal part's first read is held, so the
-/// change meets the Owner before its rebuild has folded anything. A child has
-/// no goal of its own, so the complete fold leaves the state retired: what the
-/// case pins is that the change waits instead of composing against the empty
-/// fold and failing on the unpublished branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn e3_a_change_waits_for_the_branch_rebuild() {
     const SCAN: [&str; 2] = ["branch/start", "session/forked"];
@@ -1733,63 +868,11 @@ async fn records_pair_with_the_original_next_input_across_candidate_pages() {
             );
         } else {
             assert!(
-                record.marker.contains(r#"status="active""#),
+                record.marker.contains(r#"status="paused""#),
                 "the adjacent non-candidate input pairs: {record:?}"
             );
             assert!(record.text.contains("edited objective"));
         }
         env.close().await;
     }
-}
-
-#[tokio::test]
-async fn a_cleared_goal_still_ends_its_unfinished_evaluator_on_load() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("cleared-evaluator").await;
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: None,
-            create_event: None,
-        }),
-    );
-    let (evaluation, _) = seed_evaluation(&mut seed, "eval");
-    let record = input_message(
-        vec![raw(
-            &texts::cleared("main", &texts::Answer::Trigger("clear".into())),
-            Some("goal:state"),
-            true,
-        )],
-        InputMode::Append,
-    );
-    let mut trigger = input_message(
-        vec![raw(&texts::clear("main"), None, false)],
-        InputMode::Append,
-    );
-    trigger.submission_id = Some("clear".into());
-    seed.append_batch(
-        "main",
-        vec![
-            dim_agent_types::EventKind::InputMessage(record),
-            dim_agent_types::EventKind::InputMessage(trigger),
-        ],
-    );
-    seed.finish().await;
-    let env = env.restore_seeded("cleared-evaluator").await;
-    wait_ended(
-        &env,
-        "main",
-        BranchSource::Host {
-            operation_id: format!("goal:evaluate:{evaluation}"),
-        },
-    )
-    .await;
-    let writes = env.settled("main").await;
-    assert!(
-        !writes
-            .iter()
-            .any(|block| block.marker.contains(r#"kind="continuation""#)),
-        "a cleared goal only settles its evaluator"
-    );
-    env.close().await;
 }

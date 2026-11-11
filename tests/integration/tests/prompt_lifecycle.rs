@@ -1243,6 +1243,10 @@ async fn initial_configuration_loads_before_start_and_failure_rolls_back() {
         .await
         .unwrap();
     let events = chain_events(&session, "main", ..).await.unwrap();
+    let events = events
+        .iter()
+        .filter(|event| event.kind.key() != "prompt-state/recovered")
+        .collect::<Vec<_>>();
     assert!(matches!(events[0].kind, EventKind::BranchStart(_)));
     assert!(matches!(events[1].kind, EventKind::PromptChanged(_)));
     assert!(matches!(events[2].kind, EventKind::ContextConfigured(_)));

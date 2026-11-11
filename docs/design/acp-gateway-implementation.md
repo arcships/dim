@@ -374,13 +374,15 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 | `approval.request`、`approval.resolved`、`approval.cancelled` | permission 请求和本地 waiter 结算；all branches 的审批均转交。显式保留 branchId/requestId，不能用 callId 单独关联 |
 | `SessionStore` title notice / native list metadata | 标准 session_info_update；按 revision 更新。manual 可映射 explicit；auto 不足以区分 generated/fallback，省略不可靠的 titleSource |
 | `session.context.usage` | 有值时 `usage_update {used:ceil(estimatedInputTokens),size:floor(contextWindow)}`，两个字段按 ACP 的 `u64` 输出 JSON 整数。这是估算上下文量。缺数据时不发送，未知 cost 省略，不能写 cost:0。不要把累计 token 消耗当上下文占用 |
-| `context/compaction-start`、`context/compaction` | 真正的 compaction activity；start/terminal 配对，completed/skipped/failed/cancelled 区分。只透传真实 diagnostics，不伪造节省量/耗时 |
+| `context/compaction-start`、`context/compaction`、完成压缩显示摘要 | 真正的 compaction activity；start/terminal 配对，completed/skipped/failed/cancelled 区分。显示摘要按 start（缺省时按终态 sequence）完成同一活动并释放开始记录；只透传真实 diagnostics，摘要不补造节省量/耗时。回放与实时重复事实不重复发送活动 |
 | `exec/started`、`exec/ended` | 后台任务的真实开始/终态，按 §8.3 生成独立 tool lifecycle + task metadata；不把原 exec 工具返回当后台结束 |
 | `collaboration/request`、`collaboration/delivered`、`collaboration/result` | 按 §8.3 投影最小 subagent snapshot 流；执行身份是 request，不能把可复用的 member Session 当作一次执行 |
 | child branch 普通内容 | 首版不混入主线 assistant 输出，也不借状态流声明已经接入 child 输出流 |
 | plan / proposal plan / scheduled task | 没有完整、已接入的公开来源，首版不合成 |
 
 共享 [wire.rs](../../crates/dim-client/src/wire.rs) 定义产品事件、progress 和固定头历史页边界，CLI 与 Gateway 直接消费同一类型。保留 input/consumed、turn/start、model/usage 等关联事实，不用 UI running 状态补猜，也不在投影层重复 parse 已知数据。
+
+协商显示模式后，完成压缩仅投影开始/完成状态及已知的 automatic 标记，不发送 `usedTokensBefore`、`usedTokensAfter`、`durationMs` 或 `rawOutput`。ACP 不为补诊断自动读取 `session.history.detail`，避免每次完成都加载 replacement。未完成结果仍按原完整事实透传已有原因和诊断；旧服务器完整事件模式也保留原诊断投影。
 
 ## 8. Lody 方法和能力逐项决策
 

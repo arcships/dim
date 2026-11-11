@@ -8,7 +8,7 @@ import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
 import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
-import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
+import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
 import { useSessionsStore } from "./sessions"
 import { useUiStore } from "./ui"
@@ -196,7 +196,7 @@ export const useChatStore = defineStore("chat", () => {
       if (branch.opened && !channel.historyQueue.includes(id)) channel.historyQueue.push(id)
     }
     try {
-      const model = await client().call("session.attach", { sessionId: view.sessionId }, readAttached)
+      const model = await client().call("session.attach", { sessionId: view.sessionId, ...((useConnectionStore().supports("session.history.display") && useConnectionStore().supports("session.history.detail")) ? { display: true } : {}) }, readAttached)
       if (!useConnectionStore().supports("session.history.latestTurn")) throw new ProtocolError("This server does not support bounded conversation history")
       view.methods = await sessionMethods(view.sessionId)
       for (const required of ["session.input.pending", "session.question.pending", "session.turn.get"]) {
@@ -269,7 +269,8 @@ export const useChatStore = defineStore("chat", () => {
   function applyNotification(channel: Channel, notification: Notification): void {
     const view = channel.view
     switch (notification.method) {
-      case "session.event": {
+      case "session.event":
+      case "session.display": {
         const branchId = notification.branchId
         const stream = ensureBranch(channel, branchId)
         if (stream.syncing) {
@@ -459,7 +460,8 @@ export const useChatStore = defineStore("chat", () => {
   async function window(channel: Channel, branchId: string, before?: number, through?: number) {
     const window = new HistoryWindow(before, through)
     for (;;) {
-      const page = await client().call("session.history", window.params(channel.view.sessionId, branchId), readHistory, HISTORY_TIMEOUT_MS)
+      const display = (useConnectionStore().supports("session.history.display") && useConnectionStore().supports("session.history.detail"))
+      const page = await client().call(display ? "session.history.display" : "session.history", window.params(channel.view.sessionId, branchId), display ? readDisplayHistory : readHistory, HISTORY_TIMEOUT_MS)
       if (window.push(page)) break
     }
     const events = window.take()
