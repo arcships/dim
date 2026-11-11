@@ -29,8 +29,10 @@ no-effect source tail at a fixed read or turn-end handoff.
 Recovery reads the latest numeric result, matching covered position and counter
 controls, then only the unfinished source suffix. Old v1-v3 aggregates are read directly; old prefix numbers are read by their
 existing node identities only when requested. v4 numbers remain readable. Unknown
-schemas or algorithms fail. An absent statistic is initialized in one paged
-projection and saves one current result, without historical prefix backfill.
+schemas or algorithms fail. When history exists without saved statistics, usage
+reports that it is not yet initialized. The first actual model preparation passes
+its existing history projection to Usage, which counts it once and saves one
+current result. Resume reads no historical messages to initialize a counter.
 Current reads use the in-memory totals. Earlier compression cuts seek cumulative
 numbers using epoch, branch ordinal and source sequence, without old messages.
 

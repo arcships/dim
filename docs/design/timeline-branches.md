@@ -117,11 +117,11 @@ These are Collaboration's message modes and words (`append`, `steer`), with the 
 - **Read.** `read {branch, after?, limit?}` returns one page of the target's committed history, open or ended, read from the store through `TreeCommands.page` and rendered the way Collaboration's `read` renders a member's page: inputs, text, tool calls and results, and turn ends, with `nextCursor`; a tool result item carries the effects its tool declared on that result (session boundary A.6), present only when the result declared at least one, a path verbatim and a command cut at its 200th character with the cut marked. The target is the line the caller was cut from, or, on `main`, a tool line it opened. One cursor rule covers both directions:
   - With no `after`, a read continues after the caller's last successful read of that line: the `nextCursor` of the latest read that returned a page. With no earlier read, a line's first read of its parent starts at its cut, and `main`'s first read of a line starts at the line's first event.
   - An explicit `after` reads from that point. For a parent read, a value below the cut is raised to the cut, because the events up to the cut are already the line's own history. `main`'s values are used as given, so `after: 0` re-reads a line from its start.
-  - Every successful read moves the cursor to its `nextCursor`, an explicit-after read included; the latest read wins. The cursor is a fact of the caller's own line: BranchLine folds it from the caller's own `step/tool-use` and `step/tool-result`, so a reload and a compaction rebuild it.
+  - Every successful read moves the cursor to its `nextCursor`, an explicit-after read included; the latest read wins. The cursor is a fact of the caller's own line: BranchLine retains live read results in memory; after a reload it locates the latest successful read for the requested target only when a cursor is used, then reads that request's result fields. Resume does not replay tool history.
   - A page may end in the middle of the target's turn: it reads up to the target's published head, and the next read continues after that page.
 - **Knowing when to read.** A read is on demand, so a line also needs to know its parent moved. The keyed `<dim-branch-parent>` block (§4, §7.1.1) states the parent's head and the line's cursor; the line decides which pages to read from it. The block never carries content, and reading it is not reading the parent.
 - **No caps.** There is no limit on the number of lines, messages or steers. A message loop ends through the prompt rules (§12), through a line ending itself, or through the user (interrupt or end). Why this is safe, and who would own limits, is in §6.1.
-- **Idle notice.** When a tool line's turn ends, BranchLine on that line writes one steer to `main` (`<dim-branch-idle>`, §12.1), unless one of the following holds:
+- **Idle notice.** When a tool line's turn started in this generation ends, BranchLine on that line writes one steer to `main` (`<dim-branch-idle>`, §12.1), unless one of the following holds:
   - the line was created with `idleNotice: none`;
   - the turn already sent `main` a steer message;
   - the turn called `end`;
@@ -181,7 +181,7 @@ Every line answers "which line am I, and which lines are mine" with blocks under
   - that it works in parallel from here on;
   - that messages above addressed to the parent, such as the roster, belong to the parent.
 
-  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. For `idleNotice: none`, TimelineTree includes `idle-notice="none"` on that opening identity. BranchLine reads it from the line's own opening input when running or restoring the line. A missing attribute selects `steer`, including histories written before the option existed. The setting controls only automatic idle notices. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
+  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. For `idleNotice: none`, TimelineTree includes `idle-notice="none"` on that opening identity. BranchLine reads it from the line's own opening input when an idle notice is considered; resume does not replay inputs. A missing attribute selects `steer`, including histories written before the option existed. The setting controls only automatic idle notices. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
 - **On `main`: the roster.** BranchLine on `main` writes a keyed Append from `main`'s own facts:
   - `branch/create` with a tool source;
   - `branch/create-failed`;
@@ -728,3 +728,9 @@ Removed:
 - **Fewer tools:** refusal at call time, as `create` on a child is refused now. The tool definitions and the cache prefix stay identical.
 - **Lower permission:** a per-line policy intersected with the Session's. It needs the per-branch Permission narrowing that [Pursuit §10](plugins/Pursuit.md#10-later-options) already names.
 - **Cheaper model:** per-line configuration set at create, before the first input. A different model shares no cache with its parent, so it trades the inherited prefix for cost.
+
+### Resume reads
+
+BranchLine mounts at the committed cutoff with no historical event query. It does not restore old turn counters, steering progress or a table of held inputs. A recovery terminal for a turn whose start was not consumed by this generation produces no idle notice. After the Session is published, roster reconciliation uses the currently open child directory and reads a missing purpose at its known creation position. It compares only the last roster block. Parent notification reads the last parent block and the cursor of that parent when needed. Read cursors are not eagerly loaded for other targets. No recovery fact is added.
+
+TimelineTree reads each stored child's creation source at its creation position and locates the terminal for that child identity. It does not page through all parent lifecycle facts. Existing cuts were accepted on creation and are immutable; restoration uses their directory values without rendering the inherited context to validate them again. New cuts retain their creation-time validation.

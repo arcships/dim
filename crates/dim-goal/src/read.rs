@@ -12,7 +12,7 @@ use dim_agent_runtime::{
     QueryPick, QuerySelect, QueryValue, TimelineQuery, TimelineQueryReply,
 };
 use dim_agent_types::{GoalRead, GoalView, GoalViewStatus, InputBlock, TimelinePosition};
-use std::{collections::HashSet, num::NonZeroU64};
+use std::num::NonZeroU64;
 use tokio_util::sync::CancellationToken;
 
 type ReadQuery<'a> = dyn Fn(TimelineQuery) -> BoxFuture<'a, Result<TimelineQueryReply, AgentError>>
@@ -155,82 +155,64 @@ pub(crate) async fn load(
             repaired: false,
         });
     }
-    let mut deleted = recovery::request(
+    let mut affected = recovery::request(
         branch,
-        Some(position + 1),
+        start,
         through,
-        &["input/deleted"],
-        &["data.input_id"],
+        &[recovery::KEY],
+        &["position.sequence", "data.input_id"],
     );
-    let mut ids = HashSet::new();
-    loop {
-        let reply = query_fn(deleted.clone()).await?;
-        let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("deleted input IDs")
-        };
-        for row in rows {
-            if let [QueryValue::Value { value }] = row.values.as_slice() {
-                ids.insert(
-                    value
-                        .as_str()
-                        .ok_or_else(|| AgentError::fault("Goal", "invalid deleted input ID"))?
-                        .to_owned(),
-                );
-            } else {
-                return Err(AgentError::fault("Goal", "missing deleted input ID"));
-            }
-        }
-        let Some(next) = reply.next else {
-            break;
-        };
-        deleted.page.as_mut().expect("deletion page").after = Some(next);
-    }
-    if ids.is_empty() {
-        return Ok(Loaded {
-            fold,
-            repaired: false,
-        });
-    }
-    let mut earliest = None;
-    let mut earliest_input = None;
-    let ids: Vec<_> = ids.into_iter().collect();
-    for batch in ids.chunks(128) {
-        let mut affected = recovery::request(
-            branch,
-            start,
-            through,
-            &[recovery::KEY],
-            &["position.sequence", "data.input_id"],
-        );
-        affected.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                affected.query.filter.take().expect("state kind"),
-                QueryFilter::In {
-                    value: QueryOperand::Field {
-                        path: "data.input_id".into(),
-                    },
-                    values: batch.iter().cloned().map(Into::into).collect(),
-                },
-            ],
-        });
-        affected.query.pick = Some(QueryPick::First);
-        affected.page.as_mut().expect("affected page").limit = NonZeroU64::MIN;
-        let QueryOutput::Rows { rows } = query_fn(affected).await?.result else {
-            unreachable!("affected business state")
-        };
-        if let Some(row) = rows.first() {
-            let QueryValue::Value { value } = &row.values[0] else {
-                return Err(AgentError::fault("Goal", "missing affected position"));
+    affected.query.filter = Some(QueryFilter::And {
+        conditions: vec![
+            affected.query.filter.take().expect("Goal business state"),
+            QueryFilter::Exists {
+                condition: Box::new(QueryFilter::And {
+                    conditions: vec![
+                        kind("input/deleted"),
+                        QueryFilter::Compare {
+                            left: QueryOperand::Field {
+                                path: "data.input_id".into(),
+                            },
+                            comparison: QueryComparison::Eq,
+                            right: QueryOperand::Outer {
+                                path: "data.input_id".into(),
+                            },
+                        },
+                        QueryFilter::Compare {
+                            left: QueryOperand::Field {
+                                path: "position.sequence".into(),
+                            },
+                            comparison: QueryComparison::Gt,
+                            right: QueryOperand::Value {
+                                value: position.into(),
+                            },
+                        },
+                    ],
+                }),
+            },
+        ],
+    });
+    affected.query.pick = Some(QueryPick::First);
+    affected.page.as_mut().unwrap().limit = NonZeroU64::MIN;
+    let QueryOutput::Rows { rows } = query_fn(affected).await?.result else {
+        unreachable!("deleted Goal source")
+    };
+    let (earliest, earliest_input) = match rows.into_iter().next() {
+        Some(row) => {
+            let [QueryValue::Value { value: at }, input] = <[_; 2]>::try_from(row.values).unwrap()
+            else {
+                unreachable!("affected Goal position")
             };
-            let at = value
-                .as_u64()
-                .ok_or_else(|| AgentError::fault("Goal", "invalid affected position"))?;
-            if earliest.is_none_or(|previous: u64| at < previous) {
-                earliest = Some(at);
-                earliest_input = Some(row.values[1].clone());
-            }
+            (
+                Some(
+                    at.as_u64()
+                        .ok_or_else(|| AgentError::fault("Goal", "invalid affected position"))?,
+                ),
+                Some(input),
+            )
         }
-    }
+        None => (None, None),
+    };
     let Some(earliest) = earliest else {
         return Ok(Loaded {
             fold,
@@ -373,50 +355,7 @@ async fn legacy(
     query.through = Some(through);
     query.query.pick = None;
     query.page.as_mut().unwrap().limit = NonZeroU64::new(256).unwrap();
-    query.query.filter = Some(QueryFilter::And {
-        conditions: vec![
-            kind("input/message"),
-            QueryFilter::Exists {
-                condition: Box::new(QueryFilter::And {
-                    conditions: vec![
-                        kind("input/deleted"),
-                        QueryFilter::Compare {
-                            left: QueryOperand::Field {
-                                path: "data.input_id".into(),
-                            },
-                            comparison: QueryComparison::Eq,
-                            right: QueryOperand::Outer { path: "id".into() },
-                        },
-                    ],
-                }),
-            },
-        ],
-    });
-    query.query.filter = Some(QueryFilter::Or {
-        conditions: vec![kind("input/deleted"), query.query.filter.take().unwrap()],
-    });
     let mut fold = Fold::default();
-    loop {
-        if cancel.is_cancelled() {
-            return Err(AgentError::Cancelled("Goal read".into()));
-        }
-        let page = query_fn(query.clone()).await?;
-        let QueryOutput::Rows { rows } = page.result else {
-            unreachable!("deleted input positions")
-        };
-        for row in rows {
-            let QueryValue::Value { value } = &row.values[0] else {
-                unreachable!("input position")
-            };
-            fold.invalidated_after
-                .insert(value.as_u64().expect("input sequence"));
-        }
-        query.page.as_mut().unwrap().after = page.next;
-        if query.page.as_ref().unwrap().after.is_none() {
-            break;
-        }
-    }
-    query.page.as_mut().expect("legacy input page").after = None;
     query.query.filter = Some(live_inputs(match before {
         Some(before) => QueryFilter::And {
             conditions: vec![
@@ -452,17 +391,109 @@ async fn legacy(
         let QueryOutput::Rows { rows } = page.result else {
             unreachable!("Goal input fields")
         };
-        for row in rows {
-            let [
-                QueryValue::Value { value: sequence },
-                QueryValue::Value { value: id },
-                submission,
-                QueryValue::Value { value: blocks },
-            ] = row.values.as_slice()
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| {
+                let [
+                    QueryValue::Value { value: sequence },
+                    QueryValue::Value { value: id },
+                    submission,
+                    QueryValue::Value { value: blocks },
+                ] = <[_; 4]>::try_from(row.values).expect("Goal input fields")
+                else {
+                    unreachable!("Goal input fields");
+                };
+                let blocks: Vec<InputBlock> =
+                    serde_json::from_value(blocks).expect("input blocks contract");
+                (
+                    sequence.as_u64().expect("input sequence"),
+                    id,
+                    submission,
+                    blocks,
+                )
+            })
+            .collect();
+        let mut referenced = std::collections::BTreeSet::new();
+        for (_, _, _, blocks) in &rows {
+            for block in blocks {
+                let InputBlock::Raw {
+                    text: raw,
+                    key: Some(key),
+                    ..
+                } = block
+                else {
+                    continue;
+                };
+                if key == text::STATE_KEY
+                    && let Some(attrs) = text::marker(raw)
+                    && attrs.get("restated").map(String::as_str) != Some("true")
+                    && let Some(after) = attrs
+                        .get("after")
+                        .and_then(|value| crate::fold::sequence_of(value))
+                {
+                    referenced.insert(after);
+                }
+            }
+        }
+        let referenced: Vec<_> = referenced.into_iter().collect();
+        for referenced in referenced.chunks(128) {
+            let mut invalidated = recovery::request(
+                branch_id,
+                start,
+                through,
+                &["input/message", "input/deleted"],
+                &["position.sequence"],
+            );
+            invalidated.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    invalidated.query.filter.take().expect("input source kinds"),
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "position.sequence".into(),
+                        },
+                        values: referenced.iter().copied().map(Into::into).collect(),
+                    },
+                    QueryFilter::Or {
+                        conditions: vec![
+                            kind("input/deleted"),
+                            QueryFilter::And {
+                                conditions: vec![
+                                    kind("input/message"),
+                                    QueryFilter::Exists {
+                                        condition: Box::new(QueryFilter::And {
+                                            conditions: vec![
+                                                kind("input/deleted"),
+                                                QueryFilter::Compare {
+                                                    left: QueryOperand::Field {
+                                                        path: "data.input_id".into(),
+                                                    },
+                                                    comparison: QueryComparison::Eq,
+                                                    right: QueryOperand::Outer {
+                                                        path: "id".into(),
+                                                    },
+                                                },
+                                            ],
+                                        }),
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            });
+            let QueryOutput::Rows { rows: invalidated } = query_fn(invalidated).await?.result
             else {
-                unreachable!("Goal input fields")
+                unreachable!("invalidated Goal references");
             };
-            let sequence = sequence.as_u64().expect("input sequence");
+            for row in invalidated {
+                let QueryValue::Value { value } = &row.values[0] else {
+                    unreachable!("referenced position")
+                };
+                fold.invalidated_after
+                    .insert(value.as_u64().expect("input sequence"));
+            }
+        }
+        for (sequence, id, submission, blocks) in rows {
             if let Some(next) = fold.held_next()
                 && next < sequence
             {
@@ -470,15 +501,15 @@ async fn legacy(
             }
             let submission = match submission {
                 QueryValue::Missing => None,
-                QueryValue::Value { value } => Some(value.as_str().expect("submission id")),
+                QueryValue::Value { value } => Some(value),
                 _ => unreachable!("submission scalar"),
             };
-            let blocks: Vec<InputBlock> =
-                serde_json::from_value(blocks.clone()).expect("input blocks contract");
             fold.goal_input(
                 sequence,
                 id.as_str().expect("input id"),
-                submission,
+                submission
+                    .as_ref()
+                    .map(|value| value.as_str().expect("submission id")),
                 &blocks,
             );
             fold.compact(start);

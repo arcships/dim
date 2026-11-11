@@ -1667,6 +1667,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_runtime::config::SessionLifecycle@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "scope": null,
             "status": "Ready"
@@ -1699,6 +1704,12 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "scope": null,
             "provider": 60,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_runtime::config::SessionLifecycle@session",
+            "scope": null,
+            "provider": 33,
             "generation": 1
           },
           {
@@ -1738,6 +1749,12 @@
             "provider": 60,
             "declared": true,
             "external": false
+          },
+          {
+            "service": "dim_agent_runtime::config::SessionLifecycle@session",
+            "provider": 33,
+            "declared": true,
+            "external": true
           },
           {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",

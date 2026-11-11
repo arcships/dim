@@ -31,7 +31,7 @@ boundary, or at once with no turn, and starts no request or turn while the step
 runs (ContextCompaction §5.4). An interrupt cancels a running step and settles a
 pending command; reload settles both as `cancelled`. Preparation work is tracked; handlers
 schedule it without waiting for host I/O. Cleanup cancels and joins work.
-Recovery queries applied inputs without consumption, unsettled manual compaction
+Recovery queries current ordinary/handover input members, then applied facts for only those IDs, unsettled manual compaction
 commands/starts, the last interrupt and the last turn boundary at one committed
 cut. Only an open turn needs a paged read of its request control fields. Input
 selection keeps the entire branch range, including applications before that

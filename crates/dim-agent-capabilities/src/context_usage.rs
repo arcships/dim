@@ -256,6 +256,7 @@ struct Machine {
     relevant_through: u64,
     model: Option<Arc<dyn ContextModel>>,
     unavailable: Option<HostError>,
+    needs_history: bool,
     empty: (Contribution, f64),
     numeric: Numeric,
 }
@@ -267,6 +268,7 @@ struct Progress {
     relevant_through: u64,
     saved_through: u64,
     unavailable: Option<HostError>,
+    needs_history: bool,
     model: Option<Arc<dyn ContextModel>>,
     error: Option<AgentError>,
 }
@@ -286,6 +288,13 @@ pub(crate) struct ContextUsage {
     cancel: CancellationToken,
     errors: Mutex<Vec<AgentError>>,
     association: Mutex<Association>,
+    initial_history: Mutex<Option<InitialHistory>>,
+}
+
+struct InitialHistory {
+    through: u64,
+    algorithm: String,
+    summary: Summary,
 }
 
 #[derive(Clone)]
@@ -507,6 +516,112 @@ fn reading(
 }
 
 impl ContextUsage {
+    pub(crate) async fn initialize_from_history(
+        &self,
+        through: u64,
+        history: &crate::history::StreamedContext,
+        request: Arc<ModelRequest>,
+        cancel: CancellationToken,
+    ) -> std::result::Result<(), HostError> {
+        let _ = self.at(0, cancel.clone()).await;
+        if !self.progress.borrow().needs_history {
+            return Ok(());
+        }
+        let model = self
+            .resolver
+            .0
+            .as_ref()
+            .expect("bound usage resolver")
+            .resolve(request, cancel.clone())
+            .await?;
+        let Some(counter) = model.contribution_counter() else {
+            return Ok(());
+        };
+        let mut summary = Summary::default();
+        let key = |position: &TimelinePosition| -> Result<Key> {
+            Ok(Key {
+                branch: history
+                    .branches
+                    .iter()
+                    .position(|branch| *branch == position.branch_id)
+                    .ok_or_else(|| fault("initial usage source outside branch chain"))?
+                    as u32,
+                sequence: position.sequence,
+            })
+        };
+        let empty = counter.fixed(None, None);
+        for entry in &history.history {
+            sources::message(
+                &mut summary,
+                counter,
+                (empty, counter.estimate(empty)),
+                &entry.message,
+            )
+            .map_err(|error| HostError::failed(error.to_string()))?;
+            summary.last_entry = Some(LastEntry {
+                at: key(&entry.position).map_err(|error| HostError::failed(error.to_string()))?,
+                id: Some(entry.id.clone()),
+            });
+        }
+        if let Some(event) = &history.compaction {
+            let EventKind::ContextCompaction(data) = &event.kind else {
+                unreachable!("completed compaction")
+            };
+            let ContextCompactionResult::Completed {
+                replacement,
+                context_baseline,
+                ..
+            } = &data.outcome
+            else {
+                unreachable!("completed compaction")
+            };
+            let mut contribution = Contribution::default();
+            for message in replacement
+                .iter()
+                .chain(context_baseline.iter().map(|entry| entry.message.as_ref()))
+            {
+                contribution = add(contribution, counter.message(message))
+                    .map_err(|error| HostError::failed(error.to_string()))?;
+            }
+            summary.compression = Some(Compression {
+                event_id: event.id.clone(),
+                cut: key(history
+                    .compaction_cut
+                    .as_ref()
+                    .expect("resolved compaction cut"))
+                .map_err(|error| HostError::failed(error.to_string()))?,
+                removed: Contribution::default(),
+                replacement: contribution,
+                removed_messages: Some(0),
+                replacement_messages: Some((replacement.len() + context_baseline.len()) as u64),
+            });
+        }
+        *self.initial_history.lock().unwrap() = Some(InitialHistory {
+            through,
+            algorithm: counter.algorithm().to_owned(),
+            summary,
+        });
+        self.wake.notify_one();
+        let mut progress = self.progress.subscribe();
+        loop {
+            let view = progress.borrow_and_update().clone();
+            if let Some(error) = view.error {
+                return Err(HostError::failed(error.to_string()));
+            }
+            if !view.needs_history {
+                break;
+            }
+            tokio::select! {
+                result = progress.changed() => result.map_err(|_| HostError::Cancelled("Usage owner closed".into()))?,
+                _ = cancel.cancelled() => return Err(HostError::Cancelled("Usage initialization cancelled".into())),
+                _ = self.cancel.cancelled() => return Err(HostError::Cancelled("Usage owner closed".into())),
+            }
+        }
+        match self.at(through, cancel).await {
+            Ok(_) | Err(ContextOpError::NotConfigured | ContextOpError::Model(_)) => Ok(()),
+            Err(ContextOpError::Read(error)) => Err(HostError::failed(error.to_string())),
+        }
+    }
     fn associate(&self, event: &AgentEvent) {
         let mut association = self.association.lock().unwrap();
         match &event.kind {
@@ -1001,6 +1116,7 @@ impl ContextUsage {
                     .state
                     .as_ref()
                     .is_none_or(|state| state.current.is_none())
+                    || view.needs_history
                     || view.relevant_through > through
                     || view.saved_through >= view.relevant_through)
             {
@@ -1128,6 +1244,7 @@ impl ContextUsage {
             relevant_through: machine.relevant_through,
             saved_through: machine.saved_through,
             unavailable: machine.unavailable.clone(),
+            needs_history: machine.needs_history,
             model: machine.model.clone(),
             error: None,
         });
@@ -1186,6 +1303,7 @@ impl DynPlugin for ContextUsagePlugin {
                 cancel: ctx.cancellation_token(),
                 errors: Mutex::new(Vec::new()),
                 association: Mutex::new(Association::default()),
+                initial_history: Mutex::new(None),
             });
             let cleanup = owner.clone();
             ctx.effect(move || async move {
@@ -1195,6 +1313,7 @@ impl DynPlugin for ContextUsagePlugin {
                 AgentError::aggregate(cleanup.errors.lock().unwrap().clone()).map_err(Into::into)
             })?;
             if owner.resolver.0.is_some() {
+                let initial = owner.timeline.sequence();
                 let notify = owner.clone();
                 owner.dispatcher.subscribe(
                     ctx,
@@ -1233,7 +1352,7 @@ impl DynPlugin for ContextUsagePlugin {
                         return;
                     }
                     let result = tokio::select! {
-                        result = AssertUnwindSafe(task.run()).catch_unwind() => result
+                        result = AssertUnwindSafe(task.run(initial)).catch_unwind() => result
                             .map_err(|panic| fault(crate::host::panic_message(panic)))
                             .and_then(|result| result),
                         _ = task.cancel.cancelled() => return,

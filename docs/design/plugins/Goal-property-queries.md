@@ -24,7 +24,7 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)、[#1147](https://gi
 | --- | --- |
 | 本地 opening | 最后 branch/start 或 session/forked 的位置和类型。 |
 | Goal 候选 | 本地 input/message 的 Goal 标记候选，只取必要位置、身份和 blocks，按原语义解释完整状态、触发、旧 key 和补偿。 |
-| 删除引用 | 与候选 after/trigger 有关的删除位置，不读正文。 |
+| 删除引用 | 将本页完整状态实际引用的 after 位置去重，按最多128个已知位置一批查询原输入及该 ID 的删除关联；trigger 通过原始紧邻位置配对。不读取全部普通输入的删除位置，不读正文。 |
 | 原始紧邻位置 | 必要处按位置点查类型和 submission_id；候选页相邻不等于原始相邻。 |
 
 沿用 TextCandidate 的保守 goal 候选和原属性条件，合法标记、转义和配对由 Goal 解释。每页消费完立即释放。兼容读取仍可能处理多个候选，按候选数、正文和 SQL 扫描计费，不承诺只读一个事件。

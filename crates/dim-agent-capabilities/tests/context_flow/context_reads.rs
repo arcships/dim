@@ -691,6 +691,16 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent.restore_session("growth".into()).await.unwrap();
         session
+            .submit(
+                "initialize on a real request".into(),
+                InputMode::Queue,
+                "main",
+            )
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let initialized = session.sequence("main").unwrap();
+        session
             .service::<ContextPreparation>("main")
             .unwrap()
             .usage(CancellationToken::new())
@@ -775,7 +785,8 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event.kind, EventKind::ContextCompactionStart(_)))
+                .filter(|event| event.sequence > initialized
+                    && matches!(event.kind, EventKind::ContextCompactionStart(_)))
                 .count(),
             1,
             "the saved range has less than a quarter-window of new history"
@@ -3413,6 +3424,120 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
 }
 
 #[tokio::test]
+async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_request() {
+    use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
+    let source = Arc::new(MemoryTimelineStore::default());
+    let counter = Arc::new(ObservedCounter::default());
+    let mut profile = builder_with_usage_resolver(counter.clone());
+    profile.timeline_store(source.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    session
+        .service::<Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(ModelSelection {
+                provider_id: "test".into(),
+                model_id: "test".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            }),
+            vec![],
+        )
+        .await
+        .unwrap();
+    agent.close().await.unwrap();
+    let key = TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let copied = source.read(&key, 1..=source.head(&key).await.unwrap()).await.unwrap()
+        .into_iter().map(|mut record| {
+            if matches!(&record.event.kind, EventKind::Extension(data) if data.domain() == "context-usage") {
+                let mut event = record.event.as_ref().clone();
+                event.kind = EventKind::Extension(ExtensionEvent::new("fixture", "omitted-cache", serde_json::json!({})).unwrap());
+                record.event = Arc::new(event);
+            }
+            record
+        }).collect();
+    let store = Arc::new(CountContextReads::default());
+    store
+        .create_session(&id, &SessionConfig::default())
+        .await
+        .unwrap();
+    store
+        .append(key.clone(), copied, Box::new(|result| result.unwrap()))
+        .unwrap();
+    let timeline = Timeline::restore(Ctx::root().unwrap(), key.clone(), vec![], store.clone())
+        .await
+        .unwrap();
+    let replacement = summary_message(&"migrated context ".repeat(40));
+    timeline.append(EventDraft::from(EventKind::ContextCompaction(ContextCompactionData {
+        turn_id: None, request_id: None, command: None, start: None,
+        through: timeline.sequence(),
+        outcome: ContextCompactionResult::Completed {
+            retain_from: "migration-cut".into(), replacement: vec![replacement.clone()],
+            strategy: "migration".into(),
+            diagnostics: serde_json::from_value(serde_json::json!({
+                "reason":"manual","trigger":"manual","estimatedInputTokens":0,
+                "entriesReplaced":1,"modelCallCount":0,"durationMs":0,"strategy":{"kind":"migration"}
+            })).unwrap(),
+            context_baseline: vec![], replacement_parts: None, pinned_inputs: None, digest_entries: None,
+        },
+    })).with_id("migration-cut")).unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let before = store.head(&key).await.unwrap();
+    counter.messages.store(0, Ordering::SeqCst);
+    let mut profile = builder_with_usage_resolver(counter.clone());
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent.restore_session(id).await.unwrap();
+    assert!(matches!(
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
+    assert_eq!(
+        counter.messages.load(Ordering::SeqCst),
+        0,
+        "resume must not count the replacement body"
+    );
+    assert!(
+        store.context_pages.lock().unwrap().is_empty(),
+        "resume must not project historical context"
+    );
+    let added = store
+        .memory
+        .read(&key, before + 1..=store.head(&key).await.unwrap())
+        .await
+        .unwrap();
+    assert!(added.iter().all(|record| !matches!(&record.event.kind, EventKind::Extension(data) if data.domain() == "context-usage")), "resume must not backfill usage records");
+    session
+        .submit("continue this context".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let usage = session
+        .service::<ContextPreparation>("main")
+        .unwrap()
+        .usage(CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(usage.estimated_input_tokens > serde_json::to_vec(&replacement).unwrap().len() as f64);
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_result_backfill() {
     use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
     use serde_json::{Value, json};
@@ -3617,21 +3742,80 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             .service::<ContextPreparation>("main")
             .unwrap()
             .usage(CancellationToken::new())
-            .await
-            .unwrap();
+            .await;
+        if schema.is_none() {
+            assert!(matches!(
+                value,
+                Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+            ));
+            assert_eq!(
+                counter.messages.load(Ordering::SeqCst),
+                0,
+                "opening does not count old messages"
+            );
+            assert!(
+                store.context_pages.lock().unwrap().is_empty(),
+                "opening does not project old history"
+            );
+            let added = store
+                .memory
+                .read(&key, before + 1..=store.head(&key).await.unwrap())
+                .await
+                .unwrap();
+            assert!(added.iter().all(|record| !matches!(&record.event.kind, EventKind::Extension(data) if data.key()=="context-usage/recovered")), "opening does not create numeric history");
+            session
+                .submit(
+                    "initialize statistics for this request".into(),
+                    InputMode::Queue,
+                    "main",
+                )
+                .await
+                .unwrap();
+            session.idle("main").await.unwrap();
+            let value = session
+                .service::<ContextPreparation>("main")
+                .unwrap()
+                .usage(CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(value.estimated_input_tokens > expected.estimated_input_tokens);
+            let events = chain_events(&session, "main", ..).await.unwrap();
+            let history = project_history(&events, "main").unwrap();
+            let expected = fixed
+                + history
+                    .iter()
+                    .map(|entry| serde_json::to_vec(&entry.message).unwrap().len() as f64)
+                    .sum::<f64>();
+            assert_eq!(
+                value.estimated_input_tokens, expected,
+                "request initialization counts actual effective content"
+            );
+            agent.close().await.unwrap();
+            counter.messages.store(0, Ordering::SeqCst);
+            store.context_pages.lock().unwrap().clear();
+            let agent = MinimalHost::start(&profile).await.unwrap();
+            let session = agent.restore_session(id.clone()).await.unwrap();
+            let reloaded = session
+                .service::<ContextPreparation>("main")
+                .unwrap()
+                .usage(CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                reloaded.estimated_input_tokens,
+                value.estimated_input_tokens
+            );
+            assert_eq!(counter.messages.load(Ordering::SeqCst), 0);
+            assert!(store.context_pages.lock().unwrap().is_empty());
+            agent.close().await.unwrap();
+            continue;
+        }
+        let value = value.unwrap();
         assert_eq!(
             value.estimated_input_tokens, expected.estimated_input_tokens,
             "{schema:?}"
         );
-        assert_eq!(
-            counter.messages.load(Ordering::SeqCst),
-            if schema.is_none() {
-                initial_history.len()
-            } else {
-                0
-            },
-            "{schema:?}"
-        );
+        assert_eq!(counter.messages.load(Ordering::SeqCst), 0, "{schema:?}");
         let added = store
             .memory
             .read(&key, before + 1..=store.head(&key).await.unwrap())
@@ -3643,7 +3827,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .filter(|record| matches!(&record.event.kind,
             EventKind::Extension(data) if data.key()=="context-usage/recovered"))
                 .count(),
-            usize::from(schema.is_none()),
+            0,
             "only a missing aggregate writes an initial result: {schema:?}"
         );
         agent.close().await.unwrap();

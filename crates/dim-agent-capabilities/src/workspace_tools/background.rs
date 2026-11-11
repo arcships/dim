@@ -466,6 +466,31 @@ impl BackgroundExec {
         &self,
     ) -> dim_agent_runtime::Result<(u64, Vec<(String, ExecEndedData, String)>)> {
         let through = self.timeline.committed();
+        let probe = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["exec/started".into()],
+                }),
+                select: QuerySelect::Exists,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: None,
+        };
+        if matches!(
+            self.timeline.query(probe).await?.result,
+            QueryOutput::Exists { exists: false }
+        ) {
+            return Ok((through, Vec::new()));
+        }
         let mut after = None;
         let mut tasks = HashMap::new();
         let mut open = Vec::new();

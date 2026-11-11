@@ -1727,6 +1727,8 @@ impl CollaborationSession {
         } else {
             None
         };
+        let historical_turn = (branch.current_turn.as_deref() != Some(turn_id.as_str()))
+            .then(|| (branch.timeline.clone(), turn_id.clone()));
         branch.ops.entry(event.id.clone()).or_insert_with(|| Op {
             turn_id,
             request,
@@ -1773,9 +1775,25 @@ impl CollaborationSession {
             if let Some(previous) = previous {
                 previous.await;
             }
-            let delivered = match refused {
-                Some(code) => Err(Failure::from(code)),
-                None => match permission {
+            let eligible = match (refused, historical_turn) {
+                (Some(code), _) => Err(Failure::from(code)),
+                (None, Some((timeline, turn))) => {
+                    stopped_turn(&timeline, &turn, event.sequence - 1)
+                        .await
+                        .map_err(|error| member_create_failed(error.to_string()))
+                        .and_then(|stopped| {
+                            if stopped {
+                                Err(Refusal::Interrupted.into())
+                            } else {
+                                Ok(())
+                            }
+                        })
+                }
+                (None, None) => Ok(()),
+            };
+            let delivered = match eligible {
+                Err(error) => Err(error),
+                Ok(()) => match permission {
                     Ok(permission) => {
                         this.deliver(&branch_key, &event, cancel, adopted, permission)
                             .await
@@ -3474,11 +3492,86 @@ impl DynPlugin for CollaborationTimelinePlugin {
     }
 }
 
-/// Rebuilds one branch's collaboration state from its own facts and returns
-/// the cutoff the read took: facts the previous generation wrote and had not
-/// published yet decide whether an operation was delivered or a request is
-/// still open, so the read adds the undispatched tail (ADR 020 D3). The
-/// refusals and failures it writes from that state are not taken back.
+async fn stopped_turn(
+    timeline: &Timeline,
+    turn: &str,
+    through: u64,
+) -> dim_agent_runtime::Result<bool> {
+    let mut query = TimelineQuery {
+        scope: TimelineQueryScope::Branch,
+        from: None,
+        through: Some(through),
+        include_publishing: true,
+        query: QuerySpec {
+            filter: Some(QueryFilter::And {
+                conditions: vec![
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec!["turn/start".into(), "turn/end".into()],
+                    },
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "data.turn_id".into(),
+                        },
+                        values: vec![turn.into()],
+                    },
+                ],
+            }),
+            select: QuerySelect::Fields {
+                fields: vec!["kind".into(), "position.sequence".into()],
+            },
+            group_by: vec![],
+            pick: None,
+            order_by: vec![],
+        },
+        page: Some(QueryPage {
+            limit: NonZeroU64::new(2).unwrap(),
+            after: None,
+        }),
+    };
+    let reply = timeline.query(query.clone()).await?;
+    let QueryOutput::Rows { rows } = reply.result else {
+        unreachable!("addressed turn boundaries")
+    };
+    let mut start = None;
+    for row in rows {
+        let [
+            QueryValue::Value {
+                value: Value::String(kind),
+            },
+            QueryValue::Value { value: at },
+        ] = <[_; 2]>::try_from(row.values).unwrap()
+        else {
+            unreachable!("turn boundary fields")
+        };
+        let at = at.as_u64().expect("turn boundary position");
+        if kind == "turn/start" {
+            start = Some(at)
+        } else {
+            query.through = Some(at);
+        }
+    }
+    let Some(start) = start else { return Ok(false) };
+    query.from = Some(TimelinePosition {
+        branch_id: timeline.branch_id(),
+        sequence: start,
+    });
+    query.query.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values: vec!["stop/interrupt".into()],
+    });
+    query.query.select = QuerySelect::Exists;
+    query.page = None;
+    let QueryOutput::Exists { exists } = timeline.query(query).await?.result else {
+        unreachable!("addressed turn interruption")
+    };
+    Ok(exists)
+}
+
 async fn restore(
     service: Arc<CollaborationSession>,
     phase: Arc<BranchLifecycle>,
@@ -3491,207 +3584,285 @@ async fn restore(
     let tasks = TaskTracker::new();
     let cleanup_tasks = tasks.clone();
     let mut stale_inputs = BTreeSet::new();
-    let mut current_turn = None;
-    let mut interrupted = BTreeSet::new();
-    let mut ops = BTreeMap::new();
+    let current_turn = None;
+    let interrupted = BTreeSet::new();
     let mut open: BTreeMap<String, (String, String)> = BTreeMap::new();
-    let mut after = None;
+    let kind = |kind: &str| QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values: vec![kind.into()],
+    };
+    let equal = |path: &str, value: Value| QueryFilter::Compare {
+        left: QueryOperand::Field { path: path.into() },
+        comparison: dim_agent_runtime::QueryComparison::Eq,
+        right: QueryOperand::Value { value },
+    };
+    let related = |path: &str| QueryFilter::Compare {
+        left: QueryOperand::Field { path: path.into() },
+        comparison: dim_agent_runtime::QueryComparison::Eq,
+        right: QueryOperand::Outer { path: "id".into() },
+    };
+    let mut pending = TimelineQuery {
+        scope: TimelineQueryScope::Branch,
+        from: None,
+        through: Some(through),
+        include_publishing: true,
+        query: QuerySpec {
+            filter: Some(QueryFilter::And {
+                conditions: vec![
+                    kind("collaboration/request"),
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Exists {
+                            condition: Box::new(QueryFilter::Or {
+                                conditions: vec![
+                                    QueryFilter::And {
+                                        conditions: vec![
+                                            kind("collaboration/result"),
+                                            related("data.request_event_id"),
+                                        ],
+                                    },
+                                    QueryFilter::And {
+                                        conditions: vec![
+                                            kind("collaboration/delivered"),
+                                            related("data.op_event_id"),
+                                            equal("data.status", "error".into()),
+                                        ],
+                                    },
+                                ],
+                            }),
+                        }),
+                    },
+                ],
+            }),
+            select: QuerySelect::Fields {
+                fields: vec!["id".into()],
+            },
+            group_by: vec![],
+            pick: None,
+            order_by: vec![],
+        },
+        page: Some(QueryPage {
+            limit: NonZeroU64::new(128).unwrap(),
+            after: None,
+        }),
+    };
+    let mut undelivered = pending.clone();
+    let operations = QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values: [
+            "collaboration/cancel",
+            "collaboration/close",
+            "collaboration/message",
+        ]
+        .map(Into::into)
+        .to_vec(),
+    };
+    undelivered.query.filter = Some(operations.clone());
+    undelivered.query.select = QuerySelect::Exists;
+    undelivered.page = None;
+    if matches!(
+        timeline.query(undelivered.clone()).await?.result,
+        QueryOutput::Exists { exists: true }
+    ) {
+        undelivered.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                operations,
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Exists {
+                        condition: Box::new(QueryFilter::And {
+                            conditions: vec![
+                                kind("collaboration/delivered"),
+                                related("data.op_event_id"),
+                            ],
+                        }),
+                    }),
+                },
+            ],
+        });
+        undelivered.query.select = QuerySelect::Fields {
+            fields: vec!["id".into()],
+        };
+        undelivered.page = pending.page.clone();
+        loop {
+            let reply = timeline.query(undelivered.clone()).await?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("undelivered operation identities")
+            };
+            for row in rows {
+                let [
+                    QueryValue::Value {
+                        value: Value::String(op_event_id),
+                    },
+                ] = <[_; 1]>::try_from(row.values).unwrap()
+                else {
+                    unreachable!("operation identity")
+                };
+                timeline.append(
+                    EventKind::CollaborationDelivered(CollaborationDeliveredData {
+                        op_event_id,
+                        delivery: CollaborationDelivery::Error {
+                            error: Refusal::Closed,
+                        },
+                    })
+                    .into(),
+                )?;
+            }
+            let Some(next) = reply.next else { break };
+            undelivered.page.as_mut().unwrap().after = Some(next);
+        }
+    }
     loop {
-        let reply = timeline
-            .query(TimelineQuery {
-                scope: TimelineQueryScope::Branch,
-                from: None,
-                through: Some(through),
-                include_publishing: true,
-                query: QuerySpec {
-                    filter: Some(QueryFilter::Or {
+        let reply = timeline.query(pending.clone()).await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("unfinished delegation identities")
+        };
+        for row in rows {
+            let [
+                QueryValue::Value {
+                    value: Value::String(op),
+                },
+            ] = <[_; 1]>::try_from(row.values).unwrap()
+            else {
+                unreachable!("delegation identity")
+            };
+            let delivery = timeline
+                .query(TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: None,
+                    through: Some(through),
+                    include_publishing: true,
+                    query: QuerySpec {
+                        filter: Some(QueryFilter::And {
+                            conditions: vec![
+                                kind("collaboration/delivered"),
+                                equal("data.op_event_id", op.clone().into()),
+                                QueryFilter::TextCandidate {
+                                    field: "data".into(),
+                                    partition_by: vec![],
+                                    terms: vec![op.clone()],
+                                },
+                            ],
+                        }),
+                        select: QuerySelect::Fields {
+                            fields: ["data.status", "data.agent_id", "data.session_id"]
+                                .map(String::from)
+                                .to_vec(),
+                        },
+                        group_by: vec![],
+                        pick: Some(dim_agent_runtime::QueryPick::Last),
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: NonZeroU64::MIN,
+                        after: None,
+                    }),
+                })
+                .await?;
+            let QueryOutput::Rows { rows } = delivery.result else {
+                unreachable!("delegation delivery")
+            };
+            if let Some(row) = rows.first() {
+                let [
+                    QueryValue::Value {
+                        value: Value::String(status),
+                    },
+                    QueryValue::Value {
+                        value: Value::String(agent),
+                    },
+                    QueryValue::Value {
+                        value: Value::String(session),
+                    },
+                ] = row.values.as_slice()
+                else {
+                    unreachable!("successful delivery identities")
+                };
+                if status == "ok" {
+                    open.insert(op, (agent.clone(), session.clone()));
+                }
+            } else {
+                timeline.append(
+                    EventKind::CollaborationDelivered(CollaborationDeliveredData {
+                        op_event_id: op,
+                        delivery: CollaborationDelivery::Error {
+                            error: Refusal::Closed,
+                        },
+                    })
+                    .into(),
+                )?;
+            }
+        }
+        let Some(next) = reply.next else { break };
+        pending.page.as_mut().unwrap().after = Some(next);
+    }
+    pending.page.as_mut().unwrap().after = None;
+    pending.query.filter = Some(QueryFilter::And {
+        conditions: vec![
+            kind("input/message"),
+            QueryFilter::Not {
+                condition: Box::new(QueryFilter::Present {
+                    value: QueryOperand::Field {
+                        path: "data.handover".into(),
+                    },
+                }),
+            },
+            QueryFilter::Not {
+                condition: Box::new(QueryFilter::Present {
+                    value: QueryOperand::Field {
+                        path: "data.user".into(),
+                    },
+                }),
+            },
+            QueryFilter::Prefix {
+                value: QueryOperand::Field {
+                    path: "data.submission_id".into(),
+                },
+                prefix: "collaboration-approval:".into(),
+            },
+            QueryFilter::Not {
+                condition: Box::new(QueryFilter::Exists {
+                    condition: Box::new(QueryFilter::And {
                         conditions: vec![
                             QueryFilter::In {
                                 value: QueryOperand::Field {
                                     path: "kind".into(),
                                 },
-                                values: [
-                                    "turn/start",
-                                    "turn/end",
-                                    "stop/interrupt",
-                                    "collaboration/request",
-                                    "collaboration/cancel",
-                                    "collaboration/close",
-                                    "collaboration/message",
-                                    "collaboration/delivered",
-                                    "collaboration/result",
-                                    "input/applied",
-                                    "input/deleted",
-                                ]
-                                .map(Into::into)
-                                .to_vec(),
+                                values: vec!["input/consumed".into(), "input/deleted".into()],
                             },
-                            QueryFilter::And {
-                                conditions: vec![
-                                    QueryFilter::In {
-                                        value: QueryOperand::Field {
-                                            path: "kind".into(),
-                                        },
-                                        values: vec!["input/message".into()],
-                                    },
-                                    QueryFilter::Prefix {
-                                        value: QueryOperand::Field {
-                                            path: "data.submission_id".into(),
-                                        },
-                                        prefix: "collaboration-approval:".into(),
-                                    },
-                                    QueryFilter::Not {
-                                        condition: Box::new(QueryFilter::Present {
-                                            value: QueryOperand::Field {
-                                                path: "data.user".into(),
-                                            },
-                                        }),
-                                    },
-                                ],
-                            },
+                            related("data.input_id"),
                         ],
                     }),
-                    select: QuerySelect::Fields {
-                        fields: [
-                            "kind",
-                            "id",
-                            "data.turn_id",
-                            "data.scope",
-                            "data.op_event_id",
-                            "data.status",
-                            "data.agent_id",
-                            "data.session_id",
-                            "data.request_event_id",
-                            "data.input_id",
-                            "data.blocks[].text",
-                        ]
-                        .map(String::from)
-                        .to_vec(),
-                    },
-                    group_by: vec![],
-                    pick: None,
-                    order_by: vec![],
-                },
-                page: Some(QueryPage {
-                    limit: NonZeroU64::new(256).unwrap(),
-                    after,
                 }),
-            })
-            .await?;
+            },
+            QueryFilter::Not {
+                condition: Box::new(QueryFilter::Exists {
+                    condition: Box::new(QueryFilter::And {
+                        conditions: vec![kind("input/applied"), related("data.input_id")],
+                    }),
+                }),
+            },
+        ],
+    });
+    loop {
+        let reply = timeline.query(pending.clone()).await?;
         let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("field selection returns rows")
+            unreachable!("held approval input identities")
         };
         for row in rows {
             let [
                 QueryValue::Value {
-                    value: Value::String(kind),
-                },
-                QueryValue::Value {
                     value: Value::String(id),
                 },
-                turn_id,
-                scope,
-                op_event_id,
-                status,
-                agent_id,
-                session_id,
-                request_event_id,
-                input_id,
-                blocks,
-            ] = row.values.as_slice()
+            ] = <[_; 1]>::try_from(row.values).unwrap()
             else {
-                unreachable!("event has a kind and id")
+                unreachable!("approval input identity")
             };
-            match kind.as_str() {
-                "turn/start" => {
-                    let QueryValue::Value {
-                        value: Value::String(turn),
-                    } = turn_id
-                    else {
-                        unreachable!("turn start has a turn id")
-                    };
-                    current_turn = Some(turn.clone());
-                }
-                "turn/end" => current_turn = None,
-                "stop/interrupt" => {
-                    if matches!(scope, QueryValue::Value { value: Value::String(scope) } if scope == "turn")
-                    {
-                        interrupted.extend(current_turn.clone());
-                    }
-                }
-                "collaboration/delivered" => {
-                    let QueryValue::Value {
-                        value: Value::String(op),
-                    } = op_event_id
-                    else {
-                        unreachable!("delivery has an operation id")
-                    };
-                    if ops.remove(op) == Some(true)
-                        && matches!(status, QueryValue::Value { value: Value::String(status) } if status == "ok")
-                    {
-                        let (
-                            QueryValue::Value {
-                                value: Value::String(agent),
-                            },
-                            QueryValue::Value {
-                                value: Value::String(session),
-                            },
-                        ) = (agent_id, session_id)
-                        else {
-                            unreachable!("successful delivery identifies the member")
-                        };
-                        open.insert(op.clone(), (agent.clone(), session.clone()));
-                    }
-                }
-                "collaboration/result" => {
-                    let QueryValue::Value {
-                        value: Value::String(request),
-                    } = request_event_id
-                    else {
-                        unreachable!("result has a request id")
-                    };
-                    open.remove(request);
-                }
-                "collaboration/request"
-                | "collaboration/cancel"
-                | "collaboration/close"
-                | "collaboration/message" => {
-                    ops.insert(id.clone(), kind == "collaboration/request");
-                }
-                "input/message" => {
-                    if let QueryValue::Elements { values } = blocks
-                        && matches!(values.first(), Some(QueryValue::Value { value: Value::String(text) }) if text.starts_with("<dim-agent-approval>\n"))
-                    {
-                        stale_inputs.insert(id.clone());
-                    }
-                }
-                "input/applied" | "input/deleted" => {
-                    let QueryValue::Value {
-                        value: Value::String(input),
-                    } = input_id
-                    else {
-                        unreachable!("input decision has an input id")
-                    };
-                    stale_inputs.remove(input);
-                }
-                _ => unreachable!("query selects collaboration lifecycle facts"),
-            }
+            stale_inputs.insert(id);
         }
-        after = reply.next;
-        if after.is_none() {
-            break;
-        }
-    }
-    for op in ops.into_keys() {
-        let _ = timeline.append(
-            EventKind::CollaborationDelivered(CollaborationDeliveredData {
-                op_event_id: op,
-                delivery: CollaborationDelivery::Error {
-                    error: Refusal::Closed,
-                },
-            })
-            .into(),
-        );
+        let Some(next) = reply.next else { break };
+        pending.page.as_mut().unwrap().after = Some(next);
     }
     for (op, (agent_id, session_id)) in open {
         let leads = service

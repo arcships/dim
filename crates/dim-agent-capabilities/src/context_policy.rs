@@ -1131,6 +1131,11 @@ impl ContextPolicy {
             .rendered_stream(&self.timeline, source.through, 256)
             .await
             .map_err(|error| HostError::failed(error.to_string()))?;
+        if let Some(usage) = usage {
+            usage
+                .initialize_from_history(source.through, &streamed, request.clone(), cancel.clone())
+                .await?;
+        }
         let boundary = streamed.history.last().map(|entry| entry.id.clone());
         let context = PolicyContext::from_stream(&streamed);
         let original = request.clone();

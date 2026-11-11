@@ -531,7 +531,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                 for item in &mut results {
                                     let mut effects = item.result.effects.take();
                                     if effects.is_none() {
-                                        let (_, child) = child_effects(&timeline, &item.call_id, through)
+                                        let (_, child) = child_effects(&timeline, &item.call_id, &batch.request_id, through)
                                             .await
                                             .unwrap_or_default();
                                         if !child.is_empty() {
@@ -620,6 +620,7 @@ struct OpenBatch {
 async fn child_effects(
     timeline: &Timeline,
     parent_call_id: &str,
+    request_id: &str,
     through: u64,
 ) -> dim_agent_runtime::Result<(usize, Vec<ToolEffect>)> {
     let mut seen = 0usize;
@@ -642,6 +643,15 @@ async fn child_effects(
                     },
                     QueryFilter::Compare {
                         left: QueryOperand::Field {
+                            path: "data.request_id".into(),
+                        },
+                        comparison: QueryComparison::Eq,
+                        right: QueryOperand::Value {
+                            value: request_id.into(),
+                        },
+                    },
+                    QueryFilter::Compare {
+                        left: QueryOperand::Field {
                             path: "parent_call_id".into(),
                         },
                         comparison: QueryComparison::Eq,
@@ -652,7 +662,7 @@ async fn child_effects(
                 ],
             }),
             select: QuerySelect::Fields {
-                fields: vec!["data".into()],
+                fields: vec!["data.results[].result.effects".into()],
             },
             group_by: Vec::new(),
             pick: None,
@@ -670,18 +680,19 @@ async fn child_effects(
             unreachable!("tool effects selects result data")
         };
         for row in rows {
-            let Some(QueryValue::Value { value }) = row.values.into_iter().next() else {
-                return Err(AgentError::fault(
-                    "ToolExecutor",
-                    "a child result has no data",
-                ));
+            let [QueryValue::Elements { values }] = <[_; 1]>::try_from(row.values).unwrap() else {
+                unreachable!("child effect projections")
             };
-            let data: ToolResultData = serde_json::from_value(value).map_err(|error| {
-                AgentError::fault("ToolExecutor", format!("invalid child result: {error}"))
-            })?;
-            for result in data.results {
-                seen += 1;
-                if let Some(child) = result.result.effects {
+            seen += values.len();
+            for value in values {
+                if let QueryValue::Value { value } = value {
+                    let child: Vec<ToolEffect> =
+                        serde_json::from_value(value).map_err(|error| {
+                            AgentError::fault(
+                                "ToolExecutor",
+                                format!("invalid child effects: {error}"),
+                            )
+                        })?;
                     effects.extend(child);
                 }
             }
@@ -900,7 +911,8 @@ async fn rebuild(owner: &ToolExecutor, timeline: &Timeline) -> dim_agent_runtime
         if batch.parent_call_id.is_none() {
             let through = timeline.committed();
             for call_id in &batch.calls {
-                let (seen, child) = child_effects(timeline, call_id, through).await?;
+                let (seen, child) =
+                    child_effects(timeline, call_id, &batch.request_id, through).await?;
                 children += seen;
                 effects.extend(child);
             }

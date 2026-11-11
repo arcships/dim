@@ -3423,6 +3423,7 @@
         "format",
         "matches",
         "params",
+        "rusqlite::params",
         "vec"
       ]
     },
@@ -10477,7 +10478,15 @@
         "mod sources",
         "path sources",
         "path sources::RequestBase",
+        "path sources::message",
         "path sources::optional"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::context_usage",
+      "to": "dim_agent_capabilities::history",
+      "references": [
+        "path crate::history::StreamedContext"
       ]
     },
     {
@@ -10487,6 +10496,7 @@
         "path ContextModel",
         "path ContextModelHost",
         "path Contribution",
+        "path Contribution::default",
         "path HostError",
         "path HostError::failed",
         "use crate::host::ContextContribution",
@@ -10873,6 +10883,7 @@
       "references": [
         "path Contribution",
         "path Contribution::default",
+        "path HostError::failed",
         "path ModelSettings",
         "path crate::host::ContextCounter",
         "use crate::host::ModelSettings"
@@ -16450,8 +16461,7 @@
       "from": "dim_agent_capabilities::timeline_tree",
       "to": "dim_agent_capabilities::timeline_tree::read",
       "references": [
-        "mod read",
-        "path read"
+        "mod read"
       ]
     },
     {
@@ -16497,6 +16507,7 @@
         "path BranchLifecycle",
         "path SessionIdentity",
         "path TimelineIdentity",
+        "path dim_agent_runtime::SessionLifecycle",
         "path dim_agent_runtime::TimelineIdentity",
         "use dim_agent_runtime::BranchLifecycle",
         "use dim_agent_runtime::SessionIdentity",
@@ -16586,10 +16597,14 @@
       "from": "dim_agent_capabilities::timeline_tree",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryComparison::Eq",
         "path QueryFilter::And",
+        "path QueryFilter::Compare",
+        "path QueryFilter::Exists",
         "path QueryFilter::In",
         "path QueryFilter::Or",
         "path QueryOperand::Field",
+        "path QueryOperand::Value",
         "path QueryOutput::Events",
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
@@ -16664,6 +16679,7 @@
         "path BranchSource::Host",
         "path BranchSource::Tool",
         "path BranchStartData",
+        "path EventKind",
         "path EventKind::BranchCreate",
         "path EventKind::BranchCreateFailed",
         "path EventKind::BranchEnd",
@@ -16678,6 +16694,7 @@
         "path EventKind::ToolResult",
         "path EventKind::ToolUse",
         "path EventKind::TurnEnd",
+        "path EventKind::TurnStart",
         "path InputBlock",
         "path InputBlock::Raw",
         "path InputMessageData",
@@ -17800,6 +17817,7 @@
         "path QueryOperand::Field",
         "path QueryOutput::Rows",
         "path QueryPage",
+        "path QuerySelect::Exists",
         "path QuerySelect::Fields",
         "path QuerySpec",
         "path QueryValue::Value",
@@ -24163,9 +24181,11 @@
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
         "path QueryFilter::And",
+        "path QueryFilter::Compare",
         "path QueryFilter::In",
-        "path QueryFilter::Or",
         "path QueryOperand::Field",
+        "path QueryOperand::Outer",
+        "path QueryOperand::Value",
         "path QueryOutput::Events",
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
@@ -24174,9 +24194,10 @@
         "path QuerySelect::Exists",
         "path QuerySelect::Fields",
         "path QuerySpec",
-        "path QueryValue::Elements",
         "path QueryValue::Value",
         "path TimelineQuery",
+        "path dim_agent_runtime::QueryComparison::Eq",
+        "path dim_agent_runtime::QueryPick::Last",
         "use dim_agent_runtime::QueryFilter",
         "use dim_agent_runtime::QueryOperand",
         "use dim_agent_runtime::QueryOutput",
@@ -24358,6 +24379,7 @@
       "to": "dim_app_server::collaboration::pending",
       "references": [
         "mod pending",
+        "path pending",
         "path pending::install"
       ]
     },
@@ -25569,7 +25591,9 @@
       "from": "dim_app_server::connection::tree",
       "to": "dim_agent_types::checkpoint",
       "references": [
-        "path dim_agent_types::TimelinePosition"
+        "path TimelinePosition",
+        "path dim_agent_types::TimelinePosition",
+        "use dim_agent_types::TimelinePosition"
       ]
     },
     {
@@ -48212,7 +48236,6 @@
         "path QueryFilter",
         "path QueryFilter::And",
         "path QueryFilter::In",
-        "path QueryFilter::Or",
         "path QueryOperand::Field",
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
@@ -48250,6 +48273,7 @@
       "to": "dim_agent_types::events",
       "references": [
         "path InputBlock",
+        "path InputBlock::Raw",
         "use dim_agent_types::InputBlock"
       ]
     },
@@ -48298,6 +48322,7 @@
       "references": [
         "path Fold",
         "path Fold::default",
+        "path crate::fold::sequence_of",
         "use crate::fold::Fold"
       ]
     },
@@ -48314,6 +48339,7 @@
         "path text::State::Completed",
         "path text::State::None",
         "path text::State::Paused",
+        "path text::marker",
         "use crate::text"
       ]
     },

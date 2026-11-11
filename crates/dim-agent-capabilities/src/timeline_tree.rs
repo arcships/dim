@@ -33,9 +33,6 @@ use tokio::{
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-/// Facts one page of a line read keeps.
-const LINE_PAGE: u64 = 32;
-
 /// How a loaded branch begins on its Timeline.
 enum Opening {
     /// A new branch: the root of a new Session, or a child with its first
@@ -44,25 +41,7 @@ enum Opening {
         start: BranchStartData,
         first: Option<InputMessageData>,
     },
-    /// A stored branch loaded again at its stored head. While it opens, its
-    /// build reads its history up to that head, the history its capabilities
-    /// rebuild from, and reports the facts it holds about its own lines: the
-    /// creates it saw fail, and the source each create recorded. The restore
-    /// checks its children against them.
-    Resume {
-        head: u64,
-        lines: oneshot::Sender<LineFacts>,
-    },
-}
-
-#[derive(Default)]
-struct LineFacts {
-    /// The `branch/create` sequences the line recorded as failed.
-    failed_creates: BTreeSet<u64>,
-    /// Each child it created, with the source that create recorded.
-    sources: BTreeMap<String, BranchSource>,
-    /// The children whose end it recorded, with the `branch/end` sequence.
-    ended: BTreeMap<String, u64>,
+    Resume,
 }
 
 struct Node {
@@ -452,55 +431,56 @@ impl TimelineTree {
             )
             .map(|_| ())
     }
-    /// The lines whose end `branch` recorded, from its stored history.
-    async fn stored_ends(&self, branch: &str, head: u64) -> Result<BTreeSet<String>> {
-        let scope = self.stored_scope(branch, 1, head);
-        let mut ended = BTreeSet::new();
-        let mut after = None;
-        loop {
-            let reply = self
-                .store
-                .query(
-                    &scope,
-                    &QuerySpec {
-                        filter: Some(QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
+    async fn child_terminal(
+        &self,
+        parent: &str,
+        child: &str,
+        head: u64,
+    ) -> Result<Option<EventKind>> {
+        let reply = self
+            .store
+            .query(
+                &self.stored_scope(parent, 1, head),
+                &QuerySpec {
+                    filter: Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: vec!["branch/create-failed".into(), "branch/ended".into()],
                             },
-                            values: vec!["branch/ended".into()],
-                        }),
-                        select: QuerySelect::Fields {
-                            fields: vec!["data.branch".into()],
-                        },
-                        group_by: vec![],
-                        pick: None,
-                        order_by: vec![],
-                    },
-                    Some(&QueryPage {
-                        limit: NonZeroU64::new(256).unwrap(),
-                        after,
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "data.branch".into(),
+                                },
+                                values: vec![child.into()],
+                            },
+                            QueryFilter::TextCandidate {
+                                field: "data".into(),
+                                partition_by: vec![],
+                                terms: vec![child.into()],
+                            },
+                        ],
                     }),
-                )
-                .await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("field selection returns rows")
-            };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: serde_json::Value::String(branch),
-                    },
-                ] = row.values.as_slice()
-                else {
-                    unreachable!("branch end names its branch")
-                };
-                ended.insert(branch.clone());
-            }
-            after = reply.next;
-            if after.is_none() {
-                return Ok(ended);
-            }
-        }
+                    select: QuerySelect::Events,
+                    group_by: vec![],
+                    pick: Some(QueryPick::Last),
+                    order_by: vec![],
+                },
+                Some(&QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            )
+            .await?;
+        let QueryOutput::Events { events } = reply.result else {
+            unreachable!("child terminal fact")
+        };
+        Ok(events
+            .into_iter()
+            .next()
+            .map(|event| event.event.kind.clone()))
     }
     fn stored_scope(
         &self,
@@ -548,18 +528,17 @@ impl TimelineTree {
         line: &TimelineInfo,
         stored: &mut BTreeMap<String, StoredBranch>,
     ) -> Result<()> {
-        let mut recorded: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for id in Self::stored_descendants(&line.id, stored) {
             let parent = stored[&id]
                 .info
                 .parent
                 .clone()
                 .expect("a stored descendant has a parent");
-            if !recorded.contains_key(&parent) {
-                let head = stored[&parent].sequence;
-                recorded.insert(parent.clone(), self.stored_ends(&parent, head).await?);
-            }
-            if recorded[&parent].contains(&id) {
+            if matches!(
+                self.child_terminal(&parent, &id, stored[&parent].sequence)
+                    .await?,
+                Some(EventKind::BranchEnded(_))
+            ) {
                 continue;
             }
             let head = stored[&id].sequence;
@@ -840,49 +819,7 @@ impl TimelineTree {
                     .context = Some(context.clone());
                 let (opening, mut first) = match opening {
                     Opening::Start { start, first } => (EventKind::BranchStart(start), first),
-                    Opening::Resume { head, lines } => {
-                        let mut facts = LineFacts::default();
-                        let mut after = None;
-                        loop {
-                            let reply = tokio::select! {
-                                result = tokio::time::timeout(owner.factory.startup_timeout(), context.timeline().query(TimelineQuery {
-                                    scope: TimelineQueryScope::Branch, from: None, through: Some(head), include_publishing: false,
-                                    query: QuerySpec {
-                                        filter: Some(QueryFilter::In { value: QueryOperand::Field { path: "kind".into() }, values: ["branch/create-failed", "branch/create", "branch/ended"].map(Into::into).to_vec() }),
-                                        select: QuerySelect::Fields { fields: ["kind", "data.branch", "data.createEvent", "data.source", "data.endEvent"].map(String::from).to_vec() },
-                                        group_by: vec![], pick: None, order_by: vec![],
-                                    },
-                                    page: Some(QueryPage { limit: NonZeroU64::new(LINE_PAGE).unwrap(), after }),
-                                })) => result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
-                                _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
-                            };
-                            let QueryOutput::Rows { rows } = reply.result else { unreachable!("field selection returns rows") };
-                            for row in rows {
-                                let [QueryValue::Value { value: serde_json::Value::String(kind) },
-                                    QueryValue::Value { value: serde_json::Value::String(branch) }, create, source, end] = row.values.as_slice()
-                                else { unreachable!("line facts name kind and branch") };
-                                match kind.as_str() {
-                                    "branch/create-failed" => {
-                                        let QueryValue::Value { value: create } = create else { unreachable!("creation failure names its creation") };
-                                        facts.failed_creates.insert(create.as_u64().expect("creation sequence is unsigned"));
-                                    }
-                                    "branch/create" => {
-                                        let QueryValue::Value { value: source } = source else { unreachable!("creation has a source") };
-                                        facts.sources.insert(branch.clone(), serde_json::from_value(source.clone()).expect("source follows its event contract"));
-                                    }
-                                    "branch/ended" => {
-                                        let QueryValue::Value { value: end } = end else { unreachable!("ended line has an end sequence") };
-                                        facts.ended.insert(branch.clone(), end.as_u64().expect("end sequence is unsigned"));
-                                    }
-                                    _ => unreachable!("the read selects the line facts"),
-                                }
-                            }
-                            after = reply.next;
-                            if after.is_none() { break; }
-                        }
-                        let _ = lines.send(facts);
-                        (EventKind::BranchResume(BranchResumeData {}), None)
-                    }
+                    Opening::Resume => (EventKind::BranchResume(BranchResumeData {}), None),
                 };
                 if let (Some(parent), Some((timeline, cut)), Some(input)) =
                     (&info.parent, &validate, &mut first)
@@ -1887,9 +1824,6 @@ impl TimelineTreeControl for TimelineTree {
                 .into_iter()
                 .map(|branch| (branch.info.id.clone(), branch))
                 .collect();
-            let mut failed_creates = BTreeSet::new();
-            let mut sources = BTreeMap::new();
-            let mut recorded_ends: BTreeMap<String, u64> = BTreeMap::new();
             let mut inactive = BTreeSet::new();
             while !remaining.is_empty() {
                 let stored = remaining
@@ -1906,14 +1840,26 @@ impl TimelineTreeControl for TimelineTree {
                         )
                     })?;
                 let mut next: TimelineInfo = stored.info.into();
-                next.source = sources.get(&next.id).cloned();
-                if recorded_ends.contains_key(&next.id) {
+                let terminal = if let Some(parent) = &next.parent {
+                    let head = self.head(parent).unwrap_or(0);
+                    next.source = self
+                        .creation_source(
+                            parent,
+                            &next.id,
+                            next.create_anchor.expect("child creation position"),
+                        )
+                        .await?;
+                    self.child_terminal(parent, &next.id, head).await?
+                } else {
+                    None
+                };
+                if let Some(EventKind::BranchEnded(ended)) = &terminal {
                     self.state.lock().unwrap().ended.insert(
                         next.id.clone(),
                         EndedLine {
                             head: stored.sequence,
                             info: next.clone(),
-                            end_event: recorded_ends.get(&next.id).copied(),
+                            end_event: Some(ended.end_event),
                         },
                     );
                     remaining.remove(&next.id);
@@ -1922,10 +1868,7 @@ impl TimelineTreeControl for TimelineTree {
                 }
                 if next.parent.as_ref().is_some_and(|parent| {
                     inactive.contains(parent)
-                        || failed_creates.contains(&(
-                            parent.clone(),
-                            next.create_anchor.expect("validated creation anchor"),
-                        ))
+                        || matches!(terminal, Some(EventKind::BranchCreateFailed(_)))
                 }) {
                     let ended_parent = next
                         .parent
@@ -1993,52 +1936,30 @@ impl TimelineTreeControl for TimelineTree {
                         let parent_context = self.owned_context(parent).expect("restored parent");
                         let timeline = parent_context.timeline();
                         let cut = next.branch_point.expect("validated child cut");
-                        let boundary = crate::history::validate_context_boundary_at(timeline, cut)
-                            .await
-                            .map_err(|error| {
-                                AgentError::Storage(format!(
-                                    "branch {} cannot be restored: {error}",
-                                    next.id
-                                ))
-                            })?;
-                        boundary.map_err(AgentError::Storage)?;
                         let mut ancestors = timeline.ancestors();
                         ancestors.push((parent.clone(), cut));
                         ancestors
                     }
                     None => vec![],
                 };
-                let (ready, reported) = {
+                let ready = {
                     let mut state = self.state.lock().unwrap();
                     let ready = self.reserve(&mut state, next.clone(), IdleNotice::Steer)?;
-                    let (opening, reported) = if next.parent.is_none() && stored.sequence == 0 {
-                        let start = BranchStartData {
-                            parent: None,
-                            create_event: None,
-                        };
-                        (Opening::Start { start, first: None }, None)
+                    let opening = if next.parent.is_none() && stored.sequence == 0 {
+                        Opening::Start {
+                            start: BranchStartData {
+                                parent: None,
+                                create_event: None,
+                            },
+                            first: None,
+                        }
                     } else {
-                        let (lines, reported) = oneshot::channel();
-                        let head = stored.sequence;
-                        (Opening::Resume { head, lines }, Some(reported))
+                        Opening::Resume
                     };
                     self.launch(&mut state, next.id.clone(), ancestors, None, opening);
-                    (ready, reported)
+                    ready
                 };
                 Self::await_branch(ready).await?;
-                if let Some(reported) = reported {
-                    let facts = reported
-                        .await
-                        .expect("a resumed branch reports its own lines before it is published");
-                    failed_creates.extend(
-                        facts
-                            .failed_creates
-                            .into_iter()
-                            .map(|create| (next.id.clone(), create)),
-                    );
-                    sources.extend(facts.sources);
-                    recorded_ends.extend(facts.ended);
-                }
                 remaining.remove(&next.id);
             }
             Ok(())
@@ -2373,6 +2294,7 @@ enum Decision {
 /// BranchLine's fold of its own line's facts.
 #[derive(Default)]
 struct LineView {
+    live_turn: Option<String>,
     role: Option<LineRole>,
     parent: Option<String>,
     idle_notice: IdleNotice,
@@ -2485,6 +2407,7 @@ pub struct BranchLinePlugin {
     dispatcher: Key<Dispatcher>,
     identity: Key<TimelineIdentity>,
     lifecycle: Key<BranchLifecycle>,
+    session: Key<dim_agent_runtime::SessionLifecycle>,
     tree: Key<TreeCommands>,
     guide: Key<GuideEntries>,
     config: BranchToolConfig,
@@ -2502,6 +2425,7 @@ impl BranchLinePlugin {
             dispatcher: names.key()?,
             identity: names.key()?,
             lifecycle: names.key()?,
+            session: names.key()?,
             tree: names.key()?,
             guide: names.key()?,
             config,
@@ -2518,6 +2442,7 @@ impl DynPlugin for BranchLinePlugin {
             self.dispatcher.erase(),
             self.identity.erase(),
             self.lifecycle.erase(),
+            self.session.erase(),
             self.tree.erase(),
             self.guide.erase(),
         ]
@@ -2528,6 +2453,7 @@ impl DynPlugin for BranchLinePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let identity = ctx.require_at(&self.identity)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
+            let session = ctx.require_at(&self.session)?;
             let tree = ctx.require_at(&self.tree)?;
             let guide = ctx.require_at(&self.guide)?;
             let scope = GuideScope::Branch(identity.branch_id.clone());
@@ -2559,7 +2485,6 @@ impl DynPlugin for BranchLinePlugin {
                 stop: CancellationToken::new(),
             });
             let consumer = line.clone();
-            let read = line.clone();
             let read_timeline = timeline.clone();
             dispatcher
                 .consume(
@@ -2575,6 +2500,7 @@ impl DynPlugin for BranchLinePlugin {
                         "input/consumed",
                         "input/deleted",
                         "stop/interrupt",
+                        "turn/start",
                         "turn/end",
                         "step/tool-use",
                         "step/tool-result",
@@ -2582,9 +2508,8 @@ impl DynPlugin for BranchLinePlugin {
                     .map(String::from)
                     .to_vec(),
                     Arc::new(move || {
-                        let read = read.clone();
                         let timeline = read_timeline.clone();
-                        Box::pin(async move { read.rebuild(&timeline).await })
+                        Box::pin(async move { Ok(timeline.committed()) })
                     }),
                     Arc::new(move |event| {
                         let consumer = consumer.clone();
@@ -2604,6 +2529,9 @@ impl DynPlugin for BranchLinePlugin {
                 tokio::select! {
                     _ = writer.stop.cancelled() => return,
                     active = phase.activated() => if !active { return },
+                }
+                if !session.activated().await {
+                    return;
                 }
                 writer.run().await;
             });
@@ -2630,288 +2558,326 @@ pub struct BranchLine {
     stop: CancellationToken,
 }
 impl BranchLine {
-    async fn rebuild(&self, timeline: &Timeline) -> Result<u64> {
-        let through = timeline.committed();
-        let resolved = self.resolved();
-        let mut view = LineView::default();
-        if let Some((role, parent)) = resolved {
-            view.role = Some(role);
-            view.parent = parent;
-        }
-        let mut after = None;
-        loop {
-            let reply = timeline
-                .query(TimelineQuery {
+    async fn block(&self, key: &str) -> Result<Option<(String, String, bool)>> {
+        let reply = self
+            .tree
+            .query(
+                self.own.clone(),
+                TimelineQuery {
                     scope: TimelineQueryScope::Branch,
                     from: None,
-                    through: Some(through),
+                    through: self.tree.head(&self.own),
                     include_publishing: true,
                     query: QuerySpec {
-                        filter: Some(QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: [
-                                "branch/create",
-                                "branch/create-failed",
-                                "branch/ended",
-                                "branch/end",
-                                "input/message",
-                                "input/applied",
-                                "input/consumed",
-                                "input/deleted",
-                                "stop/interrupt",
-                                "step/tool-use",
-                                "step/tool-result",
-                            ]
-                            .map(Into::into)
-                            .to_vec(),
+                        filter: Some(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["input/message".into()],
+                                },
+                                QueryFilter::TextCandidate {
+                                    field: "data".into(),
+                                    partition_by: vec![],
+                                    terms: vec!["branch".into()],
+                                },
+                                QueryFilter::Any {
+                                    field: "data.blocks".into(),
+                                    condition: Box::new(QueryFilter::In {
+                                        value: QueryOperand::Element { path: "key".into() },
+                                        values: vec![key.into()],
+                                    }),
+                                },
+                            ],
                         }),
                         select: QuerySelect::Fields {
                             fields: [
-                                "kind",
                                 "id",
-                                "position.sequence",
-                                "data.branch",
-                                "data.source",
-                                "data.prompt",
-                                "data.mode",
-                                "data.user.content[].type",
-                                "data.blocks[].text",
                                 "data.blocks[].key",
+                                "data.blocks[].text",
                                 "data.blocks[].retire",
-                                "data.input_id",
-                                "data.turn_id",
-                                "data.call.id",
-                                "data.call.name",
-                                "data.call.input.action",
-                                "data.call.input.mode",
-                                "data.call.input.to",
-                                "data.call.input.branch",
-                                "data.results[].call_id",
-                                "data.results[].result.isError",
-                                "data.results[].result.structuredContent.nextCursor",
                             ]
                             .map(String::from)
                             .to_vec(),
                         },
                         group_by: vec![],
-                        pick: None,
+                        pick: Some(QueryPick::Last),
                         order_by: vec![],
                     },
                     page: Some(QueryPage {
-                        limit: NonZeroU64::new(256).unwrap(),
-                        after,
+                        limit: NonZeroU64::MIN,
+                        after: None,
                     }),
-                })
-                .await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("field selection returns rows")
-            };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: serde_json::Value::String(kind),
-                    },
-                    QueryValue::Value {
-                        value: serde_json::Value::String(id),
-                    },
-                    QueryValue::Value { value: sequence },
-                    branch,
-                    source,
-                    prompt,
-                    mode,
-                    user,
-                    texts,
-                    keys,
-                    retires,
-                    input_id,
-                    turn_id,
-                    call_id,
-                    call_name,
-                    action,
-                    call_mode,
-                    to,
-                    target,
-                    result_ids,
-                    errors,
-                    cursors,
-                ] = row.values.as_slice()
+                },
+            )
+            .await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("branch block fields")
+        };
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let [
+            QueryValue::Value {
+                value: serde_json::Value::String(id),
+            },
+            QueryValue::Elements { values: keys },
+            QueryValue::Elements { values: texts },
+            QueryValue::Elements { values: retires },
+        ] = row.values.as_slice()
+        else {
+            unreachable!("branch block projections")
+        };
+        for ((found, text), retire) in keys.iter().zip(texts).zip(retires).rev() {
+            if matches!(found, QueryValue::Value { value: serde_json::Value::String(found) } if found == key)
+            {
+                let QueryValue::Value {
+                    value: serde_json::Value::String(text),
+                } = text
                 else {
-                    unreachable!("event has kind, id and sequence")
+                    unreachable!("raw block text")
                 };
-                let sequence = sequence
-                    .as_u64()
-                    .expect("event sequence is an unsigned integer");
-                match kind.as_str() {
-                    "branch/create" => {
-                        let (
-                            QueryValue::Value {
-                                value: serde_json::Value::String(branch),
-                            },
-                            QueryValue::Value { value: source },
-                            QueryValue::Value {
-                                value: serde_json::Value::String(prompt),
-                            },
-                        ) = (branch, source, prompt)
-                        else {
-                            unreachable!("branch create has branch, source and prompt")
-                        };
-                        view.children.insert(
-                            branch.clone(),
-                            Child {
-                                source: serde_json::from_value(source.clone())
-                                    .expect("branch source follows its event contract"),
-                                purpose: first_line(prompt),
-                                opened: sequence,
-                                failed: false,
-                                ended: false,
-                            },
-                        );
-                    }
-                    "branch/create-failed" | "branch/ended" => {
-                        let QueryValue::Value {
-                            value: serde_json::Value::String(branch),
-                        } = branch
-                        else {
-                            unreachable!("branch terminal fact names its branch")
-                        };
-                        if let Some(child) = view.children.get_mut(branch) {
-                            if kind == "branch/ended" {
-                                child.ended = true;
-                            } else {
-                                child.failed = true;
-                            }
+                return Ok(Some((
+                    id.clone(),
+                    text.clone(),
+                    matches!(
+                        retire,
+                        QueryValue::Value {
+                            value: serde_json::Value::Bool(true)
                         }
-                    }
-                    "branch/end" => view.ending = true,
-                    "input/message" => {
-                        let mode = match mode {
-                            QueryValue::Value { value } => serde_json::from_value(value.clone())
-                                .expect("input mode follows its event contract"),
-                            QueryValue::Missing if matches!(user, QueryValue::Missing) => {
-                                InputMode::Append
-                            }
-                            QueryValue::Missing => InputMode::Queue,
-                            _ => unreachable!("input mode is a scalar"),
-                        };
-                        view.held.insert(id.clone(), mode);
-                        if let QueryValue::Elements { values: texts } = texts {
-                            let (
-                                QueryValue::Elements { values: keys },
-                                QueryValue::Elements { values: retires },
-                            ) = (keys, retires)
-                            else {
-                                unreachable!("block projections retain array positions")
-                            };
-                            for ((text, key), retire) in texts.iter().zip(keys).zip(retires) {
-                                let QueryValue::Value {
-                                    value: serde_json::Value::String(key),
-                                } = key
-                                else {
-                                    continue;
-                                };
-                                let QueryValue::Value {
-                                    value: serde_json::Value::String(text),
-                                } = text
-                                else {
-                                    unreachable!("raw block has text")
-                                };
-                                let retire = matches!(
-                                    retire,
-                                    QueryValue::Value {
-                                        value: serde_json::Value::Bool(true)
-                                    }
-                                );
-                                view.input_block(id, text, key, retire);
-                            }
-                        }
-                    }
-                    "input/applied" | "input/consumed" | "input/deleted" => {
-                        let QueryValue::Value {
-                            value: serde_json::Value::String(input),
-                        } = input_id
-                        else {
-                            unreachable!("input decision names its input")
-                        };
-                        if kind == "input/applied" {
-                            view.applied.insert(input.clone(), sequence);
-                        } else {
-                            view.release(input);
-                        }
-                    }
-                    "stop/interrupt" => {
-                        view.interrupt(sequence);
-                    }
-                    "step/tool-use" => {
-                        if !matches!(call_name, QueryValue::Value { value: serde_json::Value::String(name) } if name == "branch")
-                        {
-                            continue;
-                        }
-                        let (
-                            QueryValue::Value {
-                                value: serde_json::Value::String(turn),
-                            },
-                            QueryValue::Value {
-                                value: serde_json::Value::String(call),
-                            },
-                        ) = (turn_id, call_id)
-                        else {
-                            unreachable!("tool use names its turn and call")
-                        };
-                        if matches!(action, QueryValue::Value { value: serde_json::Value::String(action) } if action == "message")
-                            && matches!(call_mode, QueryValue::Value { value: serde_json::Value::String(mode) } if mode == "steer")
-                            && matches!(to, QueryValue::Value { value: serde_json::Value::String(to) } if Some(to) == view.parent.as_ref())
-                        {
-                            view.steering = Some((turn.clone(), call.clone()));
-                        }
-                        if matches!(action, QueryValue::Value { value: serde_json::Value::String(action) } if action == "read")
-                            && let QueryValue::Value {
-                                value: serde_json::Value::String(target),
-                            } = target
-                        {
-                            view.reads.insert(call.clone(), target.clone());
-                        }
-                    }
-                    "step/tool-result" => {
-                        let (
-                            QueryValue::Elements { values: ids },
-                            QueryValue::Elements { values: errors },
-                            QueryValue::Elements { values: cursors },
-                        ) = (result_ids, errors, cursors)
-                        else {
-                            unreachable!("tool result projections retain array positions")
-                        };
-                        for ((id, error), cursor) in ids.iter().zip(errors).zip(cursors) {
-                            let QueryValue::Value {
-                                value: serde_json::Value::String(id),
-                            } = id
-                            else {
-                                unreachable!("tool result has a call id")
-                            };
-                            let error = matches!(
-                                error,
-                                QueryValue::Value {
-                                    value: serde_json::Value::Bool(true)
-                                }
-                            );
-                            let next = match cursor {
-                                QueryValue::Value { value } => value.as_u64(),
-                                _ => None,
-                            };
-                            view.tool_result(id, error, next);
-                        }
-                    }
-                    _ => unreachable!("rebuild selects its own event kinds"),
-                }
-            }
-            after = reply.next;
-            if after.is_none() {
-                break;
+                    ),
+                )));
             }
         }
-        *self.view.lock().unwrap() = view;
-        Ok(through)
+        unreachable!("selected branch block")
+    }
+    async fn parent_held(&self, id: &str) -> Result<bool> {
+        let mut query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: self.tree.head(&self.own),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::And {
+                    conditions: vec![
+                        QueryFilter::In {
+                            value: QueryOperand::Field { path: "id".into() },
+                            values: vec![id.into()],
+                        },
+                        QueryFilter::In {
+                            value: QueryOperand::Field {
+                                path: "kind".into(),
+                            },
+                            values: vec!["input/message".into()],
+                        },
+                        QueryFilter::Not {
+                            condition: Box::new(QueryFilter::Exists {
+                                condition: Box::new(QueryFilter::And {
+                                    conditions: vec![
+                                        QueryFilter::In {
+                                            value: QueryOperand::Field {
+                                                path: "kind".into(),
+                                            },
+                                            values: vec![
+                                                "input/consumed".into(),
+                                                "input/deleted".into(),
+                                            ],
+                                        },
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field {
+                                                path: "data.input_id".into(),
+                                            },
+                                            comparison: QueryComparison::Eq,
+                                            right: QueryOperand::Outer { path: "id".into() },
+                                        },
+                                    ],
+                                }),
+                            }),
+                        },
+                    ],
+                }),
+                select: QuerySelect::Exists,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: None,
+        };
+        let QueryOutput::Exists { exists } = self
+            .tree
+            .query(self.own.clone(), query.clone())
+            .await?
+            .result
+        else {
+            unreachable!("parent input ownership")
+        };
+        if !exists {
+            return Ok(false);
+        }
+        query.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["input/applied".into()],
+                },
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "data.input_id".into(),
+                    },
+                    values: vec![id.into()],
+                },
+            ],
+        });
+        query.query.select = QuerySelect::Fields {
+            fields: vec!["position.sequence".into()],
+        };
+        query.query.pick = Some(QueryPick::Last);
+        query.page = Some(QueryPage {
+            limit: NonZeroU64::MIN,
+            after: None,
+        });
+        let QueryOutput::Rows { rows } = self
+            .tree
+            .query(self.own.clone(), query.clone())
+            .await?
+            .result
+        else {
+            unreachable!("parent handover")
+        };
+        let Some(row) = rows.first() else {
+            return Ok(true);
+        };
+        let [QueryValue::Value { value: applied }] = row.values.as_slice() else {
+            unreachable!("handover position")
+        };
+        let applied = applied.as_u64().expect("handover sequence");
+        query.from = Some(TimelinePosition {
+            branch_id: self.own.clone(),
+            sequence: applied,
+        });
+        query.query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec!["stop/interrupt".into()],
+        });
+        query.query.select = QuerySelect::Exists;
+        query.query.pick = None;
+        query.page = None;
+        let QueryOutput::Exists { exists } = self.tree.query(self.own.clone(), query).await?.result
+        else {
+            unreachable!("handover interruption")
+        };
+        Ok(!exists)
+    }
+    async fn roster_state(&self) -> Result<()> {
+        let children = self
+            .tree
+            .list()
+            .into_iter()
+            .filter(|info| {
+                info.parent.as_deref() == Some(self.own.as_str())
+                    && matches!(info.source, Some(BranchSource::Tool { .. }))
+            })
+            .collect::<Vec<_>>();
+        if children.is_empty() && self.view.lock().unwrap().children.is_empty() {
+            let reply = self
+                .tree
+                .query(
+                    self.own.clone(),
+                    TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from: None,
+                        through: self.tree.head(&self.own),
+                        include_publishing: true,
+                        query: QuerySpec {
+                            filter: Some(QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: vec!["branch/create".into()],
+                            }),
+                            select: QuerySelect::Exists,
+                            group_by: vec![],
+                            pick: None,
+                            order_by: vec![],
+                        },
+                        page: None,
+                    },
+                )
+                .await?;
+            if matches!(reply.result, QueryOutput::Exists { exists: false }) {
+                return Ok(());
+            }
+        }
+        for child in children {
+            if self.view.lock().unwrap().children.contains_key(&child.id) {
+                continue;
+            }
+            let at = child.create_anchor.expect("child creation position");
+            let reply = self
+                .tree
+                .query(
+                    self.own.clone(),
+                    TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from: Some(TimelinePosition {
+                            branch_id: self.own.clone(),
+                            sequence: at,
+                        }),
+                        through: Some(at),
+                        include_publishing: true,
+                        query: QuerySpec {
+                            filter: None,
+                            select: QuerySelect::Fields {
+                                fields: vec!["data.prompt".into()],
+                            },
+                            group_by: vec![],
+                            pick: None,
+                            order_by: vec![],
+                        },
+                        page: Some(QueryPage {
+                            limit: NonZeroU64::MIN,
+                            after: None,
+                        }),
+                    },
+                )
+                .await?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("child purpose")
+            };
+            let [
+                QueryValue::Value {
+                    value: serde_json::Value::String(prompt),
+                },
+            ] = rows[0].values.as_slice()
+            else {
+                unreachable!("creation prompt")
+            };
+            self.view
+                .lock()
+                .unwrap()
+                .children
+                .entry(child.id)
+                .or_insert(Child {
+                    source: child.source.expect("tool child source"),
+                    purpose: first_line(prompt),
+                    opened: at,
+                    failed: false,
+                    ended: false,
+                });
+        }
+        if self.view.lock().unwrap().roster.is_none() {
+            let observed = self.block(&line_key()).await?;
+            let mut view = self.view.lock().unwrap();
+            if view.roster.is_none() {
+                view.roster = observed.map(|(_, text, retire)| (text, retire));
+            }
+        }
+        Ok(())
     }
     /// Folds one live committed event and queues its decision.
     fn consume(&self, event: &AgentEvent) {
@@ -3008,7 +2974,14 @@ impl BranchLine {
                 }
                 None
             }
+            EventKind::TurnStart(data) => {
+                view.live_turn = Some(data.turn_id.clone());
+                None
+            }
             EventKind::TurnEnd(data) => {
+                if view.live_turn.take().as_deref() != Some(data.turn_id.as_str()) {
+                    return None;
+                }
                 if view.idle_notice == IdleNotice::None
                     || view.held.values().any(|mode| *mode != InputMode::Append)
                 {
@@ -3032,8 +3005,161 @@ impl BranchLine {
         self.view.lock().unwrap().ending
     }
     /// The `nextCursor` of the line's latest successful read of `target`.
-    fn cursor(&self, target: &str) -> Option<u64> {
-        self.view.lock().unwrap().cursors.get(target).copied()
+    async fn cursor(&self, target: &str) -> Result<Option<u64>> {
+        if let Some(cursor) = self.view.lock().unwrap().cursors.get(target).copied() {
+            return Ok(Some(cursor));
+        }
+        let equal = |path: &str, value: serde_json::Value| QueryFilter::Compare {
+            left: QueryOperand::Field { path: path.into() },
+            comparison: QueryComparison::Eq,
+            right: QueryOperand::Value { value },
+        };
+        let success = QueryFilter::Exists {
+            condition: Box::new(QueryFilter::And {
+                conditions: vec![
+                    equal("kind", "step/tool-result".into()),
+                    QueryFilter::Compare {
+                        left: QueryOperand::Field {
+                            path: "data.request_id".into(),
+                        },
+                        comparison: QueryComparison::Eq,
+                        right: QueryOperand::Outer {
+                            path: "data.request_id".into(),
+                        },
+                    },
+                    QueryFilter::Any {
+                        field: "data.results".into(),
+                        condition: Box::new(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::Compare {
+                                    left: QueryOperand::Element {
+                                        path: "call_id".into(),
+                                    },
+                                    comparison: QueryComparison::Eq,
+                                    right: QueryOperand::Outer {
+                                        path: "data.call.id".into(),
+                                    },
+                                },
+                                QueryFilter::Not {
+                                    condition: Box::new(QueryFilter::Compare {
+                                        left: QueryOperand::Element {
+                                            path: "result.isError".into(),
+                                        },
+                                        comparison: QueryComparison::Eq,
+                                        right: QueryOperand::Value { value: true.into() },
+                                    }),
+                                },
+                                QueryFilter::Present {
+                                    value: QueryOperand::Element {
+                                        path: "result.structuredContent.nextCursor".into(),
+                                    },
+                                },
+                            ],
+                        }),
+                    },
+                ],
+            }),
+        };
+        let mut query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: self.tree.head(&self.own),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::And {
+                    conditions: vec![
+                        equal("kind", "step/tool-use".into()),
+                        QueryFilter::TextCandidate {
+                            field: "data".into(),
+                            partition_by: vec![],
+                            terms: vec!["branch".into(), target.into()],
+                        },
+                        equal("data.call.name", "branch".into()),
+                        equal("data.call.input.action", "read".into()),
+                        equal("data.call.input.branch", target.into()),
+                        success,
+                    ],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data.request_id".into(), "data.call.id".into()],
+                },
+                group_by: vec![],
+                pick: Some(QueryPick::Last),
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let reply = self.tree.query(self.own.clone(), query.clone()).await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("read call identity")
+        };
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let [
+            QueryValue::Value { value: request },
+            QueryValue::Value { value: call },
+        ] = <[_; 2]>::try_from(row.values).unwrap()
+        else {
+            unreachable!("request and call identity")
+        };
+        query.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                equal("kind", "step/tool-result".into()),
+                equal("data.request_id", request),
+                QueryFilter::Any {
+                    field: "data.results".into(),
+                    condition: Box::new(QueryFilter::Compare {
+                        left: QueryOperand::Element {
+                            path: "call_id".into(),
+                        },
+                        comparison: QueryComparison::Eq,
+                        right: QueryOperand::Value {
+                            value: call.clone(),
+                        },
+                    }),
+                },
+            ],
+        });
+        query.query.select = QuerySelect::Fields {
+            fields: vec![
+                "data.results[].call_id".into(),
+                "data.results[].result.structuredContent.nextCursor".into(),
+            ],
+        };
+        let reply = self.tree.query(self.own.clone(), query).await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("read cursor")
+        };
+        let row = rows.first().expect("successful read has a result");
+        let [
+            QueryValue::Elements { values: ids },
+            QueryValue::Elements { values: cursors },
+        ] = row.values.as_slice()
+        else {
+            unreachable!("result projections")
+        };
+        let cursor = ids.iter().zip(cursors).find_map(|(id, cursor)| {
+            if matches!(id, QueryValue::Value { value } if value == &call) {
+                let QueryValue::Value { value } = cursor else {
+                    return None;
+                };
+                value.as_u64()
+            } else {
+                None
+            }
+        });
+        if let Some(cursor) = cursor {
+            self.view
+                .lock()
+                .unwrap()
+                .cursors
+                .insert(target.into(), cursor);
+        }
+        Ok(cursor)
     }
     /// The sequence this line was cut from its parent at; 0 for main.
     fn branch_point(&self) -> u64 {
@@ -3128,6 +3254,7 @@ impl BranchLine {
                 if role != LineRole::Main {
                     return Ok(());
                 }
+                self.roster_state().await?;
                 let (text, retired) = self.roster();
                 let observed = self.view.lock().unwrap().roster.clone();
                 let settled = observed.as_ref() == Some(&(text.clone(), retired))
@@ -3141,6 +3268,7 @@ impl BranchLine {
                 if role != LineRole::Main {
                     return Ok(());
                 }
+                self.roster_state().await?;
                 let (text, retired) = self.roster();
                 self.write_roster(text, retired, Some(branch)).await
             }
@@ -3148,9 +3276,115 @@ impl BranchLine {
                 let Some(parent) = parent.filter(|_| role == LineRole::Tool) else {
                     return Ok(());
                 };
+                let needs_identity = self.view.lock().unwrap().roster.is_none();
+                if needs_identity && let Some((id, text, retire)) = self.block(&line_key()).await? {
+                    self.view
+                        .lock()
+                        .unwrap()
+                        .input_block(&id, &text, &line_key(), retire);
+                }
+                let query = TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: None,
+                    through: self.tree.head(&self.own),
+                    include_publishing: true,
+                    query: QuerySpec {
+                        filter: Some(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["input/message".into()],
+                                },
+                                QueryFilter::Not {
+                                    condition: Box::new(QueryFilter::Present {
+                                        value: QueryOperand::Field {
+                                            path: "data.handover".into(),
+                                        },
+                                    }),
+                                },
+                                QueryFilter::Not {
+                                    condition: Box::new(QueryFilter::Exists {
+                                        condition: Box::new(QueryFilter::And {
+                                            conditions: vec![
+                                                QueryFilter::In {
+                                                    value: QueryOperand::Field {
+                                                        path: "kind".into(),
+                                                    },
+                                                    values: vec![
+                                                        "input/consumed".into(),
+                                                        "input/deleted".into(),
+                                                    ],
+                                                },
+                                                QueryFilter::Compare {
+                                                    left: QueryOperand::Field {
+                                                        path: "data.input_id".into(),
+                                                    },
+                                                    comparison: QueryComparison::Eq,
+                                                    right: QueryOperand::Outer {
+                                                        path: "id".into(),
+                                                    },
+                                                },
+                                            ],
+                                        }),
+                                    }),
+                                },
+                                QueryFilter::Or {
+                                    conditions: vec![
+                                        QueryFilter::In {
+                                            value: QueryOperand::Field {
+                                                path: "data.mode".into(),
+                                            },
+                                            values: vec!["queue".into(), "steer".into()],
+                                        },
+                                        QueryFilter::And {
+                                            conditions: vec![
+                                                QueryFilter::Not {
+                                                    condition: Box::new(QueryFilter::Present {
+                                                        value: QueryOperand::Field {
+                                                            path: "data.mode".into(),
+                                                        },
+                                                    }),
+                                                },
+                                                QueryFilter::Present {
+                                                    value: QueryOperand::Field {
+                                                        path: "data.user".into(),
+                                                    },
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                },
+                            ],
+                        }),
+                        select: QuerySelect::Fields {
+                            fields: vec!["id".into()],
+                        },
+                        group_by: vec![],
+                        pick: Some(QueryPick::First),
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: NonZeroU64::MIN,
+                        after: None,
+                    }),
+                };
+                let QueryOutput::Rows { rows } =
+                    self.tree.query(self.own.clone(), query).await?.result
+                else {
+                    unreachable!("current driving input")
+                };
+                if !rows.is_empty() && status == "completed" {
+                    return Ok(());
+                }
+
                 {
                     let view = self.view.lock().unwrap();
-                    if view.ending || view.steered.as_deref() == Some(turn.as_str()) {
+                    if view.idle_notice == IdleNotice::None
+                        || view.ending
+                        || view.steered.as_deref() == Some(turn.as_str())
+                    {
                         return Ok(());
                     }
                 }
@@ -3181,15 +3415,27 @@ impl BranchLine {
                 };
                 let cut = self.branch_point();
                 let opened = self.opened();
+                let needs_parent = self.view.lock().unwrap().parent_input.is_none();
+                if needs_parent && let Some((id, text, retire)) = self.block(&parent_key()).await? {
+                    self.view
+                        .lock()
+                        .unwrap()
+                        .input_block(&id, &text, &parent_key(), retire);
+                }
+                let parent_input = self.view.lock().unwrap().parent_input.clone();
+                if let Some(id) = parent_input {
+                    if self.parent_held(&id).await? {
+                        return Ok(());
+                    }
+                    self.view.lock().unwrap().release(&id);
+                }
+                let cursor = self.cursor(&parent).await?;
                 let (after, from) = {
                     let view = self.view.lock().unwrap();
                     if !parent_due(&view) || head <= view.parent_told {
                         return Ok(());
                     }
-                    (
-                        view.cursors.get(&parent).copied().unwrap_or(cut),
-                        parent_from(&view, &parent, opened),
-                    )
+                    (cursor.unwrap_or(cut), parent_from(&view, &parent, opened))
                 };
                 if !self.tree.activity_after(&parent, from, head).await? {
                     return Ok(());
@@ -3672,7 +3918,11 @@ impl BranchTool {
         let after = match input.after {
             Some(after) if own.role == LineRole::Main => after,
             Some(after) => after.max(cut),
-            None => line.cursor(&target.id).unwrap_or(cut),
+            None => line
+                .cursor(&target.id)
+                .await
+                .map_err(|error| HostError::failed(error.to_string()))?
+                .unwrap_or(cut),
         };
         let head = self
             .tree

@@ -145,6 +145,7 @@ flowchart LR
   p42 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p65
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p65
   p60 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p65
+  p33 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p65
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p65
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p65
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p65

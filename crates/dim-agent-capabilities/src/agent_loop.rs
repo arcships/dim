@@ -536,40 +536,59 @@ impl AgentLoop {
             comparison: QueryComparison::Eq,
             right: QueryOperand::Outer { path: outer.into() },
         };
+        let current = |handover| QueryFilter::And {
+            conditions: vec![
+                equal("kind", "input/message".into()),
+                if handover {
+                    QueryFilter::Present {
+                        value: QueryOperand::Field {
+                            path: "data.handover".into(),
+                        },
+                    }
+                } else {
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Present {
+                            value: QueryOperand::Field {
+                                path: "data.handover".into(),
+                            },
+                        }),
+                    }
+                },
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Exists {
+                        condition: Box::new(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["input/consumed".into(), "input/deleted".into()],
+                                },
+                                related("data.input_id", "id"),
+                            ],
+                        }),
+                    }),
+                },
+            ],
+        };
         let mut query = TimelineQuery {
             scope: TimelineQueryScope::Branch,
             from: None,
             through: Some(through),
             include_publishing: true,
             query: QuerySpec {
-                filter: Some(QueryFilter::And {
-                    conditions: vec![
-                        equal("kind", "input/applied".into()),
-                        QueryFilter::Not {
-                            condition: Box::new(QueryFilter::Exists {
-                                condition: Box::new(QueryFilter::And {
-                                    conditions: vec![
-                                        equal("kind", "input/consumed".into()),
-                                        related("data.input_id", "data.input_id"),
-                                    ],
-                                }),
-                            }),
-                        },
-                    ],
+                filter: Some(QueryFilter::Or {
+                    conditions: vec![current(false), current(true)],
                 }),
                 select: QuerySelect::Fields {
-                    fields: vec![
-                        "data.input_id".into(),
-                        "data.mode".into(),
-                        "position.sequence".into(),
-                    ],
+                    fields: vec!["id".into()],
                 },
-                group_by: Vec::new(),
+                group_by: vec![],
                 pick: None,
-                order_by: Vec::new(),
+                order_by: vec![],
             },
             page: Some(QueryPage {
-                limit: NonZeroU64::new(256).expect("a page contains control fields"),
+                limit: NonZeroU64::new(256).unwrap(),
                 after: None,
             }),
         };
@@ -578,6 +597,45 @@ impl AgentLoop {
             let reply = self.timeline.query(query.clone()).await?;
             let QueryOutput::Rows { rows } = reply.result else {
                 unreachable!("Loop selects applied input fields")
+            };
+            let ids = rows
+                .into_iter()
+                .map(|row| {
+                    let [QueryValue::Value { value }] = <[_; 1]>::try_from(row.values).unwrap()
+                    else {
+                        unreachable!("current input identity")
+                    };
+                    value
+                })
+                .collect::<Vec<_>>();
+            let no_inputs = ids.is_empty();
+            let mut applied = query.clone();
+            applied.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    equal("kind", "input/applied".into()),
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "data.input_id".into(),
+                        },
+                        values: ids,
+                    },
+                ],
+            });
+            applied.query.select = QuerySelect::Fields {
+                fields: vec![
+                    "data.input_id".into(),
+                    "data.mode".into(),
+                    "position.sequence".into(),
+                ],
+            };
+            applied.page.as_mut().unwrap().after = None;
+            let rows = if no_inputs {
+                Vec::new()
+            } else {
+                let QueryOutput::Rows { rows } = self.timeline.query(applied).await?.result else {
+                    unreachable!("applied input fields")
+                };
+                rows
             };
             for row in rows {
                 let Ok(
@@ -616,6 +674,7 @@ impl AgentLoop {
             };
             query.page.as_mut().expect("pending inputs are paged").after = Some(next);
         }
+        pending.sort_by_key(|input| input.sequence);
         *self.pending.lock().unwrap() = pending;
         query
             .page
@@ -861,6 +920,34 @@ impl AgentLoop {
         let mut handed_over = false;
         let mut completed = Vec::<String>::new();
         if let Some(turn) = restored.as_mut() {
+            let mut latest = query.clone();
+            latest.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    equal("kind", "step/model-start".into()),
+                    equal("data.turn_id", turn.id.clone().into()),
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Present {
+                            value: QueryOperand::Field {
+                                path: "parent_call_id".into(),
+                            },
+                        }),
+                    },
+                ],
+            });
+            latest.query.select = QuerySelect::Fields {
+                fields: vec!["position.sequence".into()],
+            };
+            let QueryOutput::Rows { rows } = self.timeline.query(latest).await?.result else {
+                unreachable!("latest request position")
+            };
+            let sequence = match rows.first().and_then(|row| row.values.first()) {
+                Some(QueryValue::Value { value }) => value.as_u64().expect("request sequence"),
+                _ => through,
+            };
+            query.from = Some(TimelinePosition {
+                branch_id: self.branch.clone(),
+                sequence,
+            });
             query.query.pick = None;
             query.query.filter = Some(QueryFilter::In {
                 value: QueryOperand::Field {

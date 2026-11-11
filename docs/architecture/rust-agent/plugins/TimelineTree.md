@@ -65,11 +65,7 @@ keyed input and reads only its keys and retire flags. Candidate branches remain 
 receipts/dispatch fences and initial input acceptance succeed. Creation retains
 its fixed ancestry cut even if a waiter disappears. One opening budget requests
 cancellation; rollback and accepted host work must still settle. Cleanup closes
-the tree, cancels reservations, joins builds and closes branch contexts. Restore
-settles interrupted creates without blindly replaying external work; it reads a
-branch's failed creates while the branch opens, from the history its
-capabilities rebuild from, and settles a child's creation from its first events
-([restore-shared-read §17](../../../design/appserver/restore-shared-read.md#17-timelinetrees-restore-facts)). Tool-call
+the tree, cancels reservations, joins builds and closes branch contexts. Restore settles interrupted creates without replaying external work. For each stored child it reads the creation source at the known anchor and the terminal matching that child's identity. It does not collect all parent lifecycle facts. Accepted ancestry cuts use the directory directly; only a new cut is checked against context during creation. Tool-call
 ancestry cuts cannot split required result relationships. Client detach is not
 Session close, and closing is not deletion of persisted history.
 

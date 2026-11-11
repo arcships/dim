@@ -494,7 +494,10 @@ Session from `start`, before `exec/started`, until its supervisor has appended
 `exec/ended`; that end keeps the branch busy until its wake is posted. A start
 that gets no hold (the Session is closing) is refused as in a closing branch,
 and a refused start stops its command. Tracked tasks are joined on unload.
-Recovery pages through task lifecycle properties at one committed cutoff. It reads
+A branch with no historical exec/started skips task replay. An old generation's
+branch-close interrupt does not close the new BackgroundExec owner; its resource
+admission follows the new branch and Session lifecycle. For branches with historical
+tasks, recovery currently pages task lifecycle properties at one committed cutoff. It reads
 only tags from inputs, keeping the task directory, terminal results and outstanding
 notices; it does not collect historical input bodies or events. Ended tasks remain
 in the directory for the task APIs. Recovery reposts unreported non-cancelled ends
