@@ -411,7 +411,7 @@ empty live preview and unavailable historical captures.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `P:HostPlatform`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
-| 提供 | `S:ToolHost` |
+| 提供 | `S:ToolHost`、`S:dyn HostDispatch#toolHost` |
 | 被注入于 | `ToolRegistry` |
 <!-- /generated -->
 

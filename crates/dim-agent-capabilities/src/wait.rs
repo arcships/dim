@@ -7,7 +7,7 @@
 //! input that opened the turn comes before `turn/start`, so it never ends a
 //! wait, as TS only commits inputs of a running turn).
 use crate::{
-    host::{HostError, HostFuture, ToolExecutionContext},
+    host::{CancelledFn, HostError, HostFuture, ToolExecutionContext, call_until_cancelled},
     timeline_tree::TreeCommands,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::background::{WAKE_TASK_TAG, tagged},
@@ -53,7 +53,12 @@ enum Arrival {
     Steer,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    tag = "reason",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum WaitResult {
     Notification {
         task_ids: Vec<String>,
@@ -71,7 +76,8 @@ pub enum WaitResult {
 }
 
 /// Another `wait` is running on this branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("wait is already running in this session.")]
 pub struct AlreadyWaiting;
 
 #[derive(Default)]
@@ -87,7 +93,36 @@ pub struct Wait {
     arrived: Notify,
 }
 
+#[rutis::service]
 impl Wait {
+    /// Waits for the next matching arrival, the timeout or the caller's
+    /// cancellation, as the `wait` tool's call does.
+    ///
+    /// The caller cancels the call with `cancelled`; the wait then ends as
+    /// [`WaitResult::Interrupted`] and that answer stands. A caller that
+    /// goes away without cancelling (its row unloads or the process ends)
+    /// drops the call: no answer is produced and the branch's single wait
+    /// slot is released, so the next `wait` on this branch starts.
+    pub async fn wait(
+        &self,
+        task_id: Option<String>,
+        timeout_ms: u64,
+        cancelled: CancelledFn,
+    ) -> Result<WaitResult, AlreadyWaiting> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.arrival(
+                task_id.as_deref(),
+                Duration::from_millis(timeout_ms),
+                cancel,
+            ),
+        )
+        .await
+    }
+
     /// The last `turn/start` or `turn/end` of this branch decides whether a
     /// turn is open.
     async fn rebuild(&self, timeline: &Timeline) -> dim_agent_runtime::Result<u64> {
@@ -170,7 +205,7 @@ impl Wait {
     }
 
     /// Waits for the next matching arrival, the timeout or `cancel`.
-    pub async fn wait(
+    async fn arrival(
         &self,
         task_id: Option<&str>,
         timeout: Duration,
@@ -291,40 +326,27 @@ impl WaitTool {
                 error => HostError::failed(error.to_string()),
             })?;
         let Ok(result) = wait
-            .wait(
+            .arrival(
                 task_id.as_deref(),
                 Duration::from_millis(timeout_ms),
                 cancel,
             )
             .await
         else {
-            return Ok(ToolResult::error(
-                "wait is already running in this session.",
-            ));
+            return Ok(ToolResult::error(AlreadyWaiting.to_string()));
         };
-        let (content, structured) = match &result {
-            WaitResult::Notification {
-                task_ids,
-                waited_ms,
-            } => (
-                format!("wait ended: notification ({})", task_ids.join(", ")),
-                json!({"reason": "notification", "taskIds": task_ids, "waitedMs": waited_ms}),
-            ),
-            WaitResult::UserSteer { waited_ms } => (
-                "wait ended: steer".into(),
-                json!({"reason": "user_steer", "waitedMs": waited_ms}),
-            ),
-            WaitResult::Interrupted { waited_ms } => (
-                "wait ended: interrupted".into(),
-                json!({"reason": "interrupted", "waitedMs": waited_ms}),
-            ),
-            WaitResult::Timeout { waited_ms } => (
-                "wait ended: timeout".into(),
-                json!({"reason": "timeout", "waitedMs": waited_ms}),
-            ),
+        let content = match &result {
+            WaitResult::Notification { task_ids, .. } => {
+                format!("wait ended: notification ({})", task_ids.join(", "))
+            }
+            WaitResult::UserSteer { .. } => "wait ended: steer".into(),
+            WaitResult::Interrupted { .. } => "wait ended: interrupted".into(),
+            WaitResult::Timeout { .. } => "wait ended: timeout".into(),
         };
-        let Value::Object(structured) = structured else {
-            unreachable!("literal object")
+        let Value::Object(structured) =
+            serde_json::to_value(&result).expect("a wait result is an object")
+        else {
+            unreachable!("a wait result is an object")
         };
         Ok(ToolResult {
             structured_content: Some(structured),

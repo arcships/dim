@@ -2340,7 +2340,7 @@ impl CollaborationSession {
                 None,
             )
             .await?
-            .0
+            .withdrawal
         {
             // (W): no turn will run for the input; the settle names it.
             dim_agent_capabilities::input_queue::Withdrawal::Deleted { .. } => return Ok(()),

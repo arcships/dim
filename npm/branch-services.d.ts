@@ -11,12 +11,49 @@ export type BranchSource =
   | { kind: "tool"; turn_id: string; request_id: string; call_id: string }
   | { kind: "host"; operation_id: string }
 
-export interface TimelineInfo {
-  id: string
-  parent?: string | null
-  branch_point?: number | bigint | null
-  create_anchor?: number | bigint | null
-  source?: BranchSource | null
+export interface ApprovalCallData {
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface ApprovalRequestData {
+  approval_id: string
+  source: BranchSource
+  call: ApprovalCallData
+  reason: string
+}
+
+export type ApprovalDecision = "allow" | "deny"
+
+export interface Approval {
+  /**
+   * The committed requests no answer or cancellation ended, in request
+   * order: what the `approval` face's `pending` reads.
+   */
+  pending(): Promise<ApprovalRequestData[]>
+  /**
+   * Answers request `request_id` with `decision`: what the `approval`
+   * face's `decide` calls, and answered once the branch dispatched the
+   * answer.
+   * @throws {ApprovalRespondErrorThrown}
+   */
+  decide(requestId: string, decision: ApprovalDecision): Promise<void>
+}
+
+export interface ToolExecutionContext {
+  turnId: string
+  requestId: string
+  branchId: string
+}
+
+export interface ToolHost {
+  /**
+   * Runs one call through the host's tools as `caller` names the branch's
+   * execution. The driver is the implementation; this is the `toolHost`
+   * face ([tool contributions §2.1](../../../docs/architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)).
+   * @throws {HostErrorThrown}
+   */
+  execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>
 }
 
 export type ImageSourceType = "base64" | "url"
@@ -57,6 +94,86 @@ export interface InputMessageData {
   blocks?: InputBlock[]
   mode?: InputMode | null
   handover?: InputHandover | null
+}
+
+/** The identity of one committed input. */
+export interface InputRef {
+  inputId: string
+  sequence: number | bigint
+}
+
+/**
+ * A command to withdraw an input InputQueue still holds unapplied. It is
+ * never a fact about the input by itself: only `input/deleted` is.
+ */
+export interface InputWithdrawData {
+  input_id: string
+  /** Text for clients to show with the deleted input; no decision reads it. */
+  reason?: string | null
+}
+
+/** InputQueue's answer to one `input/withdraw`. */
+export type Withdrawal =
+  | /** The input was held: `input/deleted` at this sequence, never applied. */ { status: "deleted"; sequence: number | bigint }
+  | /** Unknown, already applied or already deleted: nothing was written. */ { status: "notHeld" }
+
+/**
+ * What one `withdraw` answers: the queue's decision, and the Steer input
+ * the same batch wrote when the caller asked for one.
+ */
+export type WithdrawReply = {
+  steer?: InputRef | null
+} & Withdrawal
+
+/**
+ * Consumes `input/message` and decides by its mode when Loop may consume
+ * it, writing `input/applied` with the mode then: steer and append inputs
+ * at once; a queue input when no turn runs or is about to start,
+ * otherwise after the turn ends, one per turn. A handover input is never
+ * released: it waits for the turn it names and is deleted when that turn
+ * ends, or on arrival when no such turn is open. Knows of turns only
+ * through `turn/start`, `turn/end` and `stop/interrupt`; Loop decides how
+ * to consume what is applied. Consumes `input/withdraw` in order and
+ * writes `input/deleted` for an input it still holds unapplied.
+ */
+export interface InputQueue {
+  /**
+   * Commits `input` on this branch through the branch's validating input
+   * entry, which accepts each submission id once, and answers with the
+   * committed event's identity: the `inputQueue` face's `submit`.
+   * @throws {AgentErrorThrown}
+   */
+  submit(input: InputMessageData): Promise<InputRef>
+  /**
+   * Withdraws `command` and answers with this queue's decision: the
+   * `inputQueue` face's `withdraw`. With `steer`, the withdrawal and that
+   * Steer input are one batch, as [`Self::withdraw_batch`] writes them.
+   * @throws {AgentErrorThrown}
+   */
+  withdraw(command: InputWithdrawData, steer?: InputMessageData | null): Promise<WithdrawReply>
+}
+
+export type Decision =
+  | { decision: "allow" }
+  | { decision: "ask"; reason: string }
+  | { decision: "deny"; reason: string }
+
+export interface Permission {
+  /**
+   * Decides `call` now, as the `permission` face's `check` does: the
+   * dispatched policy, the file facts and the command rules of the moment,
+   * with no advisor (Hooks A.6.1 asks advisors for admission only).
+   * @throws {HostErrorThrown}
+   */
+  check(call: ApprovalCallData, risk: string | null, cancelled: () => void | Promise<void>): Promise<Decision>
+}
+
+export interface TimelineInfo {
+  id: string
+  parent?: string | null
+  branch_point?: number | bigint | null
+  create_anchor?: number | bigint | null
+  source?: BranchSource | null
 }
 
 /** Which branches a query covers. */
@@ -216,6 +333,27 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   create(parent: string, at: number | bigint, options: BranchOptions, cancelled: () => void | Promise<void>): Promise<string>
+}
+
+export type WaitResult =
+  | { reason: "notification"; taskIds: string[]; waitedMs: number | bigint }
+  | { reason: "user_steer"; waitedMs: number | bigint }
+  | { reason: "timeout"; waitedMs: number | bigint }
+  | { reason: "interrupted"; waitedMs: number | bigint }
+
+export interface Wait {
+  /**
+   * Waits for the next matching arrival, the timeout or the caller's
+   * cancellation, as the `wait` tool's call does.
+   *
+   * The caller cancels the call with `cancelled`; the wait then ends as
+   * [`WaitResult::Interrupted`] and that answer stands. A caller that
+   * goes away without cancelling (its row unloads or the process ends)
+   * drops the call: no answer is produced and the branch's single wait
+   * slot is released, so the next `wait` on this branch starts.
+   * @throws {AlreadyWaitingThrown}
+   */
+  wait(taskId: string | null, timeoutMs: number | bigint, cancelled: () => void | Promise<void>): Promise<WaitResult>
 }
 
 export interface SessionConfig {
@@ -530,6 +668,15 @@ export interface UiResources {
 /** What a method returning `Err(AgentError)` throws. */
 export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
+/** What a method returning `Err(AlreadyWaiting)` throws. */
+export type AlreadyWaitingThrown = RustError<"AlreadyWaiting", "AlreadyWaiting", undefined>
+
+/** What a method returning `Err(ApprovalRespondError)` throws. */
+export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
+
+/** What a method returning `Err(HostError)` throws. */
+export type HostErrorThrown = RustError<"HostError", "Failed" | "Cancelled", undefined>
+
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
@@ -541,7 +688,12 @@ export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_
 
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
+  approval: Approval
+  toolHost: ToolHost
+  inputQueue: InputQueue
+  permission: Permission
   treeCommands: TreeCommands
+  wait: Wait
   sessionConfig: SessionConfig
   timelineIdentity: TimelineIdentity
   sessionIdentity: SessionIdentity

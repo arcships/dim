@@ -8,7 +8,7 @@ use crate::{
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, QueryFilter, QueryOperand, QueryOutput,
     QueryPage, QuerySelect, QuerySpec, QueryValue, Registrations, Result, StateCell, Timeline,
-    TimelineQuery, TimelineQueryScope,
+    TimelineIdentity, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -35,12 +35,31 @@ impl Decision {
 }
 
 /// InputQueue's answer to one `input/withdraw`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
 pub enum Withdrawal {
     /// The input was held: `input/deleted` at this sequence, never applied.
     Deleted { sequence: u64 },
     /// Unknown, already applied or already deleted: nothing was written.
     NotHeld,
+}
+
+/// The identity of one committed input.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputRef {
+    pub input_id: String,
+    pub sequence: u64,
+}
+
+/// What one `withdraw` answers: the queue's decision, and the Steer input
+/// the same batch wrote when the caller asked for one.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WithdrawReply {
+    #[serde(flatten)]
+    pub withdrawal: Withdrawal,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steer: Option<InputRef>,
 }
 
 /// One committed input until Loop consumes it.
@@ -194,6 +213,9 @@ pub struct InputQueue {
     state: Mutex<QueueState>,
     observable: Arc<StateCell<InputSnapshot>>,
     timeline: Arc<Timeline>,
+    /// The Session entry that commits an input the `submit` operation writes.
+    tree: Arc<TreeCommands>,
+    branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
     answers: Mutex<HashMap<u64, Withdrawal>>,
@@ -201,7 +223,37 @@ pub struct InputQueue {
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
 }
+#[rutis::service]
 impl InputQueue {
+    /// Commits `input` on this branch through the branch's validating input
+    /// entry, which accepts each submission id once, and answers with the
+    /// committed event's identity: the `inputQueue` face's `submit`.
+    pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
+        let event = self.tree.get(&self.branch_id)?.input(input).await?;
+        Ok(InputRef {
+            input_id: event.id.clone(),
+            sequence: event.sequence,
+        })
+    }
+
+    /// Withdraws `command` and answers with this queue's decision: the
+    /// `inputQueue` face's `withdraw`. With `steer`, the withdrawal and that
+    /// Steer input are one batch, as [`Self::withdraw_batch`] writes them.
+    pub async fn withdraw(
+        &self,
+        command: InputWithdrawData,
+        steer: Option<InputMessageData>,
+    ) -> Result<WithdrawReply> {
+        let (withdrawal, replacement) = self.withdraw_batch(command, steer).await?;
+        Ok(WithdrawReply {
+            withdrawal,
+            steer: replacement.map(|event| InputRef {
+                input_id: event.id.clone(),
+                sequence: event.sequence,
+            }),
+        })
+    }
+
     fn publish(&self, state: &QueueState) {
         self.observable.set(InputSnapshot {
             queued: state
@@ -413,7 +465,7 @@ impl InputQueue {
     /// decision for the command. With `steer`, the command and the new Steer
     /// input are one batch: the withdrawal takes effect only if the old
     /// input is still held, the new input is written either way.
-    pub async fn withdraw(
+    async fn withdraw_batch(
         &self,
         command: InputWithdrawData,
         steer: Option<InputMessageData>,
@@ -455,6 +507,8 @@ pub struct InputQueuePlugin {
     queue: Key<InputQueue>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
+    tree: Key<TreeCommands>,
+    identity: Key<TimelineIdentity>,
 }
 impl InputQueuePlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -463,6 +517,8 @@ impl InputQueuePlugin {
             queue: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
+            tree: names.key()?,
+            identity: names.key()?,
         })
     }
 }
@@ -471,16 +527,25 @@ impl DynPlugin for InputQueuePlugin {
         "InputQueue"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.timeline.erase(), self.dispatcher.erase()]
+        vec![
+            self.timeline.erase(),
+            self.dispatcher.erase(),
+            self.tree.erase(),
+            self.identity.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
+            let tree = ctx.require_at(&self.tree)?;
+            let identity = ctx.require_at(&self.identity)?;
             let queue = Arc::new(InputQueue {
                 state: Mutex::new(QueueState::default()),
                 observable: Arc::new(StateCell::new(InputSnapshot::default())),
                 timeline,
+                tree,
+                branch_id: identity.branch_id.clone(),
                 answers: Mutex::new(HashMap::new()),
                 answered: tokio::sync::Notify::new(),
                 lifecycle: ctx.cancellation_token(),
@@ -708,7 +773,11 @@ impl DynPlugin for InputMethodsPlugin {
                     MethodDecl::new("session.input.pending", false, Interruption::Report),
                 ],
                 Arc::new(move |call, cancel, _| {
-                    let MethodCall { method, params: value, .. } = call;
+                    let MethodCall {
+                        method,
+                        params: value,
+                        ..
+                    } = call;
                     let tree = tree.clone();
                     let checks = checks.clone();
                     Box::pin(async move {
@@ -727,9 +796,9 @@ impl DynPlugin for InputMethodsPlugin {
                             // the checks run: a check's context must never be
                             // what makes an input valid, and a refusal here
                             // writes neither the withdrawal nor a replacement.
-                            input
-                                .validate()
-                                .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
+                            input.validate().map_err(|reason| {
+                                RpcError::from(AgentError::InvalidInput(reason.into()))
+                            })?;
                             // A blocked steer writes neither the withdrawal nor
                             // the new input (Hooks A.6.2).
                             match checks
@@ -755,7 +824,7 @@ impl DynPlugin for InputMethodsPlugin {
                                 }
                             }
                         }
-                        let (answer, replacement) = queue
+                        let answer = queue
                             .withdraw(
                                 InputWithdrawData {
                                     input_id: p.input_id,
@@ -764,16 +833,7 @@ impl DynPlugin for InputMethodsPlugin {
                                 steer,
                             )
                             .await?;
-                        let mut result = match answer {
-                            Withdrawal::Deleted { sequence } => {
-                                serde_json::json!({"status": "deleted", "sequence": sequence})
-                            }
-                            Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),
-                        };
-                        if let Some(event) = replacement {
-                            result["steer"] = serde_json::json!({"inputId": event.id, "sequence": event.sequence});
-                        }
-                        reply(result)
+                        reply(answer)
                     })
                 }),
             )?;

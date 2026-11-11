@@ -783,7 +783,39 @@ pub trait ModelDriver: Send + Sync + 'static {
 }
 pub struct ModelHost(pub Arc<dyn ModelDriver>);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The caller's cancellation as a function it passes, the form a data method
+/// takes it in ([service faces §1](../../../docs/design/service-faces.md#1-规则)):
+/// it completes when the caller cancels the call, and the result the call
+/// produces after observing it stands.
+pub type CancelledFn = Arc<
+    dyn Fn() -> rutis::host::BoxFuture<'static, std::result::Result<(), rutis::Error>>
+        + Send
+        + Sync,
+>;
+
+/// Runs `call`, which observes `cancel`, until it returns or the caller's
+/// `cancelled` function completes: then `cancel` ends the call and the call's
+/// own result is the answer.
+pub async fn call_until_cancelled<'a, T, E, F>(
+    cancelled: CancelledFn,
+    cancel: CancellationToken,
+    call: F,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>> + Send + 'a,
+{
+    tokio::pin!(call);
+    tokio::select! {
+        result = &mut call => result,
+        _ = cancelled() => {
+            cancel.cancel();
+            call.await
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolExecutionContext {
     pub turn_id: String,
     pub request_id: String,
@@ -806,6 +838,28 @@ pub trait ToolDriver: Send + Sync + 'static {
     ) -> HostFuture<'_, ToolResult>;
 }
 pub struct ToolHost(pub Arc<dyn ToolDriver>);
+
+#[rutis::service]
+impl ToolHost {
+    /// Runs one call through the host's tools as `caller` names the branch's
+    /// execution. The driver is the implementation; this is the `toolHost`
+    /// face ([tool contributions §2.1](../../../docs/architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)).
+    pub async fn execute(
+        &self,
+        call: ToolCall,
+        caller: ToolExecutionContext,
+        cancelled: CancelledFn,
+    ) -> Result<ToolResult, HostError> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.0.execute(call, caller, cancel),
+        )
+        .await
+    }
+}
 
 /// What ContextPolicy hands a strategy: the entries from the previous cut
 /// on, the previous result, the request whose context is compacted and the

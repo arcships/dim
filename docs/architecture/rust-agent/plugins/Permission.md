@@ -288,7 +288,7 @@ and exits 3.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline`、`S:CommandRulesHost`、`S:SessionConfig`、`S:SessionIdentity` |
-| 提供 | `B:Permission`、`B:StateCell<PermissionState>` |
+| 提供 | `B:Permission`、`B:StateCell<PermissionState>`、`B:dyn HostDispatch#permission` |
 | 被注入于 | `Approval`、`HooksBranch` |
 <!-- /generated -->
 
@@ -305,6 +305,25 @@ rechecks policy before allowing an approved call to start.
 | `B:Permission` | Evaluate current policy and recheck an allowed response. |
 | `B:Dispatcher` | Recover abandoned requests, then receive approval responses. |
 | `B:Timeline` | Commit requests/cancellations. |
+
+### Data face
+
+`approval` is this part's service by name
+([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)):
+
+```text
+approval.pending() -> ApprovalRequestData[]
+approval.decide(requestId: string, decision: "allow" | "deny") -> {}
+  -> error {code: "Unknown" | "Cancelled" | "Closed", message}
+```
+
+`pending` lists the committed requests no answer or cancellation ended, in
+request order, as their `approval/request` payloads. `decide` is
+[`Approval::respond`](../../../../crates/dim-agent-capabilities/src/approval.rs):
+it commits `approval/respond` and answers once the branch dispatched it, so an
+`Unknown` refusal means the request is absent or already resolved. `admit`
+stays typed: it carries the caller's batch token, and its request records the
+call's source.
 
 ### Events and lifetime
 
@@ -356,6 +375,6 @@ fails with `invalid_params`, which ends the prompt.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Permission`、`B:Timeline` |
-| 提供 | `B:Approval` |
+| 提供 | `B:Approval`、`B:dyn HostDispatch#approval` |
 | 被注入于 | `HooksBranch`、`ToolExecutor` |
 <!-- /generated -->

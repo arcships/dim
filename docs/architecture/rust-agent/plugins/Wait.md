@@ -73,6 +73,25 @@ Provides branch-local wait state recording eligible arrivals during an open turn
 | `B:Dispatcher` | Consume arrivals and turn boundaries in order. |
 | `B:Timeline` | Read the last `turn/start` or `turn/end` and the unpublished tail, so the rebuild knows whether a turn is open. |
 
+### Data face
+
+`wait` is this part's service by name
+([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)):
+
+```text
+wait.wait(taskId: string | null, timeoutMs: number, cancelled: () => void | Promise<void>)
+  -> {reason: "notification", taskIds, waitedMs}
+   | {reason: "user_steer", waitedMs} | {reason: "timeout", waitedMs} | {reason: "interrupted", waitedMs}
+  -> error {code: "AlreadyWaiting", message}
+```
+
+It is the same wait the tool call makes. `cancelled` is the call's own
+cancellation and ends it as `interrupted`; a caller that goes away without
+cancelling — its row unloads or the process ends — drops the call, so no answer
+is produced and the branch's single wait slot is released. Only the `wait`
+tool caps `timeoutMs` at 300,000; the service waits as long as it is told and
+the caller cancels.
+
 ### Events and lifetime
 
 Consumes `input/message`, `turn/start`, `turn/end`; produces no events directly.
@@ -95,6 +114,6 @@ plugin does not spawn tasks. Only one wait can run per branch.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline` |
-| 提供 | `B:Wait` |
+| 提供 | `B:Wait`、`B:dyn HostDispatch#wait` |
 | 被注入于 | — |
 <!-- /generated -->

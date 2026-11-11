@@ -2663,17 +2663,25 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             reason: Some("user removed it".into()),
         };
 
-        let (answer, replacement) = queue.withdraw(withdraw(&first.id), None).await.unwrap();
-        let Withdrawal::Deleted { sequence } = answer else {
-            panic!("held input not deleted: {answer:?}")
+        let reply = queue.withdraw(withdraw(&first.id), None).await.unwrap();
+        let Withdrawal::Deleted { sequence } = reply.withdrawal else {
+            panic!("held input not deleted: {reply:?}")
         };
-        assert!(replacement.is_none());
+        assert!(reply.steer.is_none());
         assert_eq!(
-            queue.withdraw(withdraw(&first.id), None).await.unwrap().0,
+            queue
+                .withdraw(withdraw(&first.id), None)
+                .await
+                .unwrap()
+                .withdrawal,
             Withdrawal::NotHeld
         );
         assert_eq!(
-            queue.withdraw(withdraw("unknown"), None).await.unwrap().0,
+            queue
+                .withdraw(withdraw("unknown"), None)
+                .await
+                .unwrap()
+                .withdrawal,
             Withdrawal::NotHeld
         );
         let mut dispatch = session.dispatch_watch("main").unwrap();
@@ -2689,7 +2697,11 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             dispatch.changed().await.unwrap();
         }
         assert_eq!(
-            queue.withdraw(withdraw(&steered.id), None).await.unwrap().0,
+            queue
+                .withdraw(withdraw(&steered.id), None)
+                .await
+                .unwrap()
+                .withdrawal,
             Withdrawal::NotHeld
         );
         let user = UserInput {
@@ -2697,7 +2709,7 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
                 text: "second, now as steer".into(),
             }],
         };
-        let (answer, replacement) = queue
+        let reply = queue
             .withdraw(
                 withdraw(&second.id),
                 Some(InputMessageData {
@@ -2708,8 +2720,8 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             )
             .await
             .unwrap();
-        assert!(matches!(answer, Withdrawal::Deleted { .. }));
-        let replacement = replacement.unwrap();
+        assert!(matches!(reply.withdrawal, Withdrawal::Deleted { .. }));
+        let replacement = reply.steer.expect("the Steer input of the same batch");
         assert!(
             queue
                 .withdraw(
@@ -2751,7 +2763,7 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
                 EventKind::InputConsumed(data) if &data.input_id == id)));
         }
         assert!(events.iter().any(|event| matches!(&event.kind,
-            EventKind::InputConsumed(data) if data.input_id == replacement.id)));
+            EventKind::InputConsumed(data) if data.input_id == replacement.input_id)));
         let requests = requests.lock().unwrap().clone();
         assert!(
             requests
@@ -3253,7 +3265,7 @@ async fn a_withdrawn_handover_input_is_deleted_once() {
             .unwrap();
         dispatched_past(&session, handover.sequence).await;
         let queue = session.service::<InputQueue>("main").unwrap();
-        let (answer, replacement) = queue
+        let reply = queue
             .withdraw(
                 InputWithdrawData {
                     input_id: handover.id.clone(),
@@ -3263,10 +3275,10 @@ async fn a_withdrawn_handover_input_is_deleted_once() {
             )
             .await
             .unwrap();
-        let Withdrawal::Deleted { sequence } = answer else {
-            panic!("held handover input not deleted: {answer:?}")
+        let Withdrawal::Deleted { sequence } = reply.withdrawal else {
+            panic!("held handover input not deleted: {reply:?}")
         };
-        assert!(replacement.is_none());
+        assert!(reply.steer.is_none());
         let events = deleted(&session, &handover.id).await;
         let first = events
             .iter()

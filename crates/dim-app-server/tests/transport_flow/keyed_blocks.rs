@@ -253,7 +253,7 @@ async fn a_deleted_input_leaves_the_key_at_its_earlier_live_block_or_absent() {
         .await
         .unwrap();
     let queue = session.service::<InputQueue>("main").unwrap();
-    let (answer, _) = queue
+    let answer = queue
         .withdraw(
             InputWithdrawData {
                 input_id: held.id.clone(),
@@ -264,7 +264,7 @@ async fn a_deleted_input_leaves_the_key_at_its_earlier_live_block_or_absent() {
         .await
         .unwrap();
     assert!(
-        matches!(answer, Withdrawal::Deleted { .. }),
+        matches!(answer.withdrawal, Withdrawal::Deleted { .. }),
         "the turn holds the input unapplied: {answer:?}"
     );
     session.stop("main", "end the wait".into()).await.unwrap();

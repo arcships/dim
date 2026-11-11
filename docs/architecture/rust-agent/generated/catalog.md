@@ -100,13 +100,13 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `timelineStore` | session | SessionScope | internal(object) | — |
 | `timelineTree` | session | TimelineTree | internal(owner-api) | — |
 | `timelineTreeControl` | session | TimelineTree | internal(owner-api) | — |
-| `toolHost` | session | WorkspaceTools | internal(object) | — |
+| `toolHost` | session | WorkspaceTools | data | `execute` async |
 | `toolRegistry` | session | ToolRegistry | data | `register` async |
 | `toolSourcesView` | session | ToolRegistry | internal(owner-api) | — |
 | `treeCommands` | session | TimelineTree | data | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async |
 | `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
 | `agentLoop` | branch | Loop | internal(hot-path) | — |
-| `approval` | branch | Approval | internal(object) | — |
+| `approval` | branch | Approval | data | `decide` async, `pending` async |
 | `backgroundExec` | branch | BackgroundExec | internal(object) | — |
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | internal(hot-path) | — |
@@ -116,10 +116,10 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |
-| `inputQueue` | branch | InputQueue | internal(object) | — |
+| `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |
 | `loopState` | branch | Loop | internal(hot-path) | — |
 | `modelProvider` | branch | ModelProvider | internal(hot-path) | — |
-| `permission` | branch | Permission | internal(object) | — |
+| `permission` | branch | Permission | data | `check` async |
 | `prompt` | branch | Prompt | internal(hot-path) | — |
 | `promptSourcesBranch` | branch | PromptSourcesBranch | internal(hot-path) | — |
 | `skillsBranch` | branch | SkillsBranch | internal(host-resource) | — |
@@ -127,7 +127,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `timelineIdentity` | branch | BranchScope | data | `get` async |
 | `toolBinding` | branch | ToolBinding | internal(hot-path) | — |
 | `toolExecutor` | branch | ToolExecutor | internal(hot-path) | — |
-| `wait` | branch | WaitBranch | internal(object) | — |
+| `wait` | branch | WaitBranch | data | `wait` async |
 
 ## Capabilities
 

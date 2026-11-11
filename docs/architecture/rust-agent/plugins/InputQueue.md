@@ -72,6 +72,27 @@ observable input queue.
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
 | `B:Timeline` | Commit application decisions. |
+| `S:TreeCommands` | Commit an input `submit` writes, through the branch's validating input entry. |
+| `B:TimelineIdentity` | Name this branch to `submit`. |
+
+### Data face
+
+`inputQueue` ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)) is
+this part's service by name, so a part of any language submits and withdraws
+through the same queue a Rust part calls:
+
+```text
+inputQueue.submit(input: InputMessageData) -> {inputId, sequence}
+inputQueue.withdraw(command: InputWithdrawData, steer?: InputMessageData)
+  -> {status: "deleted", sequence, steer?: {inputId, sequence}}
+  | {status: "notHeld", steer?: {inputId, sequence}}
+  -> error {code, message}
+```
+
+`submit` commits through the branch's validating input entry; `withdraw` is
+InputQueue's own decision, and with a `steer` the withdrawal and that input are
+one batch, as `session.input.withdraw` writes them. Both return the decision the
+owner made; the queue's ordering, its recovery and its StateCell stay here.
 
 ### Events and lifetime
 
@@ -122,7 +143,7 @@ so an ordering rule for state inputs leaves it last.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline` |
-| 提供 | `B:InputQueue`、`B:StateCell<InputSnapshot>` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
+| 提供 | `B:InputQueue`、`B:StateCell<InputSnapshot>`、`B:dyn HostDispatch#inputQueue` |
 | 被注入于 | — |
 <!-- /generated -->

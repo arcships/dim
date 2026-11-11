@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 118 个名字：30 data、86 internal、2 shared-no-dispatcher。§3 表覆盖这 86 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -131,15 +131,27 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `fileStorage` | `FilePath`、根与代次 | `open`/`read`/`write`/`close`/`list`/`remove` |
 | `sqliteStorage` | 连接与事务 | store 端口（#1298） |
 | `timelineStore` | 连接与批次 | `append`/`query`/`ack`（#1298） |
-| `toolHost` | `ToolDriver` | `execute` 数据面 |
 | `mcpSession` | 会话对象 | 每 server 的 id 操作 |
 | `backgroundExec` | 任务对象 | task id 操作 |
-| `approval`、`permission` | 决策状态 | `decide` 数据面 |
-| `inputQueue` | 队列状态 | `submit`/`withdraw` 数据面 |
-| `wait` | `WaitResult`、`CancellationToken` | `start`/`wait`/`result` 操作面 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 留宿主；`hot-path` |
 
 这些面即使有数据接口，实例核心仍默认留在宿主；它们列在这里是为了说明“对象形状”不是永久 internal，而是需要操作化；原因 `object`。
+
+对象只能按操作暴露时，接口就是一组操作加 id，运行态仍由所有者持有。逐项是：
+
+| 名字 | 数据面 | 所有者把什么留在内部 |
+| --- | --- | --- |
+| `toolHost` | `execute(call, caller, cancelled) -> ToolResult` | `ToolDriver` 实现、工具声明 |
+| `approval` | `pending()`、`decide(requestId, decision)` | 请求顺序、批次 token 与准入流程 |
+| `permission` | `check(call, risk, cancelled) -> decision` | 预设、`PermissionState`、advisor 注册 |
+| `inputQueue` | `submit(input)`、`withdraw(command, steer?)` | 队列顺序、恢复与 `InputSnapshot` |
+| `wait` | `wait(taskId, timeoutMs, cancelled) -> result` | 到达队列、单次等待槽与 turn 边界 |
+
+形状与错误由各所有者文档定义：[Permission](plugins/Permission.md#data-face)、
+[InputQueue](plugins/InputQueue.md#data-face)、[Wait](plugins/Wait.md#data-face)；
+`toolHost` 的形状在
+[tool contributions §2.1](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)。
+这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
 ### 3.5 热路径与顺序：契约上 internal
 原因 `hot-path`：每回合/每条输入的状态机、严格本地顺序，或同步回调。跨了要重写顺序和失败语义，收益不成比例。
