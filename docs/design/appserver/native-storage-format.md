@@ -1388,10 +1388,23 @@ This proposal adds no recovery snapshots and no executable progress. It extends 
 | Each of `collaboration/request`, `collaboration/cancel`, `collaboration/close`, `collaboration/message` | `collaboration/delivered` | origin `id` = terminal `data.op_event_id` |
 | `exec/ended` that requires a notification | tagged `input/message` | `exec-wake-result:` + origin `id` = an input tag |
 
+The new index_id values are approval/v1, collaboration-delivery/v1 and exec-wake/v1. Existing descriptors keep their meanings.
+
 Collaboration keeps its existing unfinished-request index for accepted delegations without a final result. The new undelivered-operation roots locate only missing delivery terminals; recovery writes Closed without repeating the operation. These are outstanding decisions/notifications, not old execution state. Completed work is absent from the current root; loading an empty root must not examine any old origin. Recovery reads current members only. Historical task output is located by task identity when requested, rather than loaded into a permanent task catalog on resume.
+
+An exec end requires a notification only when its status is completed or failed and its original position is not in a closed generation. Compare the latest preceding branch/start, branch/resume or session/forked with the latest preceding branch-scoped stop/interrupt. A later stop suppresses that end; a subsequent resume starts a new generation. This is evaluated at the end's position, not at the current read head. An eligible end before a close remains owed if its input was never committed. An end suppressed by a close is absent from the notification root and cannot accumulate as a candidate on every resume. Loading never restores a previous generation's closing flag or process handle.
+
+The close lookup uses a v42 partial index on session_id, branch_id and sequence, restricted to stop/interrupt with data.scope=branch; the existing kind/position index locates the opening boundaries. Updating an exec end therefore needs indexed boundary lookups, not a pass over prior interrupts. The existing exec/v1 origin and terminal identity records locate a requested historical task's start and end by data.task_id. Query execution must reuse those identities rather than scan old exec events or rely on a task ID being an FTS-safe UUID. Normal owner queries also respect the branch's local opening; copied fork history does not transfer process ownership.
+
+```sql
+CREATE INDEX timeline_events_branch_interrupts
+ON timeline_events(session_id, branch_id, sequence)
+WHERE kind = 'stop/interrupt'
+  AND json_extract(body, '$.record.event.data.scope') = 'branch';
+```
 
 The existing schema can encode these roots, but v41 does not guarantee their contents. Therefore adding them requires v42 rather than treating absent v41 roots as empty. The upgrade builds the derived relationships in the existing upgrade transaction and switches the marker only after success. Failure rolls back. Existing v41 and both historical version families remain readable through upgrade. Old binaries refuse v42. Verification uses disposable stores.
 
-The notification relationship requires string concatenation in the existing property-query operand: a string literal prefix and the outer event ID. Add an optional operand variant; existing query objects and clients remain unchanged. The store recognizes the exact indexed relationship and still evaluates arbitrary unsupported expressions correctly. No new business state API, owner database, event type or per-source recovery event is introduced.
+The notification relationship requires two compatible additions to property-query operands. String concatenation expresses the literal wake-tag prefix plus the end ID. A reference to the second enclosing event expresses the close boundary: within an end, a preceding stop counts only if no opening lies between that stop and that same end. The current Outer refers only to the immediately enclosing event and cannot express the upper bound from the second nested Exists. Existing query objects remain valid and gain no required fields. The indexed root must match the complete notification predicate, including closing, in both native and memory execution; it cannot silently omit closed ends from a broader query. The store recognizes the exact indexed relationship and still evaluates unsupported query shapes correctly. No new business state API, owner database, event type or per-source recovery event is introduced.
 
 Native upgrade cost is separate from normal loading. A v41 database cannot acquire an index over its older facts without reading the indexed facts once; this proposal does not call that work a sub-200ms normal resume. The <=200ms end-to-end acceptance uses an already indexed native database; first upgrade is reported separately.
