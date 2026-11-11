@@ -236,14 +236,13 @@ impl HooksRuntime {
         if cancel.is_cancelled() {
             return Err(interrupted());
         }
-        // An unload settles the pending check before the part goes: the
-        // running commands are terminated and every handler answers by its
-        // `onFailure` (§1, A.5).
-        let decisions = tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => return Ok(unfinished_prompt(&matching)),
-            decisions = self.run_prompt_handlers(&matching, &payload, cancel) => decisions,
-        };
+        // An unload settles the pending check before the part goes: a handler
+        // that already finished keeps its own result, and only the ones still
+        // running answer by `onFailure` with `Hooks was unloaded` (§1, §3.3,
+        // A.5).
+        let decisions = self
+            .run_prompt_handlers(&matching, &payload, cancel, Some(&self.cancel))
+            .await;
         if cancel.is_cancelled() {
             return Err(interrupted());
         }
@@ -270,11 +269,16 @@ impl HooksRuntime {
     /// order up to and including the first one that stops the point; the
     /// handlers after it are terminated (A.5). An `async` handler starts and
     /// is not waited for.
+    ///
+    /// With `unload`, a part that unloads before the point settles it: a
+    /// handler that already finished keeps its own run, and only the ones
+    /// still running are answered as [`UNLOADED`] (Hooks §1, §3.3, A.5).
     async fn run_ordered<T>(
         self: &Arc<Self>,
         handlers: &[HookHandler],
         payload: &JsonObject,
         cancel: &CancellationToken,
+        unload: Option<&CancellationToken>,
         decide: impl Fn(&HookHandler, &HookRun) -> (bool, T),
     ) -> Vec<T> {
         let mut running: Vec<HookHandler> = Vec::new();
@@ -314,8 +318,14 @@ impl HooksRuntime {
             // arrived. Every slot from `next` on is either filled or owned by
             // one of them, so the loop never selects on an empty list.
             while slots[next].is_none() {
-                let ((position, result), _, rest) = futures_util::future::select_all(pending).await;
-                pending = rest;
+                let Some((position, result)) = next_run(&mut pending, unload).await else {
+                    for (position, slot) in slots.iter_mut().enumerate().skip(next) {
+                        if slot.is_none() {
+                            *slot = Some(unloaded_run(&running[position]));
+                        }
+                    }
+                    break;
+                };
                 slots[position] = Some(HookRun {
                     result,
                     on_failure: running[position].on_failure,
@@ -340,14 +350,16 @@ impl HooksRuntime {
     }
 
     /// `UserPromptSubmit`'s decisions in catalog order, up to and including
-    /// the first block (A.5).
+    /// the first block (A.5). `unload` settles the point early; see
+    /// [`Self::run_ordered`].
     async fn run_prompt_handlers(
         self: &Arc<Self>,
         handlers: &[HookHandler],
         payload: &JsonObject,
         cancel: &CancellationToken,
+        unload: Option<&CancellationToken>,
     ) -> Vec<PromptDecision> {
-        self.run_ordered(handlers, payload, cancel, |handler, run| {
+        self.run_ordered(handlers, payload, cancel, unload, |handler, run| {
             let decision = prompt_decision(handler, run);
             let stops = matches!(decision, PromptDecision::Blocked { .. });
             (stops, decision)
@@ -694,27 +706,47 @@ fn mode_name(mode: InputMode) -> &'static str {
     }
 }
 
-/// What an unload answers for the handlers that were running (A.5): each one
-/// did not finish, so the first `onFailure: block` in catalog order blocks and
-/// every other one is reported to the caller.
-fn unfinished_prompt(handlers: &[HookHandler]) -> SubmitCheckReply {
-    let mut warnings = Vec::new();
-    for handler in handlers.iter().filter(|handler| !handler.asynchronous) {
-        if handler.on_failure == OnFailure::Block {
-            return SubmitCheckReply::Block {
-                message: format!("Hook {} did not finish", handler.source),
-            };
-        }
-        warnings.push(unfinished(&handler.source, UNLOADED));
-    }
-    SubmitCheckReply::Proceed {
-        blocks: Vec::new(),
-        warnings,
+/// The reason an unload gives for the handlers it terminated (§1, A.5).
+const UNLOADED: &str = "Hooks was unloaded";
+
+/// The run an unload answers with for a handler still running when the part
+/// went: it did not finish, so its `onFailure` decides as for a failed run.
+fn unloaded_run(handler: &HookHandler) -> HookRun {
+    HookRun {
+        result: HookResult::Failed {
+            reason: UNLOADED.into(),
+            stderr: String::new(),
+        },
+        on_failure: handler.on_failure,
+        source: handler.source.clone(),
     }
 }
 
-/// The reason an unload gives for the handlers it terminated (§1, A.5).
-const UNLOADED: &str = "Hooks was unloaded";
+/// The next run to finish, or `None` when `unload` fires first. A run that
+/// already finished is taken before the unload, so its own result settles it;
+/// the caller reports only the handlers still pending at that moment.
+/// `pending` keeps the runs that have not arrived.
+async fn next_run(
+    pending: &mut Vec<PendingRun>,
+    unload: Option<&CancellationToken>,
+) -> Option<(usize, HookResult)> {
+    let batch = std::mem::take(pending);
+    let mut waiting = std::pin::pin!(futures_util::future::select_all(batch));
+    let mut unloading = std::pin::pin!(async {
+        match unload {
+            Some(unload) => unload.cancelled().await,
+            None => std::future::pending().await,
+        }
+    });
+    tokio::select! {
+        biased;
+        ((position, result), _, rest) = &mut waiting => {
+            *pending = rest;
+            Some((position, result))
+        }
+        _ = &mut unloading => None,
+    }
+}
 
 /// The sentence a caller shows for one run that did not finish (A.6.2).
 fn unfinished(source: &HookSourceId, reason: &str) -> String {
@@ -1875,13 +1907,16 @@ impl Branch {
             }
         };
         let token = cancel.child_token();
-        let mut run = Box::pin(
-            self.runtime
-                .run_ordered(&matching, &payload, &token, |_, run| {
-                    let advice = advice_of(run);
-                    (matches!(advice, ToolAdviceReply::Deny { .. }), advice)
-                }),
-        );
+        // A.6.1's reload row: a `PreToolUse` advice withdrawn mid-call is
+        // dropped and counts as `none`, so this point settles nothing.
+        let mut run =
+            Box::pin(
+                self.runtime
+                    .run_ordered(&matching, &payload, &token, None, |_, run| {
+                        let advice = advice_of(run);
+                        (matches!(advice, ToolAdviceReply::Deny { .. }), advice)
+                    }),
+            );
         let replies = tokio::select! {
             biased;
             _ = unload => None,
