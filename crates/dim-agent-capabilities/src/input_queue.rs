@@ -435,7 +435,7 @@ impl InputQueue {
     /// Withdraws an input by its `input_id` and replies with this queue's
     /// decision for the command. Only an accepted withdrawal adopts its
     /// optional checked Steer candidate, atomically with the deletion.
-    /// An accepted Steer replies after that result batch is published.
+    /// The result is committed; callers confirm publication before exposing a receipt.
     pub async fn withdraw(&self, command: InputWithdrawData) -> Result<WithdrawalAnswer> {
         command
             .validate_external()
@@ -448,19 +448,6 @@ impl InputQueue {
             let answered = self.answered.notified();
             let answer = self.answers.lock().unwrap().remove(&sequence);
             if let Some(answer) = answer {
-                if let (Withdrawal::Deleted { sequence }, Some(_)) = &answer {
-                    let mut publication = self.timeline.watch();
-                    tokio::select! {
-                        result = publication.wait_for(|&(published, closed)| published >= *sequence || closed) => {
-                            if !matches!(result, Ok(head) if head.0 >= *sequence) {
-                                return Err(AgentError::Storage("withdrawal result publication was not confirmed; query history after recovery".into()));
-                            }
-                        }
-                        _ = self.lifecycle.cancelled() => {
-                            return Err(AgentError::Reloading("InputQueue".into()));
-                        }
-                    }
-                }
                 return Ok(answer);
             }
             tokio::select! {
@@ -688,7 +675,7 @@ struct WithdrawParams {
     input_id: String,
     #[serde(default)]
     reason: Option<String>,
-    /// Re-submits the content as Steer in the same batch as the withdrawal.
+    /// Replacement content adopted only when withdrawal is accepted.
     #[serde(default)]
     steer: Option<UserInput>,
 }
@@ -738,7 +725,8 @@ impl DynPlugin for InputMethodsPlugin {
                             return pending::read(&tree, value, &cancel).await;
                         }
                         let p: WithdrawParams = params(value)?;
-                        let queue = tree.get(&p.branch_id)?.service::<InputQueue>()?;
+                        let branch = tree.get(&p.branch_id)?;
+                        let queue = branch.service::<InputQueue>()?;
                         let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
@@ -788,6 +776,21 @@ impl DynPlugin for InputMethodsPlugin {
                             .await?;
                         let mut result = match answer {
                             Withdrawal::Deleted { sequence } => {
+                                if replacement.is_some() {
+                                    let publication = branch.publication();
+                                    let mut progress = publication.watch();
+                                    tokio::select! {
+                                        _ = progress.wait_for(|&(published, closed)| published >= sequence || closed) => {}
+                                        _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                                    }
+                                    if publication.sequence() < sequence {
+                                        return Err(RpcError::app(
+                                            -32000,
+                                            "publication_unknown",
+                                            "committed, but publication was not confirmed; query history after recovery",
+                                        ));
+                                    }
+                                }
                                 serde_json::json!({"status": "deleted", "sequence": sequence})
                             }
                             Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),

@@ -1492,9 +1492,10 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         rusqlite::Connection::open(store.database())
             .unwrap()
             .execute_batch(&format!(
-                "CREATE TRIGGER \"fail-{kind}\" BEFORE INSERT ON timeline_events \
+                "CREATE TRIGGER \"fail-{}-{kind}\" BEFORE INSERT ON timeline_events \
                  WHEN NEW.session_id = '{}' AND NEW.kind = '{kind}' \
                  BEGIN SELECT RAISE(ABORT, 'injected write failure'); END",
+                session.id(),
                 session.id()
             ))
             .unwrap();
@@ -1530,6 +1531,33 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
             .await,
         "publication_unknown"
     );
+    let session = awaiting_approval(&sessions, &agent).await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:steer-held",
+                json!([{"type":"text","text":"replace me"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    let reply = client
+        .rpc(
+            "session.input.withdraw",
+            json!({
+                "sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
+                "steer":{"content":[{"type":"text","text":"replacement"}]}
+            }),
+        )
+        .await;
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+    assert_eq!(
+        reply["error"]["data"]["appError"], "publication_unknown",
+        "{reply}"
+    );
+    assert!(reply.get("result").is_none(), "{reply}");
     server.shutdown();
     let _ = server.join().await;
 }

@@ -101,8 +101,10 @@ to start a new turn from previously unapplied input.
 For an accepted queued-input Steer, the replacement `input/message` precedes
 the original input's `input/deleted` in one atomic result batch. A `notHeld`
 decision writes neither result nor replacement, even though its command remains
-committed, and returns no Steer receipt. The service replies to an accepted Steer only
-after the result batch is published; a retry after a lost reply cannot replace
+committed, and returns no Steer receipt. The branch service returns its committed
+decision. InputMethods confirms an accepted Steer's result publication through
+the branch facade before returning its RPC receipt, reporting `publication_unknown`
+if publication cannot be confirmed. A retry after a lost reply cannot replace
 the deleted input again. A candidate in `input/withdraw.steer` is not itself an
 adopted input and never enters model context. The owner contract is
 [Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal),
