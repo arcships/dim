@@ -2,7 +2,7 @@
 
 Status: Implemented in [#224](https://github.com/arcships/dim/pull/224), native format v17. Implementation corrected
 four statements, each where it applies: preparation also serializes the new nodes (§6.1), a request row serializes its
-event without the request content (§6.1, §6.3), one reader serves a whole validation pass (§7.1, §7.2), and acceptance
+event without the request content (§6.1, §6.3), one reader serves all pages of a read (§7.1, §7.2), and acceptance
 thresholds are measured rather than asserted (§18). Phase 2 of
 [#193](https://github.com/arcships/dim/issues/193), as agreed in the issue's latest comment. Phase 1, a bounded content
 cache shared across the pages of a read, merged as [#213](https://github.com/arcships/dim/pull/213); phase 3 is a
@@ -103,14 +103,13 @@ Each row names a convention, where it is written, and the mechanism by which v17
 | --- | --- | --- |
 | Events are written and read as their original types; encoding exists only inside storage | [timeline-storage §2](../../architecture/rust-agent/timeline-storage.md#2-存储编码) | A read rebuilds the complete `ModelRequest` (`messages`, `tools` and `system` held by `Arc`, as today) from its row and the content rows it reaches; the list format exists only in `codec.rs` and the stored JSON |
 | Request content is stored by content hash in the Session's content table, each content once, and the event body keeps only content addresses ("请求内容" row) | [timeline-storage §2](../../architecture/rust-agent/timeline-storage.md#2-存储编码) | Messages become list nodes in `timeline_content`, addressed by v16's `SHA-256(kind NUL body)` rule and stored once per Session; the event row keeps the last node's address, the length, and the `tools` and `system` addresses. The unit of sharing changes from a message to a message after a given prefix; §19 rewords that row with the implementation |
-| One decoded-content cache per read call, at most 64 MiB, released at the end ("读取" row) | [timeline-storage §2](../../architecture/rust-agent/timeline-storage.md#2-存储编码) | Node loads go through that cache. Beyond it a read keeps one rebuilt request and its node addresses (§7.1). `validate_session` decodes no request body and loads no node, so it uses none |
+| One decoded-content cache per read call, at most 64 MiB, released at the end ("读取" row) | [timeline-storage §2](../../architecture/rust-agent/timeline-storage.md#2-存储编码) | Node loads go through that cache. Beyond it a read keeps one rebuilt request and its node addresses (§7.1). |
 | The request stays in the events: `model/call` carries the final request handed to the model | [ADR 005 D1](../../adr/005-observability.md#d1-two-observation-layers) (the Timeline holds "final model requests (`model/call`)") | The request is neither derived nor loaded lazily |
 | ContextPolicy reads the latest exact request | [context_policy.rs](../../../crates/dim-agent-capabilities/src/context_policy.rs) `ContextPolicy::estimate` compares provider, model, capability snapshot, tools, system, config and metadata with the previous `model/call`, and requires `messages.starts_with` its messages | Decoded requests equal the written ones (§18 acceptance 1) |
 | Event types and the frozen fixtures `crates/dim-agent-types/tests/fixtures/events.json` and `events.ts` with the `*_contract.rs` tests | [principles §6](../../architecture/rust-agent/principles.md#6-验证), AGENTS.md rule 6 | Untouched |
 | The Timeline (sequence, atomic batches, commit and publish, before), the Dispatcher (hot window only), the `TimelineStore` trait and its read semantics, and capabilities rebuilding from `local(..=S)` | [timeline-storage §1, §3, §4](../../architecture/rust-agent/timeline-storage.md), [time bus](../../architecture/rust-agent/time-bus.md), [single tree](../../architecture/rust-agent/single-tree.md) | No code outside the store changes. Every read returns the same events, in the same order and batches, with the same errors for intact data; only storage errors for damaged request content have new messages (§8) |
 | A checkpoint read "does not scan request bodies before the snapshot recovery position" ("不扫描快照恢复位置之前的请求正文") | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描), bounded reads table | A request row is rebuilt from its own references and the content rows they reach, never from another event row, so the read's event rows start at `resume` as today. The content it loads is the messages of the requests it returns, which v16 loads through the same rows' references (§10, acceptance 3a) |
-| Reads go in segments and release the read connection after each; no hold decodes unbounded history ("每段结束释放读连接 … 不在锁内解码无限历史") | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | Event rows are read in today's segments (256 sequences, 64 rows in validation). A list walk releases the read connection after at most 256 node loads and continues from the next address; the read call keeps the partial walk between holds, as #213 keeps its cache (§7.2, acceptance 3a) |
-| Restore validates each page with its references and releases the lock per page; its caches are bounded ("恢复" row) | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | `validate_session` decodes each page in the same holds without its request bodies and checks that every reference resolves and every node's parent resolves (§8); it loads no body, so the pass uses no content cache |
+| Reads go in segments and release the read connection after each; no hold decodes unbounded history ("每段结束释放读连接 … 不在锁内解码无限历史") | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | Event rows are read in today's segments (256 sequences). A list walk releases the read connection after at most 256 node loads and continues from the next address; the read call keeps the partial walk between holds, as #213 keeps its cache (§7.2, acceptance 3a) |
 | Serialization, reference resolution, hash checks and type conversion stay at the storage boundary | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | Every node is hash-checked when it is loaded, as content rows are today (§8) |
 | External protocols expand to the original events ("外部协议仍展开为原事件") | [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | Untouched |
 | An incompatible change needs a new version and a read path; an upgrade only adds structures and reads or rewrites no business row; one-way | [Storage format, 格式版本](native-storage-format.md#格式版本) and the S5a/S5b decisions | v17 by a marker bump (§11) |
@@ -512,15 +511,14 @@ projection projects input and output facts, and collaboration reads tool calls, 
 Collaboration queries an acquired peer Session for only the event kinds it consumes, without selecting model request rows.
 The port keeps one page read, `TimelineStore::read_page`, which rebuilds the requests of the rows it
 returns; the body-less variant is gone, because no caller serves stored facts around a Session any more. A history page of a loaded line reads through the branch's query, which
-rebuilds the requests of the rows it returns ([ADR 020](../adr/020-timeline-read-convergence.md) D6). Every read that uses a request (`local`, `history`, `context`, `trace`,
-export) still rebuilds and checks each one as §7.1–§8 state; `validate_session` decodes no request body and only checks
-that each reference resolves (§8).
+rebuilds the requests of the rows it returns ([ADR 020](../../adr/020-timeline-read-convergence.md) D6). Every read that uses a request (`local`, `history`, `context`, `trace`,
+export) still rebuilds and checks each one as §7.1–§8 state. Session restore reads the directory only;
+see [restore read boundary](restore-validation.md).
 
 - The read still checks that each record and each draft of its trace has the references its kind requires, and no
   other record has any; it never follows them.
 - A damaged node therefore does not fail a paging read, because that read would not have loaded it. Every read that
-  uses requests still fails on it; restore validation loads no body, so it refuses a Session whose content rows are
-  missing and leaves a damaged one to the read that loads it (§8).
+  uses requests still fails on it. Restore does not inspect unused content (§8).
 - The streamed projection (§10) reads its history through paging, so the events it projects carry no stored request.
   The one request an estimate compares against is the one the newest `model/usage` measured: it comes from the
   `model/call` the query returns for that usage's `request_id`, not from the projected events.
@@ -542,12 +540,9 @@ not use them checks only the first item, the reference shape, §7.5):
 An in-order walk that stops at the kept request checks only the nodes it loads; the shared ones were checked when the
 kept request was rebuilt. A missing or damaged node fails the read explicitly ("missing request content", "request
 content hash mismatch", "request list length mismatch"); the request is never restored empty or partial. The bad row
-keeps its bytes: reads never write. `validate_session` decodes every event without its request bodies and checks that
-every reference a record names has a content row in the Session and that every node's parent has one too, so a Session
-with a missing content row — including a node in the middle of a message list — is refused at restore and preserved, as
-today. A body that is present but damaged passes that check: it fails the read that loads it, which is where the hash
-and kind checks live. Export is the one caller that keeps the full preflight: it rebuilds and hash-checks every body
-before its first line is written, so a damaged body leaves no partial export. A damaged node reaches every request
+keeps its bytes: reads never write. Restore does not scan events or content references. Export decodes and checks
+each event once as it writes the stream; a failed read returns an error without the terminal `end` record.
+A damaged node reaches every request
 whose list passes through it, which in normal operation is every request from the one that added it to the next
 compaction: the requests that reference the same message in v16.
 

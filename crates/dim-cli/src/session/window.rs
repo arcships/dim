@@ -1,5 +1,6 @@
 use crate::{Result, client::Client, display::Display, wire::HistoryWindow};
 use dim_client::window::Window;
+use dim_client::wire::DisplayPage;
 
 pub(super) async fn read(
     client: &mut Client,
@@ -13,9 +14,18 @@ pub(super) async fn read(
     }
     let mut window = Window::default();
     loop {
-        let page: HistoryWindow = client
-            .typed("session.history", window.params(session_id, "main"))
-            .await?;
+        let params = window.params(session_id, "main");
+        let page: HistoryWindow = if !display.json
+            && client.offers("session.history.display")
+            && client.offers("session.history.detail")
+        {
+            client
+                .typed::<DisplayPage>("session.history.display", params)
+                .await?
+                .into()
+        } else {
+            client.typed("session.history", params).await?
+        };
         if display.json {
             page.next(None, None)?;
             return Ok(page.through);
@@ -48,9 +58,18 @@ pub(super) async fn earlier(
     };
     let mut window = Window::earlier(before, display.history_through);
     loop {
-        let page = client
-            .typed("session.history", window.params(session_id, "main"))
-            .await?;
+        let params = window.params(session_id, "main");
+        let page: HistoryWindow = if !display.json
+            && client.offers("session.history.display")
+            && client.offers("session.history.detail")
+        {
+            client
+                .typed::<DisplayPage>("session.history.display", params)
+                .await?
+                .into()
+        } else {
+            client.typed("session.history", params).await?
+        };
         if window.push(page)? {
             break;
         }

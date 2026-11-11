@@ -1,7 +1,3 @@
-use dim_agent_runtime::{
-    QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
-    QueryValue, Timeline, TimelineQuery, TimelineQueryScope,
-};
 use dim_agent_types::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,8 +20,8 @@ pub struct PromptSnapshot {
     pub revision: Option<PromptReference>,
     pub system_revision: Option<PromptReference>,
     pub system: String,
-    turns: BTreeSet<String>,
-    tasks: BTreeSet<PromptScope>,
+    pub(crate) turns: BTreeSet<String>,
+    pub(crate) tasks: BTreeSet<PromptScope>,
 }
 
 impl PromptSnapshot {
@@ -119,195 +115,50 @@ impl PromptSnapshot {
         self.revision = Some(revision.clone());
         if system_changed {
             self.system_revision = Some(revision);
-            let mut entries: Vec<_> = self
-                .entries
-                .values()
-                .filter(|entry| entry.delivery == PromptDelivery::System)
-                .collect();
-            entries.sort_by(|a, b| {
-                a.order
-                    .cmp(&b.order)
-                    .then(a.source.cmp(&b.source))
-                    .then(a.scope.cmp(&b.scope))
-            });
-            self.system = entries
-                .into_iter()
-                .map(|entry| entry.body.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
+            self.rebuild_system();
         }
     }
 
-    pub(crate) async fn read(
-        timeline: &Timeline,
-        through: u64,
-    ) -> dim_agent_runtime::Result<(Self, Option<ContextConfiguredData>)> {
-        let mut query = TimelineQuery {
-            scope: TimelineQueryScope::Chain,
-            from: None,
-            through: Some(through),
-            include_publishing: false,
-            query: QuerySpec {
-                filter: Some(QueryFilter::In {
-                    value: QueryOperand::Field {
-                        path: "kind".into(),
-                    },
-                    values: vec!["context/configured".into()],
-                }),
-                select: QuerySelect::Fields {
-                    fields: vec!["data".into()],
-                },
-                group_by: vec![],
-                pick: Some(QueryPick::Last),
-                order_by: vec![],
-            },
-            page: Some(QueryPage {
-                limit: std::num::NonZeroU64::MIN,
-                after: None,
-            }),
-        };
-        let reply = timeline.query(query.clone()).await?;
-        let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("configuration fields")
-        };
-        let configuration: Option<ContextConfiguredData> = rows.into_iter().next().map(|row| {
-            let [QueryValue::Value { value }] =
-                <[_; 1]>::try_from(row.values).expect("one configuration field")
-            else {
-                unreachable!("configuration has data")
-            };
-            serde_json::from_value(value).expect("configuration follows its event contract")
+    pub(crate) fn rebuild_system(&mut self) {
+        let mut entries: Vec<_> = self
+            .entries
+            .values()
+            .filter(|entry| entry.delivery == PromptDelivery::System)
+            .collect();
+        entries.sort_by(|a, b| {
+            a.order
+                .cmp(&b.order)
+                .then(a.source.cmp(&b.source))
+                .then(a.scope.cmp(&b.scope))
         });
-        let mut snapshot = Self {
-            configuration: configuration.as_ref().map(|data| (*data.settings).clone()),
-            ..Self::default()
-        };
-        query.query.filter = Some(QueryFilter::In {
-            value: QueryOperand::Field {
-                path: "kind".into(),
-            },
-            values: [
-                "prompt/changed",
-                "turn/start",
-                "turn/end",
-                "branch/start",
-                "context/scope",
-            ]
-            .map(Into::into)
-            .to_vec(),
-        });
-        query.query.select = QuerySelect::Fields {
-            fields: [
-                "kind",
-                "data.timeline",
-                "data.revision",
-                "data.changes",
-                "data.turn_id",
-                "data.scope",
-                "data.status",
-            ]
-            .map(String::from)
-            .to_vec(),
-        };
-        query.query.pick = None;
-        query.page.as_mut().unwrap().limit = std::num::NonZeroU64::new(256).unwrap();
-        loop {
-            let reply = timeline.query(query.clone()).await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("prompt state fields")
-            };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: serde_json::Value::String(kind),
-                    },
-                    timeline,
-                    revision,
-                    changes,
-                    turn,
-                    scope,
-                    status,
-                ] = <[_; 7]>::try_from(row.values).expect("prompt state fields")
-                else {
-                    unreachable!("a prompt fact has a kind")
-                };
-                match kind.as_str() {
-                    "prompt/changed" => {
-                        let (
-                            QueryValue::Value {
-                                value: serde_json::Value::String(timeline),
-                            },
-                            QueryValue::Value {
-                                value: serde_json::Value::String(revision),
-                            },
-                            QueryValue::Value { value: changes },
-                        ) = (timeline, revision, changes)
-                        else {
-                            unreachable!("a prompt change has identity and changes")
-                        };
-                        let changes: Vec<PromptChange> = serde_json::from_value(changes)
-                            .expect("prompt changes follow their event contract");
-                        snapshot.changed(&timeline, &revision, &changes);
-                    }
-                    "turn/start" | "turn/end" => {
-                        let QueryValue::Value {
-                            value: serde_json::Value::String(turn),
-                        } = turn
-                        else {
-                            unreachable!("a turn has an identity")
-                        };
-                        if kind == "turn/start" {
-                            snapshot.turns.insert(turn);
-                        } else {
-                            snapshot.turns.remove(&turn);
-                        }
-                    }
-                    "branch/start" => snapshot.turns.clear(),
-                    "context/scope" => {
-                        let (
-                            QueryValue::Value { value: scope },
-                            QueryValue::Value { value: status },
-                        ) = (scope, status)
-                        else {
-                            unreachable!("scope event fields")
-                        };
-                        let scope: PromptScope = serde_json::from_value(scope)
-                            .expect("prompt scope follows its event contract");
-                        match serde_json::from_value::<ContextScopeStatus>(status)
-                            .expect("scope status follows its event contract")
-                        {
-                            ContextScopeStatus::Started => {
-                                snapshot.tasks.insert(scope);
-                            }
-                            ContextScopeStatus::Ended => {
-                                snapshot.tasks.remove(&scope);
-                            }
-                        }
-                    }
-                    _ => unreachable!("selected prompt state kind"),
-                }
-                snapshot.retain_active();
-            }
-            query.page.as_mut().unwrap().after = reply.next;
-            if query.page.as_ref().unwrap().after.is_none() {
-                return Ok((snapshot, configuration));
-            }
-        }
+        self.system = entries
+            .into_iter()
+            .map(|entry| entry.body.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
     }
 
     pub fn apply(&mut self, event: &AgentEvent) {
-        match &event.kind {
+        self.apply_kind(&event.kind);
+    }
+
+    pub(crate) fn apply_kind(&mut self, kind: &EventKind) {
+        match kind {
             EventKind::ContextConfigured(data) => {
                 self.configuration = Some((*data.settings).clone());
+                return;
             }
             EventKind::PromptChanged(data) => {
-                self.changed(&data.timeline, &data.revision, &data.changes)
+                self.changed(&data.timeline, &data.revision, &data.changes);
+                return;
             }
             EventKind::TurnStart(data) => {
-                self.turns.insert(data.turn_id.clone());
+                self.set_turn_active(&data.turn_id, true);
+                return;
             }
             EventKind::TurnEnd(data) => {
-                self.turns.remove(&data.turn_id);
+                self.set_turn_active(&data.turn_id, false);
+                return;
             }
             EventKind::BranchStart(_) => self.turns.clear(),
             EventKind::ContextScope(data) => match data.status {
@@ -319,6 +170,15 @@ impl PromptSnapshot {
                 }
             },
             _ => return,
+        }
+        self.retain_active();
+    }
+
+    pub(crate) fn set_turn_active(&mut self, turn_id: &str, active: bool) {
+        if active {
+            self.turns.insert(turn_id.to_owned());
+        } else {
+            self.turns.remove(turn_id);
         }
         self.retain_active();
     }

@@ -18,10 +18,10 @@ use serde_json::Value;
 
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    ApprovalView, CompactionPart, CompactionPartSize, CompactionState, CompactionView,
-    FailureDetail, LineCut, LineState, LineView, MemberCard, MemberConversationState, MemberTarget,
-    QueuedInput, RetryView, RowKind, RowTone, TaskFinish, TaskKind, TaskOutcome, TaskTarget,
-    TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
+    ApprovalView, CompactionDetail, CompactionDetailState, CompactionPart, CompactionPartSize,
+    CompactionState, CompactionView, FailureDetail, LineCut, LineState, LineView, MemberCard,
+    MemberConversationState, MemberTarget, QueuedInput, RetryView, RowKind, RowTone, TaskFinish,
+    TaskKind, TaskOutcome, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -534,25 +534,31 @@ impl Projection {
                     String::new(),
                 );
                 self.row(index).compaction = Some(CompactionView {
+                    detail: None,
                     state: CompactionState::Running,
-                    text: String::new(),
+                    text: String::new().into(),
                     insufficient: Vec::new(),
                 });
                 self.compaction_rows.insert(sequence, index);
             }
             EventContent::Compaction(data) => {
-                let index = match data
-                    .start
-                    .and_then(|start| self.compaction_rows.remove(&start))
-                {
-                    Some(index) => index,
-                    None => self.push(
-                        format!("compaction-{sequence}"),
-                        RowKind::Compaction,
-                        String::new(),
-                    ),
-                };
-                self.row(index).compaction = Some(compaction_view(&data.outcome));
+                self.finish_compaction(sequence, data.start, compaction_view(&data.outcome));
+            }
+            EventContent::CompactionSummary(data) => {
+                self.finish_compaction(
+                    sequence,
+                    data.start,
+                    CompactionView {
+                        state: CompactionState::Completed,
+                        detail: Some(CompactionDetail {
+                            event_id: event.id.clone(),
+                            sequence,
+                            state: CompactionDetailState::Unloaded,
+                        }),
+                        text: String::new().into(),
+                        insufficient: compaction_sizes(data.insufficient_space.as_ref()),
+                    },
+                );
             }
             EventContent::ModelEnd(data) => {
                 self.thinking_characters.remove(&data.request_id);
@@ -961,6 +967,13 @@ impl Projection {
     }
 
     pub fn pending_exec(&mut self, branch: &str, task: &dim_agent_types::PendingExec) {
+        if self
+            .tasks
+            .iter()
+            .any(|known| known.branch_id == branch && known.id == task.event_id)
+        {
+            return;
+        }
         let target = TaskTarget {
             branch_id: branch.into(),
             task_id: task.task_id.clone(),
@@ -1580,6 +1593,44 @@ impl Projection {
         }
     }
 
+    fn finish_compaction(&mut self, sequence: u64, start: Option<u64>, view: CompactionView) {
+        let index = match start.and_then(|start| self.compaction_rows.remove(&start)) {
+            Some(index) => index,
+            None => self.push(
+                format!("compaction-{sequence}"),
+                RowKind::Compaction,
+                String::new(),
+            ),
+        };
+        self.row(index).compaction = Some(view);
+    }
+
+    pub fn compaction_detail(
+        &mut self,
+        event_id: &str,
+        sequence: u64,
+        state: CompactionDetailState,
+        data: Option<&dim_agent_types::ContextCompactionData>,
+    ) -> bool {
+        let Some(index) = self.rows.iter().position(|row| {
+            row.compaction
+                .as_ref()
+                .and_then(|view| view.detail.as_ref())
+                .is_some_and(|detail| detail.event_id == event_id && detail.sequence == sequence)
+        }) else {
+            return false;
+        };
+        let view = self.row(index).compaction.as_mut().expect("compaction row");
+        if let Some(data) = data {
+            let loaded = compaction_view(&data.outcome);
+            view.text = loaded.text;
+        } else {
+            view.text = "".into();
+        }
+        view.detail.as_mut().expect("detail identity").state = state;
+        true
+    }
+
     fn complete_tool(
         &mut self,
         request_id: &str,
@@ -1635,20 +1686,7 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
             ..
         } => {
             let text = replacement_text(replacement, *replacement_parts);
-            let insufficient = diagnostics
-                .insufficient_space
-                .as_ref()
-                .map(|space| {
-                    space
-                        .parts
-                        .iter()
-                        .map(|part| CompactionPartSize {
-                            part: compaction_part(part.part),
-                            tokens: part.tokens,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let insufficient = compaction_sizes(diagnostics.insufficient_space.as_ref());
             (CompactionState::Completed, text, insufficient)
         }
         ContextCompactionResult::Skipped { reason, .. } => {
@@ -1662,10 +1700,22 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
         }
     };
     CompactionView {
+        detail: None,
         state,
-        text,
+        text: text.into(),
         insufficient,
     }
+}
+
+fn compaction_sizes(space: Option<&dim_agent_types::InsufficientSpace>) -> Vec<CompactionPartSize> {
+    space
+        .into_iter()
+        .flat_map(|space| &space.parts)
+        .map(|part| CompactionPartSize {
+            part: compaction_part(part.part),
+            tokens: part.tokens,
+        })
+        .collect()
 }
 
 /// A part of the insufficient-space mark, as this client names it.
@@ -2990,9 +3040,32 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Running,
-                text: String::new(),
+                text: String::new().into(),
                 insufficient: Vec::new(),
+            })
+        );
+        let mut lazy = Projection::default();
+        apply(
+            &mut lazy,
+            &[
+                compaction_start(3),
+                serde_json::json!({"id":"event-4","sequence":4,"create_at":4,
+                "type":"display","name":"compaction","data":{"start":3,"strategy":"summary"}}),
+            ],
+        );
+        let rows = lazy.snapshot().rows;
+        assert_eq!(rows.len(), 1, "the summary settles the same running row");
+        let view = rows[0].compaction.as_ref().unwrap();
+        assert_eq!(view.state, CompactionState::Completed);
+        assert!(view.text.is_empty(), "the body has not been requested");
+        assert_eq!(
+            view.detail,
+            Some(CompactionDetail {
+                event_id: "event-4".into(),
+                state: CompactionDetailState::Unloaded,
+                sequence: 4
             })
         );
 
@@ -3015,6 +3088,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Completed,
                 text: "<dim-summary>\nThe parser is half done.\n</dim-summary>".into(),
                 insufficient: Vec::new(),
@@ -3068,7 +3142,7 @@ mod tests {
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
                 assert_eq!(compaction.state, CompactionState::Completed);
-                compaction.text.as_str()
+                compaction.text.as_ref()
             })
             .collect();
         assert_eq!(summaries, [summary, summary]);
@@ -3115,7 +3189,7 @@ mod tests {
             .iter()
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
-                (compaction.state, compaction.text.as_str())
+                (compaction.state, compaction.text.as_ref())
             })
             .collect();
         assert_eq!(
@@ -3147,6 +3221,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Failed,
                 text: "context is not configured".into(),
                 insufficient: Vec::new(),

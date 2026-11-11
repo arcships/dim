@@ -20,7 +20,7 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Pursuit](Pursuit.md) (evaluator judge mode of Goal) | — | `judge` on `session.goal.set` | completion requests decided by evaluator branches; conclusion inputs and Goal's outcomes | M2; #422 |
 | [ModelRecovery](ModelRecovery.md) | — | — | the disposer registered with the Loop's port; the handover input it writes | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
-| [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
+| [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation; [ContextUsage proposal](ContextUsage.md)) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
 | [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
 | [Recall](Recall.md) | — | `recall` tool (tells the model its branch's history: turns, a turn, one thing in full, search) | — | M2; #129 |

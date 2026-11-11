@@ -22,6 +22,7 @@ cannot fit the request fails terminally without requesting another recovery.
 | `B:TimelineIdentity` | Identify configuration publication scope; Session and branch ids of the `context.prepare` span. |
 | `B:Dispatcher` | Hand off recovery to live preparation/steer/interrupt transitions and report faults. |
 | `B:Timeline` | Read fixed context, publish handoff and configuration facts. |
+| `B:ContextUsage` | Read persisted statistics and capture the exact request boundary for estimate reuse. |
 | `B:BranchLifecycle` | Refuse a guide adoption on a closing branch. |
 
 ## Events and lifetime
@@ -31,8 +32,9 @@ compaction start/result and turn start/end. Produces `model/call` on success or
 `step/model-output-end` on failure, with `context/compaction-start` and one `context/compaction` around
 each strategy call. A `context/prepare` may carry `failure_chain
 {from_request_id, attempts, waited_ms}`; preparation copies it into `model/call`
-unchanged, as it copies `configuration` and `prompt`. `usage` reads the head's budget without writing. Its publisher commits prompt changes, adopted inputs and
-`context/configured` atomically; it composes the System at every adoption that
+unchanged, as it copies `configuration` and `prompt`. `usage` reads ContextUsage at a fixed published head without projecting history. Its publisher receives the adopted Snapshot and configuration explicitly from
+Prompt, then commits prompt changes, adopted inputs and `context/configured`
+atomically; it composes the System at every adoption that
 publishes a configuration. A change that renders the System composes the new
 source text, and a model- or tool-only or guide update re-renders the guide over
 the source text the configuration records (`system_source`), so a writer that
@@ -50,14 +52,19 @@ Recovery queries preparation identities without a matching model call or output
 end, and automatic compaction starts without a matching result, at one committed
 boundary. It reads only settlement and control fields, then writes terminal
 facts without reconstructing historical requests or rerunning host work.
-Preparation and policy hold no complete request between operations; validation
-estimates the actual request it receives, including changes made before commit.
+Preparation and policy retain only a weak reference and numeric evidence for the
+in-flight request. Validation reuses that estimate for the unchanged final object
+and matching model counter and limits; otherwise it counts the actual final request.
 Context pages use one fixed content cutoff and store continuations. Cut discovery
 reads ids and positions; retained input and tool-result queries end at the chosen
 cut before returning bodies. Retry control facts use a separate fixed committed
-cutoff above the original content boundary. Provider-baseline validation reads
-the matching historical request when its exact prefix comparison requires it;
-that request remains local to the operation.
+cutoff above the original content boundary. Provider-baseline estimates come from ContextUsage's cumulative numbers and its live verified-request association. Request preparation and final
+validation do not load historical model requests.
+For a compatible numeric reference with a known projection boundary, normal
+preparation also checks growth numerically and returns without a second history
+projection. Recovery, a reusable completed compaction, or an actual threshold
+compaction reads the policy view. Legacy unknown statistics and unsupported
+counters retain their explicit local-count/projection path.
 The mock profile
 has no context resolver. Completed compaction facts remain authoritative across
 checkpoint selection. Recovery snapshots are built from the final adopted cut,
@@ -86,7 +93,7 @@ nothing and no digest can be written
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
+| 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
 | 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation` |
 | 被注入于 | `ModelProvider`、`Prompt` |
 <!-- /generated -->

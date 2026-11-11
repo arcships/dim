@@ -79,7 +79,7 @@ impl Observation {
 pub(super) struct Members {
     observations: HashMap<String, Observation>,
     /// The detail's member: the attachment it was opened on and its Session.
-    selected: Option<(u64, String)>,
+    pub(super) selected: Option<(u64, String)>,
     /// Observations waiting for the history-page slot, oldest first.
     pages: VecDeque<String>,
     /// Members whose read failed or whose Session closed: an unfinished card
@@ -117,6 +117,16 @@ struct AgentSummary {
 }
 
 impl Worker {
+    pub(super) fn member_projection(&mut self, session_id: &str) -> Option<&mut Projection> {
+        self.members
+            .observations
+            .get_mut(session_id)
+            .filter(|observation| {
+                !observation.closing && observation.projection_id == self.projection_id
+            })
+            .map(|observation| &mut observation.projection)
+    }
+
     pub(super) fn watch_member(&mut self, member_id: Option<String>) {
         let selected = member_id.map(|id| (self.projection_id, id));
         if selected == self.members.selected {
@@ -231,6 +241,13 @@ impl Worker {
                 continue;
             };
             let mut params = json!({"sessionId":id});
+            if method == "session.attach"
+                && self
+                    .client
+                    .supports(&["session.history.display", "session.history.detail"])
+            {
+                params["display"] = json!(true);
+            }
             if method == "session.goal.get" {
                 params["branchId"] = json!("main");
             }
@@ -291,7 +308,15 @@ impl Worker {
                 continue;
             }
             let params = observation.window.params(&id, "main");
-            let request = self.client.send("session.history", params).await?;
+            let method = if self
+                .client
+                .supports(&["session.history.display", "session.history.detail"])
+            {
+                "session.history.display"
+            } else {
+                "session.history"
+            };
+            let request = self.client.send(method, params).await?;
             self.members
                 .observations
                 .get_mut(&id)
@@ -473,8 +498,16 @@ impl Worker {
             }
             Pending::History(_) => {
                 let page = result.map_err(|error| error.to_string()).and_then(|value| {
-                    let page = serde_json::from_value(value)
-                        .map_err(|error| format!("Invalid history page: {error}"))?;
+                    let page = if self
+                        .client
+                        .supports(&["session.history.display", "session.history.detail"])
+                    {
+                        serde_json::from_value::<dim_client::wire::DisplayPage>(value)
+                            .map(Into::into)
+                    } else {
+                        serde_json::from_value(value)
+                    }
+                    .map_err(|error| format!("Invalid history page: {error}"))?;
                     observation
                         .window
                         .push(page)

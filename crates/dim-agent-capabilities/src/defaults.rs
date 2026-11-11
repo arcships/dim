@@ -144,9 +144,15 @@ fn install_with_prompt_capability_and_branch(
             }),
         )
         .require_feature(
-            Feature::new("ContextPreparation").branch("ContextPreparation", |names| {
-                Ok(Box::new(ContextPreparationPlugin::new(names)?))
-            }),
+            Feature::new("ContextPreparation")
+                .branch("ContextUsage", |names| {
+                    Ok(Box::new(crate::context_usage::ContextUsagePlugin::new(
+                        names,
+                    )?))
+                })
+                .branch("ContextPreparation", |names| {
+                    Ok(Box::new(ContextPreparationPlugin::new(names)?))
+                }),
         )
         .require_feature(
             Feature::new("Prompt")

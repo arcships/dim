@@ -433,6 +433,34 @@ listener of their names. The contract reserved here is unchanged:
   adopted inputs (rule 10). No `ui/*` event enters model context by itself,
   and none writes the Timeline directly.
 
+### 3.7 Context usage reads
+
+Context usage uses the Session worker's existing request/response routing. Sending
+`session.context.usage` does not wait for its reply in the command or notification
+handler. History replies, projection publication and user commands continue while
+the usage request is pending. No additional worker or statistics cache is created.
+
+Only one context request is outstanding for the current attachment. A change
+during that request keeps the reading stale; its reply allows one subsequent
+refresh. `/usage` can join the pending read and report its result. An automatic
+failure clears the reading without adding transcript text; an explicit `/usage`
+also reports the error. The existing estimate and last-request cache-share
+semantics remain unchanged.
+
+Changing the Session clears the request identity. A reply to that old request
+neither updates the new Session's reading nor prints an old `/usage` report.
+Statistics and estimation belong to [ContextUsage](ContextUsage.md); this client
+flow does not reduce the server's calculation or I/O cost.
+
+```text
+resume -> send history and usage
+       -> history reply -> show conversation; accept input
+       -> usage reply   -> update composer reading
+
+usage pending -> /new -> new Session
+old reply             -> discard
+```
+
 ## 4. Timing and conflicts
 
 | Case | Decision |

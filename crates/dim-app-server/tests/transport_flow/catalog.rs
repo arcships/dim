@@ -1,6 +1,6 @@
 use super::deletion::Store;
 use super::*;
-use dim_app_server::storage::initialize_session_catalog;
+use dim_app_server::storage::{initialize_session_catalog, initialize_session_member_index};
 use rusqlite::params;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -300,6 +300,7 @@ async fn catalog_reports_creation_origins_and_filters_the_hidden_classes() {
     )
     .unwrap();
     initialize_session_catalog(&tx, &child).unwrap();
+    initialize_session_member_index(&tx, &child).unwrap();
     tx.commit().unwrap();
 
     let plan: Vec<String> = connection
