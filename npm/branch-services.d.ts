@@ -7,6 +7,91 @@ export interface RustError<Name extends string = string, Code extends string = s
   readonly data: Data
 }
 
+/** The connections attached to one Session now. */
+export interface SessionPresenceRequest {
+  sessionId: string
+}
+
+/**
+ * The channels the model may see. `tui` is a UI leaf; a leaf's underlying
+ * connection is not counted again.
+ */
+export type ClientChannel = "tui" | "cli" | "web" | "acp" | "remote" | "desktop" | "unknown"
+
+/** One attached connection. */
+export interface ClientPresence {
+  channel: ClientChannel
+  /** The client's self-declared `hello.clientName`; never an identity. */
+  label?: string | null
+}
+
+/** The `presences` reply; an unknown Session is empty. */
+export interface SessionPresencesReply {
+  presences: ClientPresence[]
+}
+
+/**
+ * The `sessionClientsHost` face: the connections attached to each Session,
+ * as data. The App Server binds its connection and UI registries; a Rust
+ * reader calls [`Self::presences`] directly and a part of another language
+ * calls the same operation by name.
+ */
+export interface SessionClientsHost {
+  /** The connections attached to `request.session_id` now. */
+  presences(request: SessionPresenceRequest): Promise<SessionPresencesReply>
+}
+
+/** The `variables` reply: the names only, never a credential value. */
+export interface CredentialVariablesReply {
+  variables: string[]
+}
+
+/**
+ * The `credentialVariablesHost` face: the names of the environment variables
+ * the owner reads credentials from. The owner binds its read; a Rust reader
+ * calls [`Self::variables`] directly and a part of another language calls the
+ * same operation by name.
+ */
+export interface CredentialVariablesHost {
+  /** The names, in the owner's set order. */
+  variables(): Promise<CredentialVariablesReply>
+}
+
+/**
+ * One declared method as the reservation question reads it: the name, whether
+ * it mutates and the notification names it may send. `interruption` and
+ * `progress` belong to an actual registration, not to the question, so they do
+ * not cross.
+ */
+export interface ReservedMethod {
+  name: string
+  mutating: boolean
+  notifications?: string[]
+}
+
+/** A namespace and the declarations it would register. */
+export interface ReservedMethodsRequest {
+  namespace: string
+  declarations?: ReservedMethod[]
+}
+
+/** What `reservedMethods` fails with: `{code, message}`. */
+export type ReservedMethodsError = { code: "reserved"; message: string }
+
+/**
+ * The method names a host keeps from Session namespaces, such as its
+ * protocol's built-ins and roots: a process value the Session's table
+ * consults when a namespace is registered. A host that serves no protocol
+ * names no such value, and its Session tables reserve nothing.
+ */
+export interface ReservedMethods {
+  /**
+   * Refuses a namespace and declarations the host keeps for itself.
+   * @throws {ReservedMethodsErrorThrown}
+   */
+  check(request: ReservedMethodsRequest): Promise<void>
+}
+
 export type BranchSource =
   | { kind: "tool"; turn_id: string; request_id: string; call_id: string }
   | { kind: "host"; operation_id: string }
@@ -433,6 +518,24 @@ export interface SessionPermissions {
   permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
 }
 
+/** One member relation as `collaborationDirectory.relations` answers it. */
+export interface CollaborationRelation {
+  memberSessionId: string
+  leaderSessionId: string
+  memberAgentId: string
+}
+
+/** The `relations` reply: every member relation this process holds. */
+export interface CollaborationRelationsReply {
+  relations: CollaborationRelation[]
+}
+
+/** Process-lifetime records, independent of reloadable AgentIndex logic. */
+export interface CollaborationDirectory {
+  /** Every member relation this process holds, by member Session id. */
+  relations(): Promise<CollaborationRelationsReply>
+}
+
 export type WorkflowRoot = { project: string } | { package: string }
 
 export interface WorkflowReadRequest {
@@ -496,6 +599,28 @@ export interface WorkflowFiles {
   createDirectory(request: WorkflowDirectoryRequest): Promise<void>
 }
 
+/**
+ * The `read` reply: the addresses as UTF-8 text, as every path that crosses
+ * is ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
+ */
+export interface BoundAddresses {
+  unixPath?: string | null
+  pipeName?: string | null
+  websocketAddress?: string | null
+}
+
+/** What `listenAddresses.read` fails with: `{code, message}`. */
+export type ListenAddressesError = { code: "invalid_path"; message: string }
+
+/** Addresses actually bound by the transport plugin. */
+export interface ListenAddresses {
+  /**
+   * The addresses this process bound, if any.
+   * @throws {ListenAddressesErrorThrown}
+   */
+  read(): Promise<BoundAddresses>
+}
+
 export interface PublishFile {
   /** Absolute host path inside an already authorized FileStorage root. */
   path: string
@@ -530,6 +655,12 @@ export interface UiResources {
 /** What a method returning `Err(AgentError)` throws. */
 export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
 
+/** What a method returning `Err(ListenAddressesError)` throws. */
+export type ListenAddressesErrorThrown = RustError<"ListenAddressesError", "invalid_path", ListenAddressesError>
+
+/** What a method returning `Err(ReservedMethodsError)` throws. */
+export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "reserved", ReservedMethodsError>
+
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
@@ -541,6 +672,9 @@ export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_
 
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
+  sessionClientsHost: SessionClientsHost
+  credentialVariablesHost: CredentialVariablesHost
+  reservedMethods: ReservedMethods
   treeCommands: TreeCommands
   sessionConfig: SessionConfig
   timelineIdentity: TimelineIdentity
@@ -551,6 +685,8 @@ export interface Services {
   timeline: Timeline
   partRegistry: PartRegistry
   sessionPermissions: SessionPermissions
+  collaborationDirectory: CollaborationDirectory
   workflowFiles: WorkflowFiles
+  listenAddresses: ListenAddresses
   uiResources: UiResources
 }

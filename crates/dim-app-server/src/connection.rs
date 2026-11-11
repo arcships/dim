@@ -2164,14 +2164,11 @@ impl ConnectionPlugin {
     }
 }
 /// The presence host over the connection and UI registries.
-struct HubClients(Arc<ConnectionHub>);
-impl dim_agent_capabilities::environment_clients::SessionClientsSource for HubClients {
-    fn presences(
-        &self,
-        session_id: &str,
-    ) -> Vec<dim_agent_capabilities::environment_clients::ClientPresence> {
-        self.0.client_presences(session_id)
-    }
+fn hub_clients(
+    hub: Arc<ConnectionHub>,
+) -> dim_agent_capabilities::environment_clients::SessionClientsHost {
+    use dim_agent_capabilities::environment_clients::SessionClientsHost;
+    SessionClientsHost::new(Arc::new(move |session_id| hub.client_presences(session_id)))
 }
 impl DynPlugin for ConnectionPlugin {
     fn name(&self) -> &str {
@@ -2194,14 +2191,7 @@ impl DynPlugin for ConnectionPlugin {
             })?;
             ctx.provide_as::<ConnectionHub>(hub.clone())?;
             dim_agent_capabilities::environment_clients::register_parts(ctx, &parts)?;
-            ctx.provide_at(
-                self.clients.clone(),
-                Arc::new(
-                    dim_agent_capabilities::environment_clients::SessionClientsHost(Arc::new(
-                        HubClients(hub),
-                    )),
-                ),
-            )?;
+            ctx.provide_at(self.clients.clone(), Arc::new(hub_clients(hub)))?;
             Ok(Effect::Done)
         })
     }

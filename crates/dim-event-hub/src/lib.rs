@@ -38,7 +38,7 @@ pub use model::{
 };
 pub use state::InstanceState;
 pub use store::{GuideRecord, LastFailure, SUBSCRIPTIONS_FILE, Subscription};
-pub use subscriptions::EventSubscriptions;
+pub use subscriptions::{EventSubscriptions, ListCall, SubscriptionCall, UnsubscribeCall};
 pub use text::{ENTRY, EventHubTexts};
 
 /// The process bus event that says the `eventHub` service is provided and
@@ -95,10 +95,12 @@ pub fn install(builder: &mut AgentBuilder) {
 /// code keeps no second copy (design A.4, A.6, model-prompts §8.1).
 pub fn install_with(builder: &mut AgentBuilder, texts: EventHubTexts) {
     dim_agent_runtime::names::register::<EventHub>(builder.catalog_mut(), None);
-    // The `events` tool's subscription core (design §6, Appendix F): a Rust
-    // type only, with no shared name, so no row of another language reaches
-    // it and `eventHub` stays producer-only.
-    dim_agent_runtime::names::register::<EventSubscriptions>(builder.catalog_mut(), None);
+    // The `events` tool's subscription core (design §6, Appendix F): its
+    // operations are data scoped to the calling row's Session, so a leaf
+    // manages only its own subscriptions and `eventHub` stays producer-only.
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<EventSubscriptions>());
     // Producers of every language read the service (design Appendix F): the
     // shared name lets a row of another runtime be leased the dispatcher this
     // part provides at `host_key("eventHub")`.
@@ -186,9 +188,14 @@ impl DynPlugin for EventHubPlugin {
             }))?;
             // Beside `eventHub`: the `events` tool's core, scoped per call to
             // the caller's own Session (design §6).
-            ctx.provide_as::<EventSubscriptions>(Arc::new(EventSubscriptions::new(
-                shared.clone(),
-            )))?;
+            let subscriptions = Arc::new(EventSubscriptions::new(shared.clone()));
+            ctx.provide_as::<EventSubscriptions>(subscriptions.clone())?;
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key("eventSubscriptions"),
+                Arc::new(bridge::ForeignEventSubscriptions {
+                    service: subscriptions,
+                }),
+            )?;
             ctx.provide_at::<dyn HostDispatch>(
                 host_key("eventHub"),
                 Arc::new(bridge::ForeignEventHub {

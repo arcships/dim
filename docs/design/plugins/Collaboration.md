@@ -80,6 +80,8 @@ Issue: [#593](https://github.com/arcships/dim/issues/593). This section owns whi
 
 A temporary Agent is an Agent that has an owner. There is no separate flag: one field decides both whether the Agent is public and which Team may address it. The default Agent and the Agents `agent.create` creates have no owner and are public.
 
+Team relations are also process memory: `CollaborationDirectory` holds the members this process knows, and its read-only face `collaborationDirectory.relations {} -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}` lets a row of another language read them ([service faces §4.8](../service-faces.md#48-旧主机端口credentialvariableshost-等六个)). The face exposes no write: admission is Collaboration's business, and a second writer could record a relation that no Session and Agent check admitted.
+
 The producer keeps these invariants:
 
 - An owned Agent's owner is the leader Session whose `request` created it, and it never changes. Re-homing an Agent to another owner or to the public directory is not a supported operation.

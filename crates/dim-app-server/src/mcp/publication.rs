@@ -9,7 +9,7 @@ use super::{
     source_revision, sources_in_precedence,
 };
 use crate::settings::{SettingsScope, SettingsService};
-use dim_agent_capabilities::host::{CredentialVariables, CredentialVariablesHost};
+use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::{
     Modules, Names, SessionLifecycle, SessionLoader, SessionPhase, StateCell,
     names::ServiceCatalog, register_part,
@@ -226,7 +226,7 @@ struct Worker {
     commands: mpsc::Receiver<Command>,
     released: watch::Receiver<()>,
     settings_changed: watch::Receiver<()>,
-    credentials: Arc<dyn CredentialVariables>,
+    credentials: Arc<CredentialVariablesHost>,
 }
 impl McpPublication {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -361,7 +361,7 @@ impl DynPlugin for McpPublication {
                 commands: receiver,
                 released: releases,
                 settings_changed: config::settings_changes(ctx)?,
-                credentials: credentials.0.clone(),
+                credentials,
             };
             ctx.provide_as::<Publication>(port)?;
             let stop = ctx.cancellation_token();
@@ -402,7 +402,7 @@ struct Generation {
 }
 struct Projection {
     port: Arc<Publication>,
-    credentials: Arc<dyn CredentialVariables>,
+    credentials: Arc<CredentialVariablesHost>,
     sources: BTreeMap<McpSource, Source>,
     generations: BTreeMap<String, Generation>,
     disconnected: BTreeMap<(McpSource, String), String>,
@@ -540,7 +540,7 @@ impl Projection {
             if project_unresolved {
                 error = Some("MCP configuration could not be resolved");
             }
-            let protected = self.credentials.credential_variables();
+            let protected = self.credentials.variables().variables;
             for (id, config) in servers {
                 if project_unresolved {
                     continue;
@@ -844,13 +844,6 @@ mod tests {
     };
     use tokio::sync::Notify;
 
-    struct NoCredentials;
-    impl CredentialVariables for NoCredentials {
-        fn credential_variables(&self) -> BTreeSet<String> {
-            BTreeSet::new()
-        }
-    }
-
     #[derive(Default)]
     struct Faults {
         fail: AtomicBool,
@@ -922,8 +915,10 @@ mod tests {
             )
             .unwrap();
             let root = Ctx::root().unwrap();
-            root.provide(CredentialVariablesHost(Arc::new(NoCredentials)))
-                .unwrap();
+            root.provide(CredentialVariablesHost::new(Arc::new(
+                BTreeSet::<String>::new,
+            )))
+            .unwrap();
             let faults = Arc::new(Faults::default());
             let catalog = crate::catalog();
             let mut builtins = Modules::new();

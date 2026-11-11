@@ -3213,6 +3213,12 @@
         "removing": false
       },
       {
+        "service": "dim_agent_capabilities::methods::ReservedMethods",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dim_agent_capabilities::prompt_sources::BasePromptSettingsHost",
         "provider": 27,
         "generation": 1,
@@ -3459,8 +3465,32 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#collaborationDirectory",
+        "provider": 38,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#credentialVariablesHost",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventHub",
         "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#eventSubscriptions",
+        "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#listenAddresses",
+        "provider": 44,
         "generation": 1,
         "removing": false
       },
@@ -3489,8 +3519,20 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#reservedMethods",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
         "provider": 2,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionClientsHost",
+        "provider": 42,
         "generation": 1,
         "removing": false
       },

@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。§3 表覆盖这 91 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+catalog 现在 118 个名字：31 data、85 internal、2 shared-no-dispatcher。§3 表覆盖这 85 个 internal 名字；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 是 #1292 的新名字，不在当前 catalog。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -202,7 +202,6 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `eventSubscriptions` | process | eventhub | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `sessionLanguage` | session | PromptSources | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 有 leaf 消费者时加数据面 |
@@ -211,15 +210,12 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher。
 | `modelSelectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `modalityConnectionHost` | process | Provider | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `worktreeAssociations` | process | SessionStore | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `listenAddresses` | process | Transport | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `credentialVariablesHost` | process | root | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `reservedMethods` | process | — | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `agentConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `collaborationConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `skillsConfig` | session | SessionScope | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 有 leaf 消费者时加数据面 |
-| `sessionClientsHost` | process | Connection | legacy-no-consumer | 有 leaf 消费者时加数据面 |
 | `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 有 leaf 消费者时加数据面 |
+
+`eventSubscriptions`、`listenAddresses`、`credentialVariablesHost`、`reservedMethods`、`collaborationDirectory`、`sessionClientsHost` 已按 §4.8 转成数据面，所以不在这张表里。
 
 ## 4. 第一批改造（#1292）
 
@@ -315,6 +311,35 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 按 Scheduler §10.2 的方法表，不按 §11.1 的通知表。`branchId` 默认 `main`；`at` 是 RFC 3339；`cancel` 结算 `scheduled` 记录时返回 `{}`，记录已经终态时返回 `{state}`。
 
 改动：给 `Wakeups` 加数据面（或手写 dispatcher），在 `host_key("wakeups")` 提供；`SchedulerSession` 改注入 `dyn HostDispatch`。`WakeupRequest` 补 serde（camelCase）；`Wakeup` 是持久化记录，已经 snake_case，**不要**给它加 `rename_all`，data face 的 record 用单独的 wire 类型或显式映射。测试：wakeup 的 create/list/cancel flow，加 loopback。
+
+### 4.8 旧主机端口：`credentialVariablesHost` 等六个
+
+六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
+
+```text
+credentialVariablesHost.variables {} -> {variables: [string]}
+  -- 只给变量名，永不给凭据值
+sessionClientsHost.presences {sessionId} -> {presences: [{channel, label?}]}
+  -- channel 是 tui/cli/web/acp/remote/desktop/unknown；label 是 hello.clientName，不是身份
+listenAddresses.read {} -> {unixPath?, pipeName?, websocketAddress?}
+  -> error {code: invalid_path, message}
+  -- 路径按 §1 是 UTF-8 字符串；非 UTF-8 的 unix socket 路径是 invalid_path
+reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]}
+  -> {} | error {code: reserved, message}
+  -- interruption/progress 只属于真实注册，不属于这个问题
+collaborationDirectory.relations {} -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
+  -- 只读：Team 关系的写入仍由 Collaboration 的准入决定，数据面不提供第二个写入者
+eventSubscriptions.sources {} -> sources
+eventSubscriptions.subscribe {sessionId, branchId?, types, match?, mode?} -> reply
+eventSubscriptions.unsubscribe {sessionId, subscriptionId} -> reply
+eventSubscriptions.list {sessionId} -> reply
+  -> error {code, message}
+  -- 形状与 EventHub A.3 的管理方法相同；sessionId 是值，不是授权
+```
+
+`eventSubscriptions` 的 `sources`、`list` 在 dispatcher 里是 sync，其余是 async。测试：`crates/dim-agent-capabilities/tests/legacy_port_faces.rs`、`crates/dim-app-server/tests/legacy_port_faces.rs` 和 EventHub 的 `fixture_flow.rs` 证明 typed binding 与 wire 返回同一结果。
+
+`reservedMethods` 的 owner 是 App Server 的根值：它从 `process_value`（每个 Agent 一份）改为进程根上的一份，因为 shared 名字的 isolate 只覆盖 dispatcher key，而 `process_value` 的按 Agent 隔离覆盖的是类型 key；一份进程值对所有 Session 表等价，且只有一个 dispatcher。
 
 ## 5. 验证
 
