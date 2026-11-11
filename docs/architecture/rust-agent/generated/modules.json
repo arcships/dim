@@ -6308,6 +6308,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "assert_ne",
         "format",
         "json",
         "matches",
@@ -17835,10 +17836,18 @@
       "from": "dim_agent_capabilities::workspace_tools::files::write",
       "to": "dim_agent_capabilities::workspace_tools::files::codec",
       "references": [
+        "path codec::decode_text",
         "path codec::detect_eol",
         "path codec::encode_text",
         "path codec::normalize_eol",
         "use super::codec"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::files::write",
+      "to": "dim_agent_capabilities::workspace_tools::files::edit",
+      "references": [
+        "use super::edit::unified_diff"
       ]
     },
     {
@@ -41708,6 +41717,7 @@
       "references": [
         "path MouseEvent",
         "path MouseKind::Drag",
+        "path MouseKind::Move",
         "path MouseKind::Press",
         "path MouseKind::Release",
         "path MouseKind::WheelDown",
@@ -41797,6 +41807,7 @@
       "references": [
         "path MouseEvent",
         "path MouseKind::Drag",
+        "path MouseKind::Move",
         "path MouseKind::Press",
         "path MouseKind::Release",
         "path MouseKind::WheelDown",
@@ -45335,15 +45346,25 @@
         "path Detail::Collapsed",
         "path Detail::Expanded",
         "path Detail::Summary",
+        "path ToolGroup",
         "path action_at",
         "path card_actions",
         "path card_rows",
+        "path disclosure_at",
+        "path disclosure_rows",
+        "path group_id",
+        "path project_fullscreen_group",
         "path project_group",
         "path render_group",
         "use crate::ui::transcript::tool_group::Detail",
+        "use crate::ui::transcript::tool_group::ToolGroup",
         "use crate::ui::transcript::tool_group::action_at",
         "use crate::ui::transcript::tool_group::card_actions",
         "use crate::ui::transcript::tool_group::card_rows",
+        "use crate::ui::transcript::tool_group::disclosure_at",
+        "use crate::ui::transcript::tool_group::disclosure_rows",
+        "use crate::ui::transcript::tool_group::group_id",
+        "use crate::ui::transcript::tool_group::project_fullscreen_group",
         "use crate::ui::transcript::tool_group::project_group",
         "use crate::ui::transcript::tool_group::render_group"
       ]
@@ -45779,7 +45800,8 @@
       "to": "dim_cli::ui::transcript::tool_group",
       "references": [
         "path Detail::Collapsed",
-        "path Detail::Expanded"
+        "path Detail::Expanded",
+        "path Detail::Summary"
       ]
     },
     {
