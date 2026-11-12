@@ -31,13 +31,24 @@ Collapsed tool groups retain their existing header and member cards. The header
 appends the first program name of each shell call, without arguments, executable
 paths, script bodies or output. Names stay in first-call order, with repetitions
 counted (`python ×2, rg`), including shell calls classified as reads or searches.
-The header remains one terminal row and keeps its disclosure when truncated.
+The header remains one terminal row. Scrollback tool headers and their child
+rows show no disclosure arrows in any detail mode; compaction rows follow the
+same rule. Their details remain controlled by `/tools` and Settings, not by
+clicking individual rows. Fullscreen retains its interactive disclosures,
+including when a header is truncated.
+Returning to scrollback restores compaction bodies to the tool-detail preference.
 Other tools retain their existing header summaries. Summary
 adds one row per call, in call order, naming its tool and input target or command,
 without output, diffs or script bodies. Each row truncates to one terminal row;
 a multiline command shows its first nonblank line followed by `…`. Expanded
 retains the full tool details. These are the scrollback forms; fullscreen uses
 the same preference as a default for independently expandable nodes.
+
+```text
+Scrollback                         Fullscreen
+✓ Ran 1 command · du                ▸ ✓ Ran 1 command
+✓ Context compacted                ✓ Context compacted ▸
+```
 
 In fullscreen, collapsed closes the batch; summary opens its call list with
 call details closed; expanded opens both containers and details. A click toggles
@@ -231,24 +242,39 @@ Fullscreen, 8 rows             Scrollback, 8 rows
 
 ## Run keys and queue
 
-Queue and steer differ from Codex CLI: `Enter` queues while a run is in progress, and
-`Ctrl+S` steers. The other run keys follow the Codex CLI interaction (checked in its TUI,
-v0.166.0). `Enter` submits when no run is in progress.
+In scrollback and fullscreen TUI, `/settings` → Interface → Default send mode
+chooses how `Enter` submits a message draft during a run. `Ctrl+S` sends that
+draft in the other mode. Enter, Left/Right or Space toggles the setting, saves
+it in the CLI home, and applies it immediately. The default is `queue`.
+
+```text
+Settings
+  Interface
+> Default send mode    queue
+
+Running with a draft    Enter    Ctrl+S
+queue                   queue    steer
+steer                   steer    queue
+```
+
+`/keys` shows the selected mapping. `Shift+Enter`, `Alt+Enter` and `Ctrl+J`
+insert a newline in the message editor.
 
 ```text
 key                 run idle                     run in progress
-Enter               submit; no draft:            queue the draft; empty draft:
-                    /tasks while the task       steer the oldest queued message;
-                    line shows                  nothing queued: /tasks while the
-                                                task line shows
+Enter               submit; no draft:            send in the default mode; empty draft:
+                    /tasks while the task        steer the oldest queued message;
+                    line shows                   nothing queued: /tasks while the
+                                                 task line shows
 Tab                 pick an earlier message      pick an earlier message
                     (fullscreen)                 (fullscreen)
 Shift+Left          —                            empty draft: recall the newest held
                                                  message only if one text block
 Esc                 keep the draft               interrupt; every held message
                                                  returns to the draft, oldest first
-Ctrl+S              —                            draft not empty: steer the draft;
-                                                 empty: steer the oldest queued message
+Ctrl+S              —                            send draft in the other mode;
+                                                 empty: steer oldest queued message
+                                                 in queue mode only
 Up / Down           input history                input history
 Home / End          scroll (fullscreen, empty)   scroll (fullscreen, empty)
 ```
@@ -313,18 +339,18 @@ Steering always uses the owner's full held input.
 The strip and `/queue` read the same unconsumed input projection: incorporating
 messages in transcript order, then held messages oldest first. Each strip row
 names its state. During a run, `Shift+Left` on an empty draft recalls the newest
-held message subject to the attachment rule above. `Ctrl+S` steers the draft,
-or the oldest held message when the draft is empty; empty Enter does the same.
+held message subject to the attachment rule above. The strip shows the shortcut
+that steers the oldest held message from an empty draft for the selected mode.
 With nothing held, the empty-composer Enter opens `/tasks` while the task line
 shows, as the [run keys](#run-keys-and-queue) state. Up/Down remain input
 history outside the panel.
 
 ```text
-┌─ Queue (2) ──────────────────────────────────────────────┐
-│ › Incorporating · fix the failing test                   │
-│ › Held · then update the design note                     │
-│ /queue manage · shift+← edit last · ctrl+s steer         │
-└──────────────────────────────────────────────────────────┘
+┌─ Queue (2) ───────────────────────────────────────────────────────┐
+│ › Incorporating · fix the failing test                            │
+│ › Held · then update the design note                              │
+│ /queue manage · Shift+← edit last · empty draft: Ctrl+S steer     │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 A queued message the strip does not show adds its count to the hint. The strip shows at most five messages and keeps the height it reached while the queue drains.

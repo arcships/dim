@@ -41249,6 +41249,16 @@
     },
     {
       "from": "dim_cli::ui::keys",
+      "to": "dim_cli::model::session",
+      "references": [
+        "path SubmitMode",
+        "path SubmitMode::Queue",
+        "path SubmitMode::Steer",
+        "use crate::model::session::SubmitMode"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys",
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
@@ -41262,6 +41272,13 @@
       "to": "dim_cli::ui::keys::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys::tests",
+      "to": "dim_cli::model::session",
+      "references": [
+        "path SubmitMode::Queue"
       ]
     },
     {
@@ -44237,8 +44254,10 @@
         "path PromptField::Skills",
         "path PromptField::Summary",
         "path PromptSetting",
+        "path SubmitMode",
         "use crate::model::session::PromptField",
-        "use crate::model::session::PromptSetting"
+        "use crate::model::session::PromptSetting",
+        "use crate::model::session::SubmitMode"
       ]
     },
     {
@@ -46768,6 +46787,7 @@
         "path Setting",
         "path Setting::AcpSessions",
         "path Setting::BasePrompt",
+        "path Setting::DefaultSendMode",
         "path Setting::Isolation",
         "path Setting::Language",
         "path Setting::Mouse",
@@ -47280,9 +47300,11 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::model::view",
       "references": [
+        "path CompactionState::Completed",
         "path LineState::Waiting",
         "path LineState::Working",
         "path RowKind::AssistantMessage",
+        "path RowKind::Compaction",
         "path RowKind::Error",
         "path RowKind::HookContext",
         "path RowKind::Status",
@@ -47298,6 +47320,7 @@
         "path ViewRow",
         "path ViewSnapshot",
         "path ViewSnapshot::default",
+        "path crate::model::view::CompactionView",
         "path crate::model::view::MemberConversationState::Live",
         "path crate::model::view::MemberTarget::Session",
         "path crate::model::view::QueuedInput",
@@ -47351,7 +47374,8 @@
       "references": [
         "path i18n::active",
         "path i18n::set",
-        "path t"
+        "path t",
+        "path tf"
       ]
     },
     {
@@ -47451,6 +47475,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::settings_panel",
       "references": [
+        "path Setting::DefaultSendMode",
         "path Setting::Permission",
         "path Setting::ThinkingDetails",
         "path Setting::ToolDetails"
@@ -47483,6 +47508,7 @@
         "path KeyCode::Tab",
         "path KeyCode::Up",
         "path KeyEvent::new",
+        "path Modifiers::ALT",
         "path Modifiers::CTRL",
         "path Modifiers::NONE",
         "path Modifiers::SHIFT",
