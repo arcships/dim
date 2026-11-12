@@ -37,6 +37,11 @@ impl TestServer {
         let endpoint = Endpoint::default();
         let router = Router::new()
             .route("/v1/chat/completions", post(respond))
+            .route("/v1/responses", post(respond_responses))
+            .route(
+                "/v1beta/models/test-model:streamGenerateContent",
+                post(respond_gemini),
+            )
             .with_state(endpoint.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -72,6 +77,92 @@ fn frame(delta: Value, finish: Value) -> String {
         json!({"id":"remote-id","choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
     )
 }
+/// The prompt text of a request body, whichever `input` shape its protocol uses.
+fn requested_text(request: &Value) -> String {
+    request["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|last| last["content"].as_str())
+        .or_else(|| {
+            request["input"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|item| item["content"].as_array())
+                .and_then(|parts| parts.first())
+                .and_then(|part| part["text"].as_str())
+        })
+        .or_else(|| {
+            request["contents"]
+                .as_array()
+                .and_then(|contents| contents.last())
+                .and_then(|content| content["parts"].as_array())
+                .and_then(|parts| parts.first())
+                .and_then(|part| part["text"].as_str())
+        })
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// SSE framing of `events`, one `data:` line each.
+fn sse_value(events: &[Value]) -> String {
+    let mut body = String::new();
+    for event in events {
+        body.push_str(&format!("data: {event}\n\n"));
+    }
+    body
+}
+
+/// Responses replies whose usage follows the prompt: one carries
+/// `output_tokens_details` with a reasoning count of `0`, the other omits it.
+async fn respond_responses(
+    State(endpoint): State<Endpoint>,
+    Json(request): Json<Value>,
+) -> Response {
+    endpoint.requests.lock().unwrap().push(request.clone());
+    let usage = if requested_text(&request).contains("omitted") {
+        json!({"input_tokens":3,"output_tokens":6,"total_tokens":9})
+    } else {
+        json!({"input_tokens":3,"output_tokens":6,"total_tokens":9,
+            "output_tokens_details":{"reasoning_tokens":0}})
+    };
+    let body = sse_value(&[
+        json!({"type":"response.output_item.added","output_index":0,
+            "item":{"type":"message","id":"msg-1","role":"assistant","content":[]}}),
+        json!({"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"delta":"hi"}),
+        json!({"type":"response.output_item.done","output_index":0,
+            "item":{"type":"message","id":"msg-1","role":"assistant",
+                "content":[{"type":"output_text","text":"hi"}]}}),
+        json!({"type":"response.completed","response":{"id":"resp-1","status":"completed","usage":usage}}),
+    ]);
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Gemini replies in its own SSE framing: `thoughtsTokenCount` appears only
+/// for the prompt that asks to think.
+async fn respond_gemini(State(endpoint): State<Endpoint>, Json(request): Json<Value>) -> Response {
+    endpoint.requests.lock().unwrap().push(request.clone());
+    let mut usage = json!({"promptTokenCount":3,"candidatesTokenCount":6,"totalTokenCount":9});
+    if requested_text(&request).contains("thinking") {
+        usage["thoughtsTokenCount"] = json!(2);
+        usage["totalTokenCount"] = json!(11);
+    }
+    let body = sse_value(&[json!({
+        "candidates":[{
+            "content":{"parts":[{"text":"hi"}],"role":"model"},
+            "finishReason":"STOP",
+            "index":0
+        }],
+        "usageMetadata":usage
+    })]);
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(Body::from(body))
+        .unwrap()
+}
+
 async fn respond(
     State(endpoint): State<Endpoint>,
     headers: HeaderMap,
@@ -134,6 +225,14 @@ async fn respond(
         data += &format!(
             "data: {}\n\n",
             json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}})
+        );
+        data += "data: [DONE]\n\n";
+        (data, false)
+    } else if prompt == "usage-zero" {
+        let mut data = frame(json!({"content":"hi"}), json!("stop"));
+        data += &format!(
+            "data: {}\n\n",
+            json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":6,"completion_tokens_details":{"reasoning_tokens":0}}})
         );
         data += "data: [DONE]\n\n";
         (data, false)
@@ -462,6 +561,132 @@ async fn chat_reasoning_tokens_reach_the_recorded_usage() {
             Some(2.0),
             "{recorded}"
         );
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// The same local provider on another protocol; `base` is the server root the
+/// protocol's own path hangs off.
+fn configuration_of(base: &str, kind: &str) -> ModelConfigFile {
+    serde_json::from_value(json!({"defaultModel":{"providerId":"local","modelId":"test-model"},"providers":[{"id":"local","kind":kind,"baseUrl":base,"models":[{"id":"test-model","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":4096,"temperature":0}}]}]})).unwrap()
+}
+
+/// A Session on `kind`, with the server serving that protocol's path: Gemini
+/// under `/v1beta`, Responses under `/v1`.
+async fn protocol_session(
+    server: &TestServer,
+    kind: &str,
+) -> (MinimalHost, dim_agent_runtime::Session) {
+    let root = server.url.trim_end_matches("/v1");
+    let base = match kind {
+        "gemini" => format!("{root}/v1beta"),
+        _ => server.url.clone(),
+    };
+    let models = Arc::new(AimuxModels::from_config(configuration_of(&base, kind)).unwrap());
+    let agent = model_agent(models, None).await;
+    let session = agent.create_session(session_config()).await.unwrap();
+    (agent, session)
+}
+
+/// The `model/usage` fact a Session recorded, as the wire value.
+async fn recorded_usage(session: &dim_agent_runtime::Session) -> Value {
+    let events = chain_events(session, "main", ..).await.unwrap();
+    events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelUsage(data) => Some(serde_json::to_value(&data.usage).unwrap()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the reply's usage fact: {events:?}"))
+}
+
+/// A Chat reply with no `completion_tokens_details` records no reasoning count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_without_details_records_no_reasoning_count() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let agent = model_agent(server.models(), None).await;
+        let session = agent.create_session(session_config()).await.unwrap();
+        session
+            .submit("usage-nodetails".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let usage = recorded_usage(&session).await;
+        assert_eq!(usage["completionTokens"].as_f64(), Some(3.0));
+        assert_eq!(usage.get("reasoningTokens"), None, "{usage}");
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A Chat reply that reports `reasoning_tokens: 0` records a zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_with_a_zero_reasoning_count_records_zero() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let agent = model_agent(server.models(), None).await;
+        let session = agent.create_session(session_config()).await.unwrap();
+        session
+            .submit("usage-zero".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let usage = recorded_usage(&session).await;
+        assert_eq!(usage["completionTokens"].as_f64(), Some(6.0));
+        assert_eq!(usage["reasoningTokens"].as_f64(), Some(0.0), "{usage}");
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A Gemini reply without `thoughtsTokenCount` records zero. The Gemini API is
+/// proto3, whose JSON mapping omits a field holding its default value, so a
+/// reply that did not think cannot report the zero any other way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_without_a_thoughts_count_records_zero() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let (agent, session) = protocol_session(&server, "gemini").await;
+        session
+            .submit("text".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let usage = recorded_usage(&session).await;
+        assert_eq!(usage["completionTokens"].as_f64(), Some(6.0));
+        assert_eq!(usage["reasoningTokens"].as_f64(), Some(0.0), "{usage}");
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A Responses reply without `output_tokens_details` records zero: the
+/// Responses usage schema lists `output_tokens_details` and its
+/// `reasoning_tokens` among the required keys, so a missing object is read as
+/// zero rather than as an unknown count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_without_output_details_records_zero() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let (agent, session) = protocol_session(&server, "openai-responses").await;
+        session
+            .submit("omitted".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let usage = recorded_usage(&session).await;
+        assert_eq!(usage["completionTokens"].as_f64(), Some(6.0));
+        assert_eq!(usage["reasoningTokens"].as_f64(), Some(0.0), "{usage}");
         agent.close().await.unwrap();
         server.close().await;
     })
