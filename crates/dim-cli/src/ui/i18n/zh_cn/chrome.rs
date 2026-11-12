@@ -188,6 +188,21 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Result: {result}" => "结果：{result}",
         "Controlled by the leader" => "由主智能体控制",
         "› Open member conversation" => "› 打开成员会话",
+        "Waiting for result…" => "等待结果…",
+        "Running…" => "执行中…",
+        "Before/after comparison is unavailable for this record." => {
+            "此记录没有可用的修改前后对照。"
+        }
+        "No content changes." => "内容没有变化。",
+        "Old" => "旧",
+        "New" => "新",
+        "Changes" => "修改内容",
+        "Input" => "参数",
+        "Result" => "结果",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab 也可选择工具标题 · Enter/空格展开或收起当前工具"
+        }
+        "… {count} unchanged lines" => "… {count} 行未修改",
         "Not started" => "未启动",
         "Reason: {reason}" => "原因：{reason}",
         "Copied to clipboard" => "已复制到剪贴板",

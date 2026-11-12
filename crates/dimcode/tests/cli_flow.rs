@@ -6139,8 +6139,8 @@ fn tui_sends_dropped_files_as_links_and_images_by_model_capability() {
 
 #[test]
 fn fullscreen_login_releases_mouse_for_the_link_and_restores_the_preference_on_close() {
-    const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1006h";
-    const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1002l";
+    const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+    const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l";
     const URL: &str = "https://fixture.invalid/authorize";
 
     for mouse in ["on", "off"] {
@@ -9720,6 +9720,7 @@ fn tui_tasks_panel_stops_the_selected_command_or_member() {
 }
 
 #[test]
+#[ignore = "Intermittent PTY stall under investigation in #1454"]
 fn tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

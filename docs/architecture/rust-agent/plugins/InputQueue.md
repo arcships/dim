@@ -15,9 +15,14 @@ registration is withdrawn when that part unloads. A `session.input.withdraw`
 with `steer` calls each check registered now, in name order, before its batch;
 any block fails the call with `input_blocked` and writes nothing, else each
 context that is one runtime marker element becomes a text block after the
-steer's own content, and one that is not is dropped with a diagnostic. This is
-Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
-with none registered the withdrawal writes unchecked.
+steer's own content, and one that is not is dropped with a diagnostic naming the
+check. A check may also answer `warnings`, which the table attributes to the
+registration that raised them: the reply carries them as `warnings: [{check,
+message}]`, absent when empty. The table drops a block that is not one runtime
+marker element itself, where the registration name is known, and `append_blocks`
+repeats the test at the write. This is Hooks A.6.2's generic capability;
+InputQueue gives the checks no meaning, and with none registered the withdrawal
+writes unchecked.
 
 ### Dependencies
 
