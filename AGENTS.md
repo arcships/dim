@@ -33,11 +33,11 @@ This repository is Dim: a Rust coding agent (Agent v4), its App Server and the n
 
 ## Cross-language compatibility
 
-Every public service is a data face. `internal` is only a temporary migration marker for a name not yet exposed; it is not a contract class and the target catalog has none. The contract is [service faces](docs/design/service-faces.md) §2; if this section and the design disagree, the design wins.
+Every public service is a data face. The contract is [service faces](docs/design/service-faces.md) §2.
 
-- During migration a not-yet-exposed name may carry `internal(reason)` as a TODO; `object`, `hot-path`, `lock-callback`, `secret`, `owner-api`, `control`, `host-resource` and `legacy-no-consumer` describe the work, not permission to keep it internal. A new service is never marked internal. A secret value stays in the owner while the service face exposes operations. A name cannot be both shared and internal. The target is zero internal rows.
+- An existing `internal(reason)` entry must migrate to a data face or leave the catalog when its role is private implementation. New public services start as data faces. Secret values stay with the owner and public methods expose operations.
 - A data face is a name shared in the catalog **and** a `HostDispatch` at `host_key(name)`. Shared alone is not enough.
-- The face is the only public contract. A Rust typed client is a binding over the same face, not a second API: it calls the face's operations (directly in-process rather than through JSON) and owns no second business logic. Do not leave an owner trait and a face as two public contracts; generate or write one thin binding and test it against the wire shape. The target catalog has no `internal` or `shared-no-dispatcher` rows.
+- The face is the only public contract. Rust bindings call the same operations directly in-process and share the owner's business logic. Test binding and wire parity.
 - Method parameters, replies and errors are data: serde types, ids, operations and events. Handles, `&mut`, iterators, channels and `PathBuf`/`OsString` do not cross; the bridge may carry references and callbacks, but they are not the default, and a callback is never called synchronously inside the commit lock.
 - A part is leaf-ready only if every `inject` is a data face, every name it `provides` is a data face, it uses only dispatched methods, and it captures no non-service Rust state.
 - Every design and implementation states the face of each service it adds or consumes; link to the owner contract instead of restating or changing it.
