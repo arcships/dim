@@ -137,6 +137,14 @@ async fn respond(
         );
         data += "data: [DONE]\n\n";
         (data, false)
+    } else if prompt == "usage-reasoning" {
+        let mut data = frame(json!({"content":"hi"}), json!("stop"));
+        data += &format!(
+            "data: {}\n\n",
+            json!({"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":6,"completion_tokens_details":{"reasoning_tokens":2}}})
+        );
+        data += "data: [DONE]\n\n";
+        (data, false)
     } else if prompt == "truncated" {
         (frame(json!({"content":"partial"}), Value::Null), false)
     } else {
@@ -418,6 +426,41 @@ async fn chat_usage_without_details_records_cache_read_as_unknown() {
             if data.usage.prompt_tokens == 10.
                 && data.usage.total_tokens == 13.
                 && data.usage.cache_read_tokens.is_none()))
+        );
+        agent.close().await.unwrap();
+        server.close().await;
+    })
+    .await
+    .unwrap();
+}
+
+/// A recorded Chat Completions reply whose `usage` carries
+/// `completion_tokens_details.reasoning_tokens` records that reasoning share
+/// on the Session's `model/usage` fact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_reasoning_tokens_reach_the_recorded_usage() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let server = TestServer::start().await;
+        let agent = model_agent(server.models(), None).await;
+        let session = agent.create_session(session_config()).await.unwrap();
+        session
+            .submit("usage-reasoning".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let recorded = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ModelUsage(data) => Some(serde_json::to_value(&data.usage).unwrap()),
+                _ => None,
+            })
+            .expect("the reply's usage fact");
+        assert_eq!(recorded["completionTokens"].as_f64(), Some(6.0));
+        assert_eq!(
+            recorded["reasoningTokens"].as_f64(),
+            Some(2.0),
+            "{recorded}"
         );
         agent.close().await.unwrap();
         server.close().await;
