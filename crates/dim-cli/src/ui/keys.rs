@@ -2,6 +2,7 @@
 //! that owns the history scrolls, searches and copies (port of the TS
 //! `terminal-hints.ts` and `buildKeysBlockLines`).
 
+use crate::model::session::SubmitMode;
 use crate::ui::i18n::{t, tf};
 
 /// How a terminal reaches its own history: scroll, search, copy.
@@ -55,19 +56,38 @@ fn history(platform: &str, var: &dyn Fn(&str) -> String) -> History {
 }
 
 /// The `/keys` report, one string per row.
-pub fn report(fullscreen: bool, mouse: bool) -> Vec<String> {
+pub fn report(fullscreen: bool, mouse: bool, default_send_mode: SubmitMode) -> Vec<String> {
+    let steer_keys = match default_send_mode {
+        SubmitMode::Queue => "Enter / Ctrl+S",
+        SubmitMode::Steer => "Enter",
+    };
     let mut rows = vec![
         t("Application keys").to_owned(),
         format!(
             "  {}",
-            t(
-                "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history"
+            t("Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history")
+        ),
+        format!(
+            "  {}",
+            tf(
+                "Running with a draft: Enter {default} · Ctrl+S {alternate}",
+                &[
+                    ("default", default_send_mode.as_str()),
+                    ("alternate", default_send_mode.opposite().as_str()),
+                ],
+            )
+        ),
+        format!(
+            "  {}",
+            tf(
+                "Empty draft: {keys} steer first queued",
+                &[("keys", steer_keys)]
             )
         ),
         format!(
             "  {}",
             t(
-                "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued"
+                "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued"
             )
         ),
         format!(
@@ -116,15 +136,12 @@ mod tests {
     #[test]
     fn keys_report_keeps_shortcut_only_actions_and_distinguishes_modes() {
         for fullscreen in [false, true] {
-            let report = report(fullscreen, false).join("\n");
+            let report = report(fullscreen, false, SubmitMode::Queue).join("\n");
             assert!(
                 report.contains("Esc interrupt, queued messages return"),
                 "{report}"
             );
-            assert!(
-                report.contains("Ctrl+S steer draft or first queued"),
-                "{report}"
-            );
+            assert!(report.contains("Enter queue · Ctrl+S steer"), "{report}");
             if fullscreen {
                 assert!(
                     report.contains("Home/End top or bottom (empty draft)"),

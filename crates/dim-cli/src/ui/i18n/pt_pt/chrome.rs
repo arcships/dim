@@ -24,8 +24,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "As mensagens com anexos permanecem em fila; use /queue para orientar ou eliminá-las"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue gerir · shift+← editar a última · ctrl+s orientar já"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue gerir · Shift+← editar a última · rascunho vazio: {key} para orientar"
         }
         "+{count} more · {hint}" => "+{count} mais · {hint}",
         "steer or delete queued messages" => "orientar com mensagens em fila ou eliminá-las",
@@ -429,6 +429,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Tema",
         "Language" => "Idioma",
         "Startup UI form" => "Interface ao iniciar",
+        "Default send mode" => "Modo de envio predefinido",
         "fullscreen" => "ecrã inteiro",
         "scrollback" => "histórico do terminal",
         "Tool details" => "Detalhes das ferramentas",
@@ -566,11 +567,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "ver atalhos de teclado",
         "Application keys" => "Teclas da aplicação",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter enviar ou enfileirar · rascunho vazio: orientar a primeira em fila · Shift+Enter ou Ctrl+J nova linha · ↑↓ histórico"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter envia sem execução ativa · Shift+Enter / Alt+Enter / Ctrl+J nova linha · ↑↓ histórico"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O ou Ctrl+P comandos · Esc interromper, as mensagens em fila voltam · Ctrl+S orientar o rascunho ou a primeira em fila · Shift+← editar a última em fila"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Execução ativa com rascunho: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Rascunho vazio: {keys} envia a primeira da fila para a execução atual"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O ou Ctrl+P comandos · Esc interromper, as mensagens em fila voltam · Shift+← editar a última em fila"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C limpar, duas vezes para sair · Ctrl+D sair com rascunho vazio"

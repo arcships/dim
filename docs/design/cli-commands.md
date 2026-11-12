@@ -171,24 +171,39 @@ Fullscreen, 8 rows             Scrollback, 8 rows
 
 ## Run keys and queue
 
-Queue and steer differ from Codex CLI: `Enter` queues while a run is in progress, and
-`Ctrl+S` steers. The other run keys follow the Codex CLI interaction (checked in its TUI,
-v0.166.0). `Enter` submits when no run is in progress.
+In scrollback and fullscreen TUI, `/settings` → Interface → Default send mode
+chooses how `Enter` submits a message draft during a run. `Ctrl+S` sends that
+draft in the other mode. Enter, Left/Right or Space toggles the setting, saves
+it in the CLI home, and applies it immediately. The default is `queue`.
+
+```text
+Settings
+  Interface
+> Default send mode    queue
+
+Running with a draft    Enter    Ctrl+S
+queue                   queue    steer
+steer                   steer    queue
+```
+
+`/keys` shows the selected mapping. `Shift+Enter`, `Alt+Enter` and `Ctrl+J`
+insert a newline in the message editor.
 
 ```text
 key                 run idle                     run in progress
-Enter               submit; no draft:            queue the draft; empty draft:
-                    /tasks while the task       steer the oldest queued message;
-                    line shows                  nothing queued: /tasks while the
-                                                task line shows
+Enter               submit; no draft:            send in the default mode; empty draft:
+                    /tasks while the task        steer the oldest queued message;
+                    line shows                   nothing queued: /tasks while the
+                                                 task line shows
 Tab                 pick an earlier message      pick an earlier message
                     (fullscreen)                 (fullscreen)
 Shift+Left          —                            empty draft: recall the newest held
                                                  message only if one text block
 Esc                 keep the draft               interrupt; every held message
                                                  returns to the draft, oldest first
-Ctrl+S              —                            draft not empty: steer the draft;
-                                                 empty: steer the oldest queued message
+Ctrl+S              —                            send draft in the other mode;
+                                                 empty: steer oldest queued message
+                                                 in queue mode only
 Up / Down           input history                input history
 Home / End          scroll (fullscreen, empty)   scroll (fullscreen, empty)
 ```
@@ -253,18 +268,18 @@ Steering always uses the owner's full held input.
 The strip and `/queue` read the same unconsumed input projection: incorporating
 messages in transcript order, then held messages oldest first. Each strip row
 names its state. During a run, `Shift+Left` on an empty draft recalls the newest
-held message subject to the attachment rule above. `Ctrl+S` steers the draft,
-or the oldest held message when the draft is empty; empty Enter does the same.
+held message subject to the attachment rule above. The strip shows the shortcut
+that steers the oldest held message from an empty draft for the selected mode.
 With nothing held, the empty-composer Enter opens `/tasks` while the task line
 shows, as the [run keys](#run-keys-and-queue) state. Up/Down remain input
 history outside the panel.
 
 ```text
-┌─ Queue (2) ──────────────────────────────────────────────┐
-│ › Incorporating · fix the failing test                   │
-│ › Held · then update the design note                     │
-│ /queue manage · shift+← edit last · ctrl+s steer         │
-└──────────────────────────────────────────────────────────┘
+┌─ Queue (2) ───────────────────────────────────────────────────────┐
+│ › Incorporating · fix the failing test                            │
+│ › Held · then update the design note                              │
+│ /queue manage · Shift+← edit last · empty draft: Ctrl+S steer     │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 A queued message the strip does not show adds its count to the hint. The strip shows at most five messages and keeps the height it reached while the queue drains.
