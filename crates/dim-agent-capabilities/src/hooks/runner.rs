@@ -178,7 +178,7 @@ impl HooksRuntime {
             let handler = handler.clone();
             waiting.push(async move {
                 HookRun {
-                    result: self.run_one(&handler, stdin, cancel).await,
+                    result: self.run_one(&handler, stdin, cancel, None).await,
                     on_failure: handler.on_failure,
                     source: handler.source,
                 }
@@ -200,7 +200,7 @@ impl HooksRuntime {
                 biased;
                 _ = cancel.cancelled() => {}
                 _ = generation.cancelled() => {}
-                _ = owner.run_one(&handler, stdin, &generation) => {}
+                _ = owner.run_one(&handler, stdin, &generation, None) => {}
             }
         });
     }
@@ -274,8 +274,9 @@ impl HooksRuntime {
     /// is not waited for.
     ///
     /// With `unload`, a part that unloads before the point settles it: a
-    /// handler that already finished keeps its own run, and only the ones
-    /// still running are answered as [`UNLOADED`] (Hooks §1, §3.3, A.5).
+    /// handler that already finished keeps its own run, only the ones still
+    /// running are answered as [`UNLOADED`] (Hooks §1, §3.3, A.5), and one
+    /// whose process has not started does not start it.
     async fn run_ordered<T>(
         self: &Arc<Self>,
         handlers: &[HookHandler],
@@ -307,8 +308,11 @@ impl HooksRuntime {
             let owner = self.clone();
             let owned = handler.clone();
             let future_handler = owned.clone();
+            let gate = unload.cloned();
             pending.push(Box::pin(async move {
-                let result = owner.run_one(&future_handler, stdin, &token).await;
+                let result = owner
+                    .run_one(&future_handler, stdin, &token, gate.as_ref())
+                    .await;
                 (position, result)
             }));
             running.push(owned);
@@ -370,11 +374,16 @@ impl HooksRuntime {
         .await
     }
 
+    /// Runs one handler. `gate` is the point's unload, when the point settles
+    /// an unload by `onFailure` (A.5's reload row): a gate cancelled once the
+    /// spec is built ends the run without starting its process, with
+    /// [`unloaded_run`]'s result and no diagnostic.
     async fn run_one(
         &self,
         handler: &HookHandler,
         stdin: Vec<u8>,
         cancel: &CancellationToken,
+        gate: Option<&CancellationToken>,
     ) -> HookResult {
         let command = handler.command(self.platform.os == Os::Windows);
         let started = Instant::now();
@@ -391,6 +400,12 @@ impl HooksRuntime {
             }
         };
         spec.env = hook_env(spec.env, &self.environment(handler));
+        if gate.is_some_and(|gate| gate.is_cancelled()) {
+            return HookResult::Failed {
+                reason: UNLOADED.into(),
+                stderr: String::new(),
+            };
+        }
         let mut tree = match self.platform.spawn_with_stdin(spec, stdin) {
             Ok(tree) => tree,
             Err(error) => {
@@ -2410,7 +2425,7 @@ mod tests {
             assert_eq!(matching.len(), 1, "{} matched no handler", event.name());
             let run = HookRun {
                 result: runtime
-                    .run_one(&matching[0], Vec::new(), &runtime.cancel)
+                    .run_one(&matching[0], Vec::new(), &runtime.cancel, None)
                     .await,
                 on_failure: matching[0].on_failure,
                 source: matching[0].source.clone(),
@@ -2429,6 +2444,52 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    /// Hooks §1 and A.5's reload row, at the process-start boundary: a gate
+    /// cancelled once the spec is built ends the run instead of starting its
+    /// command. The run is awaited to its end, so unlike a run the point
+    /// drops, a started command would finish and leave its marker; the
+    /// marker decides whether one started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unloaded_prompt_run_starts_no_command() {
+        let dir = std::env::temp_dir().join(format!("dim-hooks-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("marker");
+        let runtime = test_runtime(
+            &dir,
+            Arc::new(DocumentSources {
+                document: prompt_document(&marker),
+            }),
+        );
+        let snapshot = runtime.snapshot().await.expect("the sources");
+        let matching = handlers(&snapshot, HookEvent::UserPromptSubmit, None, None);
+        assert_eq!(matching.len(), 1, "the prompt handler did not match");
+        let handler = &matching[0];
+        // The entry's own token stays live, as it does when only Hooks
+        // unloads: the unload alone has to stop the command.
+        let cancel = CancellationToken::new();
+        let unload = CancellationToken::new();
+        unload.cancel();
+        let run = HookRun {
+            result: runtime
+                .run_one(handler, Vec::new(), &cancel, Some(&unload))
+                .await,
+            on_failure: handler.on_failure,
+            source: handler.source.clone(),
+        };
+        assert!(
+            matches!(
+                prompt_decision(handler, &run),
+                PromptDecision::Unfinished(message)
+                    if message == "Hook user did not finish: Hooks was unloaded"
+            ),
+            "the unloaded run answered as its `onFailure` decides: {:?}",
+            run.result
+        );
+        assert!(!marker.exists(), "an unloaded run started its command");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A.4: a `Stop` block with no reason, exit 2 with an empty stderr or
@@ -2679,6 +2740,23 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "hooks": {
                 "PermissionRequest": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("printf ran > {}", marker.display()),
+                    }],
+                }],
+            },
+        }))
+        .unwrap()
+    }
+
+    /// A document with one `UserPromptSubmit` handler whose command writes
+    /// `ran` to `marker`.
+    #[cfg(unix)]
+    fn prompt_document(marker: &Path) -> HooksDocument {
+        serde_json::from_value(serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
                     "hooks": [{
                         "type": "command",
                         "command": format!("printf ran > {}", marker.display()),
