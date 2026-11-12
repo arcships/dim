@@ -394,9 +394,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "sair",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter selecionar · ←/→ esforço · Ctrl+X limpar guardado · Esc limpar/fechar"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter selecionar + predefinido · ←/→ esforço · Ctrl+X limpar guardado · Esc limpar/fechar"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Modelo predefinido para novas sessões em {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Modelo predefinido para novas sessões: {model}",
         "Enter select · Esc clear/close" => "Enter selecionar · Esc limpar/fechar",
         "esc close" => "esc fechar",
         "Suggestions" => "Sugestões",
@@ -618,6 +622,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server continua a ser {server} porque outros clientes o estão a utilizar; este cliente {client} também o utiliza. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server continua a ser {server} porque outros clientes o estão a utilizar, e fala o protocolo v{protocol}, que este cliente {client} não pode utilizar. Não foi iniciada nenhuma sessão. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server continua a ser {server} porque outros clientes o estão a utilizar (ligações: {connections}, sessões associadas: {attached}, turnos em execução: {running}), e fala o protocolo v{protocol}, que este cliente {client} não pode utilizar. Não foi iniciada nenhuma sessão. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server continua a ser {server} porque outros clientes o estão a utilizar (ligações: {connections}, sessões associadas: {attached}, turnos em execução: {running}); este cliente {client} também o utiliza. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."

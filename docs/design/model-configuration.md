@@ -158,7 +158,9 @@ guessed complete selection.
 `/effort VALUE`, alias `/reasoning VALUE`, sends `reasoningEffort` without a target.
 The `/models` picker cycles a model's advertised efforts with ←/→. Enter saves a
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
-saved preferences.
+saved preferences. Enter also writes the default the next Session in the launch
+workspace reads — the workspace's own row when the folder has one, else `global`
+([provider management §4](appserver/provider-management.md#4-client-integration)).
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
 The CLI reads the adopted provider/model identity and `capability_snapshot` from
 the public `context/configured` view and takes choices from that declaration.

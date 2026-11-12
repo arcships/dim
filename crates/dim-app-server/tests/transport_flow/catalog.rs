@@ -235,6 +235,312 @@ async fn catalog_is_not_advertised_without_native_storage() {
     server.join().await.unwrap();
 }
 
+/// #1421: a launch declares the class of work it runs, so its Session lists
+/// under `withAutomationSessions` alone — not under the default page, and not
+/// under `withInternal`, which stays the members' and stages' class.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_lists_an_automation_session_only_under_its_filter() {
+    use super::sessions;
+    let store = Store::new();
+    let mut served = sessions::serve_sessions(Some(store.database())).await;
+    assert!(
+        served
+            .client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.catalog.automation"))
+    );
+    let conversation = served.client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&conversation);
+    let conversation = conversation["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let launched = served
+        .sessions
+        .ok(
+            "launch",
+            json!({"cwd":std::env::temp_dir(),"origin":"automation","title":"Nightly build"}),
+        )
+        .await;
+    let automation = launched["sessionId"].as_str().unwrap().to_owned();
+    let stage = served
+        .sessions
+        .ok("launch", json!({"cwd":std::env::temp_dir()}))
+        .await;
+    let internal = stage["sessionId"].as_str().unwrap().to_owned();
+
+    let listed = |value: &Value| -> Vec<String> {
+        value["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let row = |page: &Value, id: &str| -> Value {
+        page["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["sessionId"] == id)
+            .unwrap_or_else(|| panic!("{id} is missing from the catalog page: {page}"))
+            .clone()
+    };
+
+    let default = served.client.rpc("session.catalog", json!({})).await;
+    assert_ok(&default);
+    let ids = listed(&default);
+    assert!(ids.contains(&conversation), "{ids:?}");
+    assert!(
+        !ids.contains(&automation) && !ids.contains(&internal),
+        "the default page lists neither launched class: {ids:?}"
+    );
+
+    let with_automation = served
+        .client
+        .rpc("session.catalog", json!({"withAutomationSessions":true}))
+        .await;
+    assert_ok(&with_automation);
+    let ids = listed(&with_automation);
+    assert!(
+        ids.contains(&automation) && !ids.contains(&internal),
+        "{ids:?}"
+    );
+    let announced = row(&with_automation, &automation);
+    assert_eq!(announced["origin"], "automation");
+    assert!(announced.get("parentSessionId").is_none(), "{announced}");
+
+    let with_internal = served
+        .client
+        .rpc("session.catalog", json!({"withInternal":true}))
+        .await;
+    assert_ok(&with_internal);
+    let ids = listed(&with_internal);
+    assert!(
+        ids.contains(&internal) && !ids.contains(&automation),
+        "{ids:?}"
+    );
+    assert_eq!(row(&with_internal, &internal)["origin"], "internal");
+
+    let both = served
+        .client
+        .rpc(
+            "session.catalog",
+            json!({"withInternal":true,"withAutomationSessions":true}),
+        )
+        .await;
+    assert_ok(&both);
+    let ids = listed(&both);
+    assert!(
+        ids.contains(&internal) && ids.contains(&automation),
+        "{ids:?}"
+    );
+
+    let summaries = served.client.rpc("session.summaries", json!({})).await;
+    assert_ok(&summaries);
+    let found = summaries["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == automation)
+        .unwrap_or_else(|| panic!("session.summaries lists it: {summaries}"))
+        .clone();
+    assert_eq!(found["origin"], "automation");
+    assert!(found.get("parentSessionId").is_none(), "{found}");
+
+    let attached = served
+        .client
+        .rpc("session.attach", json!({"sessionId":automation}))
+        .await;
+    assert_ok(&attached);
+    assert_eq!(attached["result"]["origin"], "automation");
+
+    served.server.shutdown();
+    served.server.join().await.unwrap();
+}
+
+/// #1421: the automation filter is part of the cursor's filter set, so a
+/// cursor taken under one value is refused under the other and continues
+/// under its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn automation_filter_cursor_belongs_to_one_filter_set() {
+    use super::sessions;
+    let store = Store::new();
+    let mut served = sessions::serve_sessions(Some(store.database())).await;
+    // The `sessions` consumer mounts with a Session of this test's own; it is
+    // not a launch, so it stays out of the automation pages below.
+    assert_ok(&served.client.rpc("session.create", create(json!([]))).await);
+    for _ in 0..3 {
+        served
+            .sessions
+            .ok(
+                "launch",
+                json!({"cwd":std::env::temp_dir(),"origin":"automation"}),
+            )
+            .await;
+    }
+    let first = served
+        .client
+        .rpc(
+            "session.catalog",
+            json!({"limit":1,"withAutomationSessions":true}),
+        )
+        .await;
+    assert_ok(&first);
+    let cursor = first["result"]["nextCursor"].as_str().unwrap().to_owned();
+    for params in [
+        json!({"limit":1,"cursor":cursor}),
+        json!({"limit":1,"cursor":cursor,"withAutomationSessions":false}),
+    ] {
+        let reply = served.client.rpc("session.catalog", params).await;
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert_eq!(
+            reply["error"]["data"]["appError"], "invalid_params",
+            "{reply}"
+        );
+    }
+    let automation_rows = |page: &Value| -> Vec<String> {
+        page["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["origin"] == "automation")
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let mut pages = automation_rows(&first);
+    let mut next = Some(cursor);
+    while let Some(cursor) = next {
+        let page = served
+            .client
+            .rpc(
+                "session.catalog",
+                json!({"limit":1,"cursor":cursor,"withAutomationSessions":true}),
+            )
+            .await;
+        assert_ok(&page);
+        pages.extend(automation_rows(&page));
+        next = page["result"]["nextCursor"].as_str().map(str::to_owned);
+    }
+    let mut unique = pages.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        3,
+        "the pages hold every automation Session once: {pages:?}"
+    );
+    served.server.shutdown();
+    served.server.join().await.unwrap();
+}
+
+/// #1421: the automation filter is one more condition of the same query, so a
+/// page behind hidden rows still fills from the activity index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_automation_filter_stops_in_index_order() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_ok(&client.rpc("session.create", create(json!([]))).await);
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+    let connection = store.connection();
+    for (index, origin) in [(0, "automation"), (1, "client"), (2, "automation")] {
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+                 SELECT ?1, config, created_at_ms, ?2 FROM agent_sessions LIMIT 1",
+                params![format!("plan-{index}"), origin],
+            )
+            .unwrap();
+        initialize_session_catalog(&connection, &format!("plan-{index}")).unwrap();
+    }
+    let plan = |sql: &str| -> Vec<String> {
+        connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    for (index, extra) in [
+        ("session_catalog_by_activity", ""),
+        ("session_catalog_with_preview", "c.preview IS NOT NULL AND "),
+    ] {
+        let lines = plan(&format!(
+            "SELECT c.session_id FROM session_catalog c INDEXED BY {index} \
+             CROSS JOIN agent_sessions s ON s.session_id=c.session_id \
+             WHERE {extra}s.origin != 'internal' AND s.origin != 'acp' AND s.origin != 'automation' \
+             ORDER BY c.updated_at_ms DESC, c.session_id LIMIT 51"
+        ));
+        assert!(
+            lines.iter().any(|line| line.contains(index)),
+            "{index}: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("TEMP B-TREE")),
+            "{index}: a filtered page must stop in index order: {lines:?}"
+        );
+    }
+}
+
+/// #1421: a `sessions.launch` without `origin` stays `internal`, so a Workflow
+/// stage keeps its default hiding. This is the executable form of the decision
+/// that only Scheduler opts in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flow_stage_keeps_its_default_hiding_without_a_declared_origin() {
+    use super::sessions;
+    let store = Store::new();
+    let mut served = sessions::serve_sessions(Some(store.database())).await;
+    // The `sessions` consumer mounts with the first Session; this one is not
+    // a launch, so it stays out of the assertions below.
+    assert_ok(&served.client.rpc("session.create", create(json!([]))).await);
+    let stage = served
+        .sessions
+        .ok("launch", json!({"cwd":std::env::temp_dir()}))
+        .await;
+    let stage = stage["sessionId"].as_str().unwrap().to_owned();
+    let listed = |value: &Value| -> Vec<String> {
+        value["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["sessionId"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    for params in [json!({}), json!({"withAutomationSessions":true})] {
+        let page = served.client.rpc("session.catalog", params.clone()).await;
+        assert_ok(&page);
+        assert!(
+            !listed(&page).contains(&stage),
+            "a stage is absent from {params}: {page}"
+        );
+    }
+    let with_internal = served
+        .client
+        .rpc("session.catalog", json!({"withInternal":true}))
+        .await;
+    assert_ok(&with_internal);
+    assert!(
+        listed(&with_internal).contains(&stage),
+        "withInternal lists the stage: {with_internal}"
+    );
+    let row = with_internal["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == stage)
+        .unwrap();
+    assert_eq!(row["origin"], "internal");
+    served.server.shutdown();
+    served.server.join().await.unwrap();
+}
+
 /// #557: a Session's creation origin is reported by every read, the catalog
 /// lists conversations by default, and both classes are opt-in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

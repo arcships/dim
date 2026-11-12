@@ -362,9 +362,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切换 · Enter 选择 · Esc 关闭",
         "exit" => "退出应用",
 
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 选择 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 选择并设为默认 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
         }
+        "Default for new sessions in {folder}: {model}" => "新会话在 {folder} 的默认模型：{model}",
+        "Default for new sessions: {model}" => "新会话的默认模型：{model}",
         "Enter select · Esc clear/close" => "Enter 选择 · Esc 清除/关闭",
         "esc close" => "Esc 关闭",
         "Suggestions" => "建议",
@@ -585,6 +587,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它，而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}），而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}）；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"

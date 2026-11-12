@@ -401,11 +401,13 @@ pub enum Command {
     /// A configuration command line (`/effort high`, `/agent`, ...).
     Configure(String),
     /// Make `(provider, model)` the default and the active session's model.
-    /// `reasoning_effort` is set when the picker cycled that model's effort.
+    /// `reasoning_effort` is set when the picker cycled that model's effort;
+    /// `label` is the row's text the default's confirmation names back.
     SelectModel {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        label: String,
     },
     /// Read the subagent model policy and its revision.
     ReadModelPolicy,
@@ -1251,6 +1253,13 @@ pub enum Update {
     /// workspace and the same relative directory in every worktree of its git
     /// repository, found once per picker open. The set may hold one entry.
     RepositoryWorkspaces(Vec<String>),
+    /// The default a `/models` selection wrote: the folder whose workspace
+    /// scope it wrote, or `None` when it wrote the global one, and the row's
+    /// own label. The interface names the scope; it owns the display form.
+    ModelDefault {
+        folder: Option<String>,
+        model: String,
+    },
     /// A command failed without ending the session.
     Notice(String),
     /// A submission could not be sent because no Session could be started

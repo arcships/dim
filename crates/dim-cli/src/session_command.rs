@@ -74,15 +74,17 @@ impl Summary {
         }
         (!reasons.is_empty()).then(|| reasons.join(", "))
     }
-    /// The origin classes `/resume`'s default list keeps, which is every
-    /// origin but `internal` and `acp`
+    /// The origin classes `/resume`'s default list keeps: a conversation,
+    /// `client` or `unknown`
     /// ([classification](../../../docs/design/appserver/session-classification.md)).
     /// Cleanup selects across every workspace and removes no Session
     /// `/resume` hides: a member goes with its leader's delete, a launched
     /// Session with its plugin, and an ACP Session is deleted by its id
     /// ([session deletion and cleanup](../../../docs/design/cli-commands.md#session-deletion-and-cleanup)).
+    /// The list is positive, so a destructive command never selects an origin
+    /// it does not know.
     fn resumable(&self) -> bool {
-        !matches!(self.origin.as_deref(), Some("internal" | "acp"))
+        matches!(self.origin.as_deref(), None | Some("client" | "unknown"))
     }
 }
 

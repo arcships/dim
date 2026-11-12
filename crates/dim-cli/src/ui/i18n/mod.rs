@@ -116,6 +116,9 @@ mod tests {
                 "Prompt suggestion",
                 "Prompt suggestion: {error}",
                 "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume.",
+                "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close",
+                "Default for new sessions in {folder}: {model}",
+                "Default for new sessions: {model}",
                 "Hook context · {count} line",
                 "Hook context · {count} lines",
                 "Stop hook follow-up · {count} line",
@@ -128,6 +131,21 @@ mod tests {
                     .contains("fixture-error"),
                 "{code} drops the error"
             );
+            for (key, args) in [
+                (
+                    "Default for new sessions in {folder}: {model}",
+                    vec![("folder", "fixture-folder"), ("model", "fixture-model")],
+                ),
+                (
+                    "Default for new sessions: {model}",
+                    vec![("model", "fixture-model")],
+                ),
+            ] {
+                let text = tf(key, &args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
         }
         set(previous);
     }
@@ -237,6 +255,8 @@ mod tests {
         // while every locale silently falls back to English.
         const PLAIN: &str = crate::DAEMON_BUSY;
         const COUNTS: &str = crate::DAEMON_BUSY_COUNTS;
+        const TOO_OLD: &str = crate::DAEMON_TOO_OLD;
+        const TOO_OLD_COUNTS: &str = crate::DAEMON_TOO_OLD_COUNTS;
         const UPGRADING: &str = crate::DAEMON_UPGRADING;
         let previous = active();
         for (locale, code, _) in LOCALES {
@@ -246,6 +266,8 @@ mod tests {
             for key in [
                 PLAIN,
                 COUNTS,
+                TOO_OLD,
+                TOO_OLD_COUNTS,
                 UPGRADING,
                 crate::ui::sessions_panel::HINT,
                 "Delete \"{name}\"?",
@@ -269,6 +291,25 @@ mod tests {
                     vec![
                         ("server", "9.9.9-old"),
                         ("client", "9.9.9-new"),
+                        ("connections", "2"),
+                        ("attached", "1"),
+                        ("running", "1"),
+                    ],
+                ),
+                (
+                    TOO_OLD,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
+                    ],
+                ),
+                (
+                    TOO_OLD_COUNTS,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
                         ("connections", "2"),
                         ("attached", "1"),
                         ("running", "1"),
