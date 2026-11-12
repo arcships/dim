@@ -7875,6 +7875,12 @@ async fn a_v25_seed_upgrades_to_the_fresh_bundle_record() {
                  DROP TABLE timeline_text;
                  DROP TABLE timeline_text_fts;
                  DROP TABLE timeline_text_tails;
+                 DROP TABLE timeline_array_elements;
+                 DROP TABLE timeline_output_ids;
+                 DROP TABLE timeline_member_roots;
+                 DROP TABLE timeline_member_origins;
+                 DROP TABLE timeline_member_terminals;
+                 DROP TABLE timeline_member_nodes;
                  CREATE TEMP TABLE events_rows AS SELECT session_id, branch_id, sequence, last_sequence, kind, body, event_id FROM timeline_events;
                  DROP TABLE timeline_events;
                  CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id));

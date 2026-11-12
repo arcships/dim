@@ -362,7 +362,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 
 持久化指令的表示是 InputQueue 的事件格式决定，不是新的 Timeline 原语。可选指令成员 `steer` 保存完整的已检查输入（包括提交检查上下文），模式为 `steer`。普通撤回与旧指令省略它。只有被接受的结果中的 `input/message` 采纳该内容。外部校验在准入前拒绝无效候选输入，无论原输入是否被持有。
 
-原生存储写入 **v39**，并升级 v38 接受的格式，不改写历史事件。v39 读取带或不带 `steer` 的指令；v38 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v39 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v39-conditional-queued-input-steer)。冻结事件样本保持不变。
+原生存储写入 **v42**，并升级 v41 接受的格式，不改写历史事件。v42 读取带或不带 `steer` 的指令；v41 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v42 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v42-conditional-queued-input-steer)。冻结事件样本保持不变。
 
 线协议兼容性独立于存储门禁：v3 投递原生 `input/withdraw` 事件，包含其可选 `steer` 成员。使用旧版严格指令类型构建的客户端会拒绝带该成员的事件；存储升级无法保护已经连接的旧客户端。不增加协议版本、剥离字段的适配层或回退替代输入。这沿用 [Session 边界 A.6](../../../design/contracts/session-boundary.md#a6-tool-effects) 的客户端与 daemon 配套发布策略：解码原生事件的客户端必须与 daemon 一同升级。普通撤回保持原有线协议形状，冻结的 v1 投影不变。
 

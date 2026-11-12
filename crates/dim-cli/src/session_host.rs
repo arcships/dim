@@ -33,13 +33,14 @@ use crate::model::view::{
 };
 use crate::projection::Projection;
 use crate::wire::{
-    Attached, CatalogModel, Configuration, Created, Event, EventContent, Progress,
-    ProviderCatalogSnapshot,
+    Attached, CatalogModel, Configuration, Created, DisplayNotice, Event, EventContent,
+    EventNotice, Progress, ProviderCatalogSnapshot,
 };
 use crate::{
     configure, mcp, permission, session_create_from_options, session_create_params, update,
 };
 
+mod compaction;
 mod inventory;
 mod member;
 mod report;
@@ -255,6 +256,7 @@ struct Worker {
     /// The Session `/new` left: still attached until the next one is entered.
     parked: String,
     projection: Projection,
+    retired_inputs: std::collections::HashMap<String, bool>,
     question_responses: Vec<(u64, String, crate::question::Call)>,
     approval_details: std::collections::BTreeMap<u64, MemberDetailRead>,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
@@ -275,6 +277,7 @@ struct Worker {
     task_stops: Option<StopBatch>,
     workflow: WorkflowReads,
     members: Members,
+    compaction: compaction::CompactionReads,
     output: Option<OutputWatch>,
     /// The admitted read can outlive its detail; false discards that old reply.
     output_request: Option<(u64, bool)>,
@@ -305,6 +308,7 @@ struct Worker {
     /// finished, a run on main ended, a compaction result arrived on main, or
     /// the session or its model changed.
     context_stale: bool,
+    context_request: Option<(u64, bool)>,
     /// The last `model/usage` on main, folded from the events so `/usage`
     /// can report its cache read share.
     last_usage: Option<LastUsage>,
@@ -419,6 +423,7 @@ async fn run(
         worker.poll_task_stops().await;
         worker.poll_workflow().await;
         worker.poll_context().await;
+        worker.poll_compaction().await;
         let workflow_poll = worker
             .workflow
             .next_at
@@ -433,20 +438,22 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 if worker.session_id.is_empty()
-                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
+                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..) | Command::ShellRun { .. })
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
                         worker.send(Update::StartupFailed(error.to_string()));
                         break;
                     }
-                    worker.send(Update::SubmitNotSent(
-                        if worker.options.startup.is_some() || worker.model_session.is_some() {
-                            error.to_string()
-                        } else {
-                            no_session(&error)
-                        },
-                    ));
+                    let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
+                        error.to_string()
+                    } else {
+                        no_session(&error)
+                    };
+                    worker.send(match command {
+                        Command::ShellRun { run_id, .. } => Update::ShellDone { run_id, result: Err(error) },
+                        _ => Update::SubmitNotSent(error),
+                    });
                     continue;
                 }
                 if matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
@@ -499,14 +506,6 @@ struct WebToggled {
     open: bool,
     #[serde(default)]
     url: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventNotice {
-    session_id: String,
-    branch_id: String,
-    event: Event,
 }
 
 #[derive(Deserialize)]
@@ -647,6 +646,7 @@ impl Worker {
             parked: String::new(),
             model_session: None,
             projection: Projection::default(),
+            retired_inputs: Default::default(),
             question_responses: Vec::new(),
             approval_details: Default::default(),
             cursors: Default::default(),
@@ -663,6 +663,7 @@ impl Worker {
             task_stops: None,
             workflow: WorkflowReads::default(),
             members: Members::default(),
+            compaction: Default::default(),
             output: None,
             output_request: None,
             catalog_request: None,
@@ -677,6 +678,7 @@ impl Worker {
             login: None,
             login_callbacks: unbounded_channel(),
             context_stale: false,
+            context_request: None,
             last_usage: None,
             compact_requests: Vec::new(),
             refilled_catalogs: Default::default(),
@@ -817,11 +819,14 @@ impl Worker {
                 .await?;
             self.ui_id = None;
         }
-        let attached: Attached = match self
+        let mut params = json!({"sessionId": session_id});
+        if self
             .client
-            .typed("session.attach", json!({"sessionId": session_id}))
-            .await
+            .supports(&["session.history.display", "session.history.detail"])
         {
+            params["display"] = json!(true);
+        }
+        let attached: Attached = match self.client.typed("session.attach", params).await {
             Ok(attached) => attached,
             Err(error)
                 if kind != SwitchKind::New
@@ -1383,29 +1388,7 @@ impl Worker {
             }
             Command::CloseSessions => self.cancel_catalog().await?,
             Command::Usage => {
-                let reading = self.context_usage().await;
-                // Pages land oldest first: until `main`'s history has
-                // finished loading, an earlier page's older request is not
-                // the newest, so the segment waits for `done`.
-                let loaded = self
-                    .task_history
-                    .get("main")
-                    .is_some_and(|history| history.done);
-                let cached = self
-                    .last_usage
-                    .filter(|_| loaded)
-                    .and_then(|usage| usage.percent());
-                match reading {
-                    Ok(usage) => {
-                        let mut line = usage.describe();
-                        if let Some(cached) = cached {
-                            line.push_str(" · last request cached ");
-                            line.push_str(&cached);
-                        }
-                        self.report(line, false)
-                    }
-                    Err(error) => self.report(error.to_string(), true),
-                }
+                self.request_context(true).await;
                 if self
                     .model
                     .as_ref()
@@ -1803,13 +1786,6 @@ impl Worker {
                 command,
                 private,
             } => {
-                if self.session_id.is_empty() {
-                    self.send(Update::ShellDone {
-                        run_id,
-                        result: Err(NO_SESSION.to_owned()),
-                    });
-                    return Ok(());
-                }
                 if self.shell.is_some() {
                     self.send(Update::ShellDone {
                         run_id,
@@ -1996,6 +1972,14 @@ impl Worker {
                     self.watch_task_output(target);
                 }
             }
+            Command::CompactionDetails {
+                projection_id,
+                targets,
+            } => {
+                if projection_id == self.projection_id {
+                    self.compaction_targets(targets);
+                }
+            }
             Command::WatchMember {
                 projection_id,
                 member_id,
@@ -2041,17 +2025,21 @@ impl Worker {
                 self.report_failure(result);
             }
             Command::InputControl { input_id, action } => {
+                if let Some(notified) = self.retired_inputs.get_mut(&input_id) {
+                    if !std::mem::replace(notified, true) {
+                        self.send(Update::Notice(QUEUE_LEFT.into()));
+                    }
+                    return Ok(());
+                }
+                let Some(user) = self.shown().held_input(&input_id).cloned() else {
+                    return Ok(());
+                };
                 let mut params = json!({
                     "sessionId": self.session_id,
                     "branchId": self.focus,
                     "inputId": input_id,
                 });
-                let user = self.shown().held_input(&input_id).cloned();
                 if action == "steer" {
-                    let Some(user) = &user else {
-                        self.send(Update::Notice(QUEUE_LEFT.into()));
-                        return Ok(());
-                    };
                     params["steer"] = json!(user);
                 }
                 #[derive(Deserialize)]
@@ -2062,17 +2050,19 @@ impl Worker {
                     .client
                     .typed::<Withdrawn>("session.input.withdraw", params)
                     .await;
-                match (result, user) {
-                    (Ok(withdrawn), _) if withdrawn.status == "notHeld" => {
+                if let Ok(withdrawn) = &result {
+                    self.retired_inputs
+                        .insert(input_id, withdrawn.status == "notHeld");
+                }
+                match result {
+                    Ok(withdrawn) if withdrawn.status == "notHeld" => {
                         self.send(Update::Notice(QUEUE_LEFT.into()))
                     }
-                    (Ok(withdrawn), Some(user))
-                        if withdrawn.status == "deleted" && action == "withdraw" =>
-                    {
+                    Ok(withdrawn) if withdrawn.status == "deleted" && action == "withdraw" => {
                         self.send(Update::Withdrawn(user));
                     }
-                    (Ok(_), _) => {}
-                    (Err(error), _) => self.send(Update::Notice(error.to_string())),
+                    Ok(_) => {}
+                    Err(error) => self.send(Update::Notice(error.to_string())),
                 }
             }
         }
@@ -2091,42 +2081,36 @@ impl Worker {
             )
     }
 
-    /// The main branch's context window as `session.context.usage`
-    /// estimates it.
-    async fn context_usage(&mut self) -> crate::Result<ContextUsage> {
-        self.client
-            .typed(
+    async fn request_context(&mut self, report: bool) {
+        if let Some((_, requested_report)) = &mut self.context_request {
+            *requested_report |= report;
+            return;
+        }
+        self.context_stale = false;
+        match self
+            .client
+            .send(
                 "session.context.usage",
                 json!({"sessionId": self.session_id, "branchId": "main"}),
             )
             .await
-            .map_err(
-                |error| match error.downcast_ref::<client::RpcError>().and_then(app_error) {
-                    Some("context_not_configured") => {
-                        "Context usage is known once a model has answered in this session".into()
-                    }
-                    Some("context_model_failed") => {
-                        "Context usage needs the model's capabilities; select the model again"
-                            .into()
-                    }
-                    Some("unknown_method") => "This daemon does not track context usage".into(),
-                    _ => error,
-                },
-            )
+        {
+            Ok(request) => self.context_request = Some((request, report)),
+            Err(error) => {
+                self.send(Update::Context(None));
+                if report {
+                    self.report(error.to_string(), true);
+                }
+            }
+        }
     }
 
     /// Refreshes the composer's context reading once it is stale; a session
     /// whose usage is unknown shows none.
     async fn poll_context(&mut self) {
-        if !std::mem::take(&mut self.context_stale) || self.session_id.is_empty() {
-            return;
+        if self.context_stale && !self.session_id.is_empty() && self.context_request.is_none() {
+            self.request_context(false).await;
         }
-        let reading = self.context_usage().await.ok().map(|usage| ContextReading {
-            input: usage.input(),
-            window: usage.window(),
-            threshold: tokens(usage.threshold_tokens),
-        });
-        self.send(Update::Context(reading));
     }
 
     /// Asks the shown line to compact; committed outcomes reach its transcript.
@@ -2322,8 +2306,12 @@ impl Worker {
                     });
                 }
             }
-            "session.event" => {
-                let notice: EventNotice = serde_json::from_value(params)?;
+            "session.event" | "session.display" => {
+                let notice: EventNotice = if method == "session.display" {
+                    serde_json::from_value::<DisplayNotice>(params)?.into()
+                } else {
+                    serde_json::from_value(params)?
+                };
                 if notice.session_id == self.session_id {
                     // Live only: history pages arrive as `session.history`
                     // replies applied by `apply`, so they spend no read.
@@ -3912,6 +3900,66 @@ impl Worker {
         id: u64,
         result: Result<serde_json::Value, client::RpcError>,
     ) -> crate::Result<()> {
+        if self.owns_compaction(id) {
+            self.compaction_reply(result);
+            return Ok(());
+        }
+        if self
+            .context_request
+            .as_ref()
+            .is_some_and(|(request, _)| *request == id)
+        {
+            let (_, report) = self
+                .context_request
+                .take()
+                .expect("matched context request");
+            let reading = result
+                .map_err(|error| match app_error(&error) {
+                    Some("context_not_configured") => {
+                        "Context usage is known once a model has answered in this session"
+                            .to_owned()
+                    }
+                    Some("context_model_failed") => {
+                        "Context usage needs the model's capabilities; select the model again"
+                            .to_owned()
+                    }
+                    Some("unknown_method") => "This daemon does not track context usage".to_owned(),
+                    _ => error.to_string(),
+                })
+                .and_then(|value| {
+                    serde_json::from_value::<ContextUsage>(value)
+                        .map_err(|error| format!("Invalid context usage reply: {error}"))
+                });
+            self.send(Update::Context(reading.as_ref().ok().map(|usage| {
+                ContextReading {
+                    input: usage.input(),
+                    window: usage.window(),
+                    threshold: tokens(usage.threshold_tokens),
+                }
+            })));
+            if report {
+                match reading {
+                    Ok(usage) => {
+                        let mut line = usage.describe();
+                        let loaded = self
+                            .task_history
+                            .get("main")
+                            .is_some_and(|history| history.done);
+                        if let Some(cached) = self
+                            .last_usage
+                            .filter(|_| loaded)
+                            .and_then(|usage| usage.percent())
+                        {
+                            line.push_str(" · last request cached ");
+                            line.push_str(&cached);
+                        }
+                        self.report(line, false);
+                    }
+                    Err(error) => self.report(error, true),
+                }
+            }
+            return Ok(());
+        }
         if self
             .catalog_request
             .as_ref()
@@ -4173,7 +4221,12 @@ impl Worker {
         {
             self.send(Update::Permissions(Ok(data.policy.clone())));
         }
-        if branch_id == "main" && matches!(event.content, EventContent::Compaction(_)) {
+        if branch_id == "main"
+            && matches!(
+                event.content,
+                EventContent::Compaction(_) | EventContent::CompactionSummary(_)
+            )
+        {
             self.context_stale = true;
         }
         if branch_id == "main"
@@ -4317,6 +4370,13 @@ impl Worker {
 
     fn publish(&mut self) {
         self.publish_at = None;
+        self.retired_inputs.retain(|id, _| {
+            self.projection.held_input(id).is_some()
+                || self
+                    .lines
+                    .values()
+                    .any(|line| line.projection.held_input(id).is_some())
+        });
         let mut snapshot = match self.lines.get(&self.focus).filter(|_| self.focus != "main") {
             Some(line) => line.projection.snapshot(),
             None => self.projection.snapshot(),

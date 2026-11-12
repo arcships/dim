@@ -266,6 +266,19 @@ export function readHistory(value: unknown): HistoryPage {
   }
 }
 
+export function readDisplayHistory(value: unknown): HistoryPage {
+  const at = "session.history.display"
+  const source = obj(value, at)
+  return {
+    events: arr(source.items, `${at}.items`).map((item, index) => readEvent(item, `${at}.items[${index}]`)),
+    through: num(source, "through", at),
+    nextAfter: num(source, "nextAfter", at),
+    done: bool(source, "done", at),
+    ...(source.nextBefore === undefined ? {} : { nextBefore: num(source, "nextBefore", at) }),
+    ...(source.turnStart === undefined ? {} : { turnStart: num(source, "turnStart", at) }),
+  }
+}
+
 export function readModelUpdate(value: unknown): ModelUpdateResult {
   const source = obj(value, "session.model.update")
   return { model: modelId(source.model, "session.model.update.model"), outcome: str(source, "outcome", "session.model.update") }
@@ -429,21 +442,51 @@ function loadedSkill(text: string): string | undefined {
 }
 
 /**
- * The operator's own text of a message and the Skills its blocks loaded: a
- * text block after the first that starts with the marker is a loaded Skill,
- * shown as one line and never as its instructions.
+ * The element names a submit check can append to a message, as
+ * `crates/dim-agent-types/src/markup.rs` writes them: that crate owns the
+ * vocabulary, and this is the one client that cannot link it. A name matches a
+ * whole element, so a longer name that starts with one does not match.
  */
-function userText(blocks: unknown, at: string): { text: string; skills: string[] } {
+const RUNTIME_MARKERS = ["dim-hooks", "dim-skill"] as const
+
+/** The element `text` opens, when it opens one of those after the first block. */
+function runtimeElement(index: number, text: string): (typeof RUNTIME_MARKERS)[number] | undefined {
+  if (index === 0 || !text.startsWith("<")) return undefined
+  return RUNTIME_MARKERS.find((name) => {
+    if (!text.startsWith(`<${name}`)) return false
+    const rest = text.slice(name.length + 1)
+    return rest.startsWith(">") || /^\s/.test(rest)
+  })
+}
+
+/**
+ * The operator's own text of a message, the Skills its blocks loaded, and how
+ * many hook contexts it carries. A text block after the first that opens one of
+ * those elements is not their words: a Skill shows as one line, a hook's
+ * context as a count, and neither joins the message.
+ */
+function userText(blocks: unknown, at: string): { text: string; skills: string[]; hooks: number } {
   const text: string[] = []
   const skills: string[] = []
+  let hooks = 0
   arr(blocks, at).forEach((item, index) => {
     const block = obj(item, `${at}[${index}]`)
     if (block.type !== "text" || typeof block.text !== "string") return
-    const skill = index === 0 ? undefined : loadedSkill(block.text)
-    if (skill === undefined) text.push(block.text)
-    else skills.push(skill)
+    const element = runtimeElement(index, block.text)
+    if (element === "dim-skill") {
+      const skill = loadedSkill(block.text)
+      if (skill !== undefined) {
+        skills.push(skill)
+        return
+      }
+    }
+    if (element === "dim-hooks") {
+      hooks += 1
+      return
+    }
+    text.push(block.text)
   })
-  return { text: text.join("\n"), skills }
+  return { text: text.join("\n"), skills, hooks }
 }
 
 function textOf(blocks: unknown, at: string): string {
@@ -506,8 +549,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
         return { kind: "source-input", text, blocks, ...(mode === undefined ? {} : { mode }) }
       }
       const user = obj(data.user, `${at}.user`)
-      const { text, skills } = userText(user.content, `${at}.user.content`)
-      return { kind: "input", text, user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, blocks }
+      const { text, skills, hooks } = userText(user.content, `${at}.user.content`)
+      return { kind: "input", text, user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
     }
     case "input/applied":
       return { kind: "input-applied", inputId: str(data, "input_id", at) }
@@ -727,6 +770,13 @@ export function readNotification(method: string, value: unknown): Notification |
         branchId: str(params, "branchId", method),
         event: readEvent(params.event, `${method}.event`),
       }
+    case "session.display":
+      return {
+        method,
+        sessionId: str(params, "sessionId", method),
+        branchId: str(params, "branchId", method),
+        event: readEvent(params.item, `${method}.item`),
+      }
     case "session.state":
       return {
         method,
@@ -893,7 +943,7 @@ export function readPendingInputs(value: unknown): InputPage {
     if (row.user === null) return []
     const user = readUserInput(obj(row.user, `${rowAt}.user`), `${rowAt}.user`)
     const display = userText(user.content, `${rowAt}.user.content`)
-    return [{ id: str(row, "inputId", rowAt), text: display.text, skills: display.skills, user }]
+    return [{ id: str(row, "inputId", rowAt), text: display.text, skills: display.skills, ...(display.hooks === 0 ? {} : { hooks: display.hooks }), user }]
   })
   return { branchId: str(source, "branchId", at), through: num(source, "through", at), inputs, next: source.next }
 }

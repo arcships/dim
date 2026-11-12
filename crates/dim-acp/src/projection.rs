@@ -2,6 +2,7 @@
 
 use dim_agent_types::{
     CompactionTrigger, ContentBlock, ContextCompactionResult, ExecStatus, ToolContent, UserInput,
+    markup,
 };
 use dim_client::wire::{Event, EventContent, Progress};
 use serde_json::{Value, json};
@@ -77,7 +78,7 @@ fn chunk(kind: &str, text: String, updates: &mut Vec<Value>) {
 const SKILL_BLOCK: &str = "<dim-skill name=\"";
 
 fn loaded_skill(index: usize, text: &str) -> Option<String> {
-    if index == 0 {
+    if markup::runtime_element(index, text) != Some("dim-skill") {
         return None;
     }
     let rest = text.strip_prefix(SKILL_BLOCK)?;
@@ -203,12 +204,16 @@ impl Projection {
                 if !silent && let Some(user) = user {
                     for (index, content) in user.content.into_iter().enumerate() {
                         match content {
+                            // The operator's words, and a loaded Skill as one line
+                            // naming it. Context a hook appended is the model's, not
+                            // theirs, so the editor's message does not carry it.
                             ContentBlock::Text { text } => match loaded_skill(index, &text) {
                                 Some(name) => chunk(
                                     "user_message_chunk",
                                     format!("\nSkill loaded: {name}"),
                                     &mut updates,
                                 ),
+                                None if markup::runtime_context(index, &text) => {}
                                 None => chunk("user_message_chunk", text, &mut updates),
                             },
                             ContentBlock::Image { source } => {
@@ -260,6 +265,15 @@ impl Projection {
                 self.compactions.insert(event.sequence,automatic);
                 self.tool(json!(["compaction",event.sequence]).to_string(),"Context compaction",Value::Null,"in_progress",&mut updates);
                 if let Some(update) = updates.last_mut() { update["_meta"] = json!({"lody":{"activity":{"version":1,"kind":"context_compaction","automatic":automatic}}}); }
+            }
+            EventContent::CompactionSummary(data) => {
+                let automatic = data.start.and_then(|start|self.compactions.remove(&start));
+                self.tool(json!(["compaction",data.start.unwrap_or(event.sequence)]).to_string(),"Context compaction",Value::Null,"completed",&mut updates);
+                if let Some(update) = updates.last_mut() {
+                    let mut activity = json!({"version":1,"kind":"context_compaction"});
+                    if let Some(automatic) = automatic { activity["automatic"] = json!(automatic); }
+                    update["_meta"] = json!({"lody":{"activity":activity}});
+                }
             }
             EventContent::Compaction(data) => {
                 let automatic = data.start.and_then(|start|self.compactions.remove(&start));
@@ -365,6 +379,23 @@ mod tests {
             .map(|update| update["content"]["text"].as_str().unwrap())
             .collect();
         assert_eq!(texts, ["Explain the change", "\nSkill loaded: commit"]);
+    }
+
+    #[test]
+    fn a_prompt_hooks_context_replays_as_no_chunk() {
+        let updates = replay(json!([
+            {"type":"text","text":"Explain the change"},
+            {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\n</dim-hooks>"},
+        ]));
+        let texts: Vec<&str> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            ["Explain the change"],
+            "context a hook appended is the model's, not the operator's words"
+        );
     }
 
     #[test]

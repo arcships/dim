@@ -85,16 +85,8 @@ Consumes `input/message`, `input/consumed`, `input/withdraw`, `input/applied`,
 facts needed by recovery. Its withdrawal service writes `input/withdraw`;
 its decisions produce `input/applied`, `input/deleted` and, only for an accepted
 queued-input Steer, the replacement `input/message`. It does not run a model itself.
-It registers with `Dispatcher::consume`; recovery reads ordered identity, input
-mode, handover identity and turn identity fields in pages at one committed boundary. User-content shape
-distinguishes the default queue mode from an internal append; content text is
-not otherwise needed for queue decisions. Recovery also reads the optional full
-checked `steer` candidate from withdrawal commands and retains it for an owed
-conditional result; it never reruns external submission checks. Recovery retains
-queue entries and owed decisions, removes each owed decision when its written
-result is read, and writes the remaining application or withdrawal decisions
-before live delivery. A committed replacement/deletion result is not recreated.
-It holds no historical event list. No background tasks or external resources.
+It writes no queue recovery or node events and holds no historical event list.
+No background tasks or external resources.
 An idle append is pending until a driving input; an interrupt is not permission
 to start a new turn from previously unapplied input.
 
@@ -109,23 +101,27 @@ the deleted input again. A candidate in `input/withdraw.steer` is not itself an
 adopted input and never enters model context. The owner contract is
 [Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal),
 and its durable form is the
-[v39 format decision](../../../design/appserver/native-storage-format.md#v39-conditional-queued-input-steer).
+[v42 format decision](../../../design/appserver/native-storage-format.md#v42-conditional-queued-input-steer).
 
-### Handover inputs
-
-A handover input is an `input/message` whose `handover` is `{turn_id,
-request_id}`: it is addressed to one handover's continuation and is
-model-readable only if that continuation consumes it. InputQueue never releases
-one (it writes no `input/applied`) and does not count it in the published queue
-size. It deletes one with `input/deleted` when its turn ends without consuming
-it, or on arrival when its turn is not open. These are the only InputQueue
-rules for it; the Loop consumes it only in the batch that starts its handover's
-continuation. Its instruction is a raw block with no `user`, like Goal's
-automatic inputs; clients that show the operator's words never show it as the
-operator's message.
-
-A handover input is never a [state input](../../../design/model-prompts.md#5-scopes),
-so an ordering rule for state inputs leaves it last.
+Recovery fixes a published cutoff, selects ordinary and handover current members,
+then reads first applied/withdraw controls for each page of at most 128 identities.
+Two last turn boundaries and an interrupt only when needed determine turn/starting.
+It never reads input bodies to recover entries; old missing input modes use an
+identity-driven user-presence query. Applied mode defaults agree with Loop.
+Only an owed accepted withdrawal decision loads its optional full checked `steer`
+candidate, through the selected command's identity. Recovery never reruns external
+submission checks or falls back to full history. A committed replacement/deletion
+batch removes the original from current membership and is not recreated.
+The first withdrawal owns an owed candidate; later commands cannot replace it.
+Owed results retain withdrawal sequence order across current members.
+Current entries, queued count, turn, starting and release bits stay in memory.
+Necessary applied/deleted output, including an accepted Steer's atomic result,
+waits for its commit before publishing the observable queue; pure turn/starting
+changes publish after their committed source is handled. Empty or unchanged
+transitions do not publish a new count. Closing clears only this generation's
+reply waiters, without refreshing the published snapshot.
+Public pending semantics still exclude handovers. Old derived recovery records
+are ignored; original facts and native member indexes remain authoritative.
 
 ### Tests
 

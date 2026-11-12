@@ -17,6 +17,46 @@ const SUMMARIZER: &str = "You summarize a coding session";
 const CREDENTIAL: &str = "credential-marker-7f3a";
 const SETTING: &str = "settings-marker-91c2";
 
+fn without_array_references(database: &Path) {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let records = connection
+        .prepare("SELECT session_id,branch_id,sequence,body FROM timeline_events WHERE json_extract(body,'$.encoding')='event'")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    for (session, branch, sequence, body) in records {
+        let mut row: Value = serde_json::from_str(&body).unwrap();
+        let record = &mut row["record"];
+        let inline = |wire: &mut Value| {
+            let Some(array) = wire.as_object_mut().unwrap().remove("changes") else {
+                return;
+            };
+            let values = connection
+                .prepare("SELECT c.body FROM timeline_array_elements a JOIN timeline_content c ON c.session_id=a.session_id AND c.hash=a.content_ref WHERE a.session_id=?1 AND a.array_id=?2 ORDER BY a.element_index")
+                .unwrap()
+                .query_map(rusqlite::params![session,array["id"].as_str().unwrap()], |row| row.get::<_,String>(0))
+                .unwrap()
+                .map(|body| serde_json::from_str::<Value>(&body.unwrap()).unwrap()["value"].clone())
+                .collect::<Vec<_>>();
+            assert_eq!(values.len() as u64, array["length"].as_u64().unwrap());
+            wire["event"]["data"]["changes"] = json!(values);
+        };
+        inline(record);
+        if let Some(trace) = record.get_mut("trace").filter(|trace| !trace.is_null()) {
+            inline(&mut trace["original"]);
+            for step in trace["steps"].as_array_mut().unwrap() {
+                if let Some(result) = step.get_mut("result").filter(|result| !result.is_null()) {
+                    inline(result);
+                }
+            }
+        }
+        connection.execute("UPDATE timeline_events SET body=?4 WHERE session_id=?1 AND branch_id=?2 AND sequence=?3",rusqlite::params![session,branch,sequence,row.to_string()]).unwrap();
+    }
+    connection.execute_batch("DELETE FROM timeline_content WHERE kind='array-element'; DROP TABLE timeline_array_elements;").unwrap();
+}
+
 /// An OpenAI-compatible provider: the first conversation request reads a
 /// file, the summarizer gets a summary, every other request an answer.
 #[derive(Default)]
@@ -412,8 +452,6 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o444)).unwrap();
         assert_eq!(exported(&readonly, &session).await, stopped);
 
-        // A damaged request body fails the export before its first line: the
-        // preflight rebuilds and hash-checks every body.
         let damaged = directory.join("copies/damaged.sqlite");
         std::fs::copy(&database, &damaged).unwrap();
         let connection = rusqlite::Connection::open(&damaged).unwrap();
@@ -428,11 +466,13 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
                 > 0
         );
         drop(connection);
-        assert!(
-            rejected(&damaged, &session)
-                .await
-                .contains("request content hash mismatch")
-        );
+        let failed = export(&damaged, &session).await;
+        assert_eq!(failed.status.code(), Some(1));
+        assert!(String::from_utf8(failed.stderr).unwrap().contains("request content hash mismatch"));
+        let partial: Vec<Value> = String::from_utf8(failed.stdout).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(partial[0]["kind"], "header");
+        assert!(partial.iter().all(|line| line["kind"] != "end"));
 
         for (version, dropped, end_index) in [
             (13, "DROP TABLE session_file_owners; DROP TABLE session_files; DROP TABLE session_metadata;", true),
@@ -453,6 +493,11 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (33, "", false),
             (34, "", false),
             (35, "", false),
+            (36, "", false),
+            (37, "", false),
+            (38, "", false),
+            (39, "", false),
+            (40, "", false),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             let catalog = if version < 23 {
@@ -489,17 +534,36 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             } else {
                 ""
             };
-            changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} {worktrees} {submission}
+            let members = if version < 37 {
+                "DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes;"
+            } else {
+                ""
+            };
+            let text = if version < 36 { "
                 DROP INDEX timeline_events_requests;
                 DROP INDEX timeline_events_inputs;
                 DROP INDEX timeline_events_users;
                 DROP TRIGGER timeline_text_delete;
                 DROP TABLE timeline_text;
                 DROP TABLE timeline_text_fts;
-                DROP TABLE timeline_text_tails;
+                DROP TABLE timeline_text_tails;"
+            } else if version < 38 { "
+                DROP INDEX timeline_events_requests;
+                DROP INDEX timeline_events_inputs;
+                DROP INDEX timeline_events_users;
+                CREATE INDEX timeline_events_requests ON timeline_events(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence);
+                CREATE INDEX timeline_events_inputs ON timeline_events(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence);
+                CREATE INDEX timeline_events_users ON timeline_events(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence);"
+            } else {""};
+            let identities = if version < 40 {
+                "DROP TABLE timeline_output_ids; DROP INDEX timeline_events_turns; DROP INDEX timeline_events_scopes; DROP INDEX timeline_events_source_positions;"
+            } else { "" };
+            changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} {worktrees} {submission} {members} {text}
+                {identities}
                 DROP TABLE agent_store_format;
                 CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {version}));
                 INSERT INTO agent_store_format VALUES ({version});"));
+            if version < 39 { without_array_references(&older); }
             if version < 31 {
                 without_switch_columns(&older);
             } else if version == 31 {
@@ -515,7 +579,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             if version < 27 {
                 without_v26_columns(&older);
             }
-            if version < 38 {
+            if version < 41 {
                 without_v38_protocol(&older);
             }
             let bytes = std::fs::read(&older).unwrap();
@@ -526,14 +590,15 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             assert_eq!(marker(&older), version, "v{version}");
         }
 
+        let future = dim_app_server::storage::STORE_FORMAT + 1;
         for (name, sql) in [
-            ("newer.sqlite", "DROP TABLE agent_store_format;
-                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 40));
-                INSERT INTO agent_store_format VALUES (40);"),
-            ("changed.sqlite", "CREATE TABLE extra (id TEXT)"),
+            ("newer.sqlite", format!("DROP TABLE agent_store_format;
+                CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {future}));
+                INSERT INTO agent_store_format VALUES ({future});")),
+            ("changed.sqlite", "CREATE TABLE extra (id TEXT)".into()),
         ] {
             let path = directory.join("copies").join(name);
-            changed(&database, &path, sql);
+            changed(&database, &path, &sql);
             let bytes = std::fs::read(&path).unwrap();
             assert!(rejected(&path, &session).await.contains("unsupported Timeline storage format"), "{name}");
             assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name}");
@@ -631,4 +696,83 @@ async fn timeline_export_carries_before_traces() {
         stored(&database, &session).await[..]
     );
     std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test]
+async fn exports_reject_missing_sequences_and_inconsistent_batches_across_pages() {
+    let directory =
+        std::env::temp_dir().join(format!("dim-export-completeness-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("source.sqlite");
+    let db = SqliteStorage::open(database.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("export", &dim_agent_runtime::SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        TimelineKey {
+            session_id: "export".into(),
+            branch_id: "main".into(),
+        },
+        vec![],
+        store.clone(),
+    );
+    timeline
+        .append_batch_registered(
+            (1..=300)
+                .map(|n| {
+                    EventKind::Extension(
+                        dim_agent_types::ExtensionEvent::new("export", "fact", json!({"n":n}))
+                            .unwrap(),
+                    )
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    assert_eq!(
+        exported(&database, "export").await.last().unwrap()["events"],
+        300
+    );
+    for (name, sql) in [
+        ("gap", "DELETE FROM timeline_events WHERE sequence=2"),
+        ("tail", "DELETE FROM timeline_events WHERE sequence=300"),
+        ("page-gap", "DELETE FROM timeline_events WHERE sequence=257"),
+        (
+            "batch",
+            "UPDATE timeline_events SET body=json_set(body,'$.record.batch_end',299) WHERE sequence=257",
+        ),
+        (
+            "terminal",
+            "UPDATE timeline_events SET body=json_set(body,'$.record.batch_end',301) WHERE sequence=300",
+        ),
+    ] {
+        let copy = directory.join(format!("{name}.sqlite"));
+        std::fs::copy(&database, &copy).unwrap();
+        let connection = rusqlite::Connection::open(&copy).unwrap();
+        assert_eq!(connection.execute(sql, []).unwrap(), 1);
+        drop(connection);
+        let failed = export(&copy, "export").await;
+        assert_eq!(
+            failed.status.code(),
+            Some(1),
+            "{name}: {}",
+            String::from_utf8_lossy(&failed.stderr)
+        );
+        let partial: Vec<Value> = String::from_utf8(failed.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(partial.iter().all(|line| line["kind"] != "end"), "{name}");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }

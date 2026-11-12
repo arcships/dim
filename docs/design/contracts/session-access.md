@@ -403,12 +403,12 @@ for plain withdrawals and old commands. Only the accepted result's
 `input/message` adopts that content. External validation rejects an invalid
 candidate before admission, regardless of whether the original is held.
 
-The native store writes **v39** and upgrades the formats accepted by v38 without
-rewriting historical events. v39 reads commands with or without `steer`; v38 and
-earlier readers reject the v39 store at startup because their strict command
+The native store writes **v42** and upgrades the formats accepted by v41 without
+rewriting historical events. v42 reads commands with or without `steer`; v41 and
+earlier readers reject the v42 store at startup because their strict command
 decoder cannot read the new member. The format gate, not a per-command fallback,
 prevents an older writer from opening the upgraded store. See the
-[storage owner's format decision](../appserver/native-storage-format.md#v39-conditional-queued-input-steer).
+[storage owner's format decision](../appserver/native-storage-format.md#v42-conditional-queued-input-steer).
 Frozen event fixtures remain unchanged.
 
 Wire compatibility is independent of the store gate: v3 delivers the native

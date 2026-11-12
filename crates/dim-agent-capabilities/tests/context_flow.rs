@@ -64,6 +64,29 @@ impl ContextModel for Context {
     fn count_tokens(&self, request: &ModelRequest) -> f64 {
         serde_json::to_vec(&request.messages).unwrap().len() as f64
     }
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        Some(self)
+    }
+}
+impl ContextCounter for Context {
+    fn algorithm(&self) -> &str {
+        "test/message-array/v1"
+    }
+    fn fixed(&self, _: Option<&SystemPrompt>, _: Option<&[ToolDefinition]>) -> ContextContribution {
+        ContextContribution {
+            serialized_bytes: 1,
+            images: 0,
+        }
+    }
+    fn message(&self, message: &Message) -> ContextContribution {
+        ContextContribution {
+            serialized_bytes: serde_json::to_vec(message).unwrap().len() as u64 + 1,
+            images: 0,
+        }
+    }
+    fn estimate(&self, contribution: ContextContribution) -> f64 {
+        contribution.serialized_bytes.max(2) as f64
+    }
 }
 fn test_diagnostics() -> StrategyDiagnostics {
     StrategyDiagnostics {
@@ -426,7 +449,12 @@ async fn a_steer_before_any_model_output_ends_the_request_and_continues_the_turn
             1
         );
         assert!(matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Completed { .. },
                 ..
@@ -502,7 +530,12 @@ async fn provider_budget_recovery_uses_one_fixed_source_and_retries_only_once() 
             1
         );
         assert!(matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Failed { .. },
                 ..
@@ -565,7 +598,7 @@ async fn foreign_compaction_cursor_fails_recovery_without_another_model_call() {
                 && matches!(&data.outcome, ModelOutputOutcome::Failed { error, .. } if error.contains("cut is outside the fixed context history"))
         )));
         assert!(matches!(
-            &events.last().unwrap().kind,
+            &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
             EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { error }, .. })
                 if error.contains("cut is outside the fixed context history")
         ));
@@ -615,7 +648,7 @@ async fn compressor_cursor_cannot_split_an_assistant_tool_use_from_its_result() 
             2
         );
         assert!(matches!(
-            &events.last().unwrap().kind,
+            &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
             EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { error }, .. })
                 if error == "Compaction cut separates a tool call from its results or context."
         ));
@@ -797,7 +830,12 @@ async fn compaction_restores_counts_and_uses_the_committed_context_baseline() {
             )))
     );
     assert!(matches!(
-        &forged_events.last().unwrap().kind,
+        &forged_events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -951,35 +989,151 @@ impl ModelDriver for UsageModel {
                 cost: None,
                 currency: None,
             };
-            Ok(
-                Box::pin(stream.chain(futures_util::stream::once(async move {
-                    Ok(ModelChunk::Usage(usage))
-                }))) as ModelStream,
-            )
+            let unavailable = Usage {
+                prompt_tokens: 0.,
+                completion_tokens: 0.,
+                total_tokens: 0.,
+                ..usage.clone()
+            };
+            let incomplete = Usage {
+                prompt_tokens: 100.,
+                total_tokens: 102.,
+                cache_read_tokens: Some(200.),
+                ..usage.clone()
+            };
+            Ok(Box::pin(
+                stream.chain(futures_util::stream::iter(
+                    [usage, unavailable, incomplete]
+                        .into_iter()
+                        .map(|usage| Ok(ModelChunk::Usage(usage))),
+                )),
+            ) as ModelStream)
         })
     }
 }
 
+#[tokio::test]
+async fn a_final_request_transform_does_not_calibrate_the_canonical_context() {
+    let mut builder = builder_with_context(
+        Arc::new(UsageModel),
+        HistoryRenderer::default(),
+        Context {
+            window: 20_000.,
+            ..Context::default()
+        },
+    );
+    builder.require_feature(Feature::new("ExpandFinal").branch("ExpandFinal", |names| {
+        Ok(Box::new(ExpandFinal::new(names)?))
+    }));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .service::<dim_agent_capabilities::prompt::Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            Some(ModelSelection {
+                provider_id: "test".into(),
+                model_id: "test".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            }),
+            vec![],
+        )
+        .await
+        .unwrap();
+    session
+        .submit("first".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let usage = session
+        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .unwrap()
+        .usage(CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(usage.baseline_source, BaselineSource::FullEstimate);
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ModelUsage(_)))
+    );
+    assert!(!events.iter().any(|event| matches!(&event.kind,
+        EventKind::Extension(data) if data.key() == "context-usage/request-base")));
+    agent.close().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_usage_baseline_counts_only_new_history_after_a_matching_request() {
+async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measurements() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let agent = MinimalHost::start(&builder(Arc::new(UsageModel)))
-            .await
-            .unwrap();
-        let session = agent
-            .create_session(SessionConfig::default())
-            .await
-            .unwrap();
+        let store = Arc::new(context_reads::CountContextReads::default());
+        let mut profile = builder(Arc::new(UsageModel));
+        profile.timeline_store(store.clone());
+        store.create_session("usage-baseline", &SessionConfig::default()).await.unwrap();
+        let timeline = Timeline::new(Ctx::root().unwrap(), TimelineKey {session_id:"usage-baseline".into(),branch_id:"main".into()},vec![],store.clone());
+        timeline.append(EventKind::ContextConfigured(ContextConfiguredData {
+            timeline:"main".into(),revision:"fixture".into(),previous:None,prompt:None,
+            settings:Box::new(ModelConfiguration {provider_id:"mock".into(),model_id:"echo".into(),capability_snapshot:None,tools:Some(vec![]),tool_sources:vec![],config:None,metadata:None}),system:None,system_source:None,
+        }).into()).unwrap();
+        dim_agent_runtime::core::close_timeline(&timeline).await.unwrap();
+        let agent = MinimalHost::start(&profile).await.unwrap();
+        let session = agent.restore_session("usage-baseline".into()).await.unwrap();
         session
             .submit("first".into(), InputMode::Queue, "main")
             .await
             .unwrap();
         session.idle("main").await.unwrap();
         session
+            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
+            .unwrap();
+        store.property_queries.lock().unwrap().clear();
+        store.context_pages.lock().unwrap().clear();
+        session
             .submit("second".into(), InputMode::Queue, "main")
             .await
             .unwrap();
         session.idle("main").await.unwrap();
+        session
+            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.context_pages.lock().unwrap().len(),
+            1,
+            "only construction of the actual request may read the context history"
+        );
+        for query in store.property_queries.lock().unwrap().iter() {
+            let mut pending: Vec<_> = query.filter.iter().collect();
+            let mut model_call = false;
+            while let Some(filter) = pending.pop() {
+                match filter {
+                    QueryFilter::In {
+                        value: QueryOperand::Field { path },
+                        values,
+                    } if path == "kind" => {
+                        model_call |= values.iter().any(|value| value == "model/call")
+                    }
+                    QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
+                        pending.extend(conditions)
+                    }
+                    _ => (),
+                }
+            }
+            assert!(
+                !model_call || !matches!(query.select, QuerySelect::Events),
+                "request preparation or final validation reread a historical ModelCall: {query:?}"
+            );
+        }
         let events = chain_events(&session, "main", ..).await.unwrap();
         let budgets: Vec<_> = events
             .iter()
@@ -989,12 +1143,89 @@ async fn provider_usage_baseline_counts_only_new_history_after_a_matching_reques
             })
             .collect();
         assert_eq!(budgets.len(), 2);
+        for budget in &budgets {
+            let through = events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    EventKind::ContextPrepare(data) if data.request_id == budget.request_id => {
+                        Some(data.through)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let history = HistoryRenderer::default()
+                .context_in(&session, "main", through)
+                .await
+                .unwrap();
+            let expected = project_context_history(&history)
+                .unwrap()
+                .last()
+                .map(|entry| entry.id.clone());
+            assert_eq!(
+                budget.boundary, expected,
+                "the budget retains the actual last projected entry ID"
+            );
+        }
+
         assert_eq!(budgets[0].baseline_source, BaselineSource::FullEstimate);
         assert_eq!(budgets[1].baseline_source, BaselineSource::ProviderBaseline);
         assert_eq!(budgets[1].baseline_prompt_tokens, Some(123.));
         assert_eq!(
             budgets[1].estimated_input_tokens,
             123. + budgets[1].delta_tokens.unwrap()
+        );
+        let usage = session
+            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
+            .unwrap();
+        let history = HistoryRenderer::default()
+            .context_in(&session, "main", usage.through)
+            .await
+            .unwrap();
+        let rendered = project_context_history(&history).unwrap();
+        let messages = dim_agent_capabilities::history::context_messages(&history, &rendered);
+        let latest = events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                EventKind::ModelCall(data) => Some(&data.request),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(usage.baseline_source, BaselineSource::ProviderBaseline);
+        assert_eq!(
+            usage.estimated_input_tokens,
+            123. + serde_json::to_vec(&messages).unwrap().len() as f64
+                - Context::default().count_tokens(latest)
+        );
+        assert!(!events.iter().any(|event| matches!(&event.kind,
+            EventKind::Extension(data) if data.key() == "context-usage/request-base" || data.key() == "context-usage/node")));
+        let id = session.id().to_owned();
+        agent.close().await.unwrap();
+        let mut changed = builder_with_context(
+            Arc::new(UsageModel),
+            HistoryRenderer::default(),
+            Context {
+                window: 8192.,
+                ..Context::default()
+            },
+        );
+        changed.timeline_store(store);
+        let agent = MinimalHost::start(&changed).await.unwrap();
+        let session = agent.restore_session(id).await.unwrap();
+        let usage = session
+            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(usage.context_window, 8192.);
+        assert_eq!(usage.baseline_source, BaselineSource::FullEstimate);
+        assert_eq!(
+            usage.estimated_input_tokens,
+            serde_json::to_vec(&messages).unwrap().len() as f64
         );
         agent.close().await.unwrap();
     })
@@ -1634,6 +1865,9 @@ impl ContextModel for GatedContext {
     fn count_tokens(&self, request: &ModelRequest) -> f64 {
         self.0.count_tokens(request)
     }
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        self.0.contribution_counter()
+    }
 }
 impl CompactionStrategy for GatedContext {
     fn name(&self) -> &str {
@@ -1849,7 +2083,12 @@ async fn a_changed_prefix_message_fails_the_preparation() {
                 if error.contains("must preserve the timeline history prefix"))
     )));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Failed { .. },
             ..
@@ -2040,7 +2279,12 @@ async fn a_completed_compaction_keeps_its_replacement_in_the_prefix_check() {
                 if error.contains("must preserve the timeline history prefix"))
     )));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Failed { .. },
             ..

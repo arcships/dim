@@ -1043,3 +1043,32 @@ pub struct CompactionStrategyRecord {
     #[serde(flatten)]
     pub details: JsonObject,
 }
+
+/// The completed compaction's folded display; its body is read separately.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionSummary {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::optional_safe_integer"
+    )]
+    pub start: Option<u64>,
+    pub strategy: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub insufficient_space: Option<InsufficientSpace>,
+}
+
+/// One completed compaction's complete detail response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionDetail {
+    pub event_id: String,
+    #[serde(with = "crate::safe_integer")]
+    pub sequence: u64,
+    pub data: ContextCompactionData,
+}
