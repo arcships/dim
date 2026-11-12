@@ -36,6 +36,9 @@ impl Store {
             ..Default::default()
         }
     }
+    pub fn database(&self) -> std::path::PathBuf {
+        self.0.join("dimcode.sqlite")
+    }
     pub fn connection(&self) -> Connection {
         let connection = Connection::open(self.0.join("dimcode.sqlite")).unwrap();
         connection.busy_timeout(Duration::from_secs(10)).unwrap();

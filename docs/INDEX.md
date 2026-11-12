@@ -63,6 +63,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Context assembly and recognition requirements](design/context-assembly-requirements.md)（中文）：业务必须保证什么，内存与读取加速允许改变什么
 - [Compaction requirements](design/compaction-quality.md): what compaction keeps, what users see and control, its cost bounds, how its quality is judged (#428)（[中文](zh/design/compaction-quality.md)）
 - [Model-facing prompts](design/model-prompts.md): the channels that carry model text, protocol versus policy, who may change what, the input guide, one prompt language, and how a prompt change is judged (#429)（[中文](zh/design/model-prompts.md)）
+- [Agent environment awareness](design/agent-environment.md): clients and settings as model state; client view deferred; the snapshot delivery pattern, noise budget and boundaries (#1018–#1022)
 - [Timeline-first TUI](design/timeline-ui.md): the TUI's Timeline as the primary surface, opening lines and forks from a point of it, line markers and cuts（[中文](zh/design/timeline-ui.md)）
 - [Local-execution plugin contracts](architecture/rust-agent/plugins/README.md)
 - [Build environment](architecture/build.md)

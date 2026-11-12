@@ -180,6 +180,8 @@ async fn launch(index: &Arc<AgentIndex>, agent: Option<String>, cwd: &Path) -> S
             model: None,
             policy: None,
             starter: None,
+            origin: None,
+            title: None,
         })
         .await
         .unwrap()

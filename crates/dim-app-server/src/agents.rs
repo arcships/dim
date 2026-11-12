@@ -40,6 +40,10 @@ pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 mod sessions;
 pub use sessions::{SessionPermissions, SessionRef, SessionsError};
 
+/// The member a `sessions.launch` caller's title is stored under in a stored
+/// `SessionConfig`, whose serde form is camelCase.
+const INITIAL_TITLE: &str = "initialTitle";
+
 /// The process default profile carries the process Session defaults.
 fn process_default(defaults: &SessionConfig) -> AgentProfile {
     AgentProfile {
@@ -1753,9 +1757,29 @@ impl AgentIndex {
         // A fork of an older protocol keeps the live Session's codemode
         // exclusion; the stored record is written without it, as on create.
         config.exclude_codemode_below(version);
+        // A fork starts untitled (session-deletion-and-fork §6.3, SessionTitle
+        // A7): the seed is the creation caller's, and copying it would have
+        // SessionTitle write the source's stale label at revision 0. The
+        // record loses that one member and nothing else: it is built from the
+        // source text, so the codemode exclusion `config` may have just gained
+        // stays out of it, as the comment above requires.
+        let mut record = stored;
+        if config.initial_title.take().is_some() {
+            let mut value: serde_json::Value = serde_json::from_str(&record).map_err(|error| {
+                AgentError::Storage(format!("the source configuration: {error}"))
+            })?;
+            let Some(members) = value.as_object_mut() else {
+                return Err(AgentError::Storage(
+                    "the source configuration is not an object".into(),
+                ));
+            };
+            members.remove(INITIAL_TITLE);
+            record = serde_json::to_string(&value)
+                .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
+        }
         let source = source.to_owned();
         let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
-            Box::pin(async move { store.fork_session(&source, &fork, at, &stored).await })
+            Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
         });
         let creation = usage
             .host

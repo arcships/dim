@@ -218,3 +218,32 @@ test("a turn failure that is not the model failure still prints", () => {
   const errors = projection.rows.filter((row) => row.kind === "error")
   assert.deepEqual(errors.map((row) => row.text), ["The provider reported a server error: The server is overloaded. Try again later or choose another model.", "tool crashed"])
 })
+
+test("a Stop hook's follow-up is a notice row, not the operator's words", () => {
+  const projection = new Projection()
+  projection.apply(event(5, {
+    kind: "source-input",
+    text: '<dim-hooks kind="follow-up">\nrun the suite\nfix parser::tests\nif a &lt; b &gt; c &amp;&amp; d, keep the diff small\n</dim-hooks>',
+    blocks: [],
+    mode: "queue",
+  }))
+  assert.deepEqual(projection.rows, [{
+    kind: "hook-follow-up",
+    key: "notice-5",
+    body: "run the suite\nfix parser::tests\nif a < b > c && d, keep the diff small",
+    lines: 3,
+  }])
+
+  // The same channel carries SessionStart and PostToolUse context, and a Goal
+  // continuation; none of them draws a row.
+  for (const text of [
+    '<dim-hooks kind="session-start">\nthe project conventions\n</dim-hooks>',
+    '<dim-hooks kind="post-tool" call_id="c1" tool="exec">\nthe command failed\n</dim-hooks>',
+    '<dim-goal kind="continuation" branch="main">\nkeep going\n</dim-goal>',
+    '<dim-hooks>\nthe hook body mentions kind="follow-up"\n</dim-hooks>',
+    '<dim-hooks-extra kind="follow-up">\nnot a follow-up\n</dim-hooks-extra>',
+  ]) {
+    projection.apply(event(projection.cursor + 1, { kind: "source-input", text, blocks: [] }))
+    assert.equal(projection.rows.length, 1, text)
+  }
+})

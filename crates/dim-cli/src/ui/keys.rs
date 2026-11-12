@@ -83,6 +83,10 @@ pub fn report(fullscreen: bool, mouse: bool) -> Vec<String> {
         ));
         rows.push(format!(
             "  {}",
+            t("Tab also picks tool headers · Enter/Space toggle the focused tool")
+        ));
+        rows.push(format!(
+            "  {}",
             if mouse {
                 t("wheel scroll · drag select and copy · click a link to open it, a tool group to expand it")
             } else {
