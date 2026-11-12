@@ -21,8 +21,8 @@ const REMOVE_UNSUPPORTED: &str = "This daemon does not support removing managed 
 const PRUNE_UNSUPPORTED: &str = "This daemon does not support pruning managed worktrees";
 
 /// The columns [`Worktree::row`] prints, named once beside the table.
-const COLUMNS: &str =
-    "Columns: task id, root, branch, head, changed, untracked, last used, Sessions, state";
+const COLUMNS: &str = "Columns: task id, repository, root, branch, head, changed, untracked, \
+last used, Sessions, state";
 
 /// One `dimcode worktree` command.
 #[derive(Clone, Debug)]
@@ -194,6 +194,8 @@ pub async fn prune(
 #[serde(rename_all = "camelCase")]
 struct Worktree {
     task_id: String,
+    #[serde(default)]
+    repository: Option<String>,
     root: String,
     #[serde(default)]
     branch: Option<String>,
@@ -215,6 +217,9 @@ struct Worktree {
     /// The directory exists but Git no longer names it as a worktree.
     #[serde(default)]
     git_missing: bool,
+    /// The path could not be inspected; never a candidate.
+    #[serde(default)]
+    unknown: bool,
     /// No record names it: a directory a failed creation left behind.
     #[serde(default)]
     unregistered: bool,
@@ -237,8 +242,9 @@ impl Worktree {
                 .join(",")
         };
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{last_used}\t{sessions}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{last_used}\t{sessions}\t{}",
             safe_line(&self.task_id),
+            column(&self.repository),
             safe_line(&self.root),
             column(&self.branch),
             column(&self.head),
@@ -250,11 +256,17 @@ impl Worktree {
 
     /// What is wrong with the worktree, or `ok` when nothing is.
     fn state(&self) -> &'static str {
-        match (self.missing, self.git_missing, self.unregistered) {
-            (false, false, false) => "ok",
-            (true, _, false) => "missing",
-            (_, true, false) => "git-missing",
-            (false, false, true) => "unregistered",
+        match (
+            self.unknown,
+            self.missing,
+            self.git_missing,
+            self.unregistered,
+        ) {
+            (true, _, _, _) => "unknown",
+            (_, false, false, false) => "ok",
+            (_, true, _, false) => "missing",
+            (_, _, true, false) => "git-missing",
+            (_, false, false, true) => "unregistered",
             _ => "unusable",
         }
     }
@@ -382,6 +394,7 @@ mod tests {
     fn a_row_names_every_column_and_its_state() {
         let mut worktree = Worktree {
             task_id: "4f2abc".into(),
+            repository: Some("/repo/.git".into()),
             root: "/home/worktrees/4f2abc/dim".into(),
             branch: Some("dim/4f2abc".into()),
             head: Some("abc1234".into()),
@@ -391,11 +404,12 @@ mod tests {
             sessions: vec!["s1".into(), "s2".into()],
             missing: false,
             git_missing: false,
+            unknown: false,
             unregistered: false,
         };
         assert_eq!(
             worktree.row(0),
-            "4f2abc\t/home/worktrees/4f2abc/dim\tdim/4f2abc\tabc1234\t2\t1\t-\ts1,s2\tok"
+            "4f2abc\t/repo/.git\t/home/worktrees/4f2abc/dim\tdim/4f2abc\tabc1234\t2\t1\t-\ts1,s2\tok"
         );
         worktree.branch = None;
         worktree.head = None;
@@ -403,12 +417,12 @@ mod tests {
         worktree.unregistered = true;
         assert_eq!(
             worktree.row(0),
-            "4f2abc\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tunregistered"
+            "4f2abc\t/repo/.git\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tunregistered"
         );
         worktree.missing = true;
         assert_eq!(
             worktree.row(0),
-            "4f2abc\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tunusable"
+            "4f2abc\t/repo/.git\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tunusable"
         );
     }
 }

@@ -319,7 +319,7 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 | `session_output_owners.path` | `TEXT` | 否 | — | 联合主键第 2 列；命令输出的规范绝对路径；fork 复制行，删除时按父目录清理 |
 | `worktree_directories.repository` | `TEXT` | 否 | — | 联合主键第 1 列；规范公共 Git 目录，UTF-8 绝对路径（v33） |
 | `worktree_directories.root` | `TEXT` | 否 | — | 联合主键第 2 列；worktree 规范根目录；最后关联解除后保留 |
-| `worktree_directories.last_used_at_ms` | `INTEGER` | 是 | `NULL` | 关联写入或解除时更新的最后使用时间（v43）；`NULL` 为未知，`--older-than` 不选、`--keep` 按最旧 |
+| `worktree_directories.last_used_at_ms` | `INTEGER` | 是 | `NULL` | 关联写入或解除时更新的最后使用时间（v44）；`NULL` 为未知，`--older-than` 不选、`--keep` 按最旧 |
 | `session_worktrees.session_id` | `TEXT` | 否 | — | 联合主键第 1 列；外键到 `agent_sessions(session_id)`；随 Session 删除，不随 fork 复制 |
 | `session_worktrees.repository` | `TEXT` | 否 | — | 联合主键第 2 列；与 `root` 联合作为外键引用 `worktree_directories(repository, root)` |
 | `session_worktrees.root` | `TEXT` | 否 | — | 联合主键第 3 列；关联的 worktree 根目录 |

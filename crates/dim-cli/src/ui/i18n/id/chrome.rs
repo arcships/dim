@@ -244,6 +244,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Terputus; draf disimpan. Keluar lalu lanjutkan Sesi ini."
         }
+        "Cannot open this Session; draft kept." => "Sesi ini tidak dapat dibuka; draf disimpan.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Terputus; draf disimpan. Keluar lalu jalankan: {command}"
         }
@@ -318,7 +319,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Error: {message}",
         "working…  {elapsed}" => "bekerja…  {elapsed}",
         "thinking…  {elapsed}" => "berpikir…  {elapsed}",
-        "Ask anything..." => "Tanya apa saja…",
+        "Ask anything... · Ctrl+J newline" => "Tanya apa saja… · Ctrl+J baris baru",
         "Earlier history · {id} · {count} messages" => "Riwayat lama · {id} · {count} pesan",
         "No active session" => "Tak ada sesi aktif",
         "answer required" => "perlu jawaban",

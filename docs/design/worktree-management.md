@@ -81,9 +81,10 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 路径），`list` 预先给出同一原因，客户端只展示，不自行判断。
 
 - **list**：读 Git 的 `rev-parse` 与 `status --porcelain --ignored` 和 SessionStore 的目录记录、使用关联，join 后给出
-  task-id、仓库、根、分支与 HEAD、所属 Session、最后使用时间、脏/未跟踪计数，以及目录缺失、Git 已不登记或
-  未登记。根下既无记录也无 Git 登记的目录列为未登记；管理根外的目录记录不进入本列表，也永不列为删除候选。
+  task-id、仓库、根、分支与 HEAD、所属 Session、最后使用时间、脏/未跟踪计数，以及目录缺失、Git 已不登记、
+  无法检查（unknown）或未登记。根下既无记录也无 Git 登记的目录列为未登记；管理根外的目录记录不进入本列表，也永不列为删除候选。
   `$DIMCODE_HOME/worktrees` 保留给托管 worktree：手工在其中创建的 worktree 同样按托管处理，不另设来源标记。
+  记录的根必须是规范路径下的普通目录；任务目录被换成符号链接时按 `worktree_in_use` 拒绝，删除前再核验一次。
 - **remove**：删除单个已登记的托管 worktree。仍有关联（任何 Session）、任何 Session 的 cwd 在根下、有未提交
   或未跟踪内容时拒绝；要清理仍有关联的工作树，先删除对应 Session。`--force` 只覆盖内容检查，也只有此时
   Git 才收到 `--force`，所以内容在检查后出现时 Git 自己会拒绝。删除走 `git worktree remove`，与记录删除在
@@ -92,7 +93,7 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
   没有 Session 的 cwd 在根下且不含 `.git`；带 `.git` 的残留由用户用 `git worktree remove` 处理，错误信息给出路径。
   记录只有 repository 与 root，同一路径被手工重建的 worktree 视为同一条记录，这是已知限制。
 - **prune**：候选只包括根在 `$DIMCODE_HOME/worktrees` 下、没有剩余使用关联的目录记录，再按最后使用时间
-  应用 `--older-than` 或 `--keep`；未知时间按 §4 处理，仍有关联、Session 的 cwd 在根下、Git 已不再登记（除显式
+  应用 `--older-than` 或 `--keep`；未知时间按 §4 处理，仍有关联、Session 的 cwd 在根下、无法检查、Git 已不再登记（除显式
   `--force`）或未登记的目录一律不选。删除前逐项复核 Git 登记、根未变与内容干净，先预览再按确认删除；apply
   携带预览的 task id，只删除用户看到的集合，单个候选失败时保留其记录并继续其余候选。保留项逐条给出原因。
   选择语义与交互沿用 [session cleanup](cli-commands.md#session-deletion-and-cleanup)，不新增第二套。

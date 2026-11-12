@@ -248,6 +248,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Desligado; rascunho mantido. Saia e retome esta sessão."
         }
+        "Cannot open this Session; draft kept." => {
+            "Não é possível abrir esta sessão; rascunho mantido."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Desligado; rascunho mantido. Saia e execute: {command}"
         }
@@ -320,7 +323,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Erro: {message}",
         "working…  {elapsed}" => "a trabalhar…  {elapsed}",
         "thinking…  {elapsed}" => "a pensar…  {elapsed}",
-        "Ask anything..." => "Pergunte o que quiser…",
+        "Ask anything... · Ctrl+J newline" => "Pergunte o que quiser… · Ctrl+J nova linha",
         "Earlier history · {id} · {count} messages" => {
             "Histórico anterior · {id} · {count} mensagens"
         }

@@ -176,6 +176,16 @@ A v3 client must not be able to start a Code Mode program whose child `ask_user`
 and whose child tool cards it cannot group. Keeping the tool out of v3 Sessions is the smallest
 enforcement point.
 
+The exclusion belongs to the Session, not to the connection that opens it: a Session created
+below 4 keeps `codemode` in its stored `excluded_tools`, so a v4 connection that opens it still
+does not get Code Mode, and a fork of it records the source's version and keeps the exclusion.
+
+That is one case of the rule the lower bound relies on: a connection may write to a Session
+recorded at an older version only facts that version's projection can carry, and anything else
+it writes must also raise the recorded version. Code Mode satisfies it because the exclusion is
+recorded in the Session's configuration, not projected to the client; an event shape the older
+version cannot read does not, which is why a new event kind needs a protocol version.
+
 ### 2.7 npm client protocol
 
 `npm/client-protocol.d.ts` adds:

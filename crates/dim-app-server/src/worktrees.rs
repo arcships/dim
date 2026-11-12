@@ -65,6 +65,8 @@ pub struct WorktreeView {
     pub missing: bool,
     /// The directory exists but Git no longer names it as a worktree.
     pub git_missing: bool,
+    /// The path could not be inspected (I/O or permission); never a candidate.
+    pub unknown: bool,
     pub unregistered: bool,
 }
 
@@ -262,37 +264,17 @@ impl ManagedWorktrees {
                 }
                 continue;
             }
-            let root_dir = match canonical(directory).await {
+            let root_dir = match canonical(directory.clone()).await {
                 Ok(root_dir) => root_dir,
                 Err(error) => {
-                    let cleanup = CancellationToken::new();
-                    let _ = self
-                        .git(
-                            &top,
-                            &["worktree", "remove", "--force", directory_text.as_str()],
-                            &cleanup,
-                        )
-                        .await;
-                    let _ = self
-                        .git(&top, &["branch", "-D", &branch_name], &cleanup)
-                        .await;
+                    self.rollback_add(&top, &directory, &branch_name).await;
                     return Err(error);
                 }
             };
             let subtree = match checked_subtree(&root_dir, &relative).await {
                 Ok(subtree) => subtree,
                 Err(error) => {
-                    let cleanup = CancellationToken::new();
-                    let _ = self
-                        .git(
-                            &top,
-                            &["worktree", "remove", "--force", directory_text.as_str()],
-                            &cleanup,
-                        )
-                        .await;
-                    let _ = self
-                        .git(&top, &["branch", "-D", &branch_name], &cleanup)
-                        .await;
+                    self.rollback_add(&top, &root_dir, &branch_name).await;
                     return Err(error);
                 }
             };
@@ -312,21 +294,16 @@ impl ManagedWorktrees {
         Err(last.unwrap_or_else(|| WorktreeError::Invalid("no task id was free".into())))
     }
 
-    /// Removes what a failed creation made: the worktree and the branch this
-    /// call created. A failure leaves both for the operator, reported by the
-    /// caller; a retry never reuses the task id.
-    pub async fn discard(&self, created: &CreatedWorktree, _cancel: &CancellationToken) {
-        let root = &created.prepared.directory.root;
-        let source = &created.prepared.directory.repository;
-        let Some(root_text) = root.to_str() else {
+    /// Removes a worktree this call just added, without `--force` and with a
+    /// token that cannot be cancelled; the branch goes only after Git accepted
+    /// the removal. Content that appeared since the checkout keeps both.
+    async fn rollback_add(&self, top: &Path, root: &Path, branch: &str) {
+        let Some(text) = root.to_str() else {
             return;
         };
-        // Cleanup must run after the caller's connection gave up; a cancelled
-        // token would skip both Git calls and leak the registration. No
-        // `--force`: content that appeared since the creation stays.
         let cancel = CancellationToken::new();
         let removed = self
-            .git(source, &["worktree", "remove", root_text], &cancel)
+            .git(top, &["worktree", "remove", text], &cancel)
             .await
             .is_ok();
         if !removed {
@@ -336,9 +313,19 @@ impl ManagedWorktrees {
         if let Some(parent) = root.parent() {
             let _ = tokio::fs::remove_dir(parent).await;
         }
-        let _ = self
-            .git(source, &["branch", "-D", &created.branch], &cancel)
-            .await;
+        let _ = self.git(top, &["branch", "-D", branch], &cancel).await;
+    }
+
+    /// Removes what a failed creation made: the worktree and the branch this
+    /// call created. A failure leaves both for the operator, reported by the
+    /// caller; a retry never reuses the task id.
+    pub async fn discard(&self, created: &CreatedWorktree, _cancel: &CancellationToken) {
+        self.rollback_add(
+            &created.prepared.directory.repository,
+            &created.prepared.directory.root,
+            &created.branch,
+        )
+        .await;
     }
 
     /// Lists the recorded directories under the managed root, joined with Git
@@ -484,11 +471,32 @@ impl ManagedWorktrees {
             untracked: 0,
             last_used_at_ms,
             sessions,
-            missing: !tokio::fs::try_exists(&root).await.unwrap_or(false),
+            missing: false,
             git_missing: false,
+            unknown: false,
             unregistered: repository.is_none(),
         };
-        if view.missing || view.unregistered {
+        if view.unregistered {
+            return view;
+        }
+        match path_exists(&root).await {
+            Ok(true) => {}
+            Ok(false) => {
+                view.missing = true;
+                return view;
+            }
+            Err(_) => {
+                view.unknown = true;
+                return view;
+            }
+        }
+        let toplevel = self
+            .git(&root, &["rev-parse", "--show-toplevel"], cancel)
+            .await
+            .ok()
+            .and_then(|text| std::fs::canonicalize(text.trim()).ok());
+        if toplevel.as_deref() != Some(root.as_path()) {
+            view.git_missing = true;
             return view;
         }
         let Ok(branch) = self
@@ -547,6 +555,13 @@ impl ManagedWorktrees {
                 kept.push(KeptWorktree {
                     worktree: view,
                     reason: "a Session still has an association".into(),
+                });
+                continue;
+            }
+            if view.unknown {
+                kept.push(KeptWorktree {
+                    worktree: view,
+                    reason: "the path could not be inspected; it is not a candidate".into(),
                 });
                 continue;
             }
@@ -623,11 +638,15 @@ impl ManagedWorktrees {
         }
         let root = match canonical(self.root.clone()).await {
             Ok(root) => root,
-            Err(WorktreeError::Store(_))
-                if !tokio::fs::try_exists(&self.root).await.unwrap_or(false) =>
-            {
-                return Err(WorktreeError::NotFound(format!(
-                    "no managed worktree has task id {task_id}"
+            Err(WorktreeError::Store(_)) => {
+                if !path_exists(&self.root).await? {
+                    return Err(WorktreeError::NotFound(format!(
+                        "no managed worktree has task id {task_id}"
+                    )));
+                }
+                return Err(WorktreeError::Store(format!(
+                    "{} is not a readable managed root",
+                    self.root.display()
                 )));
             }
             Err(error) => return Err(error),
@@ -652,6 +671,7 @@ impl ManagedWorktrees {
                 .remove_unregistered(task_id, &root, force, cancel)
                 .await;
         };
+        check_recorded_root(&record.directory.root, &root).await?;
         let directory = record.directory;
         let repository = directory.repository.clone();
         let sessions = self.sessions.clone();
@@ -659,7 +679,10 @@ impl ManagedWorktrees {
         let removed = sessions
             .remove_worktree(directory, move |checked| {
                 Box::pin(async move {
-                    if !tokio::fs::try_exists(&checked).await.unwrap_or(false) {
+                    let exists = path_exists(&checked)
+                        .await
+                        .map_err(|error| AgentError::Storage(error.message().to_owned()))?;
+                    if !exists {
                         let _ = git(
                             &repository,
                             &["worktree", "prune"],
@@ -668,6 +691,17 @@ impl ManagedWorktrees {
                         )
                         .await;
                         return Ok(());
+                    }
+                    // The record's path may have been redirected since the
+                    // caller's check; never follow it.
+                    let resolved = canonical(checked.clone())
+                        .await
+                        .map_err(|error| AgentError::Storage(error.message().to_owned()))?;
+                    if resolved != checked {
+                        return Err(AgentError::InvalidInput(format!(
+                            "{} is redirected; refusing to remove it",
+                            checked.display()
+                        )));
                     }
                     let registered = git(
                         &checked,
@@ -765,9 +799,9 @@ impl ManagedWorktrees {
                     path.display()
                 )));
             }
-            if tokio::fs::try_exists(path.join(".git"))
+            if path_exists(&path.join(".git"))
                 .await
-                .unwrap_or(false)
+                .map_err(|error| WorktreeError::Store(error.message().to_owned()))?
             {
                 return Err(WorktreeError::InUse(format!(
                     "{} is a Git worktree with no record; inspect it before deleting",
@@ -911,6 +945,42 @@ async fn canonical(path: PathBuf) -> Result<PathBuf, WorktreeError> {
         .map_err(|error| WorktreeError::Store(format!("{}: {error}", path.display())))
 }
 
+/// Whether `path` exists; an unreadable path is an error, not absence.
+async fn path_exists(path: &Path) -> Result<bool, WorktreeError> {
+    match tokio::fs::try_exists(path).await {
+        Ok(exists) => Ok(exists),
+        Err(error) => Err(WorktreeError::Store(format!("{}: {error}", path.display()))),
+    }
+}
+
+/// A recorded root must still be a plain directory at its canonical path under
+/// the managed root. A swapped task-directory symlink makes `canonical` differ
+/// from the stored path, and the destructive cleanup must not follow it.
+async fn check_recorded_root(root: &Path, managed: &Path) -> Result<(), WorktreeError> {
+    match tokio::fs::symlink_metadata(root).await {
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(WorktreeError::InUse(format!(
+                    "{} is not a plain directory",
+                    root.display()
+                )));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(WorktreeError::Store(format!("{}: {error}", root.display())));
+        }
+    }
+    let resolved = canonical(root.to_path_buf()).await?;
+    if resolved != root || !resolved.starts_with(managed) {
+        return Err(WorktreeError::InUse(format!(
+            "{} resolves outside the managed root",
+            root.display()
+        )));
+    }
+    Ok(())
+}
+
 /// The Session's starting directory inside the new worktree: the mapped
 /// source-relative prefix, with every component proven not to be a symlink.
 /// A redirect would make a path outside the checkout (or a sibling subtree)
@@ -954,6 +1024,15 @@ async fn cleanup_unregistered_root(
     force: bool,
     cancel: &CancellationToken,
 ) -> Result<(), AgentError> {
+    let resolved = tokio::fs::canonicalize(root)
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
+    if resolved != root {
+        return Err(AgentError::InvalidInput(format!(
+            "{} is redirected; refusing to remove it",
+            root.display()
+        )));
+    }
     let mut entries = tokio::fs::read_dir(root)
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;

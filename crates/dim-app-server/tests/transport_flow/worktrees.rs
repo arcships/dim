@@ -718,3 +718,44 @@ async fn managed_worktree_listing_and_pruning_on_a_fresh_home_are_empty() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// A task directory swapped for a symlink must not let a recorded removal
+/// reach outside the managed root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swapped_task_directory_symlink_cannot_escape_the_managed_root() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("session.create", json!({"cwd": work.repo, "worktree": {}}))
+        .await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let task_id = created["result"]["worktree"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
+    assert_ok(
+        &client
+            .rpc("session.delete", json!({"sessionId": session_id}))
+            .await,
+    );
+    let outside = work.home.join("outside");
+    std::fs::create_dir_all(outside.join("repo")).unwrap();
+    std::fs::write(outside.join("repo/secret.txt"), "secret").unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let task = root.parent().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&task).unwrap();
+    std::os::unix::fs::symlink(&outside, &task).unwrap();
+    let removed = client
+        .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+        .await;
+    assert!(removed.get("error").is_some(), "{removed}");
+    assert_eq!(
+        std::fs::read_to_string(outside.join("repo/secret.txt")).unwrap(),
+        "secret"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

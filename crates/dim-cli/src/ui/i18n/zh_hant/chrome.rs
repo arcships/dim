@@ -204,6 +204,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "連線已中斷，草稿已保留。請離開後繼續此工作階段。"
         }
+        "Cannot open this Session; draft kept." => "無法開啟此工作階段，草稿已保留。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "連線已中斷，草稿已保留。請離開後執行：{command}"
         }
@@ -266,7 +267,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "錯誤：{message}",
         "working…  {elapsed}" => "處理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "問點什麼…",
+        "Ask anything... · Ctrl+J newline" => "問點什麼… · Ctrl+J 換行",
         "Earlier history · {id} · {count} messages" => "較早歷程 · {id} · {count} 則訊息",
         "No active session" => "無目前工作階段",
         "answer required" => "需要回答",

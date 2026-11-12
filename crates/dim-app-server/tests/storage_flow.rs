@@ -629,7 +629,7 @@ fn rows(connection: &Connection, table: &str) -> Vec<String> {
         "agents" => "agent_id, profile, is_default",
         "agent_sessions" => "session_id, config, created_at_ms",
         "timeline_events" => "session_id, branch_id, sequence, last_sequence, kind, body, event_id",
-        // v43 adds the nullable last-used time; the identity rows are the
+        // v44 adds the nullable last-used time; the identity rows are the
         // facts these upgrade tests compare.
         "worktree_directories" => "repository, root",
         _ => "*",
@@ -8745,6 +8745,7 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
         (40, false),
         (41, false),
         (42, false),
+        (43, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();

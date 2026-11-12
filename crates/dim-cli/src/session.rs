@@ -263,7 +263,9 @@ pub async fn chat(
         Some(
             permission::select(client, &session_id, preset)
                 .await
-                .map_err(|error| format!("Cannot set the permission preset: {error}"))?,
+                .map_err(|error| {
+                    crate::client::resume_failure("Cannot set the permission preset", error)
+                })?,
         )
     } else {
         None

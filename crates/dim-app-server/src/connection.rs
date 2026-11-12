@@ -729,8 +729,18 @@ impl Connection {
                 }
                 (Some(&p.session_id), None)
             }
+            // A delete names rows the storage format defines and removes them
+            // by session id alone (`storage/timeline.rs` `drop_session`), and a
+            // daemon opens only a store format it knows: an unknown one is
+            // refused at open (`storage/sqlite.rs`). So every row this daemon
+            // can see, it understands and can remove, while the recorded
+            // protocol version only shapes projections. That is why it does not
+            // gate the delete. An empty id is still invalid input, as for every
+            // Session call.
             Call::Delete(p) => {
-                self.authorize_version(rpc, &p.session_id)?;
+                if p.session_id.is_empty() {
+                    return Err(RpcError::invalid("sessionId must not be empty"));
+                }
                 (None, None)
             }
             Call::Fork(p) => {
@@ -802,24 +812,28 @@ impl Connection {
         }
         Ok(())
     }
-    /// A Session belongs to the protocol version that created it. A Session
-    /// without a readable owner row has no recorded version. An empty id
-    /// names no Session at all: it is invalid input, not a closed Session.
+    /// A Session belongs to the protocol version that created it, and a
+    /// connection may use it from that version on: the recorded version is a
+    /// lower bound, not an equality. Only a Session recorded later than this
+    /// connection is refused, and the refusal names both versions so the
+    /// operator can tell the two builds apart. A Session without a readable
+    /// owner row has no recorded version and is refused without one. An empty
+    /// id names no Session at all: it is invalid input, not a closed Session.
     fn authorize_version(&self, rpc: &RpcService, id: &str) -> Result<(), RpcError> {
         if id.is_empty() {
             return Err(RpcError::invalid("sessionId must not be empty"));
         }
-        let known = rpc.index.version_of(id);
-        if known.is_some_and(|version| version != self.protocol_version())
-            || (known.is_none() && rpc.index.session(id).is_some())
-        {
-            return Err(RpcError::app(
-                -32000,
-                "session_protocol_version",
-                "Session belongs to another protocol version",
-            ));
-        }
-        Ok(())
+        let message = match rpc.index.version_of(id) {
+            Some(recorded) if recorded > self.protocol_version() => format!(
+                "Session was created by protocol version {recorded}; this connection speaks {}",
+                self.protocol_version()
+            ),
+            None if rpc.index.session(id).is_some() => {
+                "Session belongs to another protocol version".to_owned()
+            }
+            _ => return Ok(()),
+        };
+        Err(RpcError::app(-32000, "session_protocol_version", message))
     }
     /// Execution owns the cutoff; this connection owns delivery to its subscriber.
     async fn barrier(
@@ -1072,7 +1086,9 @@ impl Connection {
                         sessions.into_iter().map(move |s| (host.clone(), s))
                     })
                     .filter(|(_, session)| {
-                        rpc.index.version_of(session.id()) == Some(self.protocol_version())
+                        rpc.index
+                            .version_of(session.id())
+                            .is_some_and(|recorded| recorded <= self.protocol_version())
                     })
                     .map(|(host, s)| {
                         let status = s.state("main").map_err(RpcError::from)?;
