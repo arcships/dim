@@ -1049,10 +1049,10 @@ impl SqliteStorage {
                 .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                 .map_err(storage)?;
         } else if let Some(version) = {
-            let markers = markers(&connection)?;
+            let markers = markers(&connection).unwrap_or_default();
             known_format(&actual, single_marker(&markers))
         } {
-            let markers = markers(&connection)?;
+            let markers = markers(&connection).unwrap_or_default();
             if markers != [i64::from(version)] {
                 write_startup_failure(
                     &path,
