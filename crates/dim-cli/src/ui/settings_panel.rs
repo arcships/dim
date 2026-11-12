@@ -11,6 +11,7 @@
 //! │ › Theme                  System ›            │
 //! │   Language               简体中文 ›           │
 //! │   Startup UI form        fullscreen          │
+//! │   Default send mode      queue               │
 //! │   Tool details           collapsed           │
 //! │   Thinking details       collapsed           │
 //! │   Mouse                  on                  │
@@ -20,11 +21,11 @@
 //! │   Permissions                                │
 //! │   Permission             Workspace write ›   │
 //! │   Process isolation      ›                   │
-//! │ 1 / 10 · ↑↓ move · enter select · ←→/space change · esc close │
+//! │ 1 / 11 · ↑↓ move · enter select · ←→/space change · esc close │
 //! ╰──────────────────────────────────────────────╯
 //! ```
 
-use crate::model::session::{PromptField, PromptSetting};
+use crate::model::session::{PromptField, PromptSetting, SubmitMode};
 use crate::ui::i18n::t;
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
@@ -37,6 +38,7 @@ pub struct Values {
     pub theme: String,
     pub language: String,
     pub fullscreen_default: bool,
+    pub default_send_mode: SubmitMode,
     pub tool_detail: Detail,
     pub thinking_expanded: bool,
     pub mouse: bool,
@@ -60,6 +62,7 @@ pub enum Setting {
     Theme,
     Language,
     StartupForm,
+    DefaultSendMode,
     ToolDetails,
     ThinkingDetails,
     Mouse,
@@ -73,10 +76,11 @@ pub enum Setting {
     Isolation,
 }
 
-const ROWS: [(Setting, &str); 14] = [
+const ROWS: [(Setting, &str); 15] = [
     (Setting::Theme, "theme"),
     (Setting::Language, "language"),
     (Setting::StartupForm, "startup-form"),
+    (Setting::DefaultSendMode, "default-send-mode"),
     (Setting::ToolDetails, "tool-details"),
     (Setting::ThinkingDetails, "thinking-details"),
     (Setting::Mouse, "mouse"),
@@ -106,6 +110,7 @@ impl Setting {
         matches!(
             self,
             Self::StartupForm
+                | Self::DefaultSendMode
                 | Self::ToolDetails
                 | Self::ThinkingDetails
                 | Self::Mouse
@@ -189,6 +194,11 @@ impl SettingsPanel {
                     t("scrollback")
                 }
                 .to_owned(),
+            ),
+            row(
+                Setting::DefaultSendMode,
+                "Default send mode",
+                values.default_send_mode.as_str().to_owned(),
             ),
             row(
                 Setting::ToolDetails,

@@ -102,17 +102,32 @@ Fullscreen, 8 rows             Scrollback, 8 rows
 
 ## 运行按键与排队
 
-排队与引导和 Codex CLI 不同：运行中 `Enter` 排队，`Ctrl+S` 引导。其余运行按键与 Codex CLI 的交互一致（已在其 TUI v0.166.0 中核对）。没有运行时，`Enter` 提交。
+滚动和全屏 TUI 均可在 `/settings` → 界面 → 默认发送模式中设置运行期间用 `Enter`
+提交消息草稿的方式。`Ctrl+S` 用另一种模式提交该草稿。按 Enter、左／右方向键或空格
+切换，设置保存在 CLI 主目录，即时生效。缺省为 `queue`。
+
+```text
+设置
+  界面
+> 默认发送模式          queue
+
+运行中有草稿           Enter    Ctrl+S
+queue                  queue    steer
+steer                  steer    queue
+```
+
+`/keys` 显示当前按键对应的模式。`Shift+Enter`、`Alt+Enter` 和 `Ctrl+J` 在消息编辑器中插入换行。
 
 ```text
 按键                 空闲                         运行中
-Enter               提交；草稿为空且任务行显示时    排队草稿；草稿为空：steer 最早的排队消息；
+Enter               提交；草稿为空且任务行显示时    用默认模式提交；草稿为空：steer 最早的排队消息；
                     打开 /tasks                  没有排队消息时，任务行显示则打开 /tasks
 Tab                 选择较早消息                 选择较早消息
                     （fullscreen）               （fullscreen）
 Shift+Left          —                            草稿为空：把最新一条排队消息取回草稿
 Esc                 保留草稿                     中断；所有排队消息按先后顺序回到草稿
-Ctrl+S              —                            草稿非空：steer 草稿；为空：steer 最早的排队消息
+Ctrl+S              —                            用另一种模式提交草稿；草稿为空时，
+                                                 仅 queue 模式会 steer 最早的排队消息
 Up / Down           输入历史                     输入历史
 Home / End          滚动（fullscreen，草稿为空） 滚动（fullscreen，草稿为空）
 ```
@@ -132,17 +147,20 @@ shell 运行拦截，再是 steer 最早的排队消息，只有在没有排队�
 
 ### 队列条
 
-有消息排队时，输入框上方的队列条在带标题的边框里画出队列：按排队顺序排列，最先运行的一条在最上面，最后一行提示作用于队列的按键。运行中，草稿为空时，`Shift+Left` 把最新排队的消息取回输入框编辑。`Ctrl+S` steer 当前草稿；草稿为空时，`Ctrl+S` 或 `Enter` steer 最早的排队消息。没有排队消息时，草稿为空的 Enter 在任务行显示期间打开 `/tasks`，见[运行按键](#运行按键与排队)。Up/Down 仍用于输入历史。提示只在命令表里有对应命令时才写出命令名，因此它写出的 `/name` 都在本地执行，不会作为用户消息发给模型。目前没有查看队列的命令，所以提示只列按键。
+有消息排队时，输入框上方的队列条显示消息和状态，待处理消息按排队顺序排列。运行中，
+草稿为空时，`Shift+Left` 把最新排队的消息取回输入框编辑。队列条根据默认发送模式，
+提示草稿为空时 steer 最早排队消息的快捷键。`/queue` 打开队列面板。没有排队消息时，
+草稿为空的 Enter 在任务行显示期间打开 `/tasks`，见[运行按键](#运行按键与排队)。
 
 ```text
-┌─ Queue (2) ─────────────────────────────────────┐
-│ › fix the failing test in session_host          │
-│ › then update the design note                   │
-│ shift+← edit last · ctrl+s steer now            │
-└────────────────────────────────────────────────┘
+┌─ Queue (2) ───────────────────────────────────────────────────────┐
+│ › Incorporating · fix the failing test                            │
+│ › Held · then update the design note                              │
+│ /queue manage · Shift+← edit last · empty draft: Ctrl+S steer     │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
-队列条没有显示的消息把数量加进提示：`+3 more · shift+← edit last · ctrl+s steer now`。队列条最多显示五条消息，并在队列排空时保持已达到的高度。
+队列条最多显示五条消息，未显示的数量加在提示前，并在队列排空前保持已达到的高度。
 
 ## 用量报告
 

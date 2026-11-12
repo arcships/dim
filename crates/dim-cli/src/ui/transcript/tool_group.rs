@@ -2034,10 +2034,8 @@ fn capitalize(text: &str) -> String {
 
 /// The group's rows at `width`. `spinner` is the glyph of running marks.
 ///
-/// The header ends in `▸` (collapsed) or `▾` (expanded), and so
-/// does every expanded row with rows of its own under it (a section, a
-/// command with output, an edit with its diff). The marker survives the
-/// header's truncation.
+/// Interactive headers show `▸` (collapsed) or `▾` (expanded). Non-interactive
+/// groups have no disclosure markers in any detail mode.
 pub fn render_group(group: &ToolGroup, width: usize, p: &Palette, spinner: &str) -> Vec<String> {
     lay_out_group(group, width, p, spinner).0
 }
@@ -2128,22 +2126,10 @@ fn lay_out_group(
     let mut starts = Vec::with_capacity(lines.len());
     for (at, line) in lines.iter().enumerate() {
         starts.push(rows.len());
-        let disclosure = if group.interactive {
-            line.disclosure
-                .as_ref()
-                .map(|(_, open)| if *open { "▾" } else { "▸" })
-        } else if at == 0 {
-            Some(match group.detail {
-                Detail::Collapsed => "▸",
-                Detail::Summary | Detail::Expanded => "▾",
-            })
-        } else {
-            (line.mark.is_some()
-                && lines
-                    .get(at + 1)
-                    .is_some_and(|next| next.indent > line.indent))
-            .then_some("▾")
-        };
+        let disclosure = line
+            .disclosure
+            .as_ref()
+            .map(|(_, open)| if *open { "▾" } else { "▸" });
         let mark = line.mark.map(|mark| mark_text(mark, spinner, p));
         let lead = line.indent
             + if mark.is_some() {
@@ -2151,20 +2137,15 @@ fn lay_out_group(
             } else {
                 0
             };
-        let reserve = if disclosure.is_some() && !group.interactive {
-            2
-        } else {
-            0
-        };
         let rest_indent = line.indent + line.hang;
-        let first_width = width.saturating_sub(lead + reserve).max(1);
+        let first_width = width.saturating_sub(lead).max(1);
         let laid = if at == 0 && line.spans.iter().any(|span| span.tone == Tone::Path) {
             vec![layout_paths(&line.spans, first_width)]
         } else {
             layout(
                 &line.spans,
                 first_width,
-                width.saturating_sub(rest_indent + reserve).max(1),
+                width.saturating_sub(rest_indent).max(1),
                 line.overflow,
             )
         };
@@ -2175,13 +2156,7 @@ fn lay_out_group(
                 rows.push(format!("{}{}", " ".repeat(lead), fg(&note, &p.muted)));
             }
         }
-        let last = laid.len().saturating_sub(1);
         for (index, cells) in laid.iter().enumerate() {
-            let suffix = match disclosure {
-                _ if group.interactive => String::new(),
-                Some(glyph) if index == last => format!(" {}", fg(glyph, &p.text)),
-                _ => String::new(),
-            };
             let prefix = if index == 0 {
                 match &mark {
                     Some(mark) if group.interactive => format!(
@@ -2195,7 +2170,7 @@ fn lay_out_group(
             } else {
                 " ".repeat(rest_indent)
             };
-            rows.push(format!("{prefix}{}{suffix}", paint_cells(cells, p)));
+            rows.push(format!("{prefix}{}", paint_cells(cells, p)));
         }
     }
     (rows, starts)
