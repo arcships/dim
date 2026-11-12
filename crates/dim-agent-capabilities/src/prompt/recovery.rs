@@ -223,8 +223,10 @@ fn after_source(
 /// A request consumes every pending input when it starts, so every change at or
 /// before **S**, the last `turn/start`, was delivered. Only a change another
 /// line wrote after **S** can be undelivered, and the earliest such change is
-/// **E**: one query reads them, one `consumed` call over their union of inputs
-/// answers all of them, and E is the first whose inputs are not all consumed.
+/// **E**. The changes after S are read and judged one page at a time, with one
+/// `consumed` call over that page's union of inputs, stopping at the first page
+/// that holds an undelivered change; each consumption query names at most
+/// `CONSUMPTION_IDS` ids.
 async fn earliest_undelivered(owner: &Prompt, through: u64) -> Result<Option<TimelinePosition>> {
     let mut last_start = request(
         TimelineQueryScope::Chain,
@@ -262,7 +264,6 @@ async fn first_undelivered(
     if let Some(after) = &after {
         after_source(owner, &mut query, through, after)?;
     }
-    let mut changes = Vec::new();
     let mut after = query.page.as_mut().unwrap().after.clone();
     loop {
         let mut page = query.clone();
@@ -271,6 +272,10 @@ async fn first_undelivered(
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("prompt changes after a request start")
         };
+        // Judge this page before reading the next one: a change is delivered
+        // when every input it names was consumed, and the first page that holds
+        // an undelivered one holds E.
+        let mut changes = Vec::new();
         for row in rows {
             let [position, timeline, inputs] =
                 <[_; 3]>::try_from(row.values).expect("change header");
@@ -285,20 +290,24 @@ async fn first_undelivered(
             }
             changes.push((position, inputs));
         }
-        let Some(next) = reply.next else { break };
+        let union: Vec<String> = changes
+            .iter()
+            .flat_map(|(_, inputs)| inputs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let received = consumed(owner, &union, through).await?;
+        if let Some((position, _)) = changes
+            .into_iter()
+            .find(|(_, inputs)| !inputs.iter().all(|input| received.contains(input)))
+        {
+            return Ok(Some(position));
+        }
+        let Some(next) = reply.next else {
+            return Ok(None);
+        };
         after = Some(next);
     }
-    let union: Vec<String> = changes
-        .iter()
-        .flat_map(|(_, inputs)| inputs.iter().cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let received = consumed(owner, &union, through).await?;
-    Ok(changes
-        .into_iter()
-        .find(|(_, inputs)| !inputs.iter().all(|input| received.contains(input)))
-        .map(|(position, _)| position))
 }
 
 fn at_source(
@@ -477,6 +486,14 @@ async fn scope_edges(
     Ok((start, end))
 }
 
+/// The most input ids one consumption query names.
+///
+/// The store turns each id into its own comparison inside a single expression,
+/// and SQLite bounds how deep an expression may nest, so a filter naming an
+/// unbounded list fails to prepare. A change can name many inputs and callers
+/// can pass many changes, so the list is split before it reaches the store.
+const CONSUMPTION_IDS: usize = 128;
+
 /// The `input/message` ids of `inputs` consumed in the chain up to `through`.
 ///
 /// A change names the inputs written with it, and a block delivers the change
@@ -485,50 +502,48 @@ async fn scope_edges(
 /// consumed there. The ids are known before this runs, so the query names them
 /// and reads no other consumption.
 async fn consumed(owner: &Prompt, inputs: &[String], through: u64) -> Result<BTreeSet<String>> {
-    if inputs.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let mut query = request(
-        TimelineQueryScope::Chain,
-        through,
-        &["input/consumed"],
-        &["data.input_id"],
-    );
-    query.query.filter = Some(QueryFilter::And {
-        conditions: vec![
-            query.query.filter.take().expect("the kind filter"),
-            QueryFilter::In {
-                value: QueryOperand::Field {
-                    path: "data.input_id".into(),
-                },
-                values: inputs.iter().map(|input| json!(input)).collect(),
-            },
-        ],
-    });
     let mut consumed = BTreeSet::new();
-    loop {
-        let reply = owner.timeline.query(query.clone()).await?;
-        let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("consumption ids")
-        };
-        for row in rows {
-            let QueryValue::Value {
-                value: Value::String(input),
-            } = row.values.into_iter().next().expect("one consumption id")
-            else {
-                // `InputConsumedData.input_id` is a required string, so an
-                // event of this kind that decodes carries one. The projection
-                // reads the stored body without decoding it, so a row holding
-                // none names no input and delivers no change.
-                continue;
+    for chunk in inputs.chunks(CONSUMPTION_IDS) {
+        let mut query = request(
+            TimelineQueryScope::Chain,
+            through,
+            &["input/consumed"],
+            &["data.input_id"],
+        );
+        query.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                query.query.filter.take().expect("the kind filter"),
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "data.input_id".into(),
+                    },
+                    values: chunk.iter().map(|input| json!(input)).collect(),
+                },
+            ],
+        });
+        loop {
+            let reply = owner.timeline.query(query.clone()).await?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("consumption ids")
             };
-            consumed.insert(input);
+            for row in rows {
+                let QueryValue::Value {
+                    value: Value::String(input),
+                } = row.values.into_iter().next().expect("one consumption id")
+                else {
+                    // `InputConsumedData.input_id` is a required string, so an
+                    // event of this kind that decodes carries one. The
+                    // projection reads the stored body without decoding it, so a
+                    // row holding none names no input and delivers no change.
+                    continue;
+                };
+                consumed.insert(input);
+            }
+            let Some(next) = reply.next else { break };
+            query.page.as_mut().unwrap().after = Some(next);
         }
-        let Some(next) = reply.next else {
-            return Ok(consumed);
-        };
-        query.page.as_mut().unwrap().after = Some(next);
     }
+    Ok(consumed)
 }
 
 /// Whether `change` has been delivered to a line whose own branch is `branch`.
@@ -977,10 +992,14 @@ impl Projection {
         // Its boundary then precedes every undelivered change, so all the
         // changes it covers were delivered and nothing needs rejecting.
         //
-        // Cost, constant in the length of history: one read for the last
-        // request start, one for the changes after it, one consumption query
-        // over their union of inputs, and at most two candidate reads, the
-        // line's own row and then the chain's.
+        // Cost: one read for the last request start, then one page of changes
+        // after it and one `consumed` call over that page's inputs per page,
+        // stopping at the page that holds E; each consumption query names at
+        // most `CONSUMPTION_IDS` ids. So it grows with the inherited changes
+        // after the last request start that name inputs, one page at a time,
+        // and it stops at E. Ordinary chat has no such change after that start,
+        // so there it is still one read. Finally at most two candidate reads,
+        // the line's own row and then the chain's.
         let undelivered = earliest_undelivered(owner, through).await?;
         let mut scope = TimelineQueryScope::Branch;
         let saved_row = loop {

@@ -4733,3 +4733,213 @@ struct EntryReferenceSeed {
     event_id: String,
     element_index: u64,
 }
+
+/// A long turn keeps every refresh made since its `turn/start`, including ones
+/// mid-turn requests already consumed, because no `turn/start` is written per
+/// model request; an idle parent can do the same with plain refreshes. The
+/// suffix after that start can therefore span many pages of changes, and each
+/// change can name more than one input. Every consumption query Prompt issues
+/// stays bounded, whichever page it is judging.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
+    // Enough refreshes to span more than one page of `prompt/changed` rows.
+    const REFRESHES: u32 = 200;
+
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    agent.close().await.unwrap();
+    drop(session);
+
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    // S: a request start whose turn stays open, as a long turn's does.
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "t1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    // After S, refreshes that were consumed, standing for mid-turn requests.
+    // Each names two inputs and both are consumed.
+    for n in 0..REFRESHES {
+        let first = format!("a{n}");
+        let second = format!("b{n}");
+        timeline
+            .append_batch_registered(
+                vec![
+                    EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                        "turn",
+                        Some(InputMode::Append),
+                    )))
+                    .with_id(first.clone()),
+                    EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                        "turn",
+                        Some(InputMode::Append),
+                    )))
+                    .with_id(second.clone()),
+                    EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                        timeline: "main".into(),
+                        revision: format!("r{n}"),
+                        previous: None,
+                        reason: PromptChangeReason::Refresh,
+                        changes: vec![PromptChange::Set {
+                            entry: PromptEntry {
+                                source: "rules".into(),
+                                version: format!("{n}"),
+                                body: format!("value {n}"),
+                                scope: scope.clone(),
+                                delivery: PromptDelivery::Context,
+                                order: 0,
+                            },
+                        }],
+                        inputs: vec![first.clone(), second.clone()],
+                    })),
+                    EventDraft::new(EventKind::InputConsumed(InputConsumedData {
+                        input_id: first,
+                    })),
+                    EventDraft::new(EventKind::InputConsumed(InputConsumedData {
+                        input_id: second,
+                    })),
+                ],
+                |_| Ok(()),
+            )
+            .unwrap();
+    }
+    // The last refresh names two inputs that are never consumed: it is E.
+    timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "turn",
+                    Some(InputMode::Append),
+                )))
+                .with_id("pending-a"),
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "turn",
+                    Some(InputMode::Append),
+                )))
+                .with_id("pending-b"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "pending".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Set {
+                        entry: PromptEntry {
+                            source: "rules".into(),
+                            version: "pending".into(),
+                            body: "value pending".into(),
+                            scope: scope.clone(),
+                            delivery: PromptDelivery::Context,
+                            order: 0,
+                        },
+                    }],
+                    inputs: vec!["pending-a".into(), "pending-b".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    let head = timeline.committed();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let before = store.property_queries.lock().unwrap().len();
+
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .restore_session(id)
+        .await
+        .expect("the restore succeeds");
+    let child = session
+        .branch(
+            "main".into(),
+            head,
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "long".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+        .unwrap()
+        .unwrap();
+    // The gate found E past the first page: the entries are the ones the
+    // refreshes up to 199 wrote, and the pending one is not among them.
+    let bodies: Vec<&str> = state
+        .entries
+        .values()
+        .map(|entry| entry.body.as_str())
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![format!("value {}", REFRESHES - 1).as_str()],
+        "the state carries the last delivered refresh, not the pending one"
+    );
+    // Every consumption query Prompt issued is bounded. Collected first,
+    // because the guard must not be held across the close below.
+    let widths: Vec<usize> = {
+        let property_queries = store.property_queries.lock().unwrap();
+        let mut widths = Vec::new();
+        for query in property_queries[before..].iter() {
+            let mut filters: Vec<_> = query.filter.iter().collect();
+            while let Some(filter) = filters.pop() {
+                match filter {
+                    QueryFilter::In {
+                        value: QueryOperand::Field { path },
+                        values,
+                    } if path == "data.input_id" => widths.push(values.len()),
+                    QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
+                        filters.extend(conditions)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        widths
+    };
+    assert!(!widths.is_empty(), "a consumption query was issued");
+    for width in widths {
+        assert!(
+            width <= 128,
+            "a consumption query names at most 128 ids: {width}"
+        );
+    }
+    agent.close().await.unwrap();
+}
