@@ -993,12 +993,8 @@ impl Connection {
                 rpc.control.shutdown().cancel();
                 return None;
             }
-<<<<<<< HEAD
             Call::Create(params) => self.create(rpc, *params).await,
-=======
-            Call::Create(params) => self.create(rpc, params).await,
             Call::ModelPreview(params) => rpc.preview_model(params).await,
->>>>>>> origin/main
             Call::CatalogCancel(params) => {
                 if let Some(Some(cancel)) = self
                     .ids
@@ -1716,66 +1712,6 @@ impl Connection {
                     .startup_connection(connection)
                     .map_err(provider_error)?;
             }
-<<<<<<< HEAD
-        } else if let Some(startup) = params.startup {
-            let provider = rpc
-                .ctx
-                .get::<crate::provider::ProviderService>()
-                .ok_or_else(RpcError::reloading)?;
-            let target = params.model.unwrap_or_else(|| {
-                host.profile
-                    .model
-                    .clone()
-                    .map(|model| crate::protocol::ModelSelection {
-                        provider: Some(model.provider_id),
-                        model_id: Some(model.model_id),
-                    })
-                    .unwrap_or_default()
-            });
-            let admission = provider
-                .startup_configuration(
-                    target,
-                    Path::new(&cwd),
-                    preferences,
-                    startup,
-                    None,
-                    &rpc.unloading,
-                )
-                .await
-                .map_err(provider_error)?;
-            config.model = admission.model.clone();
-            startup_admission = Some(admission);
-        } else if rpc.index.selects_models() {
-            if params
-                .model
-                .as_ref()
-                .is_some_and(|model| model.provider.is_some() != model.model_id.is_some())
-            {
-                return Err(RpcError::invalid(
-                    "Explicit model requires provider and modelId",
-                ));
-            }
-            config.model = rpc
-                .model_selection(
-                    params
-                        .model
-                        .as_ref()
-                        .and_then(|model| {
-                            model
-                                .model_id
-                                .as_ref()
-                                .map(|model_id| dim_agent_types::ModelId {
-                                    provider_id: model
-                                        .provider
-                                        .clone()
-                                        .expect("explicit provider was validated"),
-                                    model_id: model_id.clone(),
-                                })
-                        })
-                        .or_else(|| host.profile.model.clone()),
-                    Some(cwd.clone().into()),
-                    preferences,
-=======
         } else {
             startup_admission = rpc
                 .session_model(
@@ -1784,7 +1720,6 @@ impl Connection {
                     params.model,
                     params.model_preferences.unwrap_or_default(),
                     params.startup,
->>>>>>> origin/main
                 )
                 .await?;
         }

@@ -97,12 +97,8 @@ pub enum Call {
     },
     Ping,
     Shutdown(Shutdown),
-<<<<<<< HEAD
     Create(Box<Create>),
-=======
-    Create(Create),
     ModelPreview(ModelPreview),
->>>>>>> origin/main
     Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
@@ -948,12 +944,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
                 Call::Ping
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
-<<<<<<< HEAD
             "session.create" => Call::Create(Box::new(params(raw_params)?)),
-=======
-            "session.create" => Call::Create(params(raw_params)?),
             "session.model.preview" => Call::ModelPreview(params(raw_params)?),
->>>>>>> origin/main
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
