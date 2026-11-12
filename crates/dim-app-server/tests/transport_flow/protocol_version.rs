@@ -178,3 +178,57 @@ async fn a_fork_of_an_older_session_keeps_its_version() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// A Session recorded at a version the store still admits below v3 opens from
+/// a v4 connection, including after the daemon reloads it from storage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_newer_connection_opens_a_session_recorded_below_v3() {
+    let store = Store::new();
+    let (server, _agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut v2 = Client::new_version(&server, false, 2).await;
+    let created = v2.rpc("session.create", create(json!(["wait"]))).await;
+    assert_ok(&created);
+    let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let submitted = v2
+        .rpc(
+            "session.submit",
+            json!({"sessionId":session,"branchId":"main","text":"from v2"}),
+        )
+        .await;
+    assert_ok(&submitted);
+    let idle = v2
+        .rpc(
+            "session.idle",
+            json!({"sessionId":session,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&idle);
+    let mut v4 = Client::new_version(&server, false, 4).await;
+    let attached = v4.rpc("session.attach", json!({"sessionId":session})).await;
+    assert_ok(&attached);
+    assert_eq!(attached["result"]["sessionId"], json!(session));
+    let page = v4
+        .rpc(
+            "session.history",
+            json!({"sessionId":session,"branchId":"main","after":0,"limit":256}),
+        )
+        .await;
+    assert_ok(&page);
+    assert!(
+        !page["result"]["events"].as_array().unwrap().is_empty(),
+        "the page carries the v2 Session's events: {page}"
+    );
+    drop((v2, v4));
+    // A restart makes the daemon reload the Session from the store, so the
+    // restore path reads the recorded version too.
+    server.shutdown();
+    server.join().await.unwrap();
+    let (server, _agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut v4 = Client::new_version(&server, false, 4).await;
+    let restored = v4.rpc("session.attach", json!({"sessionId":session})).await;
+    assert_ok(&restored);
+    assert_eq!(restored["result"]["sessionId"], json!(session));
+    drop(v4);
+    server.shutdown();
+    server.join().await.unwrap();
+}
