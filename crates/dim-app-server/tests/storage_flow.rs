@@ -8716,7 +8716,8 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
 mod position_queries;
 
 #[tokio::test]
-async fn main_and_branch_formats_upgrade_to_v43_without_reinterpreting_their_markers() {
+async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpreting_their_markers()
+ {
     for (version, main_layout) in [
         (37, true),
         (38, true),
@@ -8811,7 +8812,7 @@ async fn main_and_branch_formats_upgrade_to_v43_without_reinterpreting_their_mar
                 assert_eq!(rows(&connection, table), *expected, "v42 rows in {table}");
             }
         }
-        assert_eq!(schema(&connection), schema_of(43));
+        assert_eq!(schema(&connection), schema_of(STORE_FORMAT));
         if !main_layout {
             assert_ne!(
                 schema(&connection),
