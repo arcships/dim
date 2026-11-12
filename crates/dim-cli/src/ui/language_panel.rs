@@ -58,7 +58,7 @@ impl LanguagePanel {
         let before = self.list.selected_id();
         match self.list.handle_key(key) {
             Event::Close => Effect::LanguageRestore(self.original),
-            Event::Pick(id) => Effect::LanguageApply(choice(&id)),
+            Event::Pick { id, .. } => Effect::LanguageApply(choice(&id)),
             Event::None | Event::Refresh => match self.list.selected_id() {
                 Some(id) if Some(&id) != before.as_ref() => Effect::LanguagePreview(choice(&id)),
                 _ => Effect::None,

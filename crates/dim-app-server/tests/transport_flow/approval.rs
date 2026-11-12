@@ -1,7 +1,9 @@
 use super::*;
+use dim_agent_capabilities::approval::{AdmitCall, Approval};
+use dim_agent_capabilities::permission::{CommandRulesHost, ReadCommandRules};
 use dim_agent_capabilities::tool_executor::ToolExecutor;
 use dim_agent_runtime::testing::{branch_events, chain_events};
-use dim_agent_runtime::{Dispatcher, Session, Timeline};
+use dim_agent_runtime::{Dispatcher, Session, Timeline, TimelineKey, TimelineStore};
 use dim_agent_types::{
     ApprovalDecision, ContentBlock, EventKind, InputMode, InterruptScope, StopInterruptData,
     TurnOutcome,
@@ -23,8 +25,16 @@ struct Probe {
     invalid_request: AtomicBool,
     invalid_response: AtomicBool,
     tools: ToolReload,
+    deny_on_policy_change: StdMutex<Option<String>>,
     cancel_gate: StdMutex<Option<std::sync::mpsc::Receiver<()>>>,
     cancel_entered: Notify,
+    command_rules: StdMutex<Vec<dim_agent_types::CommandRule>>,
+}
+impl ReadCommandRules for Probe {
+    fn rules(&self, _: CancellationToken) -> HostFuture<'_, Vec<dim_agent_types::CommandRule>> {
+        let rules = self.command_rules.lock().unwrap().clone();
+        Box::pin(async move { Ok(rules) })
+    }
 }
 struct ProbePlugin(
     Arc<Probe>,
@@ -90,7 +100,7 @@ impl rutis::host::DynPlugin for ProbePlugin {
             dispatcher.subscribe(
                 ctx,
                 "approval-test-gate",
-                &["input/message", "step/tool-call"],
+                &["input/message", "step/tool-call", "permission/changed"],
                 move |event| {
                     let gate = match &event.kind {
                         EventKind::InputMessage(data) => matches!(
@@ -99,6 +109,26 @@ impl rutis::host::DynPlugin for ProbePlugin {
                         ),
                         EventKind::ToolCall(_) => {
                             probe.stop_before_request.swap(false, Ordering::SeqCst)
+                        }
+                        EventKind::PermissionChanged(_) => {
+                            if let Some(approval_id) =
+                                probe.deny_on_policy_change.lock().unwrap().take()
+                            {
+                                timeline
+                                    .append(
+                                        EventKind::ApprovalRespond(
+                                            dim_agent_types::ApprovalRespondData {
+                                                approval_id,
+                                                decision: ApprovalDecision::Deny,
+                                            },
+                                        )
+                                        .into(),
+                                    )
+                                    .unwrap();
+                                true
+                            } else {
+                                false
+                            }
                         }
                         _ => false,
                     };
@@ -153,7 +183,18 @@ async fn setup_store(
     let calls = Arc::new(AtomicUsize::new(0));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder.timeline_store(store);
-    defaults::install(&mut builder);
+    builder
+        .session_value(Arc::new(dim_agent_capabilities::host::PromptHost(
+            Arc::new(dim_agent_capabilities::host::EmptyPromptHost),
+        )))
+        .session_value(Arc::new(
+            dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(None),
+        ))
+        .session_value(Arc::new(CommandRulesHost(probe.clone())));
+    defaults::install_with_prompt_capability(
+        &mut builder,
+        dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
+    );
     defaults::mock_model_hosts(&mut builder);
     probe.tools.install(
         &mut builder,
@@ -568,6 +609,154 @@ async fn another_client_learns_each_committed_response_on_both_transports() {
 }
 
 #[tokio::test]
+async fn a_policy_change_ends_pending_questions_for_every_attached_client() {
+    for ws in [false, true] {
+        let probe = Arc::new(Probe::default());
+        let (server, session, mut owner, calls) = setup_version(ws, probe.clone(), 3).await;
+        let mut observer = Client::new_version(&server, !ws, 3).await;
+        assert_ok(
+            &observer
+                .rpc("session.attach", json!({"sessionId":session.id()}))
+                .await,
+        );
+        let request_id = request_v2(&mut owner, &session).await;
+        assert_eq!(
+            observer.notice("approval.request").await["params"]["requestId"],
+            request_id
+        );
+        session
+            .service::<dim_agent_capabilities::permission::Permission>("main")
+            .unwrap()
+            .update(
+                0,
+                serde_json::from_value(json!({"preset":"full-access"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for client in [&mut owner, &mut observer] {
+            let ended = client.notice("approval.cancelled").await;
+            assert_eq!(ended["params"]["requestId"], request_id);
+            assert_eq!(
+                ended["params"]["reason"],
+                "Approval no longer required by the permission policy"
+            );
+            assert!(
+                client
+                    .notices
+                    .iter()
+                    .all(|notice| notice["method"] != "approval.resolved")
+            );
+        }
+        let rejected = owner
+            .rpc(
+                "approval.respond",
+                json!({"sessionId":session.id(),"branchId":"main","requestId":request_id,"decision":"deny"}),
+            )
+            .await;
+        assert_eq!(rejected["error"]["code"], -32602);
+        let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+        timeline
+            .append(
+                EventKind::ApprovalRespond(dim_agent_types::ApprovalRespondData {
+                    approval_id: request_id.as_str().unwrap().into(),
+                    decision: ApprovalDecision::Deny,
+                })
+                .into(),
+            )
+            .unwrap();
+        for client in [&mut owner, &mut observer] {
+            let losing = client.notice("approval.resolved").await;
+            assert_eq!(losing["params"]["requestId"], request_id);
+            assert_eq!(losing["params"]["decision"], "deny");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            session
+                .service::<Approval>("main")
+                .unwrap()
+                .respond(request_id.as_str().unwrap(), ApprovalDecision::Allow)
+                .await,
+            Err(dim_agent_capabilities::approval::ApprovalRespondError::Unknown)
+        );
+        let mut attached = Client::new_version(&server, ws, 3).await;
+        assert_ok(
+            &attached
+                .rpc("session.attach", json!({"sessionId":session.id()}))
+                .await,
+        );
+        settle_notices(&mut attached).await;
+        assert!(
+            attached
+                .notices
+                .iter()
+                .all(|notice| notice["method"] != "approval.request")
+        );
+        session.close().await.unwrap();
+        server.shutdown();
+        server.join().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn automatic_permission_settlement_cannot_overtake_a_committed_denial() {
+    for ws in [false, true] {
+        let probe = Arc::new(Probe::default());
+        let (server, session, mut owner, calls) = setup_version(ws, probe.clone(), 3).await;
+        let request_id = request_v2(&mut owner, &session).await;
+        *probe.deny_on_policy_change.lock().unwrap() = Some(request_id.as_str().unwrap().into());
+        let permission = session
+            .service::<dim_agent_capabilities::permission::Permission>("main")
+            .unwrap();
+        let update = tokio::spawn(async move {
+            permission
+                .update(
+                    0,
+                    serde_json::from_value(json!({"preset":"full-access"})).unwrap(),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), probe.entered.notified())
+            .await
+            .unwrap();
+        wait_events(&session, "approval/respond", 1).await;
+        assert_eq!(
+            session
+                .get::<dim_agent_capabilities::permission::PermissionState>("main")
+                .unwrap()
+                .unwrap()
+                .policy
+                .preset,
+            dim_agent_types::PermissionPreset::FullAccess,
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), async {
+                while calls.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_err(),
+            "a committed denial must block automatic admission before dispatch"
+        );
+        probe.release.notify_one();
+        update.await.unwrap().unwrap();
+        session.idle("main").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let ended = owner.notice("approval.resolved").await;
+        assert_eq!(ended["params"]["requestId"], request_id);
+        assert_eq!(ended["params"]["decision"], "deny");
+        assert!(!chain_events(&session, "main", ..).await.unwrap().iter().any(|event| {
+            matches!(&event.kind, EventKind::ApprovalCancelled(data) if data.approval_id == request_id.as_str().unwrap())
+        }));
+        session.close().await.unwrap();
+        server.shutdown();
+        server.join().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn v2_clients_receive_no_approval_resolved_on_both_transports() {
     for ws in [false, true] {
         let probe = Arc::new(Probe::default());
@@ -605,6 +794,170 @@ async fn v2_clients_receive_no_approval_resolved_on_both_transports() {
         }
         server.shutdown();
         server.join().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn automatic_admission_waits_for_its_terminal_to_be_stored() {
+    for (deny_during_publication, close_store) in [(false, false), (true, false), (false, true)] {
+        let dir =
+            std::env::temp_dir().join(format!("dim-approval-publication-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let db = dim_app_server::storage::SqliteStorage::open(path.clone()).unwrap();
+        let store = dim_app_server::storage::SqliteTimelineStore::new(db.clone());
+        let probe = Arc::new(Probe::default());
+        let (server, session, mut client, _) =
+            setup_store(false, probe.clone(), 3, store.clone()).await;
+        let approval = session.service::<Approval>("main").unwrap();
+        let admission = tokio::spawn(async move {
+            approval
+                .admit(
+                    AdmitCall {
+                        source: dim_agent_types::BranchSource::Tool {
+                            turn_id: "turn".into(),
+                            request_id: "request".into(),
+                            call_id: "call".into(),
+                        },
+                        call: dim_agent_types::ApprovalCallData {
+                            name: "exec".into(),
+                            input: serde_json::from_value(json!({"command":"git push"})).unwrap(),
+                        },
+                    },
+                    Some("execute_process"),
+                    CancellationToken::new(),
+                )
+                .await
+        });
+        let request = client.notice("approval.request").await;
+        let (release, gate) = std::sync::mpsc::channel();
+        *probe.cancel_gate.lock().unwrap() = Some(gate);
+        let permission = session
+            .service::<dim_agent_capabilities::permission::Permission>("main")
+            .unwrap();
+        permission
+            .update(
+                0,
+                serde_json::from_value(json!({"preset":"full-access"})).unwrap(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), probe.cancel_entered.notified())
+            .await
+            .unwrap();
+        if close_store {
+            store.close().await.unwrap();
+            release.send(()).unwrap();
+            let error = tokio::time::timeout(Duration::from_secs(5), admission)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("Timeline storage is closed"),
+                "{error}"
+            );
+            let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+            assert!(timeline.failure().is_some());
+            assert!(
+                timeline
+                    .append(
+                        EventKind::ApprovalCancelled(dim_agent_types::ApprovalCancelledData {
+                            approval_id: request["params"]["requestId"].as_str().unwrap().into(),
+                            reason: error.to_string(),
+                        })
+                        .into()
+                    )
+                    .is_err(),
+                "a failed Timeline cannot record a replacement terminal"
+            );
+            let key = TimelineKey {
+                session_id: session.id().into(),
+                branch_id: "main".into(),
+            };
+            let head = store.head(&key).await.unwrap();
+            let events = store.read(&key, 1..=head).await.unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|record| matches!(record.event.kind, EventKind::ApprovalRequest(_)))
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|record| matches!(record.event.kind, EventKind::ApprovalCancelled(_)))
+            );
+            assert!(session.close().await.is_err());
+            server.shutdown();
+            let _ = server.join().await;
+            db.close().await.unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            continue;
+        }
+        let lock = rusqlite::Connection::open(&path).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        release.send(()).unwrap();
+        let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !timeline.has_pending() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the terminal must be queued while its storage commit is blocked");
+        if deny_during_publication {
+            *probe.command_rules.lock().unwrap() = serde_json::from_value(json!([
+                {"command":"git push", "match":"exact", "decision":"deny"}
+            ]))
+            .unwrap();
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), async {
+                while !admission.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_err(),
+            "the tool cannot start before its terminal is durable"
+        );
+        lock.execute_batch("ROLLBACK").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), admission)
+            .await
+            .unwrap()
+            .unwrap();
+        if deny_during_publication {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Command denied by command rule `git push` (exact)"
+            );
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(
+            client.notice("approval.cancelled").await["params"]["requestId"],
+            request["params"]["requestId"]
+        );
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::ApprovalCancelled(_)))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ApprovalRespond(_)))
+        );
+        session.close().await.unwrap();
+        server.shutdown();
+        server.join().await.unwrap();
+        drop(lock);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

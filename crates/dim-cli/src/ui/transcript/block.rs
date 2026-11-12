@@ -13,6 +13,16 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{CompactionPartSize, CompactionState, RowKind, RowTone, ViewRow};
 use crate::ui::transcript::tool_group::{Detail, ToolGroup, project_group};
 
+/// Which runtime block a hook row names: the two say different things and no
+/// more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookRow {
+    /// Context the hook appended after the operator's words.
+    Context,
+    /// The input a `Stop` hook wrote to continue the conversation.
+    FollowUp,
+}
+
 /// How a status line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -36,9 +46,10 @@ pub enum Block {
     /// A shell-mode run: recorded (`!`) from the transcript, private (`!!`)
     /// from the terminal alone.
     Shell(ShellRun),
-    /// Context a hook injected after the operator's words: one muted row, and
-    /// its body when the detail setting is expanded.
-    HookContext {
+    /// A runtime block a hook wrote: one muted row, and its body when the
+    /// detail setting is expanded.
+    Hook {
+        row: HookRow,
         body: String,
         expanded: bool,
     },
@@ -48,6 +59,7 @@ pub enum Block {
         text: String,
         elapsed_ms: Option<u64>,
         expanded: bool,
+        streamed: bool,
     },
     /// The calls of one model request.
     ToolGroup(ToolGroup),
@@ -118,7 +130,12 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             },
             Block::Shell,
         ),
-        RowKind::HookContext => Block::HookContext {
+        RowKind::HookContext | RowKind::HookFollowUp => Block::Hook {
+            row: if row.kind == RowKind::HookContext {
+                HookRow::Context
+            } else {
+                HookRow::FollowUp
+            },
             body: row.text.clone(),
             expanded: detail == Detail::Expanded,
         },
@@ -127,6 +144,7 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             text: row.text.clone(),
             elapsed_ms: row.elapsed_ms,
             expanded: detail == Detail::Expanded,
+            streamed: false,
         },
         RowKind::ToolCall => Block::ToolGroup(project_group(&group_rows(rows, index), detail)),
         RowKind::Compaction => match &row.compaction {
@@ -203,6 +221,7 @@ mod tests {
             failure: None,
             reportable: false,
             row_id: "r".into(),
+            provisional_id: None,
             kind,
             text: text.into(),
             display: None,

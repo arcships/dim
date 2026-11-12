@@ -155,7 +155,7 @@ impl IsolationPanel {
                     return Effect::Close;
                 }
             }
-            Event::Pick(id) => match id.as_str() {
+            Event::Pick { id, .. } => match id.as_str() {
                 "off" => {
                     if let Some(draft) = &mut self.draft {
                         draft.sandbox = false;
