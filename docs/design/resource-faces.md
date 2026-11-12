@@ -15,7 +15,7 @@ Three faces, each a name whose public contract is data:
 
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
-| `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
+| `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
 | `store` | Timeline and Session-row repository operations, and the commit notification | the state owner | #1298 |
 
@@ -98,8 +98,9 @@ whether a call may run, or consults who is calling.
 | `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
 | `settle` | async | `{taskId}` | `{}` |
-| `output` | async | `{taskId, cursor?, limit?}` | page (§3.4) |
+| `output` | async | `{taskId, cursor?, limit?} \| {outputPath, cursor?, limit?}` | page (§3.4) |
 | `tail` | async | `{taskId}` | `{text, totalBytes, truncated}` (§3.5) |
+| `removeOutputDirectory` | async | `{path}` | `{}` (§3.8) |
 | `shell` | async | `{taskId, cwd, workspace, roots, cols, rows}` | `{outputPath}` |
 | `write` | async | `{taskId, data}` | `{}` |
 | `resize` | async | `{taskId, cols, rows}` | `{}` |
@@ -113,8 +114,8 @@ whether a call may run, or consults who is calling.
 directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
-`roots` the additional roots recognition confirmed and persisted. All are node-absolute. A cwd
-that does not exist is `cwd_not_found`; the provider never resolves a relative path itself.
+`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
+A cwd that does not exist is `cwd_not_found`; the provider never resolves a relative path itself.
 
 The provider prepares the boundary with `workspace` plus exactly `roots` and adds no other
 writable root of its own, apart from the output and temporary directories its contract already
@@ -169,7 +170,8 @@ task record — `exec_task_unknown` only when the branch has no record either.
 
 ### 3.4 `output`
 
-`output {taskId, cursor?, limit?}` reads the task's captured output by byte cursor and answers
+`output` reads captured output by byte cursor. A request supplies exactly one of `taskId` and
+`outputPath`. Both forms answer
 `{text, bytes, nextCursor?, truncated, retainedFrom, reset?}`. `limit` rejects `0` (`invalid`),
 defaults to 1 MiB and clamps to 4 MiB. `text` is sanitized exactly like the preview; `bytes` is
 the captured bytes this page consumed; `nextCursor` is present when the page was full and equals
@@ -177,8 +179,17 @@ the captured bytes this page consumed; `nextCursor` is present when the page was
 never splits a character. For a command, the capture is the append-only output file: the file
 never changes behind a cursor, `retainedFrom` is `0`, and `truncated` is the 64 MiB cap. These are
 the rules of [background command output](background-task-output.md); this face adds no second page
-rule, only the fields below, which a bounded capture needs. The reply never selects a path: the
-task id does.
+rule, only the fields below, which a bounded capture needs.
+
+- `{taskId, cursor?, limit?}` selects a task held by the provider. This serves the PTY capture
+  and command output while the task record is held.
+- `{outputPath, cursor?, limit?}` pages a command's file independently of the task record.
+  For `session.exec.output.page`, the control side resolves the task in the requested Session
+  and branch and takes the path from that branch's `exec/started`. This route serves ended and
+  rebuilt tasks, including after settlement or provider restart. The provider opens only files
+  within its command-output root and checks containment when opening. The control side uses
+  the terminal fact's `outputTruncated` when present. On the path-only read, the provider uses
+  the file-size-at-cap rule for recovered tasks. The public RPC continues to take a task id.
 
 **The retained start is data, not an error.** `retainedFrom` is the earliest cursor the provider
 can still serve. A bounded capture grows at its end and drops at its start, so `retainedFrom` only
@@ -208,8 +219,10 @@ ever increases.
 sanitized like the preview; `totalBytes` is how many bytes the capture holds so far, so a client
 can tell growth from a stall; `truncated` is the same flag the terminal record carries. It is a
 read of the live capture, not a page: the control side's `session.exec.output` uses it, and a
-client that needs the whole output pages `output` from `retainedFrom`. The terminal record's
-`preview` is the settled form of the same value.
+client that needs the whole output pages `output` from `retainedFrom`. Once the live capture is
+released, a held task answers `output_unavailable`. The control side maps that and `task_unknown`
+to the existing `exec_task_unknown` response for this RPC. The terminal preview comes from
+`exec/ended` under the [background output contract](background-task-output.md#2-client-method).
 
 ### 3.6 Persistent shell
 
@@ -275,12 +288,19 @@ not an agent-reachable operation: no tool maps to it.
   reply never arrived is not retried — the branch has no record of it, and the id stays held until
   the connection ends, so a retry cannot run the command twice.
 - **Settlement.** The provider holds a task record from `start` until `settle`. `start` and
-  `shell` refuse every id still held, live or terminal (`task_exists`), so `wait`, `output`, `tail`
-  and `kill` are never ambiguous. The control side settles only after the branch has recorded the
-  terminal fact and after it has read whatever output it still needs; `settle` then removes the
-  record and the output file, after which the same operations answer `task_unknown` and the id may
-  be reused. Ending the connection settles every task the connection holds. `exec_stop` settles
-  through its own kill/wait step (§3.3), so it never sees a settled id for a task it stopped.
+  `shell` refuse every id still held, live or terminal (`task_exists`). After recording the
+  terminal fact, the control side can call `settle` to release the task record and its runtime
+  resources. Calls by task id then answer `task_unknown` until the id is reused. A new task
+  creates a fresh output file. Settlement, including on disconnect, preserves output files.
+  The control side can still page the registered command output by path (§3.4).
+- **Output directory removal.** SessionStore applies the last-owner rule and orders durable
+  directory removal before the row commit under the
+  [Session deletion contract](appserver/session-deletion-and-fork.md#32-sequence). It calls
+  `execHost.removeOutputDirectory {path}` for persistent-shell output. The provider validates
+  that the directory is strictly below its `execRoot`, removes it and makes removal durable
+  before replying, as required by [ADR 013 D4](../adr/013-command-output-ownership.md#d4-fork-delete-and-growth).
+  An absent directory counts as removed. SessionStore uses `fsHost.remove` for command-output
+  directories in the FileStorage root.
 - When the link drops, the node's own host ends the processes it started
   ([overview §6.3](overview.md#63-multiple-nodes)), and settlement is the connection's end. A
   reconnect provides the services again and reloads nothing: the Session keeps running.
@@ -314,7 +334,7 @@ client reads and writes them through the node's own management methods, not thro
 | Code | When |
 | --- | --- |
 | `node_unavailable` | The provider is not connected. Only this call fails |
-| `invalid` | A malformed request: relative `cwd`, `limit: 0`, a boundary switch |
+| `invalid` | Malformed request or an output path outside the operation's root |
 | `task_exists` | `start` or `shell` with an id the provider still holds |
 | `task_unknown` | An id the provider does not hold: never issued, or settled |
 | `cwd_not_found` | The resolved `cwd` does not exist |
@@ -322,7 +342,8 @@ client reads and writes them through the node's own management methods, not thro
 | `isolation_unavailable` | The sandbox is on and the host has no backend |
 | `isolation_config_invalid` | The switches cannot be read |
 | `spawn_failed` | The process could not start |
-| `output_unavailable` | The task's output file is gone before settlement |
+| `output_unavailable` | The selected output file is missing or unreadable, or `tail` has no live capture for a held task |
+| `remove_failed` | Removing a persistent-shell output directory or making the removal durable failed |
 | `cancelled` | The call was cancelled before it changed anything |
 
 ## 4. `fsHost`
@@ -367,10 +388,13 @@ tool semantics: no line numbers, no images, no effects.
   to a durable sibling named `<name>.<suffix>`. `unlock` releases the lease; ending the caller's
   connection releases every lease it held. `permissions` is data — `"private"` (owner-only, 0600
   on Unix) or `"preserve"` (the existing file's mode) — because the provider's own permission type
-  is an OS object and does not cross; absent means `"preserve"`, as today.
+  is an OS object and does not cross; absent means `"preserve"`, as today. `replace` also accepts
+  `"privateReadOnly"` for a newly written Session file (Unix mode `0400`, Windows read-only
+  attribute).
 - `openRead` pins a file for several bounded random reads (`readAt`) and is closed by `closeRead`
-  or the caller's connection. It exists for readers that cannot hold a whole file: UI resource
-  streaming and plugin-file uploads.
+  or the caller's connection. UI resource streaming uses these bounded reads. Plugin-file
+  uploads and work directories stay with the host-local
+  [PluginFiles service](../../crates/dim-app-server/README.md#trusted-plugin-storage).
 - `stat` is one path, never a traversal: existence and kind for configuration discovery (a
   project rule file, a hooks file). It is not a `stat`/`open` primitive API; traversals stay
   `glob`, `grep` and `mentions`.
@@ -393,25 +417,25 @@ started through a symlinked directory still matches — and answers:
 {path: string,                        // the resolved node path the caller then uses
  workspace: boolean,                  // inside `workspace`
  system: boolean,                     // inside the node's platform roots
- roots: [{path, contains, valid}],    // per passed root; see below
- worktree?: {repository: string, root: string, subtree: string},
+ roots: [{root, contains, valid}],    // per passed root; see below
+ worktree?: {repository: string, root: string, subtree: string, rootIdentity: string},
  discoveryError?: string}             // recognition was asked for and failed; nothing was expanded
 ```
 
 - `workspace`, `system` and `roots` are path facts of the node: it holds the filesystem, so it
   answers them.
-- `roots` entries are `{path, identity}` in the request — the Session's confirmed range, each with
-  the directory identity recorded when it was confirmed — and `{path, contains, valid}` in the
-  reply. **`contains` and `valid` are separate answers**: `contains` says whether the resolved path
-  lies inside that root, and `valid` says only whether the root still exists with the recorded
-  identity and its mapping still resolves. A root that does not contain this path is not invalid.
+- `roots` entries are `{root, subtree, rootIdentity}` in the request and `{root, contains, valid}`
+  in the reply. `subtree` is the fixed mapped prefix within the worktree. **`contains` and `valid`
+  are separate answers**: `contains` checks the resolved target against `subtree`. `valid` checks
+  the directory's identity at `root` and verifies that the mapping still resolves to that prefix
+  under the [worktree mapping rules](worktree-access.md#22-仓库身份与目录范围).
   The caller drops a root only when `valid` is false; a false `valid` for one root never discards
   another root the Session confirmed.
 - `recognize: true` asks for the [worktree probe](#421-session-scoped-recognition-and-association)
   when the path is outside `workspace` and `roots`. The reply's `worktree` is a **candidate
   record**, not an expansion: the node reads Git metadata, applies the fixed-prefix mapping, and
-  returns what it found; it persists nothing and grants nothing. Without `recognize` the node
-  never runs Git.
+  returns the root, mapped subtree and opaque directory identity. The Session keeps
+  `rootIdentity` in memory for revalidation (§4.2.2). Without `recognize` the node never runs Git.
 - `discoveryError` reports a probe that could not answer — Git unavailable, a timeout, or
   metadata that does not verify. The Session part uses the same field when the association write
   fails on the control side (§4.2.1). Either way nothing is expanded, so the caller keeps the
@@ -477,12 +501,12 @@ it is published, or it must not be published:
    closing, deleted or between generations publishes nothing and answers the call with its normal
    closing or cancelled outcome. A committed association stays; only publication stops.
 2. It revalidates the candidate with a second `resolve` — `recognize: false`, so no Git probe and
-   no new grant — passing the candidate's root and identity in `roots` and the target path. The
-   candidate is publishable only if that root answers `valid: true` and `contains: true` and the
-   resolved path is unchanged. A deleted or replaced root, a root whose mapped subtree no longer
-   resolves, or a path that now resolves elsewhere fails this check.
-3. On failure it drops the candidate, keeps the committed association, and answers the caller with
-   the facts it just read — no expansion, and the ordinary approval path stays available.
+   no new grant — passing the candidate's `{root, subtree, rootIdentity}` in `roots` and the target
+   path. Before publishing, the Session part checks that the same generation is still active and
+   the call is still live, using step 1's outcome if either check fails.
+3. Publication requires `valid: true`, `contains: true` and the unchanged resolved path. If the
+   reply fails this check, the Session drops the candidate, keeps the committed association and
+   answers with the unexpanded facts. A failed `resolve` call returns its error without publishing.
 
 Waiting for persistence is not a fresh observation: the recheck is the only thing that lets the
 earlier probe become a published range, and a stale candidate is never published from the old
@@ -562,12 +586,10 @@ grant, and tool approval still follows the preset
 
 ### 4.6 Session files and exec output
 
-Bytes stay on the node. `sessionFiles.put` already writes into the resource node's file storage
-through `createDirectory` and `replace` and returns a node path
-([session files §3.1](appserver/session-files.md#31-on-disk)); this face reads and writes those
-files like any other node file, and `sessionFiles` remains the owner of the rows. An exec task's
-output file is the node's, and `execHost.output` and `execHost.tail` are how it is paged and
-previewed. Neither moves bytes through the control side.
+`sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
+store the file on the resource node. It returns a node path and owns the rows under the
+[Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
+and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
 ### 4.7 Errors
 
@@ -615,8 +637,8 @@ notification {subscriptionId, batchId, branchId, through, result: "committed" | 
   queued in call order, so per-branch sequence order is the admission order.
 - `commits` registers the caller's completion listener and answers a subscription id. The
   provider then delivers one notification per accepted batch, after that batch is durable or has
-  failed, **in branch sequence order**, and never before its commit. That is the existing publish
-  callback, expressed as data instead of a Rust closure.
+  failed, **in branch sequence order**. `through` is the inclusive sequence of the batch's last
+  event on `branchId`. It advances the durable watermark only when `result` is `"committed"`.
 - A failed batch is reported with its `batchId` and error, and rejects later `append` calls for
   that Session with a storage error until it is released. The failure is not delivered twice.
 - `releaseSession` and `rollbackSession` answer only after every batch the Session had accepted
@@ -666,7 +688,7 @@ today, with the same ordering and the same draining.
 | `sqliteStorage` | `store` | The SQL engine inside the provider |
 | `timelineStore` | `store` | The Timeline half of the face; the `TimelineStore` trait is its binding |
 
-Each of these is reached by Rust callers through a thin binding over the operations — a direct
+For the owners below, Rust callers use a thin binding over the operations — a direct
 in-process call rather than JSON — and none of them publishes a second API: there is no owner
 trait beside the face, no object type another module constructs, and no method set that the face
 does not have. A consumer that needs something the face does not offer needs a new operation on
@@ -677,12 +699,12 @@ The owners that read node files or start node processes, and the operations they
 | Owner | Operations |
 | --- | --- |
 | WorkspaceTools file tools | `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions` |
-| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove` |
+| SessionStore Session files and command output | `createDirectory`, `replace`, `list`, `remove`, `execHost.removeOutputDirectory` |
 | Settings sources and their CAS writes | `readBytes`, `stat`, `lock`, `readBytes {leaseId}`, `replace {leaseId}`, `unlock` |
 | MCP auth store, managed OAuth and OAuth token stores | `readBytes`, `lock`, `readBytes {leaseId}`, `backup`, `replace {leaseId}`, `unlock` |
 | Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
 | PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
-| UI extension resources, plugin-file uploads | `stat`, `openRead`, `readAt`, `closeRead` |
+| UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
 | Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
@@ -757,11 +779,11 @@ No other requirement is raised:
 6. **One `store` name or two.** The Timeline family and the Session-row family are one face with
    two families here because one repository port serves both (#1298). If the implementation finds
    two names clearer, the split is a naming decision on that PR, not a new contract.
-7. **Root identity form.** A root's identity is an opaque string the provider records and compares;
-   its platform form is the provider's detail, and the caller only compares `valid` and `contains`.
+7. **Root identity form.** The Session passes the opaque `rootIdentity` back to the provider.
+   The provider owns its platform form and comparison.
 8. **Retained task records.** Settlement is explicit (§3.8). If a long-lived local provider wants a
-   bound instead, the bound must be longer than any caller's read of the output and must still
-   refuse a repeated `start` until it expires.
+   bound instead, it must give the control side time to record the terminal fact and refuse a
+   repeated `start` until expiry. Registered file retention follows Session ownership (§3.8).
 
 ## 10. Ablation
 
@@ -769,6 +791,8 @@ The faces are operations over data with ids, not adapters: `start`/`wait`/`kill`
 reuse the existing process tree, capture, page rule and fault vocabulary; `shell`/`write`/`resize`
 are the PTY primitives the shell already has; `info`, `confined` and `configured` are the reads
 and starts the platform already performs, including the configuration command Hooks runs.
+`removeOutputDirectory` carries the existing HostPlatform cleanup across the face. Paging by a
+registered output path reuses `output` after the provider releases its task record.
 `fsHost` adds no primitive file API and no per-file traversal: its storage family is the reads and
 leases the node's storage already offers, needed because a path's facts and its bytes cannot be
 read on a machine that does not hold the file; `resolve` is where resolution and the worktree
@@ -776,10 +800,6 @@ probe belong. `store` publishes the repository operations the state owner alread
 engine and the `TimelineStore` trait stop being second contracts instead of gaining a wrapper;
 admission stays synchronous and completion keeps the callback's ordering as a notification.
 
-Three details were added because the remote split leaves no other place for them: the `worktree`
-candidate plus its recheck and lifecycle check (the probe must run where the files are, the
-association must commit where the rows are, and neither may publish a stale observation); the
-`retainedFrom`/`reset` page (an error cannot carry the cursor, and an omitted cursor cannot mean
-zero for a bounded capture); and the resolved-`cwd` rule (a caller cannot resolve a node path, and
-recognition has to finish before the process starts). Nothing else was added that a caller could
-not do without.
+The `worktree` candidate carries the identity needed to recheck the mapping after the association
+commits. `retainedFrom` and `reset` let a caller resume a bounded capture after its cursor expires.
+Resolving `cwd` on the node completes recognition before the process starts.
