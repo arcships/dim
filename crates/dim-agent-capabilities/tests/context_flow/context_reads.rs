@@ -492,27 +492,27 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         )
         .await
         .unwrap();
-    session
-        .service::<ContextPreparation>("main")
-        .unwrap()
-        .usage(CancellationToken::new())
-        .await
-        .unwrap();
+    assert!(matches!(
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
     session
         .submit("x".repeat(1_200), InputMode::Queue, "main")
         .await
         .unwrap();
     session.idle("main").await.unwrap();
-    let usage = session
-        .service::<ContextPreparation>("main")
-        .unwrap()
-        .usage(CancellationToken::new())
-        .await
-        .unwrap();
-    assert!(
-        usage.estimated_input_tokens >= usage.threshold_tokens,
-        "the next preparation must test growth despite being above threshold: {usage:?}"
-    );
+    assert!(matches!(
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
     let first = chain_events(&session, "main", ..).await.unwrap();
     assert_eq!(
         first
@@ -535,8 +535,8 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         .unwrap();
     assert_eq!(
         store.context_pages.lock().unwrap().len(),
-        1,
-        "growth and budget checks must not project a second history"
+        2,
+        "the first stable request uses the existing Loop and policy projections to initialize numbers"
     );
     let events = chain_events(&session, "main", ..).await.unwrap();
     assert_eq!(
@@ -555,7 +555,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
             _ => None,
         })
         .unwrap();
-    assert!(budget.estimated_input_tokens >= usage.threshold_tokens);
+    assert!(budget.estimated_input_tokens >= 1_000.);
     let source = events
         .iter()
         .find_map(|event| match &event.kind {
@@ -735,6 +735,12 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
                 })
                 .into(),
             )
+            .unwrap();
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await
             .unwrap();
         agent.close().await.unwrap();
         drop(session);
@@ -955,23 +961,18 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
             .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
             .unwrap()
             .usage(CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(
-            usage.estimated_input_tokens,
-            first.estimated_input_tokens
-                + Context::default()
-                    .message(&Message::text(Role::User, "new after saved result"))
-                    .serialized_bytes as f64
-        );
+            .await;
+        assert!(matches!(
+            usage,
+            Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        ));
         assert!(
             store.context_pages.lock().unwrap().is_empty(),
-            "processing a new source replayed settled history"
+            "cold recovery must not consume the uncovered source"
         );
         assert!(store.property_queries.lock().unwrap().iter().all(|query| {
-        !matches!(&query.filter, Some(QueryFilter::In { value: QueryOperand::Field { path }, values })
-            if path == "id" && values.iter().any(|id| old_body_ids.contains(id)))
-    }), "processing a new source reread a settled source object");
+            !matches!(&query.filter, Some(QueryFilter::In { value: QueryOperand::Field { path }, values }) if path == "id" && values.iter().any(|id| old_body_ids.contains(id)))
+        }), "cold recovery reread settled source bodies");
         agent.close().await.unwrap();
     }
 }
@@ -1038,6 +1039,10 @@ async fn closing_during_usage_result_publication_is_not_a_statistics_fault() {
                 }),
                 vec![],
             )
+            .await
+            .unwrap();
+        session
+            .submit("first".into(), InputMode::Queue, "main")
             .await
             .unwrap();
         entered.notified().await;
@@ -3220,7 +3225,7 @@ impl ResolveContextModel for ObservedCounter {
 }
 impl ContextModel for ObservedCounter {
     fn context_window(&self) -> f64 {
-        4096.
+        32_768.
     }
     fn output_tokens(&self) -> f64 {
         64.
@@ -3328,11 +3333,17 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
         )
         .unwrap();
     let preparation = session.service::<ContextPreparation>("main").unwrap();
+    assert!(matches!(
+        preparation.usage(CancellationToken::new()).await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
+    session
+        .submit("bootstrap request".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
     let empty = preparation.usage(CancellationToken::new()).await.unwrap();
-    assert_eq!(
-        empty.estimated_input_tokens,
-        counter.fixed_value.lock().unwrap().0 as f64
-    );
+    let initial_messages = counter.messages.load(Ordering::SeqCst);
     assert!(
         counter
             .fixed_value
@@ -3364,7 +3375,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     assert!(value.estimated_input_tokens > empty.estimated_input_tokens);
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
-        1,
+        initial_messages + 1,
         "a newly adopted message is counted once"
     );
     let calls = (
@@ -3394,7 +3405,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
         calls,
         "ready reads reuse both fixed and message contributions"
     );
-    assert_eq!(after.iter().filter(|event|matches!(&event.kind,EventKind::Extension(data) if data.key()=="context-usage/recovered")).count(),2,"configuration and the adopted input each save one numeric result");
+    assert_eq!(after.iter().filter(|event|matches!(&event.kind,EventKind::Extension(data) if data.key()=="context-usage/recovered")).count(),3,"the initial projection, output settlement and adopted input each save one numeric result");
     assert!(after.iter().all(|event|!matches!(&event.kind,EventKind::Extension(data) if data.key().starts_with("input-queue/")||data.key()=="context-usage/node"||data.key()=="context-usage/request-base")),"no queue snapshots, numeric nodes or request facts");
     let id = session.id().to_owned();
     agent.close().await.unwrap();
@@ -3407,12 +3418,19 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
         .usage(CancellationToken::new())
         .await
         .unwrap();
+    let context = HistoryRenderer::default()
+        .context_in(&restored, "main", reading.through)
+        .await
+        .unwrap();
+    let rendered = project_context_history(&context).unwrap();
+    let expected_messages = dim_agent_capabilities::history::context_messages(&context, &rendered);
     assert_eq!(
         reading.estimated_input_tokens,
         counter.fixed_value.lock().unwrap().0 as f64
-            + serde_json::to_vec(&Message::text(Role::User, "one adopted input"))
-                .unwrap()
-                .len() as f64,
+            + expected_messages
+                .iter()
+                .map(|message| serde_json::to_vec(message).unwrap().len() as f64)
+                .sum::<f64>(),
         "reload uses the adopted guide and current tool controls without recounting the input"
     );
     assert_eq!(
@@ -3733,6 +3751,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .unwrap();
         }
         counter.messages.store(0, Ordering::SeqCst);
+        counter.fixed.store(0, Ordering::SeqCst);
         let before = store.head(&key).await.unwrap();
         let mut profile = builder_with_usage_resolver(counter.clone());
         profile.timeline_store(store.clone());
@@ -3744,6 +3763,11 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             .usage(CancellationToken::new())
             .await;
         if schema.is_none() {
+            assert_eq!(
+                counter.fixed.load(Ordering::SeqCst),
+                0,
+                "opening missing statistics must not count old configuration"
+            );
             assert!(matches!(
                 value,
                 Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
@@ -3911,6 +3935,19 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .unwrap();
             let agent = MinimalHost::start(&profile).await.unwrap();
             let session = agent.restore_session(id.clone()).await.unwrap();
+            assert!(matches!(
+                session
+                    .service::<ContextPreparation>("main")
+                    .unwrap()
+                    .usage(CancellationToken::new())
+                    .await,
+                Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+            ));
+            session
+                .submit("after offline compaction".into(), InputMode::Queue, "main")
+                .await
+                .unwrap();
+            session.idle("main").await.unwrap();
             let usage = session
                 .service::<ContextPreparation>("main")
                 .unwrap()
@@ -4027,16 +4064,14 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     agent.close().await.unwrap();
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent.restore_session(id.clone()).await.unwrap();
-    let restored = session
-        .service::<ContextPreparation>("main")
-        .unwrap()
-        .usage(CancellationToken::new())
-        .await
-        .unwrap();
-    assert_eq!(
-        restored.estimated_input_tokens,
-        before.estimated_input_tokens
-    );
+    assert!(matches!(
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
         counts,
@@ -4090,6 +4125,19 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .unwrap();
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent.restore_session(id).await.unwrap();
+    assert!(matches!(
+        session
+            .service::<ContextPreparation>("main")
+            .unwrap()
+            .usage(CancellationToken::new())
+            .await,
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+    ));
+    session
+        .submit("after offline compaction".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
     let usage = session
         .service::<ContextPreparation>("main")
         .unwrap()
@@ -4112,6 +4160,159 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
                 .map(|message| serde_json::to_vec(message).unwrap().len() as f64)
                 .sum::<f64>(),
         "compaction subtracts only actual context contributions"
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_prompt_references_migrate_explicitly_and_preserve_domain_task_state() {
+    use dim_agent_capabilities::prompt::migrate_prompt_references;
+    let store = Arc::new(CountContextReads::default());
+    store
+        .create_session("prompt-migration", &SessionConfig::default())
+        .await
+        .unwrap();
+    let key = TimelineKey {
+        session_id: "prompt-migration".into(),
+        branch_id: "main".into(),
+    };
+    let timeline = Timeline::new(Ctx::root().unwrap(), key.clone(), vec![], store.clone());
+    timeline
+        .append(
+            EventKind::BranchStart(BranchStartData {
+                parent: None,
+                create_event: None,
+            })
+            .into(),
+        )
+        .unwrap();
+    let scope = PromptScope::Task {
+        timeline: "main".into(),
+        id: "durable-task".into(),
+    };
+    timeline
+        .append(
+            EventKind::ContextScope(ContextScopeData {
+                scope: scope.clone(),
+                status: ContextScopeStatus::Started,
+            })
+            .into(),
+        )
+        .unwrap();
+    for version in ["first", "latest"] {
+        timeline
+            .append(
+                EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: version.into(),
+                    previous: (version == "latest").then(|| PromptReference {
+                        timeline: "main".into(),
+                        revision: "first".into(),
+                    }),
+                    reason: if version == "first" {
+                        PromptChangeReason::Initialize
+                    } else {
+                        PromptChangeReason::Refresh
+                    },
+                    changes: vec![PromptChange::Set {
+                        entry: PromptEntry {
+                            source: "domain-state".into(),
+                            version: version.into(),
+                            body: format!("{version} domain state"),
+                            scope: scope.clone(),
+                            delivery: PromptDelivery::State,
+                            order: 0,
+                        },
+                    }],
+                })
+                .into(),
+            )
+            .unwrap();
+    }
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::mock_hosts(&mut builder);
+    defaults::install_with_prompt(
+        &mut builder,
+        Arc::new(SystemSources(AtomicUsize::new(0))),
+        None,
+    );
+    builder.timeline_store(store.clone());
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let error = match agent.restore_session(key.session_id.clone()).await {
+        Ok(_) => panic!("legacy prompt adoption must require migration"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("explicit migration"), "{error}");
+    agent.close().await.unwrap();
+    let timeline = Arc::new(
+        Timeline::restore(Ctx::root().unwrap(), key.clone(), vec![], store.clone())
+            .await
+            .unwrap(),
+    );
+    let before = timeline.committed();
+    assert!(migrate_prompt_references(timeline.clone()).await.unwrap());
+    assert!(!migrate_prompt_references(timeline.clone()).await.unwrap());
+    assert_eq!(
+        timeline.committed(),
+        before + 1,
+        "migration writes one existing reference result"
+    );
+    let saved = store
+        .memory
+        .read(&key, before + 1..=before + 1)
+        .await
+        .unwrap();
+    let EventKind::Extension(saved) = &saved[0].event.kind else {
+        unreachable!()
+    };
+    let mut legacy = saved.data().clone();
+    legacy["schema"] = "prompt-state/v1".into();
+    legacy["source_through"] = before.into();
+    legacy.as_object_mut().unwrap().remove("changed_through");
+    timeline
+        .append(
+            EventKind::Extension(ExtensionEvent::new("prompt-state", "recovered", legacy).unwrap())
+                .into(),
+        )
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent.restore_session(key.session_id).await.unwrap();
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.entries[&("domain-state".into(), scope.clone())].body,
+        "latest domain state"
+    );
+    let child = session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "legacy-reference-fork".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        session
+            .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+            .unwrap()
+            .unwrap()
+            .entries[&("domain-state".into(), scope)]
+            .body,
+        "latest domain state",
+        "a v1 source cutoff belongs to its ancestor branch, not the child's local sequence"
     );
     agent.close().await.unwrap();
 }

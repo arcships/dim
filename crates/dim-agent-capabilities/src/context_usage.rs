@@ -519,13 +519,14 @@ impl ContextUsage {
     pub(crate) async fn initialize_from_history(
         &self,
         through: u64,
-        history: &crate::history::StreamedContext,
+        history: &[crate::history::HistoryEntry],
+        source: &crate::history::StreamedContext,
         request: Arc<ModelRequest>,
         cancel: CancellationToken,
-    ) -> std::result::Result<(), HostError> {
+    ) -> std::result::Result<bool, HostError> {
         let _ = self.at(0, cancel.clone()).await;
         if !self.progress.borrow().needs_history {
-            return Ok(());
+            return Ok(false);
         }
         let model = self
             .resolver
@@ -535,12 +536,12 @@ impl ContextUsage {
             .resolve(request, cancel.clone())
             .await?;
         let Some(counter) = model.contribution_counter() else {
-            return Ok(());
+            return Ok(false);
         };
         let mut summary = Summary::default();
         let key = |position: &TimelinePosition| -> Result<Key> {
             Ok(Key {
-                branch: history
+                branch: source
                     .branches
                     .iter()
                     .position(|branch| *branch == position.branch_id)
@@ -550,7 +551,7 @@ impl ContextUsage {
             })
         };
         let empty = counter.fixed(None, None);
-        for entry in &history.history {
+        for entry in history {
             sources::message(
                 &mut summary,
                 counter,
@@ -563,7 +564,7 @@ impl ContextUsage {
                 id: Some(entry.id.clone()),
             });
         }
-        if let Some(event) = &history.compaction {
+        if let Some(event) = source.compaction.as_deref() {
             let EventKind::ContextCompaction(data) = &event.kind else {
                 unreachable!("completed compaction")
             };
@@ -585,7 +586,7 @@ impl ContextUsage {
             }
             summary.compression = Some(Compression {
                 event_id: event.id.clone(),
-                cut: key(history
+                cut: key(source
                     .compaction_cut
                     .as_ref()
                     .expect("resolved compaction cut"))
@@ -618,7 +619,7 @@ impl ContextUsage {
             }
         }
         match self.at(through, cancel).await {
-            Ok(_) | Err(ContextOpError::NotConfigured | ContextOpError::Model(_)) => Ok(()),
+            Ok(_) | Err(ContextOpError::NotConfigured | ContextOpError::Model(_)) => Ok(true),
             Err(ContextOpError::Read(error)) => Err(HostError::failed(error.to_string())),
         }
     }
@@ -1112,11 +1113,12 @@ impl ContextUsage {
             }
             if view.state.is_some()
                 && view.covered >= through
-                && (view
-                    .state
-                    .as_ref()
-                    .is_none_or(|state| state.current.is_none())
-                    || view.needs_history
+                && (view.state.as_ref().is_none_or(|state| {
+                    state
+                        .current
+                        .as_ref()
+                        .is_none_or(|current| current.totals.configuration.is_none())
+                }) || view.needs_history
                     || view.relevant_through > through
                     || view.saved_through >= view.relevant_through)
             {
@@ -1210,7 +1212,7 @@ impl ContextUsage {
     }
 
     async fn cover(&self, machine: &mut Machine) -> Result<()> {
-        if machine.relevant_through <= machine.saved_through {
+        if machine.needs_history || machine.relevant_through <= machine.saved_through {
             return Ok(());
         }
         let Some(result_id) = &machine.result_id else {

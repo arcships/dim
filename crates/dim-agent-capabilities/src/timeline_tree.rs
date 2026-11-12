@@ -19,7 +19,7 @@ use rutis::service;
 use rutis::{Ctx, Error};
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{
@@ -54,6 +54,11 @@ struct Node {
     turn_end: watch::Sender<u64>,
     started: bool,
 }
+enum ChildTerminal {
+    Ended(u64),
+    CreateFailed,
+}
+
 struct EndedLine {
     head: u64,
     info: TimelineInfo,
@@ -436,7 +441,7 @@ impl TimelineTree {
         parent: &str,
         child: &str,
         head: u64,
-    ) -> Result<Option<EventKind>> {
+    ) -> Result<Option<ChildTerminal>> {
         let reply = self
             .store
             .query(
@@ -463,7 +468,9 @@ impl TimelineTree {
                             },
                         ],
                     }),
-                    select: QuerySelect::Events,
+                    select: QuerySelect::Fields {
+                        fields: vec!["kind".into(), "data.endEvent".into()],
+                    },
                     group_by: vec![],
                     pick: Some(QueryPick::Last),
                     order_by: vec![],
@@ -474,14 +481,26 @@ impl TimelineTree {
                 }),
             )
             .await?;
-        let QueryOutput::Events { events } = reply.result else {
-            unreachable!("child terminal fact")
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("child terminal fields")
         };
-        Ok(events
-            .into_iter()
-            .next()
-            .map(|event| event.event.kind.clone()))
+        Ok(rows.into_iter().next().map(|row| {
+            let [QueryValue::Value { value: kind }, end_event] =
+                <[_; 2]>::try_from(row.values).expect("child terminal fields")
+            else {
+                unreachable!("child terminal kind")
+            };
+            if kind == "branch/ended" {
+                let QueryValue::Value { value: end_event } = end_event else {
+                    unreachable!("ended child position")
+                };
+                ChildTerminal::Ended(end_event.as_u64().expect("ended child sequence"))
+            } else {
+                ChildTerminal::CreateFailed
+            }
+        }))
     }
+
     fn stored_scope(
         &self,
         branch: &str,
@@ -505,15 +524,18 @@ impl TimelineTree {
     }
     /// The stored lines below `id`, deepest first.
     fn stored_descendants(id: &str, stored: &BTreeMap<String, StoredBranch>) -> Vec<String> {
+        let mut children: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for branch in stored.values() {
+            if let Some(parent) = branch.info.parent.as_deref() {
+                children.entry(parent).or_default().push(&branch.info.id);
+            }
+        }
         let mut found = Vec::new();
-        let mut pending = vec![(id.to_owned(), 0usize)];
+        let mut pending = vec![(id, 0usize)];
         while let Some((parent, depth)) = pending.pop() {
-            for branch in stored
-                .values()
-                .filter(|branch| branch.info.parent.as_deref() == Some(parent.as_str()))
-            {
-                found.push((branch.info.id.clone(), depth + 1));
-                pending.push((branch.info.id.clone(), depth + 1));
+            for child in children.get(parent).into_iter().flatten() {
+                found.push(((*child).to_owned(), depth + 1));
+                pending.push((child, depth + 1));
             }
         }
         found.sort_by_key(|found| std::cmp::Reverse(found.1));
@@ -537,7 +559,7 @@ impl TimelineTree {
             if matches!(
                 self.child_terminal(&parent, &id, stored[&parent].sequence)
                     .await?,
-                Some(EventKind::BranchEnded(_))
+                Some(ChildTerminal::Ended(_))
             ) {
                 continue;
             }
@@ -1156,6 +1178,53 @@ impl TimelineTree {
             .get(id)
             .map(|node| node.turn_end.subscribe())
     }
+    async fn lifecycle(&self, branch: &str, head: u64) -> Result<(Option<u64>, Option<u64>)> {
+        let result = self
+            .store
+            .query(
+                &self.stored_scope(branch, 1, head),
+                &QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec!["branch/start".into(), "branch/end".into()],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["kind".into(), "position.sequence".into()],
+                    },
+                    group_by: vec!["kind".into()],
+                    pick: Some(QueryPick::Last),
+                    order_by: vec![],
+                },
+                Some(&QueryPage {
+                    limit: NonZeroU64::new(2).unwrap(),
+                    after: None,
+                }),
+            )
+            .await?;
+        let QueryOutput::Rows { rows } = result.result else {
+            unreachable!("branch lifecycle positions")
+        };
+        let mut opening = None;
+        let mut ending = None;
+        for row in rows {
+            let [
+                QueryValue::Value { value: kind },
+                QueryValue::Value { value: position },
+            ] = <[_; 2]>::try_from(row.values).expect("lifecycle fields")
+            else {
+                unreachable!("lifecycle position")
+            };
+            let position = position.as_u64().expect("lifecycle sequence");
+            if kind == "branch/end" {
+                ending = Some(position);
+            } else {
+                opening = Some(position);
+            }
+        }
+        Ok((opening, ending))
+    }
     async fn own_end(&self, branch: &str, head: u64) -> Result<Option<(u64, BranchEndData)>> {
         let scope = self.stored_scope(branch, 1, head);
         let reply = self
@@ -1589,11 +1658,7 @@ impl TimelineTree {
                 .await?
                 .map_err(AgentError::InvalidInput)?;
             let original = BranchCreateData {
-                at: if at == parent_length {
-                    BranchCreateAt::Create {}
-                } else {
-                    BranchCreateAt::Sequence { sequence: at }
-                },
+                at: BranchCreateAt::Sequence { sequence: at },
                 source: options.source,
                 branch: uuid::Uuid::new_v4().to_string(),
                 prompt: options.prompt,
@@ -1824,42 +1889,53 @@ impl TimelineTreeControl for TimelineTree {
                 .into_iter()
                 .map(|branch| (branch.info.id.clone(), branch))
                 .collect();
+            let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            let mut pending = VecDeque::new();
+            for branch in remaining.values() {
+                if let Some(parent) = &branch.info.parent {
+                    if !remaining.contains_key(parent) {
+                        return Err(AgentError::Storage(
+                            "branch directory parent is missing".into(),
+                        ));
+                    }
+                    children
+                        .entry(parent.clone())
+                        .or_default()
+                        .push(branch.info.id.clone());
+                } else {
+                    pending.push_back(branch.info.id.clone());
+                }
+            }
+            let mut order = Vec::with_capacity(remaining.len());
+            while let Some(id) = pending.pop_front() {
+                pending.extend(children.remove(&id).unwrap_or_default());
+                order.push(id);
+            }
+            if order.len() != remaining.len() {
+                return Err(AgentError::Storage(
+                    "branch directory contains a cycle".into(),
+                ));
+            }
             let mut inactive = BTreeSet::new();
-            while !remaining.is_empty() {
+            for id in order {
                 let stored = remaining
-                    .values()
-                    .find(|branch| {
-                        branch.info.parent.as_ref().is_none_or(|parent| {
-                            self.get(parent).is_some() || inactive.contains(parent)
-                        })
-                    })
-                    .cloned()
-                    .ok_or_else(|| {
-                        AgentError::Storage(
-                            "branch directory contains missing parents or a cycle".into(),
-                        )
-                    })?;
+                    .get(&id)
+                    .expect("ordered branch directory")
+                    .clone();
                 let mut next: TimelineInfo = stored.info.into();
                 let terminal = if let Some(parent) = &next.parent {
                     let head = self.head(parent).unwrap_or(0);
-                    next.source = self
-                        .creation_source(
-                            parent,
-                            &next.id,
-                            next.create_anchor.expect("child creation position"),
-                        )
-                        .await?;
                     self.child_terminal(parent, &next.id, head).await?
                 } else {
                     None
                 };
-                if let Some(EventKind::BranchEnded(ended)) = &terminal {
+                if let Some(ChildTerminal::Ended(end_event)) = terminal {
                     self.state.lock().unwrap().ended.insert(
                         next.id.clone(),
                         EndedLine {
                             head: stored.sequence,
                             info: next.clone(),
-                            end_event: Some(ended.end_event),
+                            end_event: Some(end_event),
                         },
                     );
                     remaining.remove(&next.id);
@@ -1868,41 +1944,33 @@ impl TimelineTreeControl for TimelineTree {
                 }
                 if next.parent.as_ref().is_some_and(|parent| {
                     inactive.contains(parent)
-                        || matches!(terminal, Some(EventKind::BranchCreateFailed(_)))
+                        || matches!(terminal, Some(ChildTerminal::CreateFailed))
                 }) {
-                    let ended_parent = next
-                        .parent
-                        .as_deref()
-                        .filter(|parent| self.ended_head(parent).is_some());
-                    if let Some(parent) = ended_parent
-                        && self.created(&next.id, stored.sequence).await?
+                    if self
+                        .ended_head(next.parent.as_deref().expect("child parent"))
+                        .is_some()
+                        && !matches!(terminal, Some(ChildTerminal::CreateFailed))
                     {
-                        if next.source.is_none()
-                            && let Some(anchor) = next.create_anchor
-                        {
-                            next.source = self.creation_source(parent, &next.id, anchor).await?;
+                        let (opening, end_event) =
+                            self.lifecycle(&next.id, stored.sequence).await?;
+                        if opening.is_some() {
+                            self.state.lock().unwrap().ended.insert(
+                                next.id.clone(),
+                                EndedLine {
+                                    head: stored.sequence,
+                                    info: next.clone(),
+                                    end_event,
+                                },
+                            );
                         }
-                        // A cascade-ended line's `branch/end` sits on the
-                        // line itself; one page reads it (limit 1). The
-                        // result, if any, is what the directory reports.
-                        let end_event = self
-                            .own_end(&next.id, stored.sequence)
-                            .await?
-                            .map(|(sequence, _)| sequence);
-                        self.state.lock().unwrap().ended.insert(
-                            next.id.clone(),
-                            EndedLine {
-                                head: stored.sequence,
-                                info: next.clone(),
-                                end_event,
-                            },
-                        );
                     }
                     remaining.remove(&next.id);
                     inactive.insert(next.id);
                     continue;
                 }
-                let own_end = if next.parent.is_some() {
+                let own_end = if next.parent.is_some()
+                    && self.lifecycle(&next.id, stored.sequence).await?.1.is_some()
+                {
                     self.own_end(&next.id, stored.sequence).await?
                 } else {
                     None
@@ -1930,6 +1998,15 @@ impl TimelineTreeControl for TimelineTree {
                     remaining.remove(&next.id);
                     inactive.insert(next.id);
                     continue;
+                }
+                if let Some(parent) = &next.parent {
+                    next.source = self
+                        .creation_source(
+                            parent,
+                            &next.id,
+                            next.create_anchor.expect("child creation position"),
+                        )
+                        .await?;
                 }
                 let ancestors = match &next.parent {
                     Some(parent) => {

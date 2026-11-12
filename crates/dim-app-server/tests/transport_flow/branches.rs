@@ -126,7 +126,7 @@ async fn branches_list_main_and_its_lines_and_read_an_ended_line_through_its_hea
         .await;
     assert_ok(&detail);
     assert_eq!(detail["result"]["purpose"], "child work");
-    assert_eq!(detail["result"]["cutMessages"], 0);
+    assert!(detail["result"]["cutMessages"].is_null());
     assert_eq!(open["parentBranchId"], "main");
     assert!(open["branchPoint"].as_u64().is_some(), "{open}");
     assert!(open["createEvent"].as_u64().is_some(), "{open}");
@@ -227,27 +227,43 @@ async fn branches_answer_the_same_directory_after_a_restart() {
     let after = directory(&mut client, &id).await;
     assert_eq!(before.len(), after.len(), "{after:?}");
     for was in &before {
-        let id = was["branchId"].as_str().unwrap();
-        let now = row(&after, id);
+        let branch_id = was["branchId"].as_str().unwrap();
+        let now = row(&after, branch_id);
         for field in [
             "parentBranchId",
             "branchPoint",
             "createEvent",
-            "source",
             "state",
             "purpose",
             "cutMessages",
             "end",
         ] {
-            assert_eq!(was.get(field), now.get(field), "{id} keeps {field}: {now}");
+            assert_eq!(
+                was.get(field),
+                now.get(field),
+                "{branch_id} keeps {field}: {now}"
+            );
         }
         if was["state"] == "ended" {
-            assert_eq!(was["head"], now["head"], "{id} keeps its fixed head");
-            assert_eq!(was["endEvent"], now["endEvent"], "{id} keeps its end");
+            assert!(now["source"].is_null());
+            assert_eq!(was["head"], now["head"], "{branch_id} keeps its fixed head");
+            assert_eq!(
+                was["endEvent"], now["endEvent"],
+                "{branch_id} keeps its end"
+            );
+            let detail = client
+                .rpc(
+                    "session.branch.get",
+                    json!({"sessionId":id,"branchId":branch_id}),
+                )
+                .await;
+            assert_ok(&detail);
+            assert_eq!(detail["result"]["source"], was["source"]);
         } else {
+            assert_eq!(was.get("source"), now.get("source"));
             assert!(
                 now["head"].as_u64().unwrap() >= was["head"].as_u64().unwrap(),
-                "{id} head moves forward: {now}"
+                "{branch_id} head moves forward: {now}"
             );
         }
     }

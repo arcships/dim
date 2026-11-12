@@ -27,18 +27,16 @@ A `context-usage/covered` v1 extends a saved result only for an already checked
 no-effect source tail at a fixed read or turn-end handoff.
 
 Recovery reads the latest numeric result, matching covered position and counter
-controls, then only the unfinished source suffix. Old v1-v3 aggregates are read directly; old prefix numbers are read by their
+controls only when a kind/position probe proves there is no uncovered source. An uncovered source invalidates the derived numbers; cold recovery never consumes its body. Old v1-v3 aggregates are read directly; old prefix numbers are read by their
 existing node identities only when requested. v4 numbers remain readable. Unknown
-schemas or algorithms fail. When history exists without saved statistics, usage
-reports that it is not yet initialized. The first actual model preparation passes
-its existing history projection to Usage, which counts it once and saves one
-current result. Resume reads no historical messages to initialize a counter.
+schemas or algorithms fail. Without saved statistics, usage
+reports that it is not yet initialized. A real model preparation passes its existing final, stable projection to Usage, which counts it once and saves one current result. A compaction adopted after that projection cutoff defers initialization until the next actual request. Resume reads no historical messages to initialize a counter.
 Current reads use the in-memory totals. Earlier compression cuts seek cumulative
-numbers using epoch, branch ordinal and source sequence, without old messages.
+numbers using epoch, branch ordinal and source sequence. A missing predecessor makes statistics unavailable until an actual request establishes a new total; no history recount fills that gap.
 
 Current dynamic tools use a small version/identity/fixed-number cache; no handler
 binding or extra Timeline event is required. New messages are counted once and
-fixed controls are reused. Settled-output projection is shared with history.
+fixed controls are reused. The first stable projection establishes the same existing request association before invocation, so its provider measurement can calibrate the next request. Settled-output projection is shared with history.
 Provider calibration uses one Weak reference to the actual numerically verified
 request and one current-call slot, invalidated by incompatible controls or content.
 Delivered measurements retain only their numeric basis and source positions until

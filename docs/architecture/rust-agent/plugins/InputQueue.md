@@ -81,8 +81,8 @@ application/deletion decisions. It writes no queue recovery or node events.
 Recovery fixes a published cutoff, selects ordinary and handover current members,
 then reads last applied/withdraw controls for each page of at most 128 identities.
 Two last turn boundaries and an interrupt only when needed determine turn/starting.
-It never reads input bodies to recover entries; old missing input modes use an
-identity-driven user-presence query. Applied mode defaults agree with Loop.
+It never reads input bodies to recover entries; old missing input modes use
+one identity-driven user-presence query for all missing modes in a page, returning only IDs. Applied mode defaults agree with Loop.
 Current entries, queued count, turn, starting and release bits stay in memory.
 Only necessary applied/deleted output waits for its commit before publishing the
 observable queue; empty or unchanged transitions do not publish a new count.

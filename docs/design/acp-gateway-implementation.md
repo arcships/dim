@@ -291,8 +291,8 @@ native reply、事件和 live progress 可以先后任意到达。先登记 subm
 
 ### 5.2 固定头与 live 合流
 
-1. 为同一 Session 的 new/load/resume/fork/history 操作同步建立一个准备槽位，再开始 await；并发 load 共用该槽位，不能创建两个消费者。失败清除槽位，关闭标志阻止迟到准备重新登记。
-2. attach 前登记接收路由；attach 后先缓存该 Session 的 live 事件和 notices。首次准备使用 [客户端首屏窗口](clients.md#opening-a-conversation-with-a-bounded-window)：以 latestTurn 固定 through=H，再用 before 补足窗口。未结束任务、待答问题及委派等旧状态按该契约单独读取；不能靠全历史回放恢复。断线补读则从此前已消费游标继续。
+1. 为同一 Session 的 new/load/resume/fork 操作同步建立一个准备槽位，再开始 await；并发 load 共用该槽位，不能创建两个消费者。失败清除槽位，关闭标志阻止迟到准备重新登记。
+2. attach 前登记接收路由；attach 后先缓存该 Session 的 live 事件和 notices。首次准备使用 [客户端首屏窗口](clients.md#opening-a-conversation-with-a-bounded-window)：协商 tail 固定 through=H，再用 before 补足窗口；旧服务器使用有界 latestTurn。当前任务、待答问题及委派按各 owner 的索引接口读取。断线后重新取得有界窗口与当前 inventories，替换内部投影，不沿旧游标翻页补齐全部漏失事件。
 3. 将读到的窗口按 sequence 折叠；首屏停止条件由客户端窗口契约决定。history 中删除的输入不渲染成有效用户消息，raw-only input 不渲染。Gateway 自己的 prompt 不重复 echo，其他客户端的真实 user input 可以投影。
 4. 丢弃缓存中已折叠的 durable events，顺序消费 H 之后的部分；progress 用 request id 和 Unicode scalar offsets 与 committed text/thinking 合流。resume 不向 ACP 输出 H 以内的旧内容。load 的回放 updates 全部成功写出后才回复。
 5. Session notice 无 Timeline sequence。标题按 titleRevision 去重；非持久状态不可仅靠 history 恢复，重新查询公开元数据。所有 I/O、reply 和回放都检查连接 generation，旧 generation 不能写入新连接。
@@ -301,7 +301,7 @@ native reply、事件和 live progress 可以先后任意到达。先登记 subm
 
 `submissionId` 是查询关联键，不是服务端的 exactly-once 保证。不得自动重发已送出的 create、fork、delete、attachment.put、configuration update 或 approval response。
 
-submit 的拒绝/不确定性遵循 [现有提交合同](../../crates/dim-app-server/README.md#session-submission-errors)：明确保证未提交的错误才是 rejection；其他错误、断线和 `submission_unknown` 都不能报告“未发送”。重连后 `session.input_lookup {sessionId,branchId:"main",submissionId}` 返回 accepted 时继续关联同一个 input；unknown 时可能原调用仍未完成，不立即重发。恢复窗口内继续查询与 catch-up；仍无证据则返回 `submission_unknown`，提示客户端 load 检查，禁止自动生成新 submissionId 重试。
+submit 的拒绝/不确定性遵循 [现有提交合同](../../crates/dim-app-server/README.md#session-submission-errors)：明确保证未提交的错误才是 rejection；其他错误、断线和 `submission_unknown` 都不能报告“未发送”。重连后 `session.input_lookup {sessionId,branchId:"main",submissionId}` 返回 accepted 时继续关联同一个 input；unknown 时可能原调用仍未完成，不立即重发。恢复窗口内继续查询提交标识；已接受的输入通过现有 session.turn.get 的 inputId 定位消费轮次和终态，不从历史页推断。仍无证据则返回 `submission_unknown`，提示客户端 load 检查，禁止自动生成新 submissionId 重试。
 
 ## 6. 生命周期与连接管理
 
@@ -346,9 +346,9 @@ ACP responses 和主动通知由单 writer 保序。可靠业务输出按序列�
 | 情况 | 必须行为 |
 | --- | --- |
 | ACP EOF / writer failure / signal / plugin unload | 关闭本地准入，释放本地请求和 subscriptions；按 §4.4 尽力取消自己的 pending login attempt，尽力 session.detach 后断开 RPC。不调用 session.stop/close、daemon.shutdown、Agent close 或 logout；共享执行和已被插件接受的登录交换继续 |
-| RPC 连接丢失、ACP 仍在线 | 暂停新变更请求，保留已知关联；重连、submission lookup 和 history catch-up 共用从断线起算的 30 秒截止点。按 0.25/0.5/1/2 秒封顶间隔重连同一受保护 endpoint，不启动第二个 daemon。每次 hello 核验协议/profile/instance，再 attach 和按固定头补历史；排队 call 与异步结果均核验 generation |
+| RPC 连接丢失、ACP 仍在线 | 暂停新变更请求，保留已知关联；重连、submission lookup 和有界窗口准备共用从断线起算的 30 秒截止点。按 0.25/0.5/1/2 秒封顶间隔重连同一受保护 endpoint，不启动第二个 daemon。每次 hello 核验协议/profile/instance，再 checked attach、读取有界窗口和当前 inventories；排队 call 与异步结果均核验 generation |
 | 恢复后 instance id 未变 | 接回当前 runtime；read/attach/history 可重试，已送出的变更只查询结果 |
-| daemon instance id 改变 | 旧 RPC ids 和非持久 progress 失效；Session identity 仍用持久 id。按 history 重建 turn 终态；未知 permission id 不擅自重发旧答案，等待 attach 的真实 pending replay |
+| daemon instance id 改变 | 旧 RPC ids 和非持久 progress 失效；Session identity 仍用持久 id。按已接受 inputId/已知 turnId 定位该轮终态，不恢复旧执行；未知 permission id 不擅自重发旧答案，等待 attach 的真实 pending replay |
 | 无法在恢复窗口内恢复 | 已收到 cancel 的 prompt 仍 best-effort 返回 cancelled，并记录无法确认 native stop 的诊断；其他在途请求返回 daemon_unavailable，随后关闭 ACP 连接。不报告原生执行已经取消 |
 | namespace service_reloading / unavailable | 只影响该功能；已知未投递的 read 可以重试，变更仍服从各自合同。不卸载其他 Session，不安装缺失插件 |
 | 同一 Session 被其他客户端操作 | 依原生 sequence 和 owner 结果更新；审批 first answer wins；本连接的 prompt 只认消费自己 input 的 turn |
@@ -394,13 +394,13 @@ Agent 在 initialize response 的 `agentCapabilities._meta.lody` 按项声明；
 
 Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 `LodyExtensionCapabilities` 未列该字段；实际 DTO 是 `LodySessionMeta.sessionConfig`。首版按明确 metadata DTO 处理，不自创 `sessionConfig:{version:1}` capability。对这个上游文档/类型差异不作兼容字段猜测。
 
-首版计划接入 `sessionHistory`、`compaction`、条件提供的 `forkAtTurn`、后台 exec 的 `tasks:{version:1,background:true}`，以及双向协商的最小 `subagentEvents` 状态流。新会话的 startup config 走已有创建参数。完整 task/subagent 控制、计量和 Goal 不由这些声明隐含获得。
+首版计划接入 `sessionHistory` version 2（有界单页）、`compaction`、条件提供的 `forkAtTurn`、后台 exec 的 `tasks:{version:1,background:true}`，以及双向协商的最小 `subagentEvents` 状态流。新会话的 startup config 走已有创建参数。完整 task/subagent 控制、计量和 Goal 不由这些声明隐含获得。
 
 ### 8.2 逐项映射
 
 | Lody 表面 | 原生现状 | 首版接法 / 不支持原因 |
 | --- | --- | --- |
-| `_lody/session/history/read` / sessionHistory | 有 history | 已登记 Session；与 load 同一回放路径，拒绝本连接 prompt 在途；固定头完整输出后返回 `{}`。其他客户端仍可能运行，按固定头处理，不假定 Session 全局静止 |
+| `_lody/session/history/read` / sessionHistory | 有 history | 已登记 Session；请求必须指定 version:2；拒绝本连接 prompt 在途。一次只输出一个有界展示页，返回 through/before/complete；不累积完整历史，旧完整读取合同明确报错。其他客户端仍可能运行，按固定头处理，不假定 Session 全局静止 |
 | `_meta.lody.forkAtTurn` / forkAtTurn | 有 native turn id、turn/end、session.fork | 只接有终态的真实 main turn，按 §4.3 调用；锚点未知、非 main、未结束均报错。标准更新带真实 turnId；不拿 tool call id 或 request id 冒充 turnId |
 | compaction / `_meta.lody.activity` | 有完整 compaction facts | §7；metadata 只增强标准工具活动，普通 ACP 仍可显示 |
 | `_lody/session/usage_update` / usage / usageScopeId | 有 model/usage；aimux 保留输入/输出总量、可选 cache，丢失 reasoning/text 分区，cost/currency 为 None | 首版不支持。costUSD、reasoningOutputTokens、cacheCreationInputTokens 是可选，不因缺费用而禁用。实际缺口是必填 outputTokens 必须排除 reasoning，cacheReadInputTokens 也必填；上游未知分区不能补零或把总 completion 当文本。后续按 §8.4 从真实事实投影，无需新累计 RPC |

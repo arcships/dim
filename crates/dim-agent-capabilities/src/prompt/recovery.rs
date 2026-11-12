@@ -104,17 +104,17 @@ fn decode<T: DeserializeOwned>(value: QueryValue) -> Result<T> {
     serde_json::from_value(value).map_err(|error| AgentError::fault("Prompt", error.to_string()))
 }
 
-async fn last(owner: &Prompt, mut query: TimelineQuery) -> Result<Option<Vec<QueryValue>>> {
+async fn last(timeline: &Timeline, mut query: TimelineQuery) -> Result<Option<Vec<QueryValue>>> {
     query.query.pick = Some(QueryPick::Last);
     query.page.as_mut().unwrap().limit = NonZeroU64::MIN;
-    let QueryOutput::Rows { mut rows } = owner.timeline.query(query).await?.result else {
+    let QueryOutput::Rows { mut rows } = timeline.query(query).await?.result else {
         unreachable!("prompt fields")
     };
     Ok(rows.pop().map(|row| row.values))
 }
 
 async fn source_kind(
-    owner: &Prompt,
+    timeline: &Timeline,
     scope: TimelineQueryScope,
     through: u64,
     id: &str,
@@ -125,7 +125,7 @@ async fn source_kind(
         conditions: vec![query.query.filter.take().unwrap(), eq("id", json!(id))],
     });
     let [data] = <[_; 1]>::try_from(
-        last(owner, query)
+        last(timeline, query)
             .await?
             .ok_or_else(|| AgentError::fault("Prompt", "missing source fact"))?,
     )
@@ -151,17 +151,17 @@ fn rank(position: &TimelinePosition, segments: &[(String, u64)]) -> Result<(usiz
 }
 
 fn at_source(
-    owner: &Prompt,
+    timeline: &Timeline,
     query: &mut TimelineQuery,
     through: u64,
     at: Option<&TimelinePosition>,
 ) -> Result<()> {
     let Some(at) = at else { return Ok(()) };
-    if at.branch_id == owner.identity.branch_id {
+    if at.branch_id == timeline.branch_id() {
         query.through = Some(at.sequence);
         return Ok(());
     }
-    let segments = owner.timeline.segments(through)?;
+    let segments = timeline.segments(through)?;
     let (last, _) = rank(at, &segments)?;
     let conditions = segments
         .iter()
@@ -198,7 +198,7 @@ fn at_source(
 }
 
 async fn reset_at(
-    owner: &Prompt,
+    timeline: &Timeline,
     through: u64,
     at: Option<&TimelinePosition>,
 ) -> Result<Option<TimelinePosition>> {
@@ -208,8 +208,8 @@ async fn reset_at(
         &["branch/start"],
         &["position"],
     );
-    at_source(owner, &mut query, through, at)?;
-    match last(owner, query).await? {
+    at_source(timeline, &mut query, through, at)?;
+    match last(timeline, query).await? {
         Some(row) => {
             let [position] = <[_; 1]>::try_from(row).expect("reset position");
             Ok(Some(decode(position)?))
@@ -264,66 +264,74 @@ fn set_active(snapshot: &mut PromptSnapshot, scope: &PromptScope, active: bool) 
     }
 }
 
+async fn scope_boundary(
+    timeline: &Timeline,
+    scope: &PromptScope,
+    through: u64,
+    started: bool,
+    at: Option<&TimelinePosition>,
+) -> Result<Option<TimelinePosition>> {
+    let mut query = match scope {
+        PromptScope::Branch { .. } => return Ok(None),
+        PromptScope::Turn { timeline, id } => {
+            let mut query = request(
+                TimelineQueryScope::Chain,
+                through,
+                &[if started { "turn/start" } else { "turn/end" }],
+                &["position"],
+            );
+            query.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    query.query.filter.take().unwrap(),
+                    eq("data.turn_id", json!(id)),
+                    eq("position.branch_id", json!(timeline)),
+                ],
+            });
+            query
+        }
+        PromptScope::Task { timeline, id } => {
+            let mut query = request(
+                TimelineQueryScope::Chain,
+                through,
+                &["context/scope"],
+                &["position"],
+            );
+            query.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    query.query.filter.take().unwrap(),
+                    eq("data.scope.kind", json!("task")),
+                    eq("data.scope.timeline", json!(timeline)),
+                    eq("data.scope.id", json!(id)),
+                    eq(
+                        "data.status",
+                        json!(if started { "started" } else { "ended" }),
+                    ),
+                ],
+            });
+            query
+        }
+    };
+    at_source(timeline, &mut query, through, at)?;
+    query.page.as_mut().unwrap().limit = NonZeroU64::MIN;
+    Ok(match last(timeline, query).await? {
+        Some(row) => {
+            let [position] = <[_; 1]>::try_from(row).expect("scope position");
+            Some(decode(position)?)
+        }
+        None => None,
+    })
+}
+
 async fn scope_edges(
-    owner: &Prompt,
+    timeline: &Timeline,
     scope: &PromptScope,
     through: u64,
     at: Option<&TimelinePosition>,
 ) -> Result<(Option<TimelinePosition>, Option<TimelinePosition>)> {
-    let mut result = Vec::new();
-    for started in [true, false] {
-        let mut query = match scope {
-            PromptScope::Branch { .. } => return Ok((None, None)),
-            PromptScope::Turn { timeline, id } => {
-                let mut query = request(
-                    TimelineQueryScope::Chain,
-                    through,
-                    &[if started { "turn/start" } else { "turn/end" }],
-                    &["position"],
-                );
-                query.query.filter = Some(QueryFilter::And {
-                    conditions: vec![
-                        query.query.filter.take().unwrap(),
-                        eq("data.turn_id", json!(id)),
-                        eq("position.branch_id", json!(timeline)),
-                    ],
-                });
-                query
-            }
-            PromptScope::Task { timeline, id } => {
-                let mut query = request(
-                    TimelineQueryScope::Chain,
-                    through,
-                    &["context/scope"],
-                    &["position"],
-                );
-                query.query.filter = Some(QueryFilter::And {
-                    conditions: vec![
-                        query.query.filter.take().unwrap(),
-                        eq("data.scope.kind", json!("task")),
-                        eq("data.scope.timeline", json!(timeline)),
-                        eq("data.scope.id", json!(id)),
-                        eq(
-                            "data.status",
-                            json!(if started { "started" } else { "ended" }),
-                        ),
-                    ],
-                });
-                query
-            }
-        };
-        at_source(owner, &mut query, through, at)?;
-        query.page.as_mut().unwrap().limit = NonZeroU64::MIN;
-        result.push(match last(owner, query).await? {
-            Some(row) => {
-                let [position] = <[_; 1]>::try_from(row).expect("scope position");
-                Some(decode(position)?)
-            }
-            None => None,
-        });
-    }
-    let [start, end] = <[_; 2]>::try_from(result).expect("two scope edges");
-    Ok((start, end))
+    Ok((
+        scope_boundary(timeline, scope, through, true, at).await?,
+        scope_boundary(timeline, scope, through, false, at).await?,
+    ))
 }
 
 impl Projection {
@@ -377,8 +385,8 @@ impl Projection {
             .collect()
     }
 
-    pub(super) fn checkpoint(&mut self, owner: &Prompt, blocks: Vec<InputBlock>) -> Result<()> {
-        let recovered = Recovered {
+    fn recovered(&self) -> Recovered {
+        Recovered {
             schema: SCHEMA,
             changed_through: self.changed_through.clone(),
             state: RecoveryState {
@@ -397,7 +405,11 @@ impl Projection {
                 revision: self.snapshot.revision.clone(),
                 system_revision: self.snapshot.system_revision.clone(),
             },
-        };
+        }
+    }
+
+    pub(super) fn checkpoint(&mut self, owner: &Prompt, blocks: Vec<InputBlock>) -> Result<()> {
+        let recovered = self.recovered();
         let mut drafts: Vec<EventDraft> = blocks
             .into_iter()
             .map(|block| {
@@ -596,41 +608,14 @@ impl Projection {
         self.finish(owner, expired, false)
     }
 
-    async fn set_scope_at(
-        &mut self,
-        owner: &Prompt,
-        scope: &PromptScope,
+    async fn load(
+        timeline: &Timeline,
         through: u64,
-        at: Option<&TimelinePosition>,
-    ) -> Result<Option<TimelinePosition>> {
-        if matches!(scope, PromptScope::Branch { .. }) {
-            return Ok(None);
-        }
-        let (start, end) = scope_edges(owner, scope, through, at).await?;
-        let reset = if at.is_some() && matches!(scope, PromptScope::Turn { .. }) {
-            reset_at(owner, through, at).await?
-        } else {
-            self.reset.clone()
-        };
-        let segments = owner.timeline.segments(through)?;
-        set_active(
-            &mut self.snapshot,
-            scope,
-            active_at(
-                scope,
-                start.as_ref(),
-                end.as_ref(),
-                reset.as_ref(),
-                &segments,
-            )?,
-        );
-        Ok(end)
-    }
-
-    pub(super) async fn restore(owner: &Prompt, through: u64) -> Result<Self> {
+        migration: bool,
+    ) -> Result<(Self, Vec<PromptEntry>, bool)> {
         let mut state = Self::default();
         if let Some(row) = last(
-            owner,
+            timeline,
             request(
                 TimelineQueryScope::Chain,
                 through,
@@ -659,10 +644,10 @@ impl Projection {
                 "data.source_through",
             ],
         );
-        let mut saved_row = last(owner, saved.clone()).await?;
-        if saved_row.is_none() && !owner.timeline.ancestors().is_empty() {
+        let mut saved_row = last(timeline, saved.clone()).await?;
+        if saved_row.is_none() && !timeline.ancestors().is_empty() {
             saved.scope = TimelineQueryScope::Chain;
-            saved_row = last(owner, saved).await?;
+            saved_row = last(timeline, saved).await?;
         }
         let mut initialize = false;
         if let Some(row) = saved_row {
@@ -682,18 +667,23 @@ impl Projection {
             state.changed_through = match schema.as_str() {
                 SCHEMA => decode(changed)?,
                 "prompt-state/v1" => {
-                    let through: u64 = decode(legacy_through)?;
-                    match last(
-                        owner,
-                        request(
-                            TimelineQueryScope::Chain,
-                            through,
-                            &["prompt/changed"],
-                            &["position"],
-                        ),
-                    )
-                    .await?
-                    {
+                    let legacy_through: u64 = decode(legacy_through)?;
+                    let mut query = request(
+                        TimelineQueryScope::Chain,
+                        through,
+                        &["prompt/changed"],
+                        &["position"],
+                    );
+                    at_source(
+                        timeline,
+                        &mut query,
+                        through,
+                        Some(&TimelinePosition {
+                            branch_id: position.branch_id.clone(),
+                            sequence: legacy_through,
+                        }),
+                    )?;
+                    match last(timeline, query).await? {
                         Some(row) => {
                             let [position] = <[_; 1]>::try_from(row).expect("changed position");
                             Some(decode(position)?)
@@ -703,7 +693,7 @@ impl Projection {
                 }
                 _ => return Err(AgentError::fault("Prompt", "unsupported recovery schema")),
             };
-            let segments = owner.timeline.segments(through)?;
+            let segments = timeline.segments(through)?;
             if state.snapshot.revision.is_some() != state.changed_through.is_some() {
                 return Err(AgentError::fault(
                     "Prompt",
@@ -745,7 +735,7 @@ impl Projection {
                             .iter()
                             .map(|entry| format!("data.changes[{}].entry", entry.element_index)),
                     );
-                    let values = last(owner, query).await?.ok_or_else(|| {
+                    let values = last(timeline, query).await?.ok_or_else(|| {
                         AgentError::fault("Prompt", "missing effective prompt entry")
                     })?;
                     let mut values = values.into_iter();
@@ -778,7 +768,7 @@ impl Projection {
                     }
                 }
             }
-            if position.branch_id == owner.identity.branch_id {
+            if position.branch_id == timeline.branch_id() {
                 state.written_result = position.sequence;
                 state.published_result = position.sequence;
             }
@@ -795,59 +785,91 @@ impl Projection {
             branch_id: at.branch_id.clone(),
             sequence: at.sequence.saturating_add(1),
         });
-        let mut changed = false;
-        loop {
-            let reply = owner.timeline.query(changes.clone()).await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("changed identities")
+        let legacy = initialize && migration;
+        let mut latest = if legacy {
+            None
+        } else {
+            last(timeline, changes.clone()).await?
+        };
+        if initialize
+            && !migration
+            && let Some(latest) = &latest
+        {
+            let mut first = changes.clone();
+            first.query.pick = Some(QueryPick::First);
+            first.page.as_mut().unwrap().limit = NonZeroU64::MIN;
+            let QueryOutput::Rows { rows } = timeline.query(first).await?.result else {
+                unreachable!("first adoption identity")
             };
-            for row in rows {
-                let [id, position] = <[_; 2]>::try_from(row.values).expect("changed identity");
-                let id: String = decode(id)?;
-                let position: TimelinePosition = decode(position)?;
-                let kind = source_kind(
-                    owner,
-                    TimelineQueryScope::Chain,
-                    through,
-                    &id,
-                    "prompt/changed",
-                )
-                .await?;
-                let EventKind::PromptChanged(data) = &kind else {
-                    unreachable!()
-                };
-                let scopes: BTreeSet<_> = data
-                    .changes
-                    .iter()
-                    .map(|change| match change {
-                        PromptChange::Set { entry } => entry.scope.clone(),
-                        PromptChange::Revoke { scope, .. } => scope.clone(),
-                    })
-                    .collect();
-                for scope in scopes {
-                    state
-                        .set_scope_at(owner, &scope, through, Some(&position))
-                        .await?;
-                }
-                state.apply(&id, &kind, position);
-                changed = true;
+            if rows.first().is_none_or(|row| row.values[0] != latest[0]) {
+                return Err(AgentError::InvalidInput(
+                    "Prompt references require explicit migration".into(),
+                ));
             }
-            let Some(next) = reply.next else { break };
-            changes.page.as_mut().unwrap().after = Some(next);
         }
+        let mut changed = false;
+        {
+            loop {
+                let rows = if legacy {
+                    let reply = timeline.query(changes.clone()).await?;
+                    changes.page.as_mut().unwrap().after = reply.next;
+                    let QueryOutput::Rows { rows } = reply.result else {
+                        unreachable!("changed identities")
+                    };
+                    rows.into_iter().map(|row| row.values).collect::<Vec<_>>()
+                } else {
+                    latest.take().into_iter().collect()
+                };
+                for row in rows {
+                    let [id, position] = <[_; 2]>::try_from(row).expect("changed identity");
+                    let id: String = decode(id)?;
+                    let position: TimelinePosition = decode(position)?;
+                    let kind = source_kind(
+                        timeline,
+                        TimelineQueryScope::Chain,
+                        through,
+                        &id,
+                        "prompt/changed",
+                    )
+                    .await?;
+                    let EventKind::PromptChanged(data) = &kind else {
+                        unreachable!()
+                    };
+                    if !legacy && data.previous != state.snapshot.revision {
+                        return Err(AgentError::fault(
+                            "Prompt",
+                            "unrecorded adoption does not follow saved references",
+                        ));
+                    }
+                    for change in &data.changes {
+                        if let PromptChange::Set { entry } = change {
+                            set_active(&mut state.snapshot, &entry.scope, true);
+                        }
+                    }
+                    state.apply(&id, &kind, position);
+                    changed = true;
+                }
+                if !legacy || changes.page.as_ref().unwrap().after.is_none() {
+                    break;
+                }
+            }
+        }
+        state.snapshot.turns.clear();
+        state.snapshot.tasks.clear();
         if state
             .scoped
             .keys()
             .any(|scope| matches!(scope, PromptScope::Turn { .. }))
         {
-            state.reset = reset_at(owner, through, None).await?;
+            state.reset = reset_at(timeline, through, None).await?;
         }
         let reset = state.reset.clone();
-        let segments = owner.timeline.segments(through)?;
+        let segments = timeline.segments(through)?;
         let scopes: Vec<_> = state.scoped.keys().cloned().collect();
         let mut expired = Vec::new();
         for scope in scopes {
-            let end = state.set_scope_at(owner, &scope, through, None).await?;
+            let end = scope_boundary(timeline, &scope, through, false, None).await?;
+            set_active(&mut state.snapshot, &scope, true);
             let mut remove = Vec::new();
             if let Some(sources) = state.scoped.get(&scope) {
                 for source in sources {
@@ -879,6 +901,7 @@ impl Projection {
             }
             if state.scoped.get(&scope).is_some_and(BTreeSet::is_empty) {
                 state.scoped.remove(&scope);
+                set_active(&mut state.snapshot, &scope, false);
             }
         }
         if let Some(configuration) = &state.configuration
@@ -890,11 +913,16 @@ impl Projection {
             state.snapshot.rebuild_system();
         }
         state.source_through = through;
-        if initialize {
+        if legacy {
             expired.clear();
         }
+        Ok((state, expired, changed))
+    }
+
+    pub(super) async fn restore(owner: &Prompt, through: u64) -> Result<Self> {
+        let (mut state, expired, changed) = Self::load(&owner.timeline, through, false).await?;
         if changed || !expired.is_empty() {
-            state.finish(owner, expired, true)?;
+            state.finish(owner, expired, changed)?;
             owner
                 .publisher
                 .await_published(state.written_result)
@@ -918,11 +946,14 @@ impl Prompt {
             };
             let edges = async {
                 let reset = if matches!(scope, PromptScope::Turn { .. }) {
-                    reset_at(self, through, None).await?
+                    reset_at(&self.timeline, through, None).await?
                 } else {
                     reset
                 };
-                Ok::<_, AgentError>((scope_edges(self, scope, through, None).await?, reset))
+                Ok::<_, AgentError>((
+                    scope_edges(&self.timeline, scope, through, None).await?,
+                    reset,
+                ))
             }
             .await;
             let mut projection = self.projection.lock().unwrap();
@@ -961,7 +992,7 @@ impl Prompt {
             .iter()
             .any(|scope| matches!(scope, PromptScope::Turn { .. }))
         {
-            reset_at(self, through, None).await?
+            reset_at(&self.timeline, through, None).await?
         } else {
             None
         };
@@ -969,7 +1000,7 @@ impl Prompt {
             if snapshot.active(scope) {
                 continue;
             }
-            let (start, end) = scope_edges(self, scope, through, None).await?;
+            let (start, end) = scope_edges(&self.timeline, scope, through, None).await?;
             set_active(
                 snapshot,
                 scope,
@@ -1061,7 +1092,7 @@ impl Prompt {
                         continue;
                     }
                     let kind = source_kind(
-                        self,
+                        &self.timeline,
                         TimelineQueryScope::Branch,
                         through,
                         id.as_str().expect("source identity"),
@@ -1086,4 +1117,46 @@ impl Prompt {
         self.projection.lock().unwrap().publish(self, written);
         Ok(())
     }
+}
+
+pub(super) async fn migrate(timeline: &Timeline) -> Result<bool> {
+    let through = timeline.committed();
+    if last(
+        timeline,
+        request(TimelineQueryScope::Branch, through, &[KEY], &["id"]),
+    )
+    .await?
+    .is_some()
+    {
+        return Ok(false);
+    }
+    let (state, _, changed) = Projection::load(timeline, through, true).await?;
+    if !changed {
+        return Ok(false);
+    }
+    let data = serde_json::to_value(state.recovered())
+        .map_err(|error| AgentError::fault("Prompt", error.to_string()))?;
+    let draft = EventKind::Extension(
+        ExtensionEvent::new("prompt-state", "recovered", data.clone())
+            .expect("private recovery key"),
+    )
+    .into();
+    let events = timeline.append_batch_registered(vec![draft], |events| {
+        if !matches!(&events[0].kind, EventKind::Extension(actual) if actual.key() == KEY && actual.data() == &data) {
+            return Err(AgentError::InvalidInput("before changed migrated prompt references".into()));
+        }
+        Ok(())
+    })?;
+    let sequence = events[0].sequence;
+    let mut published = timeline.watch();
+    while published.borrow_and_update().0 < sequence {
+        if let Some(error) = timeline.failure() {
+            return Err(error);
+        }
+        published
+            .changed()
+            .await
+            .map_err(|_| AgentError::Closed("Prompt migration publication".into()))?;
+    }
+    Ok(true)
 }

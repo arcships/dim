@@ -20,7 +20,7 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)、[#1147](https://gi
 | 校验 | 普通 resume 不校验已接受的历史或子分支切点；仅在导入、升级、新建切点时验证对应边界。 | 打开时完整解析历史、重复验证不可变的旧切点。 |
 | 请求存储前缀 | 沿用已发布请求存储合同。 | 本轮新增的冷前缀重哈希优化及请求链重构。 |
 
-各设计为确定方案，不列实现者自行挑选的替代结构。表中 O(K)、旧格式兼容和删除修复是各自明确成本，不是正常历史遍历的备用路径。
+各设计为确定方案，不列实现者自行挑选的替代结构。表中当前成员数量与显式迁移是各自明确成本，不是正常历史遍历的备用路径。
 
 ## 2. 最终 API 与模块关系
 
@@ -65,7 +65,7 @@ CLI / ACP / Web
 Goal  -> 最新完整业务状态 -> 未结束在内存paused；运行计数不恢复
 Queue -> 当前输入成员 -> 每项决定事实 -> 最新控制 -> 原内存调度
 Prompt-> 最新有效引用 -> 指定scope边界 -> 有效Set下标；配置独立读
-Usage -> 最新数字/小位置缓存 -> 仅真正尚未处理来源 -> 数字提交后发布
+Usage -> 最新数字/小位置缓存 -> 仅类型/位置探测 -> 有缺口则未就绪；实际请求建立数字
 ~~~
 
 普通已就绪getter直接用owner当前内存；固定本次目标，等待真实工作交接，不等待并不存在的“每回调恢复事件”。usage不以新总量冒充旧through。查询取消不撤销已接受业务工作。Goal重载暂停不传播到其它owner；Loop/Tool/Task等仍结算自己的资源。
@@ -76,7 +76,7 @@ Usage -> 最新数字/小位置缓存 -> 仅真正尚未处理来源 -> 数字�
 | --- | --- | --- |
 | [Usage](plugins/ContextUsage.md) | 数字/位置缓存/计数控制各1+六类源合并后缀1，共4 query；未指定tools时首次另点读system；无旧消息解码 | 每个实际内容源一份numeric（同时是累计边界），配置/基准变化按实际来源保存；仅无效果尾部交接保存小covered |
 | [队列](input-queue-recovery.md) | 空队列4query；有队列只增加当前对象的applied/withdraw及必要默认mode、interrupt定位 | 恢复事件0；仅原applied/deleted |
-| [Goal](plugins/Goal-state-read.md) | 新格式普通加载1条；兼容/删除修复单列；活get零SQL | 仅真实goal/state；运行进度和重载均0 |
+| [Goal](plugins/Goal-state-read.md) | opening位置和最新goal/state；只解码一个目标，活get零SQL | 仅真实goal/state；运行进度和重载均0 |
 | [Prompt](prompt-state-read.md) | 引用1+配置1+提示变更后缀检查1+G个有效正文事件+已知scope键定位 | 真实采用/退役每批1份引用；普通无提示变化的turn0 |
 | [pending](appserver/timeline-member-index.md) | 固定through根、当前成员与本页字段 | 原事实事务维护成员路径；不复制整个当前队列 |
 
@@ -86,14 +86,14 @@ Usage -> 最新数字/小位置缓存 -> 仅真正尚未处理来源 -> 数字�
 
 | 情况 | 确定处理 |
 | --- | --- |
-| 旧数据/缺少派生结果 | Queue直接用原事实和升级后的成员索引，不写初始快照；Prompt已知v1可取原引用，缺引用时只定位有效条目；Usage旧v1–v3复用已有数字，无数字时等待实际请求取得内容。Goal仅兼容目标定义，不回填运行快照。 |
+| 旧数据/缺少派生结果 | Queue直接用原事实和升级后的成员索引，不写初始快照；Prompt已知v1可取原引用；正常恢复只补一条可证明的采用缺口，旧多条无引用历史须用显式离线迁移；Usage旧v1–v3复用可证明有效的已有数字；启动读头前有未覆盖源或无数字时等待实际请求最终投影。Goal只读取当前goal/state；没有该事实即没有Goal，不读旧文本、不回填运行快照。 |
 | 配置不存在或计数不支持 | Usage 直接返回原业务错误，不先渲染正文。 |
 | 未知 schema、缺引用、损坏 | 返回错误，不隐藏为“无状态”，不使用更旧结果或全历史回退。 |
 | fork | 各owner遵守原opening/祖先截止；只用切点内可见引用和数字，缺数字时等待实际请求建立数字，不冒用父分支未来状态。 |
-| Goal 删除 | input_id 定位受影响业务状态，类型/位置索引定位前一个完整目标；只修复实际受影响的 Goal 业务变更，结束旧执行并完成必要补偿，不重建控制源。 |
+| 删除排队输入 | 只删除对应排队/续行输入身份，不撤销已生效Goal，不读取历史、不写补偿目标。 |
 | 正常打开 | 读取目录、当前控制和当前对象；不进行历史完整性校验。 |
 
-Goal 删除及删除后补偿未提交的崩溃，属于目标定义的真实业务修复，成本按受影响 Goal 变更计；不恢复旧次数、轮次、任务或评估，不为普通输入保存边界。旧格式兼容与该修复不承诺只读一条；新格式普通加载不借此重扫历史。
+Goal 的目标定义只由明确的目标操作与执行终态改变。输入删除不是目标撤回；不保留旧文本兼容或删除回放。
 
 ## 5. 首屏、详情和 Recall
 
@@ -142,7 +142,7 @@ Goal 的 Session 身份隔离、RPC 边界的既有正确性修复保留为独�
 
 v39 保留已确定的 changes 元素定位编码，不附加数组查询语言。v40 采用已确认的[输出逻辑身份和恢复成员方案](appserver/native-storage-format.md#提案v40-补齐逻辑事件身份与恢复成员)：输出locator和五种恢复描述保留；本次补齐handover存在组与turn/scope/epoch及源位置三个定位键，同事务升级、失败回滚。
 
-不向 v39 静默写入 v40 结构；旧程序拒读新格式。owner 的 ExtensionEvent/schema 与 native 格式分开：Queue不再写恢复事件；Prompt新引用为prompt-state/v2，Usage数字为context-usage/v4，小位置缓存为context-usage-covered/v1；Goal业务事件为goal-state/v1，不沿用旧 goal/v1 或提议 goal/v2 的运行快照。旧布局按各 owner 的兼容合同处理，Goal 不初始化运行快照；Store 不执行业务初始化。普通调用继续使用现有 query；旧 QuerySpec 的 Rust 字面量与线上请求不增加可选字段。
+不向 v39 静默写入 v40 结构；旧程序拒读新格式。当前 native 格式为已确认的 v42，兼容升级按 native-storage-format 的 v41/v42 章节执行；本轮不新增 v43 或业务快照表。owner 的 ExtensionEvent/schema 与 native 格式分开：Queue不再写恢复事件；Prompt新引用为prompt-state/v2，Usage数字为context-usage/v4，小位置缓存为context-usage-covered/v1；Goal业务事件为goal-state/v1，不沿用旧 goal/v1 或提议 goal/v2 的运行快照。旧布局按各 owner 的兼容合同处理，Goal 不初始化运行快照；Store 不执行业务初始化。普通调用继续使用现有 query；旧 QuerySpec 的 Rust 字面量与线上请求不增加可选字段。
 
 v42 为审批、协作交付、未通知后台结果补成员索引，保留 exec 任务身份定位。只索引原事实，不增加状态事件；兼容 v41 和两套旧格式家族，失败回滚。首次升级单独测量，不计为已经建好索引的正常加载；具体结构与通知关闭边界只在[原生格式 v42](appserver/native-storage-format.md#v42-indexes-for-unfinished-external-work)规定。
 

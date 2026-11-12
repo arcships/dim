@@ -2,99 +2,21 @@ use super::*;
 
 impl Owner {
     pub(super) async fn write_guard(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, AgentError> {
-        loop {
-            let mut fresh = self.fresh.subscribe();
-            loop {
-                let status = fresh.borrow_and_update().clone()?;
-                if status {
-                    break;
-                }
-                tokio::select! {
-                    result = fresh.changed() => { result.map_err(|_| AgentError::Reloading("Goal".into()))?; }
-                    _ = self.stop.cancelled() => return Err(AgentError::Closed(self.branch_id.clone())),
-                }
+        let write = tokio::select! {
+            guard = self.write.lock() => guard,
+            _ = self.stop.cancelled() => return Err(AgentError::Closed(self.branch_id.clone())),
+        };
+        self.await_fold().await?;
+        let through = self.timeline.committed();
+        let mut dispatched = self.dispatcher.watch();
+        while self.dispatcher.sequence() < through {
+            if let Some(error) = self.dispatcher.failure() {
+                return Err(error);
             }
-            let write = tokio::select! {
-                guard = self.write.lock() => guard,
-                _ = self.stop.cancelled() => return Err(AgentError::Closed(self.branch_id.clone())),
-            };
-            self.await_fold().await?;
-            let through = self.timeline.committed();
-            let mut dispatched = self.dispatcher.watch();
-            while self.dispatcher.sequence() < through {
-                if let Some(error) = self.dispatcher.failure() {
-                    return Err(error);
-                }
-                tokio::select! {result=dispatched.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,_=self.stop.cancelled()=>return Err(AgentError::Closed("Goal".into()))}
-            }
-            if self.fresh.borrow().clone()? {
-                return Ok(write);
-            }
+            tokio::select! {result=dispatched.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,_=self.stop.cancelled()=>return Err(AgentError::Closed("Goal".into()))}
         }
-    }
-
-    pub(super) fn refresh(self: &Arc<Self>) {
-        let owner = self.clone();
-        self.work.spawn(async move {
-            if !owner.phase.activated().await {
-                return;
-            }
-            let result = tokio::select! {
-                _ = owner.stop.cancelled() => return,
-                result = owner.refresh_state() => result,
-            };
-            if let Err(error) = result {
-                tracing::warn!(%error, "Goal restore failed");
-                let _ = owner.fresh.send_replace(Err(error));
-            }
-        });
-    }
-
-    async fn refresh_state(self: &Arc<Self>) -> Result<(), AgentError> {
-        let write = self.write.lock().await;
-        loop {
-            let through = self.timeline.sequence();
-            let opening = self.opening(through).await?;
-            let query = |query| -> BoxFuture<'_, _> { Box::pin(self.timeline.query(query)) };
-            let mut loaded = crate::read::load(
-                &self.branch_id,
-                opening.map(|(at, _)| at),
-                through,
-                &query,
-                &self.stop,
-            )
-            .await?;
-            if self.timeline.committed() > through {
-                self.publication(self.timeline.committed()).await?;
-                continue;
-            }
-            crate::read::pause_reloaded(&mut loaded.fold);
-            let statement = statement_of_fold(&loaded.fold);
-            {
-                let mut state = self.state.lock().unwrap();
-                if *self.stepped.borrow() > through {
-                    continue;
-                }
-                if loaded.repaired {
-                    state.fold = loaded.fold;
-                }
-                state.start = opening.map(|(at, _)| at);
-                state.source_through = through;
-                state.refresh_from = None;
-                state.decisions = CancellationToken::new();
-                state.repair_pending = loaded.repaired;
-                self.stepped.send_replace(through);
-                let _ = self.fresh.send_replace(Ok(true));
-            }
-            drop(write);
-            if loaded.repaired {
-                self.record(through, Some(statement.state), false, None)
-                    .await?;
-            } else {
-                self.resume_decisions();
-            }
-            return Ok(());
-        }
+        self.write_status.borrow().clone()?;
+        Ok(write)
     }
 
     pub(super) fn resume_decisions(self: &Arc<Self>) {

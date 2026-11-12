@@ -142,6 +142,9 @@ pub struct ToolGroup {
     pub detail: Detail,
     /// The delegations its member cards show, by request event id.
     pub cards: Vec<String>,
+    pub(crate) source: String,
+    pub(crate) awaiting_origins: bool,
+    pub(crate) known_origins: usize,
     collapsed: Vec<Line>,
     summary: Vec<Line>,
     expanded: Vec<Line>,
@@ -428,6 +431,21 @@ pub fn project_group(rows: &[&ViewRow], detail: Detail) -> ToolGroup {
             .iter()
             .filter_map(|item| Some(item.call().member?.task.id.clone()))
             .collect(),
+        source: rows
+            .first()
+            .map(|row| row.row_id.clone())
+            .unwrap_or_default(),
+        known_origins: rows
+            .iter()
+            .filter(|row| {
+                row.tool_lookup_done || row.tool_name.is_some() && row.tool_input.is_some()
+            })
+            .count(),
+        awaiting_origins: rows.iter().any(|row| {
+            !row.pending
+                && !row.tool_lookup_done
+                && (row.tool_name.is_none() || row.tool_input.is_none())
+        }),
         collapsed,
         summary,
         expanded,

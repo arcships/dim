@@ -507,6 +507,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::prompt_sources::SessionLanguage@session",
             "scope": null,
             "status": "Ready"
@@ -520,11 +525,6 @@
             "service": "dim_agent_runtime::state::StateCell<dim_agent_capabilities::prompt_state::PromptSnapshot>@main",
             "scope": null,
             "status": "Ready"
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "status": "Ready"
           }
         ],
         "resolved": [
@@ -532,6 +532,12 @@
             "service": "dim_agent_capabilities::host::PromptHost@session",
             "scope": null,
             "provider": 43,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "provider": 74,
             "generation": 1
           },
           {
@@ -551,18 +557,18 @@
             "scope": null,
             "provider": 74,
             "generation": 1
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "provider": 74,
-            "generation": 1
           }
         ],
         "reads": [
           {
             "service": "dim_agent_capabilities::host::PromptHost@session",
             "provider": 43,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "provider": 74,
             "declared": true,
             "external": true
           },
@@ -580,12 +586,6 @@
           },
           {
             "service": "dim_agent_runtime::state::StateCell<dim_agent_capabilities::prompt_state::PromptSnapshot>@main",
-            "provider": 74,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
             "provider": 74,
             "declared": true,
             "external": true

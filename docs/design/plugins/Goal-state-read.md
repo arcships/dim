@@ -4,7 +4,7 @@ Status: Draft.
 Scope: Goal 的持久状态、运行期内存、异常终止、重载和 session.goal.get。
 Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
 
-依据：[Goal](Goal.md)、[旧事件读取](Goal-property-queries.md)、[设计规则](../../architecture/rust-agent/principles.md)、[ADR 002](../../adr/002-plugin-scope.md)、[插件合同](../plugin-contract.md)、[rutis](../rutis-usage.md)。本文件规定状态保存与读取合同。
+依据：[Goal](Goal.md)、[读取与输入删除](Goal-property-queries.md)、[设计规则](../../architecture/rust-agent/principles.md)、[ADR 002](../../adr/002-plugin-scope.md)、[插件合同](../plugin-contract.md)、[rutis](../rutis-usage.md)。本文件规定状态保存与读取合同。
 
 ## 1. 决定
 
@@ -28,7 +28,7 @@ Goal branch 通过自己的 timeline 写私有业务事件 type=goal、name=stat
 | objective | 完整目标文本；没有目标为 null。沿用 Goal 长度限制。 |
 | state | 原 Goal 状态对象：kind 为 active、paused、completed、blocked、none；paused 的 text 为原因，completed/blocked 的 text 为说明。 |
 | judge | model 或 evaluator。 |
-| input_id | 本次命令 trigger 的输入 ID；自动终止等没有命令 trigger 时为 null。用于定位被删除的 Goal 变更。 |
+| input_id | 本次命令 trigger 的输入 ID；自动终止等没有命令 trigger 时为 null。仅保留命令来源身份；删除该输入不撤销已提交的目标变更。 |
 
 信封已有 ID、分支、sequence 和时间，data 不重复保存。clear 写 objective=null、state.kind=none、judge=model，不能靠删除记录表达清除。
 
@@ -47,7 +47,7 @@ Goal branch 通过自己的 timeline 写私有业务事件 type=goal、name=stat
 }
 ~~~
 
-不保存 previous 链。删除修复需要前一个业务状态时，使用同一分支的 kind/位置索引，在受影响状态位置之前取 Last、limit=1。旧历史没有 goal/state 时按[兼容读取](Goal-property-queries.md)取得目标；下一次真实业务变更才写新格式，加载不回填。
+不保存 previous 链。没有 goal/state 就没有可恢复的 Goal；旧文本和恢复快照保留为历史，不再解释为当前目标。下一次明确的 Goal 操作按当前状态写完整业务状态，加载不回填。
 
 ### 2.2 只在内存中的对象
 
@@ -102,7 +102,7 @@ Store 使用现有类型/位置索引；新格式不从 input/message 文本筛�
 | paused | 保留状态和原因。 | 不自动工作，不写事件。 |
 | completed / blocked | 保留状态和说明。 | 不自动工作，不写事件。 |
 | none / clear | 没有目标。 | 不自动工作，不写事件。 |
-| 没有新格式状态 | 兼容读取目标，再应用相同映射；确实没有目标则为 none。 | 不回填，兼容成本单列。 |
+| 没有新格式状态 | 没有 Goal，不读取旧文本或恢复快照。 | 不回填，不自动工作，不写事件。 |
 
 返回 S 交接 Dispatcher；S 以前的轮次、续行、任务、评估、决定不重新交付给 Goal 执行。S 以后仍只有新的 set/resume 能建立执行，其他晚到事实不能使 paused 自动运行。
 
@@ -114,7 +114,7 @@ Store 使用现有类型/位置索引；新格式不从 input/message 文本筛�
 
 无活 owner 的结束分支通过原 TreeCommands.query 读取业务状态并应用结束/重载映射。保持原 GoalRead；through 是本次读/交付覆盖的位置，不是 source_through。历史页表示当时的持久状态，不能代替当前状态 API。
 
-新格式普通加载只返回一个 Goal 状态对象，不装载集合节点、不查控制源后缀。opening 定位、旧数据兼容、真实未结算删除修复和其他所有者的资源结算单独计量，不能冒充这一条对象读取。
+新格式普通加载只返回一个 Goal 状态对象，不装载集合节点、不查控制源后缀。本地 opening 定位另需一次位置查询；其他所有者的资源结算不属于 Goal 状态读取。
 
 ## 5. 终止、重载和模型上下文
 
@@ -154,11 +154,7 @@ goal/state 不直接进入模型上下文，模型状态仍使用已采用输入
 
 ### 5.1 输入删除与旧评估
 
-普通输入删除只改变本实例的输入集合。涉及 Goal 命令时保留原回滚合同：input_id 定位业务状态，按该状态之前的位置索引取得前一个完整目标；只处理其后真正受影响的 Goal 业务变更，排除被删命令。旧输入/补偿解释按[兼容读取](Goal-property-queries.md)。
-
-修复仅恢复目标定义和业务状态，不恢复次数、轮次、任务、评估或旧自动决定。若结果仍为 active，则结束本次执行，以 paused 写完整业务结果。修复期间 get 不成功返回旧状态，新的 set/resume 等待修复完成。删除后、补偿前崩溃仍须完成这项真实业务修复；这条路径不承诺单事件读取，成本按受影响 Goal 变更计，不作为普通加载的执行重放。加载先用类型/位置索引判断最新业务状态之后、固定上界 S 之前是否有 input/deleted；空范围直接结束，不关联旧 Goal 记录。有删除才查询最早受影响的 Goal 业务状态：其 data.input_id 必须存在该范围内的删除。关联使用已有 input_id 索引；不将所有普通聊天的删除 ID 分页读入 Goal。只在实际命中 Goal 定义后开始修复。查询扫描范围和修复成本分别验证，不以 LIMIT1 或新增每输入进度日志掩盖它们。
-
-不为普通输入写删除边界，不新增前驱链；既有类型/位置索引已经能定位相邻业务状态。
+input/deleted 只移除本实例 driving、continuation_inputs 中对应的输入 ID。它不改变 objective、state、judge，不取消 Goal 决定，不读取历史，不写补偿状态，也不补发命令输入。Goal 命令提交的 goal/state 已经生效，trigger 是交给模型的通知和驱动，不是业务状态提交的确认。用户撤销目标通过明确的 edit、pause、clear 等 Goal 操作完成。
 
 Pursuit 的请求、评估关系和报告配对只属于发起它的执行。终止时取消并结算仍拥有的评估工作；新实例评估表为空，旧报告不能完成、恢复或续行当前 Goal。旧评估资源由原生命周期所有者结算，不读取旧回复补造结论。
 
@@ -174,9 +170,9 @@ Pursuit 的请求、评估关系和报告配对只属于发起它的执行。终
 | 用户再次 resume | 增加一条 active，次数从零开始。 |
 | 普通输入、轮次、工具调用、评估等待 | 不因此增加状态事件。 |
 
-体积随当前目标和说明长度变化，不随历史轮数、当前输入数或任务数增长。解析一条 JSON 仍有正文成本；兼容、删除和资源结算分别报告。
+体积随当前目标和说明长度变化，不随历史轮数、当前输入数或任务数增长。解析一条 JSON 仍有目标正文成本；删除输入不增加查询或状态写入。
 
-新格式普通冷读共3次逻辑查询：opening 位置、最新 goal/state、该状态之后的删除存在性。只解码1个目标对象，不读取删除列表；状态事件已是固定读头时省去第3次。活 get 为0次查询。范围内确有删除才增加受影响定义查询；其扫描和真实修复另计，不能算入“只读一条”的普通路径。
+普通冷读共2次逻辑查询：本地 opening 位置、最新 goal/state。只解码1个目标对象；没有状态时解码0个目标对象。活 get 为0次查询。输入删除为0次查询、0条 Goal 状态写入。
 
 | 代码对象 | 修改职责 |
 | --- | --- |
@@ -184,12 +180,12 @@ Pursuit 的请求、评估关系和报告配对只属于发起它的执行。终
 | 状态写入 | 一个完整业务状态类型，与必要输入原子提交，保持命令配对顺序。 |
 | read / Session 路由 | 活 get 读内存，冷读最后业务状态；保留 Session 身份隔离。 |
 | 当前计算 | 仅推进本实例新事实；不序列化运行对象，不逐事件 checkpoint。 |
-| 兼容和删除 | 仅保留目标定义解释；移除运行状态/节点装载和每输入边界。 |
+| 旧历史与输入删除 | 不恢复旧文本目标；删除输入只移除当前待处理 ID，不回滚业务状态。 |
 | 模型文本与 Pursuit | 历史状态不驱动执行，重载不继续旧评估。 |
 
 ## 7. Requirements raised to mechanism owners、验收与 Rule check
 
-无新机制要求。使用已有 Timeline.append_batch、kind/位置及 ID/input_id 查询、Dispatcher 和生命周期。goal/state 是扩展事件，不新增核心事件变体、Store 业务表、Goal 专用接口或 native 版本。
+无新机制要求。使用已有 Timeline.append_batch、kind/位置查询、Dispatcher 和生命周期。goal/state 是扩展事件，不新增核心事件变体、Store 业务表、Goal 专用接口或 native 版本。
 
 验收使用公开 Goal 流程：
 
@@ -199,7 +195,7 @@ Pursuit 的请求、评估关系和报告配对只属于发起它的执行。终
 4. active 后崩溃、paused 提交前后崩溃：加载不自动续行，也不补写状态。
 5. reload 丢弃次数和评估；新的 set/resume 才执行，旧报告/turn/end 不恢复执行。
 6. 重连保持原实例；部件 reload 暂停；UI/get 不把旧 active 当作当前 active。
-7. clear、旧数据、opening、fork、删除期间崩溃和未知 schema 明确处理，不装载旧恢复节点。
+7. clear、仅有旧文本、opening、fork、删除命令输入后重载和未知 schema 明确处理，不装载旧恢复节点。
 8. 原子提交失败无半份状态；固定 Goal 变更数，扩大十倍普通聊天历史，不增加新格式状态定位的候选扫描/返回对象。
 
 | 规则 | 本设计 |
@@ -213,4 +209,4 @@ Pursuit 的请求、评估关系和报告配对只属于发起它的执行。终
 | §4 规则 7、8 | 只用声明的原服务和事实，不改核心查询合同。 |
 | §4 规则 9 | 只保存业务状态，执行进度留在内存。 |
 
-删减：移除执行快照、逐事件进度写入、持久输入集合、节点协议、每输入删除边界。保留完整业务状态是为一条独立读取；input_id 服务既有命令删除语义，前驱状态复用类型/位置索引定位。
+删减：移除执行快照、逐事件进度写入、持久输入集合、节点协议、每输入删除边界。保留完整业务状态是为一条独立读取；input_id 仅保留已提交命令的来源身份，不增加反向撤销查询。删除旧文本兼容、删除回滚、补偿状态及修复等待。

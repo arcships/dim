@@ -70,6 +70,8 @@ An input is pending from its `input/message` until either `input/applied` follow
 
 ## 3. Flows
 
+The native `session.attach.expectedCwd` capability permits an optional `expectedCwd` on `session.attach`. The boundary canonicalizes that one path and checks the target Session's stored or live cwd by Session ID under its acquire gate, before project authorization, Session restore or plugin activation. A mismatch fails without attaching or running that project's configuration. Omitting it preserves existing callers. Attach already returns cwd and title metadata; a checked attach never lists all Sessions to find its target.
+
 ### 3.1 Launch, write, wait
 
 ```mermaid

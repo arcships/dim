@@ -4,9 +4,12 @@ The TimelineTree plugin registers TimelineTree in every Session and TreeTimeline
 
 The single-line display read also belongs to TimelineTree. The directory itself
 is read without history I/O; display details are requested separately. It reads the
-creation prompt and end fact by position, and counts user inputs at the inherited
-cutoff with a scalar query. Ended prefixes use the tree's stored branch chain;
+creation prompt/source and end fact by position only when detail is requested. It omits the
+optional inherited user-message count instead of querying the historical prefix. Ended prefixes use the tree's stored branch chain;
 this does not widen the public own-line-only `TreeCommands.query` contract.
+Restore selects lifecycle kind/positions first. Closed lines retain directory metadata without
+reading creation/end bodies; unfinished closes read the terminal data they must settle, and
+only active lines read their opening source. Parent-child adjacency orders the directory once.
 The App Server only maps these owner-produced properties into its wire fields.
 `TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding.
 
@@ -65,7 +68,7 @@ keyed input and reads only its keys and retire flags. Candidate branches remain 
 receipts/dispatch fences and initial input acceptance succeed. Creation retains
 its fixed ancestry cut even if a waiter disappears. One opening budget requests
 cancellation; rollback and accepted host work must still settle. Cleanup closes
-the tree, cancels reservations, joins builds and closes branch contexts. Restore settles interrupted creates without replaying external work. For each stored child it reads the creation source at the known anchor and the terminal matching that child's identity. It does not collect all parent lifecycle facts. Accepted ancestry cuts use the directory directly; only a new cut is checked against context during creation. Tool-call
+the tree, cancels reservations, joins builds and closes branch contexts. Restore settles interrupted creates without replaying external work. It selects each child's terminal kind and end position, preserving that end identity even if a fork has no own history for the child. Only a line that will mount reads its creation source at the known anchor. Accepted ancestry cuts use the directory directly; only a new cut is checked against context during creation. Tool-call
 ancestry cuts cannot split required result relationships. Client detach is not
 Session close, and closing is not deletion of persisted history.
 

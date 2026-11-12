@@ -855,6 +855,14 @@ impl AgentIndex {
         Some((host, slot))
     }
     pub(crate) async fn acquire(&self, id: &str) -> dim_agent_runtime::Result<SessionUse> {
+        self.acquire_checked(id, None).await
+    }
+
+    pub(crate) async fn acquire_checked(
+        &self,
+        id: &str,
+        expected_cwd: Option<&std::path::Path>,
+    ) -> dim_agent_runtime::Result<SessionUse> {
         if let Some(reason) = self.unavailable_session(id) {
             return Err(AgentError::Storage(reason));
         }
@@ -873,9 +881,18 @@ impl AgentIndex {
             return Err(AgentError::Closed(id.into()));
         }
         let session = match host.agent.get_session(id) {
-            Some(session) => session,
+            Some(session) => {
+                if expected_cwd
+                    .is_some_and(|expected| std::path::Path::new(&session.config().cwd) != expected)
+                {
+                    return Err(AgentError::InvalidInput(
+                        "Session cwd does not match expectedCwd".into(),
+                    ));
+                }
+                session
+            }
             None if self.session_store.is_some() => {
-                if let Some(settings) = &self.settings {
+                if self.settings.is_some() || expected_cwd.is_some() {
                     let config = self
                         .session_store
                         .as_ref()
@@ -884,12 +901,21 @@ impl AgentIndex {
                         .session_config(id)
                         .await?
                         .ok_or_else(|| AgentError::Storage(format!("unknown session {id}")))?;
-                    settings
-                        .authorize_project(config.cwd.into(), &self.stopping)
-                        .await
-                        .map_err(|error| {
-                            AgentError::fault("project authorization", error.to_string())
-                        })?;
+                    if expected_cwd
+                        .is_some_and(|expected| std::path::Path::new(&config.cwd) != expected)
+                    {
+                        return Err(AgentError::InvalidInput(
+                            "Session cwd does not match expectedCwd".into(),
+                        ));
+                    }
+                    if let Some(settings) = &self.settings {
+                        settings
+                            .authorize_project(config.cwd.into(), &self.stopping)
+                            .await
+                            .map_err(|error| {
+                                AgentError::fault("project authorization", error.to_string())
+                            })?;
+                    }
                 }
                 let version = self
                     .version_of(id)

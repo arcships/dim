@@ -94,6 +94,17 @@ async fn display_windows_and_live_compaction_use_one_typed_detail_with_a_frame_b
     let display = reader.rpc("session.history.display", params.clone()).await;
     assert_ok(&display);
     assert_eq!(display["result"]["items"], json!([summary]));
+    let tail = reader
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":event.sequence,"limit":1
+            }),
+        )
+        .await;
+    assert_ok(&tail);
+    assert_eq!(tail["result"]["items"], json!([summary]));
+    assert!(tail["result"]["turnStart"].is_null());
     let summary_bytes = serde_json::to_vec(&display).unwrap().len();
     assert!(summary_bytes < 1024);
     let full = legacy.rpc("session.history", params).await;
@@ -184,6 +195,80 @@ async fn display_windows_and_live_compaction_use_one_typed_detail_with_a_frame_b
     let summary=reader.rpc("session.history.display",json!({"sessionId":id,"branchId":"main","through":oversized.sequence,"latestTurn":true,"limit":1})).await;
     assert_ok(&summary);
     assert!(serde_json::to_vec(&summary).unwrap().len() < 1024);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_tail_pages_inside_a_batch() {
+    let directory = new_directory("display-tail");
+    let (server, probe) = serve_streaming(&directory, Arc::new(StreamingModel::default())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.history.display.tail"))
+    );
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+    let batch = timeline
+        .append_batch_registered(
+            (0..12)
+                .map(|i| {
+                    EventKind::InputMessage(dim_agent_types::InputMessageData::text(
+                        format!("tail-{i}"),
+                        Some(dim_agent_types::InputMode::Append),
+                    ))
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let through = batch.last().unwrap().sequence;
+    let first = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&first);
+    assert_eq!(first["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["result"]["nextBefore"], through - 2);
+    assert!(first["result"]["turnStart"].is_null());
+    let second = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,
+                "before":first["result"]["nextBefore"],"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&second);
+    assert_eq!(second["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(second["result"]["nextBefore"], through - 5);
+    let invalid = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"latestTurn":true
+            }),
+        )
+        .await;
+    assert_eq!(invalid["error"]["code"], -32602);
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(directory).unwrap();

@@ -14,6 +14,49 @@ const GRACE: Duration = Duration::from_millis(200);
 /// Deadline of one transition; a passing run stays far below it.
 const DEADLINE: Duration = Duration::from_secs(20);
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn checked_attach_rejects_a_different_cwd_before_restoring_the_session() {
+    let store = Store::new();
+    let loads = Loads::default();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_unloading(&store, &loads, GRACE).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let id = launch(&sessions).await;
+    loads.released(&id).await;
+    let before = loads.of(&id);
+    let rejected = client
+        .rpc(
+            "session.attach",
+            json!({
+                "sessionId":id,"expectedCwd":std::env::current_dir().unwrap()
+            }),
+        )
+        .await;
+    assert!(rejected.get("error").is_some(), "{rejected}");
+    assert_eq!(
+        loads.of(&id),
+        before,
+        "a mismatched attach must not mount Session plugins"
+    );
+    let accepted = client
+        .rpc(
+            "session.attach",
+            json!({
+                "sessionId":id,"expectedCwd":std::env::temp_dir()
+            }),
+        )
+        .await;
+    assert_ok(&accepted);
+    assert_eq!(loads.of(&id), (before.0 + 1, true));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// Every load of a Session, creation or restore, with its Timeline tree held
 /// weakly: once a released instance is no longer referenced anywhere, its
 /// tree is gone. It can also hold one Session's next unload in its cleanup,

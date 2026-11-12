@@ -159,5 +159,24 @@ When a prefix is omitted, their response includes
 `_meta["dim/history"] = { through, before, complete: false }`.
 `through` fixes the window head and `before` is its exclusive backward cursor.
 The client displays “earlier content not loaded”; an omitted prefix is not an empty history.
-The explicit `_lody/session/history/read` operation remains a full-history request.
+`_lody/session/history/read` implements `sessionHistory` version 2: a request
+`{sessionId, version: 2, before?, through?, limit?}` emits one bounded display
+page and replies `{through, before, complete}`. The first page uses the latest
+published head and a limit of 64 by default; later pages retain that head and
+use its exclusive backward cursor. The limit is 1–256. A version 1 or unversioned
+full-history request fails explicitly; it never silently reports a partial replay
+as complete. Reconnect installs a fresh bounded window and current inventories,
+without accumulating the missed historical suffix. A configuration update carries
+`_meta["dim/history"] = {through, before, complete, replace: true}` for clients
+that support replacing their loaded window; standard ACP provides no history-reset
+operation. Lost submit acknowledgements are checked by submission id, then the
+accepted input's consuming turn and outcome are read by `inputId` through the
+existing `session.turn.get`, including deletion and output-limit outcomes.
+
+Load and resume validate `expectedCwd` through the existing checked attach
+capability before the daemon restores the Session. They read no full Session
+catalog to validate one identity. Title and adopted model fields come from attach.
+Ended branch directory entries are not queried for actionable questions. Missing
+tool origins remain placeholder calls; initial preparation reads no original
+arguments outside its display page.
 Configuration refresh reads the attach record and configuration owners without rereading the transcript.

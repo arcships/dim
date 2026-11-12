@@ -7,6 +7,68 @@ use serde_json::{Value, json};
 use std::num::NonZeroU64;
 
 #[tokio::test]
+async fn scalar_projection_of_non_output_events_keeps_missing_and_null_without_output_expansion() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    let records = vec![record(
+        1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "summary",
+                "saved",
+                json!({"status":"completed","optional":null,"payload":"x".repeat(64 * 1024)}),
+            )
+            .unwrap(),
+        ),
+    )];
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let mut query = fields(&["id", "data.status", "data.optional", "data.absent"]);
+    query.filter = Some(eq("kind", json!("summary/saved")));
+    parity(&store, &memory, &scope(1), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(1), &query, Some(&page(1)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("selected fields")
+    };
+    assert_eq!(
+        rows[0].values[2],
+        dim_agent_runtime::QueryValue::Value { value: Value::Null }
+    );
+    assert_eq!(rows[0].values[3], dim_agent_runtime::QueryValue::Missing);
+    let statistics = store.take_query_statistics();
+    let projection = statistics
+        .iter()
+        .find(|statement| statement.stage == "selected_properties")
+        .unwrap();
+    assert!(
+        !projection.plan.iter().any(|step| step.contains("UNION")),
+        "a proven non-output kind must not open packed output rows: {statistics:?}"
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn alternative_text_candidates_seek_positions_without_scanning_unrelated_inputs() {
     let mut costs = Vec::new();
     for inputs in [100u64, 1_000] {

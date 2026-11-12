@@ -159,6 +159,13 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
+    ToolOrigin {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+        request_id: String,
+        call_id: String,
+    },
     Report(crate::report::Request),
     CompactionDetails {
         projection_id: u64,

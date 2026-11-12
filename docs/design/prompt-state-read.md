@@ -29,7 +29,7 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
 - `revision`、`system_revision`：原 PromptReference 或 null。
 - `changed_through`：最后已经纳入本份引用结果的prompt/changed源位置（branch_id、sequence；没有采用时为null）；只用于补齐尚未保存的真实提示变更。它不因turn、配置或处理回调而前进。
 
-不保存通用 source_through、turns、tasks、configuration_event、System 拼接副本、历史 changes、加载任务/句柄。已提交 v1 可直接取得相同引用和版本，忽略其冗余运行字段；不因读取 v1 补写 v2。未知 schema 报错，不筛掉后冒用旧记录。
+不保存通用 source_through、turns、tasks、configuration_event、System 拼接副本、历史 changes、加载任务/句柄。已提交 v1 可直接取得相同引用和版本，source_through按保存事件所属分支的局部位置定位changed，不当作当前子分支序号；忽略其冗余运行字段；不因读取 v1 补写 v2。未知 schema 报错，不筛掉后冒用旧记录。
 
 prompt/changed及其必要输入/配置保留原采用批次。Prompt处理实际提交、完成before变换的prompt/changed后，更新引用并保存一份结果。不能预先按变换前草稿生成引用：现有append_batch_registered不提供在before之后再生成一条派生草稿的能力，本设计不为这个缓存改变Timeline。
 
@@ -44,12 +44,12 @@ scope 结束时，从内存按 scope 定位受影响的键。只有确实移除�
 固定读头 S，注册原 Dispatcher 交接：
 
 1. 读取最新引用结果和最新 context/configured，各1次 query。没有引用且没有历史 prompt/changed 是空状态，零回填。
-2. 先补changed_through之后的真实prompt/changed；每条新变更按其源位置取得目标scope的活动性，引用结果按实际提交内容生成。之后按当前引用的完整 scope 分组。branch scope 保留；turn scope 查询该 ID 的最近 start/end，并检查相关 branch/start 是否晚于 Set；task scope 查询该完整 scope 的最近 started/ended。
+2. 点读最后一条prompt/changed；晚于changed_through时只补这一条，并要求previous与当前revision一致。串行采用在引用保存发布后才允许下一次采用；版本链不匹配明确报错，不分页补旧历史。生产者保证已提交Set的scope在采用时合法，不重新证明历史活动性。之后按当前引用的完整 scope 分组。branch scope 保留；turn scope 查询该 ID 的最近 end，并检查相关 branch/start 是否晚于 Set；task scope 只查询该完整 scope 的最近 ended。已采用Set保证开始时合法，没有之后的ended/reset即可保留。
 3. 某 scope 的 ended 或 branch/start 重置位置晚于 Set，旧 Set 永久失效，即使同 ID 后来再次 started；不得复活。仍有效的引用保留。新采用的活动性则看 started/end 中较新者，不能把旧 Set 的有效性判断与“现在能否采用新 Set”混为一个条件。
 4. 当前 K 个有效引用分组到 G 个原 changed 事件，沿用 `Fields(data.changes[原下标].entry)`，每个事件1次 query。同一事件的多个下标合并，不取其它元素。外置 changes 直接按 locator 读取；内联小数组解析量按原格式4KiB阈值计。
 5. 发现尚未处理的 scope 结束，按原规则完成必要退役并同批保存引用。普通已结算冷读不写结果。新提交来源按原 Dispatcher 顺序交接。
 
-不能查询 source_through 之后的全部 turn/scope 历史；需要的是已知 scope 的最近边界。两个 scope 的 started/ended 查找必须使用[完整 scope 索引](appserver/timeline-state-read-indexes.md)，不是 `kind=context/scope LIMIT1` 后逐条筛选。related branch/start 查询按分支类型/位置定位，同一分支只查一次并复用标量。
+不能查询 source_through 之后的全部 turn/scope 历史；需要的是已知 scope 的最近边界。scope 的 ended 查找以及新采用所需的 started/ended 查找必须使用[完整 scope 索引](appserver/timeline-state-read-indexes.md)，不是 `kind=context/scope LIMIT1` 后逐条筛选。related branch/start 查询按分支类型/位置定位，同一分支只查一次并复用标量。
 
 turns/tasks 不是异步 load、Pending、TaskTracker。后者在重载时取消/丢弃，不重启旧加载；新 opening 按原 InitialPromptConfiguration 重新加载当前源，与已采用条目逐目标比较。旧已采用正文在新结果成功提交前仍有效，加载不等于采用。异常 scope 的 owner 写出 ended 后，Prompt 消费其结束，不自行猜测任务已失败。
 
@@ -70,11 +70,11 @@ scope 结束/interrupt 的 handler 及时取消受影响加载。scope 退役需
 
 ## 5. 查询量、计算量、事件数
 
-单分支有 K 个有效条目、分布于 G 个 changed 事件；这些引用涉及 T 个 turn scope、A 个 task scope、R 个重置分支。正常恢复为 `3 + G + 2T + 2A + R` 次逻辑 query。前2次是引用与配置，另1次是提示变更后缀检查；它有明确位置下界。G次元素查询解码K个 PromptEntry；每个生命周期查询至多返回一个标量边界。无scope、一个branch提示时为4次查询；提示正文重新加载1份，不遍历旧 turns 或 changed。旧 v1 的格式边界解码可能仍读其较大旧记录，单列兼容成本。
+单分支有 K 个有效条目、分布于 G 个 changed 事件；这些引用涉及 T 个 turn scope、A 个 task scope、R 个重置分支。正常恢复为 `3 + G + T + A + R` 次逻辑 query。前2次是引用与配置，另1次是提示变更后缀检查；它有明确位置下界。G次元素查询解码K个 PromptEntry；每个生命周期查询至多返回一个标量边界。无scope、一个branch提示时为4次查询；提示正文重新加载1份，不遍历旧 turns 或 changed。旧 v1 的格式边界解码可能仍读其较大旧记录，单列兼容成本。
 
 普通聊天/Goal 自动执行一轮、没有 turn/task 作用域提示：引用结果0，turn start/end 只更新内存。一个 Context/State 提示变化：原 changed1+必要输入1+引用结果1；只改变 model/tools：原 configured1，Prompt 结果0。一个有效 scope 提示退役：原退役输入1+引用结果1；scope 没条目：0。System 提示变化需要原 configured1，引用结果仍只1份。
 
-采用比较只访问本次目标的已有值；scope 结束只访问该 scope 当前引用；保存时才序列化K条引用，不复制K份 body。恢复只解码有效内容，System 在确实需要重建时拼接一次。
+采用比较只访问本次目标的已有值；scope 结束只访问该 scope 当前引用；保存时才序列化K条引用，不复制K份 body。恢复只解码已保存当前引用指向的条目；发现已结束scope时退役相应引用，不读取其它历史条目。System 在确实需要重建时拼接一次。
 
 ## 6. 必要落点与 Requirements raised to mechanism owners
 
@@ -92,7 +92,7 @@ scope 结束/interrupt 的 handler 及时取消受影响加载。scope 退役需
 
 ## 7. 验收、Rule check 与删减
 
-覆盖同事件 Set/Revoke 顺序、仅 Revoke 的 revision、scope 结束再启动不复活、branch/start重置、同值刷新零写入、仅模型配置变化零引用写入、采用后引用保存前崩溃、scope 退役崩溃、fork、装配期采用与并发 load/unload。现有 v1 与没有结果的旧数据明确初始化一次；旧历史初始化不属于正常读取，也不在 getter 静默执行。
+覆盖同事件 Set/Revoke 顺序、仅 Revoke 的 revision、scope 结束再启动不复活、branch/start重置、同值刷新零写入、仅模型配置变化零引用写入、采用后引用保存前崩溃、scope 退役崩溃、fork、装配期采用与并发 load/unload。现有 v1 引用直接读取；没有引用但有多条旧changed的分支要求显式迁移。只有一条changed且previous为空时，First/Last元数据定位确认唯一，按首个采用提交后的崩溃缺口补这一条，不分页。迁移最多保存一份现有v2引用结果；正常装配、resume和getter均不得执行旧历史初始化，也不能把旧自定义State/Context默认为空。
 
 | 规则 | 本设计 |
 | --- | --- |
@@ -104,3 +104,13 @@ scope 结束/interrupt 的 handler 及时取消受影响加载。scope 退役需
 | §4 9 | 只保存未来采用需要的当前引用和真实版本 |
 
 删减：去掉 turns/tasks/configuration_event/source_through 的持久副本、无条目 turn/end 的全量 clone、逐回调恢复结果、五处历史重建。不引入 QueryRows、Reader、全文缓存或任务恢复。
+
+## 显式旧引用迁移入口
+
+owner 提供 `migrate_prompt_references(Arc<Timeline>) -> Result<bool>`，仅用于独占持有的离线 Timeline。停止持有目标数据库的 daemon 后执行：
+
+~~~sh
+cargo run --locked -p xtask -- migrate-prompt-references DB SESSION BRANCH
+~~~
+
+工具独占打开原数据库，只装载目标分支 Timeline 与目录祖先截止，不创建 Session、挂载插件或执行 PromptHost。已有有效引用或没有旧采用的分支写入0条；旧无引用历史显式投影后最多写1条现有 prompt-state/v2 引用结果，等待提交再退出。重复执行不重复写入。正常 attach、getter、resume 不调用此入口。唯一一条 changed 且 previous 为空的首次采用崩溃间隙仍由正常恢复补齐，不被当作多条旧历史迁移。

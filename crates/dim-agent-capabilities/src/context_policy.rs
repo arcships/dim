@@ -261,7 +261,7 @@ pub(crate) struct View {
 /// projected on it, or why the committed result cannot be adopted.
 pub(crate) struct Compacted {
     pub fact: Arc<AgentEvent>,
-    pub request: Option<Result<Arc<ModelRequest>, HostError>>,
+    pub request: Option<Result<(Arc<ModelRequest>, f64), HostError>>,
 }
 
 pub(crate) struct PreparedRequest {
@@ -1126,153 +1126,174 @@ impl ContextPolicy {
             }
             preliminary = Some((model, evidence));
         }
-        let streamed = self
+        let mut streamed = self
             .history
             .rendered_stream(&self.timeline, source.through, 256)
             .await
             .map_err(|error| HostError::failed(error.to_string()))?;
-        if let Some(usage) = usage {
-            usage
-                .initialize_from_history(source.through, &streamed, request.clone(), cancel.clone())
-                .await?;
-        }
         let boundary = streamed.history.last().map(|entry| entry.id.clone());
         let context = PolicyContext::from_stream(&streamed);
         let original = request.clone();
         let view = self
-            .view(request, context, streamed.history, source.through, reusable)
-            .await?;
-        let prepared_through = view
-            .adopted
-            .as_ref()
-            .map_or(source.through, |(sequence, _)| *sequence);
-        let prepared_compaction = view.adopted.as_ref().map(|(_, id)| id.clone());
-        let (model, evidence) = match preliminary {
-            Some(preliminary) if Arc::ptr_eq(&original, &view.prepared) => preliminary,
-            _ => {
-                let model = self
-                    .resolver
-                    .resolve(view.prepared.clone(), cancel.clone())
-                    .await?;
-                check_cancel(&cancel)?;
-                let evidence = match usage {
-                    Some(usage) => {
-                        usage
-                            .reference(
-                                source,
-                                prepared_through,
-                                &view.prepared,
-                                prepared_compaction.as_deref(),
-                                cancel.clone(),
-                            )
-                            .await?
-                    }
-                    None => None,
-                };
-                (model, evidence)
-            }
-        };
-        let estimate = evidence
-            .as_ref()
-            .and_then(|evidence| evidence.estimate(model.as_ref()))
-            .unwrap_or_else(|| Self::local_estimate(&view.prepared, model.as_ref()));
-        self.record_budget(source, boundary, &estimate, model.as_ref())?;
-        let provider_budget = source.recovery.clone().or_else(|| {
-            (estimate.input > input_budget(model.as_ref())).then(|| ProviderOutputBudgetFacts {
-                input_tokens: estimate.input,
-                context_window: model.context_window(),
-                requested_max_tokens: model.output_tokens(),
-                allowed_max_tokens: (model.context_window() - estimate.input).max(0.),
-                ratio: 1.,
-            })
-        });
-        let recovery = provider_budget.is_some();
-        if !recovery && estimate.input < model.threshold_tokens() {
-            return Ok(PreparedRequest {
-                request: view.prepared,
-                estimate: Some(crate::context_usage::PreparedEstimate::new(
-                    estimate,
-                    model.as_ref(),
-                )),
-            });
-        }
-        if !recovery
-            && !match numeric_regrowth {
-                Some(regrown) => regrown,
-                None => self.regrown(&view, model.as_ref()).await?,
-            }
-        {
-            return Ok(PreparedRequest {
-                request: view.prepared,
-                estimate: Some(crate::context_usage::PreparedEstimate::new(
-                    estimate,
-                    model.as_ref(),
-                )),
-            });
-        }
-        let step = CompactionStep {
-            turn_id: Some(source.turn_id.clone()),
-            request_id: Some(source.request_id.clone()),
-            command: None,
-            through: source.through,
-            trigger: if recovery {
-                CompactionTrigger::ProviderOutputBudgetExhausted
-            } else {
-                CompactionTrigger::Threshold
-            },
-            provider_budget,
-        };
-        let compacted = self
-            .compact_step(
-                step,
-                &view,
-                model.clone(),
-                &estimate,
-                cancel.clone(),
-                cancelled,
+            .view(
+                request,
+                context,
+                std::mem::take(&mut streamed.history),
+                source.through,
+                reusable,
             )
             .await?;
-        check_cancel(&cancel)?;
-        let EventKind::ContextCompaction(data) = &compacted.fact.kind else {
-            unreachable!("a compaction step commits a compaction")
-        };
-        match (&data.outcome, compacted.request) {
-            (_, Some(request)) => {
-                let request = request?;
-                let input = model.count_tokens(&request);
-                if recovery && input > input_budget(model.as_ref()) {
-                    return Err(recovery_overflow(&data.outcome, model.as_ref(), &view));
+        let prepared = async {
+            let prepared_through = view
+                .adopted
+                .as_ref()
+                .map_or(source.through, |(sequence, _)| *sequence);
+            let prepared_compaction = view.adopted.as_ref().map(|(_, id)| id.clone());
+            let (model, evidence) = match preliminary {
+                Some(preliminary) if Arc::ptr_eq(&original, &view.prepared) => preliminary,
+                _ => {
+                    let model = self
+                        .resolver
+                        .resolve(view.prepared.clone(), cancel.clone())
+                        .await?;
+                    check_cancel(&cancel)?;
+                    let evidence = match usage {
+                        Some(usage) => {
+                            usage
+                                .reference(
+                                    source,
+                                    prepared_through,
+                                    &view.prepared,
+                                    prepared_compaction.as_deref(),
+                                    cancel.clone(),
+                                )
+                                .await?
+                        }
+                        None => None,
+                    };
+                    (model, evidence)
                 }
-                Ok(PreparedRequest {
-                    request,
+            };
+            let estimate = evidence
+                .as_ref()
+                .and_then(|evidence| evidence.estimate(model.as_ref()))
+                .unwrap_or_else(|| Self::local_estimate(&view.prepared, model.as_ref()));
+            self.record_budget(source, boundary, &estimate, model.as_ref())?;
+            let provider_budget = source.recovery.clone().or_else(|| {
+                (estimate.input > input_budget(model.as_ref())).then(|| ProviderOutputBudgetFacts {
+                    input_tokens: estimate.input,
+                    context_window: model.context_window(),
+                    requested_max_tokens: model.output_tokens(),
+                    allowed_max_tokens: (model.context_window() - estimate.input).max(0.),
+                    ratio: 1.,
+                })
+            });
+            let recovery = provider_budget.is_some();
+            if !recovery && estimate.input < model.threshold_tokens() {
+                return Ok(PreparedRequest {
+                    request: view.prepared.clone(),
                     estimate: Some(crate::context_usage::PreparedEstimate::new(
-                        Estimate {
-                            input,
-                            source: BaselineSource::FullEstimate,
-                            baseline: None,
-                            delta: None,
-                        },
+                        estimate,
                         model.as_ref(),
                     )),
-                })
+                });
             }
-            (ContextCompactionResult::Cancelled { reason }, _) => {
-                Err(HostError::Cancelled(reason.clone()))
+            if !recovery
+                && !match numeric_regrowth {
+                    Some(regrown) => regrown,
+                    None => self.regrown(&view, model.as_ref()).await?,
+                }
+            {
+                return Ok(PreparedRequest {
+                    request: view.prepared.clone(),
+                    estimate: Some(crate::context_usage::PreparedEstimate::new(
+                        estimate,
+                        model.as_ref(),
+                    )),
+                });
             }
-            (ContextCompactionResult::Failed { error, .. }, _) if recovery => {
-                Err(HostError::failed(error.clone()))
+            let step = CompactionStep {
+                turn_id: Some(source.turn_id.clone()),
+                request_id: Some(source.request_id.clone()),
+                command: None,
+                through: source.through,
+                trigger: if recovery {
+                    CompactionTrigger::ProviderOutputBudgetExhausted
+                } else {
+                    CompactionTrigger::Threshold
+                },
+                provider_budget,
+            };
+            let compacted = self
+                .compact_step(
+                    step,
+                    &view,
+                    model.clone(),
+                    &estimate,
+                    cancel.clone(),
+                    cancelled,
+                )
+                .await?;
+            check_cancel(&cancel)?;
+            let EventKind::ContextCompaction(data) = &compacted.fact.kind else {
+                unreachable!("a compaction step commits a compaction")
+            };
+            match (&data.outcome, compacted.request) {
+                (_, Some(request)) => {
+                    let (request, input) = request?;
+                    if recovery && input > input_budget(model.as_ref()) {
+                        return Err(recovery_overflow(&data.outcome, model.as_ref(), &view));
+                    }
+                    Ok(PreparedRequest {
+                        request,
+                        estimate: Some(crate::context_usage::PreparedEstimate::new(
+                            Estimate {
+                                input,
+                                source: BaselineSource::FullEstimate,
+                                baseline: None,
+                                delta: None,
+                            },
+                            model.as_ref(),
+                        )),
+                    })
+                }
+                (ContextCompactionResult::Cancelled { reason }, _) => {
+                    Err(HostError::Cancelled(reason.clone()))
+                }
+                (ContextCompactionResult::Failed { error, .. }, _) if recovery => {
+                    Err(HostError::failed(error.clone()))
+                }
+                (ContextCompactionResult::Skipped { reason, .. }, _) if recovery => Err(
+                    HostError::failed(format!("Context recovery could not compact: {reason}")),
+                ),
+                _ => Ok(PreparedRequest {
+                    request: view.prepared.clone(),
+                    estimate: Some(crate::context_usage::PreparedEstimate::new(
+                        estimate,
+                        model.as_ref(),
+                    )),
+                }),
             }
-            (ContextCompactionResult::Skipped { reason, .. }, _) if recovery => Err(
-                HostError::failed(format!("Context recovery could not compact: {reason}")),
-            ),
-            _ => Ok(PreparedRequest {
-                request: view.prepared,
-                estimate: Some(crate::context_usage::PreparedEstimate::new(
-                    estimate,
-                    model.as_ref(),
-                )),
-            }),
         }
+        .await?;
+        if view.adopted.is_none()
+            && Arc::ptr_eq(&prepared.request, &view.prepared)
+            && let Some(usage) = usage
+            && usage
+                .initialize_from_history(
+                    source.through,
+                    &view.history,
+                    &streamed,
+                    prepared.request.clone(),
+                    cancel.clone(),
+                )
+                .await?
+        {
+            usage
+                .reference(source, source.through, &prepared.request, None, cancel)
+                .await?;
+        }
+        Ok(prepared)
     }
 
     /// The one compaction path, for the automatic trigger in preparation and
@@ -1651,7 +1672,7 @@ impl ContextPolicy {
                 let (request, tokens) =
                     view.compacted(model.as_ref(), kept, replacement, context_baseline);
                 view.check_compacted(model.as_ref(), tokens)
-                    .map(|()| request)
+                    .map(|()| (request, tokens))
                     .map_err(HostError::failed)
             }
             Err(error) => Err(error),

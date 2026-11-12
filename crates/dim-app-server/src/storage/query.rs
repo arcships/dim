@@ -1691,6 +1691,57 @@ fn wire_at(
     serde_json::from_str(&encoded).map_err(error)
 }
 
+fn selected_wires(
+    connection: &Connection,
+    scope: &TimelineReadScope,
+    positions: &[(usize, u64)],
+    #[cfg(feature = "testing")] statistics: &Statistics,
+) -> Result<Vec<WireEvent>> {
+    let mut parameters = vec![SqlValue::Text(scope.key.session_id.clone())];
+    let wanted = positions
+        .iter()
+        .enumerate()
+        .map(|(index, &(ordinal, sequence))| {
+            parameters.push(SqlValue::Text(scope.segments[ordinal].branch_id.clone()));
+            parameters.push(SqlValue::Integer(sequence as i64));
+            format!("({index},?{},?{})", parameters.len() - 1, parameters.len())
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "WITH wanted(ord,branch,seq) AS (VALUES {wanted})
+         SELECT CASE json_extract(e.body,'$.encoding') WHEN 'event' THEN
+           json_remove(json_extract(e.body,'$.record'),'$.trace') ELSE
+           json_remove(json_set(json_extract(e.body,'$.records['||(w.seq-e.sequence)||']'),
+             '$.event.data.turn_id',json_extract(e.body,'$.turn_id'),
+             '$.event.data.request_id',json_extract(e.body,'$.request_id')),'$.trace') END
+         FROM wanted w JOIN timeline_events e ON e.session_id=?1 AND e.branch_id=w.branch
+           AND e.sequence=(SELECT p.sequence FROM timeline_events p
+             WHERE p.session_id=?1 AND p.branch_id=w.branch AND p.sequence<=w.seq
+               AND p.last_sequence>=w.seq ORDER BY p.sequence DESC LIMIT 1)
+         ORDER BY w.ord"
+    );
+    let mut statement = connection.prepare(&sql).map_err(error)?;
+    let wires = statement
+        .query_map(params_from_iter(&parameters), |row| row.get::<_, String>(0))
+        .map_err(error)?
+        .map(|encoded| serde_json::from_str(&encoded.map_err(error)?).map_err(error))
+        .collect::<Result<Vec<_>>>()?;
+    #[cfg(feature = "testing")]
+    record_statement(
+        statistics,
+        connection,
+        &statement,
+        &sql,
+        &parameters,
+        "selected_events",
+    )?;
+    if wires.len() != positions.len() {
+        return Err(error("selected event is missing from its stored interval"));
+    }
+    Ok(wires)
+}
+
 fn safe_filter(filter: &QueryFilter) -> Option<QueryFilter> {
     fn safe(operand: &QueryOperand) -> bool {
         match operand {
@@ -2432,6 +2483,7 @@ fn selected_properties(
     scope: &TimelineReadScope,
     positions: &[(usize, u64)],
     fields: &[&str],
+    expand_outputs: bool,
     #[cfg(feature = "testing")] statistics: &Statistics,
 ) -> Result<Vec<Vec<QueryValue>>> {
     let mut compiler = Compiler {
@@ -2445,7 +2497,7 @@ fn selected_properties(
         text_candidates: Vec::new(),
         prefixes: Vec::new(),
         direct_relations: false,
-        expand_outputs: true,
+        expand_outputs,
         physical_candidates: None,
         physical_ids: None,
         physical_kinds: None,
@@ -2926,6 +2978,7 @@ pub(super) fn execute(
                 scope,
                 batch,
                 &inline_fields,
+                compiler.expand_outputs,
                 #[cfg(feature = "testing")]
                 statistics,
             )?;
@@ -2933,6 +2986,19 @@ pub(super) fn execute(
         }
     }
     let mut properties = properties.into_iter();
+    let stored_events = if matches!(query.select, QuerySelect::Events) {
+        positions
+            .iter()
+            .filter(|&&(ordinal, sequence, _, _)| {
+                sequence <= scope.segments[ordinal].stored_through
+            })
+            .map(|&(ordinal, sequence, _, _)| (ordinal, sequence))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut batches = stored_events.chunks(128);
+    let mut wires = Vec::new().into_iter();
     for (ordinal, sequence, total, group) in positions {
         cancelled(cancel)?;
         let segment = &scope.segments[ordinal];
@@ -2992,7 +3058,19 @@ pub(super) fn execute(
                 let event = if let Some(event) = tail {
                     (*event).clone()
                 } else {
-                    let mut wire = wire_at(connection, scope, ordinal, sequence)?;
+                    if wires.len() == 0 {
+                        wires = selected_wires(
+                            connection,
+                            scope,
+                            batches.next().expect("stored event batch"),
+                            #[cfg(feature = "testing")]
+                            statistics,
+                        )?
+                        .into_iter();
+                    }
+                    let mut wire = wires
+                        .next()
+                        .expect("selected wires preserve stored position order");
                     loop {
                         cancelled(cancel)?;
                         match reader.decode(connection, &scope.key.session_id, wire)? {

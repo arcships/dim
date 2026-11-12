@@ -15,8 +15,14 @@ hello 在协议 v3 公布 session.history.display 和 session.history.detail。�
 
 | 方法 | 请求 | 回复 |
 | --- | --- | --- |
-| session.history.display | 原 session/branch、latestTurn/before、through、limit | items、through、nextBefore、done、可选 turnStart；窗口位置语义不变。 |
+| session.history.display | 原 session/branch、latestTurn/before、through、limit；可协商的 tail | items、through、nextBefore、done、可选 turnStart。 |
 | session.history.detail | sessionId、branchId、eventId、sequence | eventId、sequence、data；data 为完整 ContextCompactionData。 |
+
+`session.history.display.tail` 公布后，客户端在显示读取传 `tail=true`。它与 `latestTurn`、`after` 互斥，只选择固定已发布 `through` 以下最近的有界序号窗口。初始页不查询 turn 起点、首个请求或 consumed 输入；后续 `before` 仍为排他上界。显示页允许在原子批次内结束，不扩张到整批。当前控制状态由 owner inventories 和实时通知提供；显示页不恢复它们。旧 history、显式 latestTurn 和导出的原子批次合同不变。旧服务器仍使用已有有界读取，不全量回退。
+
+历史 context/configured 不进入 tail。attach 的模型配置及其后实时配置按自己的 model_through 交接，不能因配置序号已被聊天窗口覆盖而丢弃。工具起点不在窗口时保留调用身份/结果，完整参数按详情需要点读，不为首屏补齐旧工具输入。
+
+压缩事件先按 kind 和窗口范围定位，再一次提取状态及摘要字段；不能在普通事件候选和摘要筛选中重复解析大正文。completed 使用下面的摘要，其他结果保留原产品事件。字段投影必须保留 Missing 与 null 的原语义；不外置压缩正文、不新增格式或缓存。
 
 完成压缩摘要：
 
@@ -42,7 +48,7 @@ detail 只读本分支已发布且身份、sequence 同时匹配的完成压缩�
 
 ## 3. 窗口与数据读取
 
-1. 沿用既有窗口固定 through、批次端点和原始位置游标。
+1. 固定 through 和原始位置游标。协商 tail 的显示页按位置取最近窗口，端点不要求完整批次；旧显式 latestTurn 保持原约定。
 2. 在正文解码前按同一 ProductEvent 可见性规则选类型；隐藏 model/call、context/prepare 和私有事实不加载请求正文。
 3. 完成压缩只取摘要字段，不在客户端丢弃已传输的 replacement。
 4. 按实际编码字节执行原窗口预算；隐藏位置保留内部零载荷位置项，仍推进游标，不伪造事件。
@@ -51,7 +57,7 @@ detail 只读本分支已发布且身份、sequence 同时匹配的完成压缩�
 
 摘要字段仍位于同一存储事件 JSON。该物理行的读取和 SQLite JSON 解析计入服务端成本；本次不增加摘要表、不外置整个 compaction、不承诺摘要点读只触碰几个字节。确定减少的是 replacement 网络传输、客户端解码和折叠视图内存。隐藏请求的外置消息节点加载必须为零。
 
-普通大消息、工具结果和大原子批次沿用既有完整历史预算及传输错误，不擅自扩展成另一套摘要。导出始终使用完整事实。
+普通大消息和工具结果保持完整对象；显示按小批读取并编码，达到页字节目标即停止，不为原子批次扩张。单对象超过帧预算返回原传输错误，不引入另一套摘要。导出始终使用完整事实。
 
 ## 4. 客户端与交互
 

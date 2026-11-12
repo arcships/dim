@@ -121,7 +121,13 @@ impl Connection {
         rpc: &RpcService,
         params: History,
         display: bool,
+        tail: bool,
     ) -> Result<Reply, RpcError> {
+        if tail && (params.latest_turn || params.after.is_some()) {
+            return Err(RpcError::invalid(
+                "tail cannot be combined with latestTurn or after",
+            ));
+        }
         if params.latest_turn && params.after.is_some() {
             return Err(RpcError::invalid(
                 "latestTurn and after are mutually exclusive",
@@ -133,17 +139,19 @@ impl Connection {
         if params.before == Some(0) {
             return Err(RpcError::invalid("before must be at least 1"));
         }
-        if params.latest_turn && params.limit.is_some_and(|limit| limit > HISTORY_TURN_LIMIT) {
+        if (params.latest_turn || tail)
+            && params.limit.is_some_and(|limit| limit > HISTORY_TURN_LIMIT)
+        {
             return Err(RpcError::invalid(format!(
                 "latestTurn limit must be between 1 and {HISTORY_TURN_LIMIT}"
             )));
         }
-        let limit = if params.latest_turn {
+        let limit = if params.latest_turn || tail {
             params.limit.unwrap_or(HISTORY_TURN_LIMIT)
         } else {
             params.limit.unwrap_or(HISTORY_PAGE_LIMIT)
         };
-        let window = params.latest_turn || params.before.is_some();
+        let window = tail || params.latest_turn || params.before.is_some();
         if window && !rpc.index.has_session_store() {
             return Err(RpcError::invalid(
                 "history windows require the native Session store",
@@ -220,7 +228,11 @@ impl Connection {
             } else {
                 HistoryRead::Open(&session, self.protocol_version())
             };
-            let reply = window_at(&read, branch, before, limit, through, turn, display).await;
+            let reply = if tail {
+                display_tail(&read, branch, before, limit, through).await
+            } else {
+                window_at(&read, branch, before, limit, through, turn, display).await
+            };
             // The owner is chosen before the read: a line that ends in between
             // answers `BranchEnded`, and the tree serves the same request at its
             // fixed head.
@@ -231,16 +243,12 @@ impl Connection {
                         .as_ref()
                         .is_some_and(|data| data.app_error == "branch_ended") =>
                 {
-                    window_at(
-                        &HistoryRead::Ended(&tree, self.protocol_version()),
-                        branch,
-                        before,
-                        limit,
-                        through,
-                        turn,
-                        display,
-                    )
-                    .await
+                    let ended = HistoryRead::Ended(&tree, self.protocol_version());
+                    if tail {
+                        display_tail(&ended, branch, before, limit, through).await
+                    } else {
+                        window_at(&ended, branch, before, limit, through, turn, display).await
+                    }
                 }
                 other => other,
             };
@@ -1060,6 +1068,50 @@ async fn window_at(
     history_window(read, branch, events, through, turn).await
 }
 
+async fn display_tail(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    before: u64,
+    limit: usize,
+    through: u64,
+) -> Result<wire::HistoryResult, RpcError> {
+    let top = before.saturating_sub(1).min(through);
+    let low = top.saturating_sub(limit.saturating_sub(1) as u64).max(1);
+    let mut next = top;
+    let mut bytes = 0;
+    let mut kept = Vec::new();
+    'page: while next >= low && next > 0 {
+        let start = next.saturating_sub(7).max(low);
+        let items = window_items(read, branch, start, next, true, false).await?;
+        for item in items.into_iter().rev() {
+            if item.bytes > REPLY_FRAME_BYTES {
+                return Err(RpcError::app(
+                    -32000,
+                    "history_too_large",
+                    "A display event exceeds the reply frame budget",
+                ));
+            }
+            if bytes > 0 && bytes + item.bytes > HISTORY_TURN_BYTES {
+                break 'page;
+            }
+            bytes += item.bytes;
+            kept.push(item);
+        }
+        next = start - 1;
+    }
+    kept.reverse();
+    let next_before = kept.first().map(|item| item.sequence);
+    let next_after = kept.last().map_or(through, |item| item.sequence);
+    Ok(wire::HistoryResult {
+        events: kept.into_iter().filter_map(|item| item.event).collect(),
+        through,
+        next_after,
+        done: next_before.is_none_or(|sequence| sequence <= 1),
+        next_before,
+        turn_start: None,
+    })
+}
+
 /// The newest events below `before` inside `window_start..=through`
 /// (session-history-window §4.2), read through the loaded line's query or the
 /// tree's stored read. The page ends at the newest batch end at or below
@@ -1091,7 +1143,7 @@ async fn window_page(
         .max(1)
         .max(window_start);
     let low = batch_start(read, branch, low, window_start).await?;
-    window_items(read, branch, low, end, display).await
+    window_items(read, branch, low, end, display, true).await
 }
 
 /// The greatest atomic-batch end at or below `top`, searching no lower than
@@ -1139,6 +1191,7 @@ async fn window_items(
     low: u64,
     end: u64,
     display: bool,
+    configuration: bool,
 ) -> Result<Vec<HistoryItem>, RpcError> {
     let limit = end.saturating_sub(low).saturating_add(1).max(1);
     let filter = if display {
@@ -1146,7 +1199,16 @@ async fn window_items(
             conditions: vec![
                 wire::ProductEvent::query_filter(),
                 QueryFilter::Not {
-                    condition: Box::new(completed_compaction()),
+                    condition: Box::new(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: if configuration {
+                            vec!["context/compaction".into()]
+                        } else {
+                            vec!["context/compaction".into(), "context/configured".into()]
+                        },
+                    }),
                 },
             ],
         }
@@ -1199,7 +1261,12 @@ async fn window_items(
                     through: Some(end),
                     include_publishing: false,
                     query: QuerySpec {
-                        filter: Some(completed_compaction()),
+                        filter: Some(QueryFilter::In {
+                            value: QueryOperand::Field {
+                                path: "kind".into(),
+                            },
+                            values: vec!["context/compaction".into()],
+                        }),
                         select: QuerySelect::Fields {
                             fields: [
                                 "id",
@@ -1208,6 +1275,7 @@ async fn window_items(
                                 "data.start",
                                 "data.strategy",
                                 "data.diagnostics.insufficientSpace",
+                                "data.status",
                             ]
                             .map(String::from)
                             .to_vec(),
@@ -1227,9 +1295,17 @@ async fn window_items(
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("display selects summary fields")
         };
+        let mut other = Vec::new();
         for row in rows {
-            let [id, sequence, create_at, start, strategy, insufficient_space]: [_; 6] =
-                row.values.try_into().expect("compaction summary fields");
+            let [
+                id,
+                sequence,
+                create_at,
+                start,
+                strategy,
+                insufficient_space,
+                status,
+            ]: [_; 7] = row.values.try_into().expect("compaction summary fields");
             let value = |value| match value {
                 QueryValue::Value { value } => value,
                 _ => unreachable!("required compaction summary field"),
@@ -1239,6 +1315,10 @@ async fn window_items(
                 QueryValue::Value { value } => Some(value),
                 _ => unreachable!("scalar compaction summary field"),
             };
+            if value(status) != "completed" {
+                other.push(value(id));
+                continue;
+            }
             let item = wire::CompactionItem {
                 id: serde_json::from_value(value(id)).expect("event id"),
                 sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
@@ -1258,6 +1338,44 @@ async fn window_items(
                 bytes: encoded.get().len(),
                 event: Some(encoded),
             });
+        }
+        if !other.is_empty() {
+            let reply = read
+                .query(
+                    branch,
+                    TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from: Some(TimelinePosition {
+                            branch_id: branch.into(),
+                            sequence: low,
+                        }),
+                        through: Some(end),
+                        include_publishing: false,
+                        query: QuerySpec {
+                            filter: Some(QueryFilter::In {
+                                value: QueryOperand::Field { path: "id".into() },
+                                values: other,
+                            }),
+                            select: QuerySelect::Events,
+                            group_by: vec![],
+                            pick: None,
+                            order_by: vec![],
+                        },
+                        page: Some(QueryPage {
+                            limit: std::num::NonZeroU64::new(limit).unwrap(),
+                            after: None,
+                        }),
+                    },
+                )
+                .await
+                .map_err(history_error)?;
+            let QueryOutput::Events { events } = reply.result else {
+                unreachable!("compaction events")
+            };
+            visible.extend(history_items(
+                events.into_iter().map(|event| event.event).collect(),
+                version,
+            )?);
         }
         visible.sort_unstable_by_key(|item| item.sequence);
     }
@@ -1455,7 +1573,7 @@ async fn forward_page(
         }
     }
     let items = if end > after {
-        window_items(read, branch, after + 1, end, display).await?
+        window_items(read, branch, after + 1, end, display, true).await?
     } else {
         Vec::new()
     };

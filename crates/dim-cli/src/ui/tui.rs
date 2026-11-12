@@ -2083,6 +2083,8 @@ impl App {
                 self.snapshot = Some(*snapshot);
                 self.refresh_compactions();
                 self.refresh_cards();
+                self.refresh_tool_origins();
+                self.sync_tool_origins();
                 if self.running() && !was_running {
                     self.run_started = Some(Instant::now());
                     self.last_pulse = 0;
@@ -4041,6 +4043,100 @@ impl App {
         }
     }
 
+    fn sync_tool_origins(&self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if row.kind != RowKind::ToolCall || !opens_group(&snapshot.rows, index) {
+                continue;
+            }
+            let rows = group_rows(&snapshot.rows, index);
+            if rows.iter().all(|call| {
+                call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+            }) {
+                continue;
+            }
+            let detail = self
+                .group_details
+                .get(&row.row_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    self.history
+                        .iter()
+                        .find_map(|block| match block {
+                            Block::ToolGroup(group) if group.source == row.row_id => {
+                                Some(group.detail)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(self.tool_detail)
+                });
+            if detail != Detail::Expanded {
+                continue;
+            }
+            for call in rows {
+                if call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+                {
+                    continue;
+                }
+                if let (Some(request_id), Some(call_id)) = (&call.batch, &call.call_id) {
+                    self.host.send(Command::ToolOrigin {
+                        session_id: snapshot.session_id.clone(),
+                        projection_id: snapshot.projection_id,
+                        branch_id: snapshot.focus.clone(),
+                        request_id: request_id.clone(),
+                        call_id: call_id.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn refresh_tool_origins(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (index, block) in self.history.iter_mut().enumerate() {
+            let Block::ToolGroup(group) = block else {
+                continue;
+            };
+            if !group.awaiting_origins {
+                continue;
+            }
+            let Some(source) = snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == group.source)
+            else {
+                continue;
+            };
+            let rows = group_rows(&snapshot.rows, source);
+            if rows
+                .iter()
+                .filter(|row| {
+                    row.tool_lookup_done || row.tool_name.is_some() && row.tool_input.is_some()
+                })
+                .count()
+                != group.known_origins
+            {
+                *group = project_group(&rows, group.detail);
+                changed.push(index + self.dropped);
+            }
+        }
+        if !changed.is_empty() {
+            for index in changed {
+                self.mark_rewritten(index);
+            }
+            self.request_reflow();
+        }
+    }
+
     fn release_compaction_details(&mut self) {
         if let Some((projection_id, _)) = self.compaction_targets.take() {
             self.host.send(Command::CompactionDetails {
@@ -4391,6 +4487,7 @@ impl App {
         }
         self.request_reflow();
         self.sync_compaction_details();
+        self.sync_tool_origins();
         if let Some(error) =
             crate::ui::config::write(&self.home, TOOL_DETAILS_KEY, detail.label().into())
         {
@@ -6343,6 +6440,7 @@ impl App {
                     .copied()
                     .unwrap_or(self.tool_detail);
                 self.group_details.insert(first.clone(), current.next());
+                self.sync_tool_origins();
                 return true;
             }
             return false;
@@ -6373,6 +6471,7 @@ impl App {
         }
         self.mark_rewritten(id);
         self.sync_compaction_details();
+        self.sync_tool_origins();
         true
     }
 

@@ -104,8 +104,10 @@ the directory usable and reports the failure for that selection.
 ### Opening a conversation with a bounded window
 
 CLI main, line mode, branch side panels, member conversations and ACP load/resume
-open with `session.history {latestTurn: true, limit: 64}`. They show the first page
-containing transcript rows, keeping that whole atomic page and its fixed `through`.
+prefer `session.history.display {tail: true, limit: 64}` when the daemon advertises
+`session.history.display.tail`. Older daemons keep the existing bounded `latestTurn` window.
+The display tail has no whole-turn or atomic-batch expansion requirement. They show the first page
+containing transcript rows, keeping that wire page and its fixed `through`.
 If a page has no visible transcript rows, they continue backwards at the same head,
 up to four pages total. They do not fetch older messages to fill a 100-message quota.
 The capability name is `session.history.latestTurn`; it is not a separate RPC method.
@@ -121,9 +123,8 @@ After reading stops, the view applies a separate retention budget of 300 rows by
 dropping older whole wire pages. It always keeps the newest page and, when any
 transcript rows were found, the newest page containing them. These required pages
 remain whole even when they exceed 300 rows. The retention budget does not cause
-more pages to be read to reach 300 rows. Atomic batches remain whole; the view
-never invents a cursor inside a batch. An oversized batch follows the
-history protocol's byte limit and error contract.
+more pages to be read to reach 300 rows. The display tail may start or stop inside a committed batch; it never exposes uncommitted facts.
+Legacy raw history and export retain their own atomic-batch contract.
 
 The pages progress backwards; events within each page remain ascending. Clients
 prepend each older page, then project the collected window once in event order. Live events received
@@ -133,7 +134,15 @@ advances. `done` from `latestTurn` ends that turn window, not the branch's histo
 JSON exec emits live wire notifications and has no historical transcript; it reads
 one window page to pin the cursor without decoding historical event bodies.
 Earlier transcript is loaded only on user request. Export keeps its full fixed
-prefix. CLI/ACP reconnect catch-up starts from the last consumed cursor; Web replaces each opened transcript with a fresh bounded window.
+prefix. ACP reconnect replaces its internal projection with a fresh bounded window and
+reloads current owner inventories; it does not accumulate the missed suffix. It emits
+`_meta["dim/history"]` with `replace: true` on a configuration update so supporting
+clients can replace their loaded window. Standard ACP has no history-reset operation;
+the client's previously displayed messages remain client-owned. Web replaces each opened
+transcript with a fresh bounded window. A lost submit acknowledgement is resolved by
+submission id; reconnecting does not resubmit an input or recreate old execution state.
+The line CLI's live idle/configuration settlement reads events after its current cursor;
+this is execution-time catch-up, not cold history restoration.
 
 ```text
 attach -> latest 64-position page -> draw -> editable
@@ -146,8 +155,12 @@ The client retains only the initial window, its oldest `nextBefore` and its fixe
 head. It does not keep a second list of raw events after projection. A missing
 prefix is displayed as “earlier content not loaded”; it does not turn a partial
 reply into a complete reply. Tool results keep their call identity even when the
-start is outside the window; [ToolExecution’s origin read](tool-origin-read.md) supplies that call by identity instead
-of extending the transcript to find it. Neither an unresolved identity nor a
+start is outside the window. A missing origin renders as a tool result with that identity;
+[ToolExecution’s origin read](tool-origin-read.md) supplies complete arguments only when the user
+requests tool details. Native committed tool blocks retain their existing three rendered
+formats so previously displayed blocks can still switch detail after their source rows
+leave the current window; this change does not reduce that rendering or retained-block cost.
+Neither initial display nor owner-state readiness waits for origins. Neither an unresolved identity nor a
 single very long turn removes the four-page initial-read bound.
 
 A transcript window is not an inventory of running work. Before enabling controls,
@@ -163,6 +176,11 @@ absence from a missing start event in the window:
 | Background execution | Task identities, statuses and display fields required by the task panel; a completed task in the transcript is historical, an open task remains controllable even if its start is older. |
 | Delegations and branches | Current member/branch identities and unfinished delegations; read a selected member's transcript with its own window. |
 | Pending inputs | Unconsumed Queue/Steer input identities, modes and display content, excluding deleted inputs. |
+
+Ended branches remain directory entries but have no actionable inventories; clients read their
+transcript and details only when selected. Configuration updates use the attach configuration
+position independently of the transcript cursor, so a buffered configuration between attach and
+the window head is still adopted.
 
 The active-turn row and the last four rows raise requirements to InputQueue, Questions, BackgroundExec
 and Collaboration, plus Loop for current execution state, through the App Server. Each read must identify the branch and

@@ -60,12 +60,14 @@ impl InitialPromptConfiguration {
 }
 
 /// Rules and state enter the model context as inputs written with the change.
-fn context_rules(
-    before: &PromptSnapshot,
-    after: &PromptSnapshot,
-    changes: &[PromptChange],
-) -> Vec<InputBlock> {
-    context_changes(before, after, changes, false)
+fn context_rules(before: &PromptSnapshot, changes: &[PromptChange]) -> Vec<InputBlock> {
+    context_changes(before, changes, false)
+}
+
+/// Migrates legacy prompt adoptions to effective references on an exclusively held Timeline.
+/// Existing references and branches without adopted prompts write nothing.
+pub async fn migrate_prompt_references(timeline: Arc<Timeline>) -> Result<bool> {
+    recovery::migrate(&timeline).await
 }
 
 /// Result of [`Prompt::adopt_tools`].
@@ -414,7 +416,7 @@ impl Prompt {
                 Vec::new(),
                 None,
                 Some(tools),
-                |_, _, _| Vec::new(),
+                |_, _| Vec::new(),
                 |_| {
                     if cancel.is_cancelled() {
                         Err(AgentError::Cancelled("tool adoption superseded".into()))
@@ -637,7 +639,7 @@ impl Prompt {
         changes: Vec<PromptChange>,
         model: Option<ModelSelection>,
         tools: Option<ToolSetAdoption>,
-        inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
+        inputs: impl FnOnce(&PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()> + Send,
     ) -> Result<Option<u64>> {
         let sequence = {
@@ -1125,34 +1127,30 @@ impl Prompt {
     }
 }
 
-/// Input blocks that bring the rule and state changes from `before` to
-/// `after` into the model context, ordered by the entries' `order`. Entry
-/// bodies are final text: sources escape what comes from outside. A rule
-/// that leaves because its scope `ended` expires; otherwise it is revoked.
 fn context_changes(
     before: &PromptSnapshot,
-    after: &PromptSnapshot,
     adopted: &[PromptChange],
     ended: bool,
 ) -> Vec<InputBlock> {
-    let keys: BTreeSet<_> = adopted
-        .iter()
-        .map(|change| match change {
-            PromptChange::Set { entry } => (&entry.source, &entry.scope),
-            PromptChange::Revoke { source, scope } => (source, scope),
-        })
-        .collect();
+    let mut targets = BTreeMap::new();
+    for change in adopted {
+        match change {
+            PromptChange::Set { entry } => {
+                targets.insert((&entry.source, &entry.scope), Some(entry));
+            }
+            PromptChange::Revoke { source, scope } => {
+                targets.insert((source, scope), None);
+            }
+        }
+    }
     let mut changes = Vec::new();
-    for (source, scope) in keys {
+    for ((source, scope), new) in targets {
         let key = (source.clone(), scope.clone());
         let old = before
             .entries
             .get(&key)
             .filter(|entry| entry.delivery != PromptDelivery::System);
-        let new = after
-            .entries
-            .get(&key)
-            .filter(|entry| entry.delivery != PromptDelivery::System);
+        let new = new.filter(|entry| entry.delivery != PromptDelivery::System);
         if old != new
             && let Some(entry) = new.or(old)
         {

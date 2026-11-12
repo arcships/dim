@@ -106,7 +106,7 @@ pub enum Call {
     Submit(Submit),
     InputLookup(InputLookup),
     History(History),
-    HistoryDisplay(History),
+    HistoryDisplay(History, bool),
     HistoryDetail(HistoryDetail),
     Keys(Keys),
     Stop(Stop),
@@ -695,6 +695,8 @@ pub struct Attach {
     pub session_id: String,
     #[serde(default)]
     pub display: bool,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub expected_cwd: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -917,7 +919,16 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.submit" => Call::Submit(params(raw_params)?),
             "session.input_lookup" => Call::InputLookup(params(raw_params)?),
             "session.history" => Call::History(params(raw_params)?),
-            "session.history.display" => Call::HistoryDisplay(params(raw_params)?),
+            "session.history.display" => {
+                let mut value = raw_params;
+                let tail = value
+                    .as_object_mut()
+                    .and_then(|object| object.remove("tail"))
+                    .map(params::<bool>)
+                    .transpose()?
+                    .unwrap_or(false);
+                Call::HistoryDisplay(params(value)?, tail)
+            }
             "session.history.detail" => Call::HistoryDetail(params(raw_params)?),
             "session.keys" => Call::Keys(params(raw_params)?),
             "session.stop" => Call::Stop(params(raw_params)?),

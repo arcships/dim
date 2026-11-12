@@ -261,6 +261,7 @@ struct Worker {
     approval_details: std::collections::BTreeMap<u64, MemberDetailRead>,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
     cursors: std::collections::HashMap<String, u64>,
+    tool_origins: std::collections::VecDeque<(String, String, String)>,
     projection_id: u64,
     focus: String,
     /// The line the side panel follows.
@@ -648,6 +649,7 @@ impl Worker {
             question_responses: Vec::new(),
             approval_details: Default::default(),
             cursors: Default::default(),
+            tool_origins: Default::default(),
             projection_id: 0,
             focus: "main".into(),
             side: None,
@@ -885,7 +887,13 @@ impl Worker {
                 .await?;
             for entry in directory.branches {
                 self.projection.directory(&entry);
-                self.discover_branch(&entry.branch_id);
+                if entry.state == "ended" {
+                    let history = self.task_history.entry(entry.branch_id).or_default();
+                    history.ended = true;
+                    history.done = true;
+                } else {
+                    self.discover_branch(&entry.branch_id);
+                }
             }
         }
         self.poll_task_history().await?;
@@ -1975,6 +1983,35 @@ impl Worker {
             } => {
                 if projection_id == self.projection_id {
                     self.watch_task_output(target);
+                }
+            }
+            Command::ToolOrigin {
+                session_id,
+                projection_id,
+                branch_id,
+                request_id,
+                call_id,
+            } => {
+                if session_id == self.session_id
+                    && projection_id == self.projection_id
+                    && self.methods.contains("session.tool.get")
+                {
+                    let key = (branch_id.clone(), request_id.clone(), call_id.clone());
+                    let queued = self.tool_origins.contains(&key)
+                        || self.task_history_request.as_ref().is_some_and(|read| {
+                            read.is_tool_origin(&branch_id, &request_id, &call_id)
+                        });
+                    let needed = transcript_mut(&mut self.projection, &mut self.lines, &branch_id)
+                        .is_some_and(|projection| {
+                            projection.rows().iter().any(|row| {
+                                row.batch.as_deref() == Some(&request_id)
+                                    && row.call_id.as_deref() == Some(&call_id)
+                                    && !row.tool_lookup_done
+                            })
+                        });
+                    if needed && !queued {
+                        self.tool_origins.push_back(key);
+                    }
                 }
             }
             Command::CompactionDetails {

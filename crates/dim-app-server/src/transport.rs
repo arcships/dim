@@ -747,6 +747,7 @@ async fn run_connection(
                                             "session.branches",
                                             "session.branch.get",
                                             "session.turn.get",
+                                            "session.turn.get.inputId",
                                             "session.submit",
                                             "session.stop",
                                             "session.keys",
@@ -759,6 +760,7 @@ async fn run_connection(
                                             "session.branch_end",
                                             "session.create.origin",
                                             "session.language",
+                                            "session.attach.expectedCwd",
                                         ]);
                                         if params.protocol_version >= 3 {
                                             features.extend([
@@ -772,6 +774,9 @@ async fn run_connection(
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");
                                             features.push("session.history.latestTurn");
+                                            if params.protocol_version >= 3 {
+                                                features.push("session.history.display.tail");
+                                            }
                                         }
                                     }
                                     if trusted && hub.config().local_execution() {

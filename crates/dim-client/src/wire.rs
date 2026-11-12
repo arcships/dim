@@ -452,6 +452,8 @@ pub struct TurnRead {
     pub through: u64,
     pub turn: Option<TurnBoundary>,
     pub output: Option<dim_agent_types::ActiveOutput>,
+    #[serde(default)]
+    pub input_deleted: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -459,6 +461,10 @@ pub struct TurnBoundary {
     pub turn_id: String,
     pub sequence: u64,
     pub ended: bool,
+    #[serde(default)]
+    pub outcome: Option<dim_agent_types::TurnOutcome>,
+    #[serde(default)]
+    pub model_outcome: Option<dim_agent_types::ModelOutputOutcome>,
 }
 
 #[derive(Deserialize)]

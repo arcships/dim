@@ -220,7 +220,7 @@ impl DynPlugin for GoalBranch {
             let (resolved, _) = watch::channel(false);
             let (stepped, _) = watch::channel(0);
             let (ready, _) = watch::channel(false);
-            let (fresh, _) = watch::channel(Ok(true));
+            let (write_status, _) = watch::channel(Ok(()));
             let owner = Arc::new(Owner {
                 branch_id: identity.branch_id.clone(),
                 timeline,
@@ -236,7 +236,7 @@ impl DynPlugin for GoalBranch {
                 resolved,
                 stepped,
                 ready,
-                fresh,
+                write_status,
                 state: Mutex::new(State::default()),
                 write: tokio::sync::Mutex::new(()),
             });
@@ -349,11 +349,9 @@ enum Retry {
 struct State {
     fold: Fold,
     source_through: u64,
-    repair_pending: bool,
     decisions: CancellationToken,
     decision_tasks: TaskTracker,
     terminating: bool,
-    refresh_from: Option<u64>,
     /// The opening event the fold started at.
     start: Option<u64>,
     role: Option<Role>,
@@ -394,7 +392,7 @@ struct Owner {
     /// Set once the rebuild has returned and the facts it held are folded
     /// (R6.2): a change composes only from that complete fold.
     ready: watch::Sender<bool>,
-    fresh: watch::Sender<Result<bool, AgentError>>,
+    write_status: watch::Sender<Result<(), AgentError>>,
     state: Mutex<State>,
     /// Serializes state records: each is composed from the fold as it stands
     /// when the lock is taken and commits before the next one is composed, so
@@ -509,107 +507,100 @@ impl Owner {
     }
 
     async fn change_inner(self: &Arc<Self>, change: Change) -> Result<u64, AgentError> {
-        loop {
-            self.await_ready().await?;
-            let write = self.write_guard().await?;
-            let settled = self.settle_decisions().await;
-            if let Err(error) = settled {
-                self.state.lock().unwrap().terminating = false;
-                return Err(error);
+        self.await_ready().await?;
+        let _write = self.write_guard().await?;
+        let settled = self.settle_decisions().await;
+        if let Err(error) = settled {
+            self.state.lock().unwrap().terminating = false;
+            return Err(error);
+        }
+        let result = async {
+            if matches!(change, Change::Set { .. } | Change::Resume) {
+                self.load_current_work().await?;
             }
-            if !self.fresh.borrow().clone()? {
-                self.state.lock().unwrap().terminating = false;
-                drop(write);
-                continue;
-            }
-            let result = async {
-                if matches!(change, Change::Set { .. } | Change::Resume) {
-                    self.load_current_work().await?;
+            let trigger = change.trigger(&self.branch_id);
+            let (objective, state, judge, live, decisions) = {
+                let lock = self.state.lock().unwrap();
+                let (attrs, op) = fold::change_of(&trigger.blocks)
+                    .expect("a change carries its own trigger marker");
+                let (objective, mut state, mut judge) = lock.fold.after_change(op, &attrs);
+                if objective.is_none() {
+                    state = text::State::None;
+                    judge = text::Judge::Model;
                 }
-                let trigger = change.trigger(&self.branch_id);
-                let (objective, state, judge, live, decisions) = {
-                    let lock = self.state.lock().unwrap();
-                    let (attrs, op) = fold::change_of(&trigger.blocks)
-                        .expect("a change carries its own trigger marker");
-                    let (objective, mut state, mut judge) = lock.fold.after_change(op, &attrs);
-                    if objective.is_none() {
-                        state = text::State::None;
-                        judge = text::Judge::Model;
-                    }
-                    (
-                        objective,
-                        state,
-                        judge,
-                        lock.fold.live,
-                        lock.decisions.clone(),
-                    )
-                };
-                let trigger_id = trigger
-                    .submission_id
-                    .clone()
-                    .expect("Goal inputs carry a submission id");
-                let operation = match &change {
-                    Change::Set { .. } => "set",
-                    Change::Edit { .. } => "edit",
-                    Change::Pause => "pause",
-                    Change::Resume => "resume",
-                    Change::Clear => "clear",
-                    Change::Report {
-                        completed: true, ..
-                    } => "completed",
-                    Change::Report {
-                        completed: false, ..
-                    } => "blocked",
-                };
-                let business = recovery::BusinessState::new(
-                    operation,
-                    objective.clone(),
-                    state.clone(),
-                    judge,
-                    None,
-                );
-                let record = text::state(
-                    &self.branch_id,
-                    objective.as_deref(),
+                (
+                    objective,
                     state,
                     judge,
-                    text::Answered::Trigger(&trigger_id),
-                    live,
-                    &self.texts,
-                );
-                if decisions.is_cancelled() {
-                    return Err(AgentError::Cancelled("Goal command superseded".into()));
-                }
-                let events = if matches!(
-                    &change,
-                    Change::Report {
-                        completed: true,
-                        ..
-                    }
-                ) && judge == text::Judge::Evaluator
-                {
-                    let events = self
-                        .tree
-                        .inputs(self.branch_id.clone(), vec![record, trigger])
-                        .await?;
-                    self.state.lock().unwrap().last_write =
-                        events.last().expect("evaluation request").sequence;
-                    events
-                } else {
-                    self.append_business(vec![record, trigger], business, Some(1))?
-                };
-                let sequence = events[1].sequence;
-                let mut lock = self.state.lock().unwrap();
-                lock.recorded = lock.recorded.max(sequence);
-                lock.written.insert(sequence);
-                lock.last_write = lock.last_write.max(sequence);
-                drop(lock);
-                Ok(sequence)
+                    lock.fold.live,
+                    lock.decisions.clone(),
+                )
+            };
+            let trigger_id = trigger
+                .submission_id
+                .clone()
+                .expect("Goal inputs carry a submission id");
+            let operation = match &change {
+                Change::Set { .. } => "set",
+                Change::Edit { .. } => "edit",
+                Change::Pause => "pause",
+                Change::Resume => "resume",
+                Change::Clear => "clear",
+                Change::Report {
+                    completed: true, ..
+                } => "completed",
+                Change::Report {
+                    completed: false, ..
+                } => "blocked",
+            };
+            let business = recovery::BusinessState::new(
+                operation,
+                objective.clone(),
+                state.clone(),
+                judge,
+                None,
+            );
+            let record = text::state(
+                &self.branch_id,
+                objective.as_deref(),
+                state,
+                judge,
+                text::Answered::Trigger(&trigger_id),
+                live,
+                &self.texts,
+            );
+            if decisions.is_cancelled() {
+                return Err(AgentError::Cancelled("Goal command superseded".into()));
             }
-            .await;
-            self.state.lock().unwrap().terminating = false;
-            return result;
+            let events = if matches!(
+                &change,
+                Change::Report {
+                    completed: true,
+                    ..
+                }
+            ) && judge == text::Judge::Evaluator
+            {
+                let events = self
+                    .tree
+                    .inputs(self.branch_id.clone(), vec![record, trigger])
+                    .await?;
+                self.state.lock().unwrap().last_write =
+                    events.last().expect("evaluation request").sequence;
+                events
+            } else {
+                self.append_business(vec![record, trigger], business, Some(1))?
+            };
+            let sequence = events[1].sequence;
+            let mut lock = self.state.lock().unwrap();
+            lock.recorded = lock.recorded.max(sequence);
+            lock.written.insert(sequence);
+            lock.last_write = lock.last_write.max(sequence);
+            drop(lock);
+            Ok(sequence)
         }
+        .await;
+        self.state.lock().unwrap().terminating = false;
+        result
     }
 
     /// Runs `work` once under `key` while the branch is active, and records a
@@ -654,9 +645,6 @@ impl Owner {
                 }
             {
                 tracing::warn!(key = %key, %error, "Goal write failed");
-                if owner.state.lock().unwrap().repair_pending {
-                    let _ = owner.fresh.send_replace(Err(error));
-                }
             }
             let retry = {
                 let mut state = owner.state.lock().unwrap();
@@ -665,7 +653,7 @@ impl Owner {
             };
             // The second pass reads the fold as it stands now; C4, `decided`
             // and the conclusion's own checks deduplicate it.
-            if decisions.is_cancelled() && matches!(*owner.fresh.borrow(), Ok(true)) {
+            if decisions.is_cancelled() && owner.write_status.borrow().is_ok() {
                 owner.resume_decisions();
             }
             match retry {
@@ -705,7 +693,7 @@ impl Owner {
         self.publication(through).await?;
         let opening = self.opening(through).await?;
         let query = |query| -> BoxFuture<'_, _> { Box::pin(self.timeline.query(query)) };
-        let mut loaded = crate::read::load(
+        let mut fold = crate::read::load(
             &self.branch_id,
             opening.map(|(at, _)| at),
             through,
@@ -713,16 +701,15 @@ impl Owner {
             &self.stop,
         )
         .await?;
-        crate::read::pause_reloaded(&mut loaded.fold);
+        crate::read::pause_reloaded(&mut fold);
         if let Some((at, true)) = opening {
-            loaded.fold.copied_live = Some(self.copied_keys(at).await?);
+            fold.copied_live = Some(self.copied_keys(at).await?);
         }
         {
             let mut state = self.state.lock().unwrap();
-            state.fold = loaded.fold;
+            state.fold = fold;
             state.start = opening.map(|(at, _)| at);
             state.source_through = through;
-            state.repair_pending = loaded.repaired;
         }
         self.stepped.send_replace(through);
         let previous = self.clone();
@@ -738,11 +725,6 @@ impl Owner {
                 if let Err(error)=result && !matches!(error,AgentError::BranchEnded(_)) {previous.dispatcher.fail(error);return;}
             }
         });
-        if loaded.repaired {
-            self.task(format!("delete:{through}"), None, move |owner| {
-                Box::pin(async move { owner.record(through, None, false, None).await })
-            });
-        }
         if let Some((at, _)) = opening {
             self.decide_start(at);
         }
@@ -768,7 +750,7 @@ impl Owner {
         self.await_fold().await?;
         let through = self.timeline.committed();
         let mut dispatched = self.dispatcher.watch();
-        let mut fresh = self.fresh.subscribe();
+        let mut write_status = self.write_status.subscribe();
         loop {
             if let Some(error) = self
                 .dispatcher
@@ -777,10 +759,8 @@ impl Owner {
             {
                 return Err(error);
             }
-            if self.dispatcher.sequence() >= through
-                && fresh.borrow_and_update().clone()?
-                && !self.state.lock().unwrap().repair_pending
-            {
+            write_status.borrow_and_update().clone()?;
+            if self.dispatcher.sequence() >= through {
                 return Ok(crate::read::view(
                     &self.branch_id,
                     through,
@@ -789,7 +769,7 @@ impl Owner {
             }
             tokio::select! {
                 result=dispatched.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,
-                result=fresh.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,
+                result=write_status.changed()=>result.map_err(|_|AgentError::Closed("Goal".into()))?,
                 _=self.stop.cancelled()=>return Err(AgentError::Closed("Goal".into())),
             }
         }
@@ -1081,80 +1061,22 @@ impl Owner {
         {
             let business = recovery::BusinessState::decode(data.data().clone())?;
             let mut state = self.state.lock().unwrap();
-            business.apply(&mut state.fold, false);
+            business.apply(&mut state.fold);
             state.fold.state_after = sequence;
             state.fold.record_after = sequence;
             state.source_through = sequence;
-            if state.refresh_from.is_none() {
-                state.repair_pending = false;
-                let _ = self.fresh.send_replace(Ok(true));
-            }
             self.stepped.send_replace(sequence);
             return Ok(());
         }
         let turn_start = {
             let mut state = self.state.lock().unwrap();
-            let invalid = !matches!(*self.fresh.borrow(), Ok(true));
-            if invalid || matches!(event.kind, EventKind::InputDeleted(_)) {
-                let start = !matches!(*self.fresh.borrow(), Ok(false));
-                let _ = self.fresh.send_replace(Ok(false));
-                state.refresh_from.get_or_insert(sequence);
-                if let EventKind::InputDeleted(data) = &event.kind {
-                    state.fold.driving.remove(data.input_id.as_str());
-                    state
-                        .fold
-                        .continuation_inputs
-                        .remove(data.input_id.as_str());
-                } else {
-                    state.fold.apply(event);
-                }
-                state.repair_pending = true;
-                state.recorded = state.recorded.max(state.fold.record_after);
-                state.decisions.cancel();
-                self.stepped.send_replace(sequence);
-                drop(state);
-                if start {
-                    self.refresh();
-                }
-                return Ok(());
-            }
             let turn_start = state.fold.turn_start;
-            let statement = if state.repair_pending {
-                match &event.kind {
-                    EventKind::InputMessage(data) => data
-                        .blocks
-                        .iter()
-                        .rev()
-                        .find_map(|block| {
-                            let InputBlock::Raw {
-                                text: raw,
-                                key,
-                                retire,
-                            } = block;
-                            (key.as_deref() == Some(text::STATE_KEY))
-                                .then(|| published_statement(raw, *retire))
-                                .flatten()
-                        })
-                        .or_else(|| {
-                            state
-                                .fold
-                                .paired_record(sequence, data.submission_id.as_deref())
-                                .and_then(|(raw, retire)| published_statement(raw, retire))
-                        }),
-                    _ => None,
-                }
-            } else {
-                None
-            };
             state.fold.apply(event);
             if fold::is_opening(&event.kind) {
                 state.start = Some(sequence);
             }
             let start = state.start;
             state.fold.compact(start);
-            if statement.is_some_and(|statement| statement == statement_of_fold(&state.fold)) {
-                state.repair_pending = false;
-            }
             state.source_through = sequence;
 
             let recorded = state.recorded;
@@ -1197,6 +1119,7 @@ impl Owner {
                     }
                 }
             }
+            EventKind::InputDeleted(_) => self.settle_deferred(),
             EventKind::TurnEnd(data) => self.turn_decision(sequence, turn_start, data.clone()),
             EventKind::StopInterrupt(data) if data.scope == InterruptScope::Turn => {
                 self.interrupted(sequence)
@@ -1314,12 +1237,7 @@ impl Owner {
                     }
                 };
                 owner
-                    .record(
-                        at,
-                        Some(text::State::Paused(reason.to_owned())),
-                        false,
-                        None,
-                    )
+                    .record(at, Some(text::State::Paused(reason.to_owned())), false)
                     .await
             })
         });
@@ -1330,16 +1248,15 @@ impl Owner {
         after: u64,
         status: Option<text::State>,
         answer: bool,
-        withdrawn: Option<u64>,
     ) -> Result<(), AgentError> {
         let (reply, result) = tokio::sync::oneshot::channel();
         let owner = self.clone();
         self.tasks.spawn(async move {
-            let result = owner.record_inner(after, status, answer, withdrawn).await;
+            let result = owner.record_inner(after, status, answer).await;
             owner.state.lock().unwrap().terminating = false;
             if let Err(Err(error)) = reply.send(result) {
                 tracing::warn!(%error, "Goal terminal state could not be saved");
-                let _ = owner.fresh.send_replace(Err(error));
+                let _ = owner.write_status.send_replace(Err(error));
             }
         });
         result
@@ -1352,7 +1269,6 @@ impl Owner {
         after: u64,
         status: Option<text::State>,
         answer: bool,
-        withdrawn: Option<u64>,
     ) -> Result<(), AgentError> {
         let _write = self.write_guard().await?;
         {
@@ -1364,18 +1280,9 @@ impl Owner {
             {
                 return Ok(());
             }
-            if let Some(withdrawn) = withdrawn
-                && !(state.fold.recorded_at_or_after(withdrawn)
-                    || state.recorded >= withdrawn
-                    || state.written.range(withdrawn..).next().is_some())
-            {
-                return Ok(());
-            }
         }
         self.settle_decisions().await?;
-        if !self.fresh.borrow().clone()? {
-            return Ok(());
-        }
+        self.write_status.borrow().clone()?;
         let (objective, status, judge, live) = {
             let state = self.state.lock().unwrap();
             if state.fold.last_change > after || after < state.recorded {
@@ -1409,9 +1316,6 @@ impl Owner {
         let mut state = self.state.lock().unwrap();
         state.written.insert(after);
         state.recorded = state.recorded.max(after);
-        if withdrawn.is_some() && state.refresh_from == Some(after) {
-            state.refresh_from = None;
-        }
         Ok(())
     }
 
@@ -1463,7 +1367,7 @@ impl Owner {
             return;
         };
         self.task(format!("state:{last}"), None, move |owner| {
-            Box::pin(async move { owner.record(last, None, true, None).await })
+            Box::pin(async move { owner.record(last, None, true).await })
         });
     }
 
@@ -1596,11 +1500,14 @@ impl Owner {
                     operation_id: fold::evaluation_operation(after),
                 },
             };
-            if self
+            let created = self
                 .tree
                 .create(self.branch_id.clone(), after, options, cancelled)
-                .await
-                .is_err()
+                .await;
+            if let Err(error) = &created {
+                tracing::warn!(branch_id = %self.branch_id, evaluation = after, %error, "Goal evaluator creation failed");
+            }
+            if created.is_err()
                 && !self.stopped()
                 && !self.created(after).await?
                 && self.state.lock().unwrap().fold.is_current(after)
@@ -1609,7 +1516,6 @@ impl Owner {
                     after,
                     Some(text::State::Paused("evaluation_failed".to_owned())),
                     false,
-                    None,
                 )
                 .await?;
             }
@@ -1674,13 +1580,8 @@ impl Owner {
             }
             Decision::Pause { reason } => {
                 drop(write);
-                self.record(
-                    after,
-                    Some(text::State::Paused(reason.to_owned())),
-                    false,
-                    None,
-                )
-                .await?;
+                self.record(after, Some(text::State::Paused(reason.to_owned())), false)
+                    .await?;
             }
         }
         Ok(())
@@ -1929,7 +1830,6 @@ impl Owner {
                         at,
                         Some(text::State::Paused("evaluation_failed".to_owned())),
                         false,
-                        None,
                     )
                     .await
             })
@@ -1967,16 +1867,15 @@ impl Owner {
                     sequence,
                     Some(text::State::Paused("evaluation_failed".to_owned())),
                     false,
-                    None,
                 )
                 .await?;
             }
             ConclusionAction::Completed(text) => {
-                self.record(sequence, Some(text::State::Completed(text)), false, None)
+                self.record(sequence, Some(text::State::Completed(text)), false)
                     .await?;
             }
             ConclusionAction::Blocked(text) => {
-                self.record(sequence, Some(text::State::Blocked(text)), false, None)
+                self.record(sequence, Some(text::State::Blocked(text)), false)
                     .await?;
             }
             ConclusionAction::Continue => {
@@ -2040,7 +1939,6 @@ impl Owner {
                             sequence,
                             Some(text::State::Paused(reason.to_owned())),
                             false,
-                            None,
                         )
                         .await?;
                     }
@@ -2142,29 +2040,6 @@ struct Statement {
     retired: bool,
 }
 
-/// The state the fold computes, normalised as `text::state` writes it: no
-/// objective is a retired record, whatever the fold still holds.
-fn statement_of_fold(fold: &Fold) -> Statement {
-    let objective = fold
-        .objective
-        .clone()
-        .filter(|objective| !objective.is_empty());
-    let Some(objective) = objective else {
-        return Statement {
-            objective: None,
-            state: text::State::None,
-            judge: text::Judge::Model,
-            retired: true,
-        };
-    };
-    Statement {
-        objective: Some(objective),
-        state: fold.state.clone(),
-        judge: fold.judge,
-        retired: false,
-    }
-}
-
 /// What the published block `raw` states, by the readers the record writer's
 /// counterpart uses. A block this version cannot read — an older format with
 /// no `<objective>` element — is no statement at all, which never matches the
@@ -2204,16 +2079,6 @@ fn published_statement(raw: &str, retire: bool) -> Option<Statement> {
         judge: text::Judge::of(&attrs),
         retired: false,
     })
-}
-
-pub(crate) fn model_state_agrees(fold: &Fold, blocks: &[InputBlock]) -> bool {
-    let state = blocks.iter().rev().find_map(|block| {
-        let InputBlock::Raw { text, key, retire } = block;
-        (key.as_deref() == Some(text::STATE_KEY))
-            .then(|| published_statement(text, *retire))
-            .flatten()
-    });
-    state.as_ref() == Some(&statement_of_fold(fold))
 }
 
 fn result_name(result: fold::ConclusionKind) -> &'static str {

@@ -60,7 +60,7 @@ impl ConfigurationPublisher {
         changes: Vec<PromptChange>,
         model: Option<ModelSelection>,
         tools: Option<ToolSetAdoption>,
-        inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
+        inputs: impl FnOnce(&PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> + Send,
     ) -> dim_agent_runtime::Result<Option<u64>> {
         let (before, previous_configuration) = adopted;
@@ -116,10 +116,10 @@ impl ConfigurationPublisher {
                 ));
             }
         }
-        let base = previous_configuration.map(|data| (*data.settings).clone());
         let configuration = match (model, tools) {
             (None, None) => None,
             (model, tools) => {
+                let base = previous_configuration.map(|data| (*data.settings).clone());
                 let mut settings = match (model, base) {
                     (Some(model), base) => ModelConfiguration {
                         provider_id: model.provider_id,
@@ -145,8 +145,8 @@ impl ConfigurationPublisher {
             }
         };
         let effective_configuration = configuration
-            .clone()
-            .or_else(|| previous_configuration.map(|data| (*data.settings).clone()));
+            .as_ref()
+            .or_else(|| previous_configuration.map(|data| data.settings.as_ref()));
         let mut drafts: Vec<EventDraft> = Vec::new();
         if !changes.is_empty() {
             let revision = Uuid::new_v4().to_string();
@@ -161,9 +161,8 @@ impl ConfigurationPublisher {
                 },
                 changes,
             };
-            let mut after = before.clone();
-            after.changed(&data.timeline, &data.revision, &data.changes);
-            let blocks = inputs(before, &after, &data.changes);
+            let system = before.system_after(&data.changes);
+            let blocks = inputs(before, &data.changes);
             drafts.push(EventKind::PromptChanged(data).into());
             drafts.extend(blocks.into_iter().map(|block| {
                 EventKind::InputMessage(InputMessageData {
@@ -173,8 +172,8 @@ impl ConfigurationPublisher {
                 })
                 .into()
             }));
-            if after.system_revision != before.system_revision {
-                let settings = effective_configuration.clone().ok_or_else(|| {
+            if let Some(system) = system {
+                let settings = effective_configuration.cloned().ok_or_else(|| {
                     AgentError::InvalidInput("system prompt update requires configuration".into())
                 })?;
                 drafts.push(
@@ -185,13 +184,16 @@ impl ConfigurationPublisher {
                             timeline: data.timeline.clone(),
                             revision: data.revision.clone(),
                         }),
-                        prompt: after.system_revision.clone(),
+                        prompt: Some(PromptReference {
+                            timeline: self.identity.branch_id.clone(),
+                            revision,
+                        }),
                         settings: Box::new(settings),
                         system: Some(self.guide.compose_system(
                             &self.identity.branch_id,
-                            Some(SystemPrompt::Text(after.system.clone())),
+                            Some(SystemPrompt::Text(system.clone())),
                         )),
-                        system_source: Some(after.system.clone()),
+                        system_source: Some(system),
                     })
                     .into(),
                 );
