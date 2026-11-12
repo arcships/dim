@@ -63,6 +63,18 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   assert.match(failed.stderr, /local defaultModelId .* missing/);
   assert.equal(await readFile(path, "utf8"), initialCatalog);
 
+  await writeFile(upstreamFile, JSON.stringify({ models: [{ id: defaultId, limit: { context: 1.5 } }] }));
+  const invalidLimit = spawnSync(process.execPath, sync, { cwd, env, encoding: "utf8" });
+  assert.equal(invalidLimit.status, 1);
+  assert.match(invalidLimit.stderr, /contextWindow must be a positive safe integer/);
+  assert.equal(await readFile(path, "utf8"), initialCatalog);
+
+  await writeFile(join(upstream, "nvidia.json"), JSON.stringify({ models: [] }));
+  const empty = spawnSync(process.execPath, [script, "--sync", "nvidia"], { cwd, env, encoding: "utf8" });
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /sync would remove every bundled model/);
+  assert.equal(await readFile(path, "utf8"), initialCatalog);
+
   const freshModels = [old.models.find((model) => model.modelId === defaultId).metadata.raw, { id: "new-model" }];
   await writeFile(upstreamFile, JSON.stringify({ api: "https://upstream.invalid/v1", models: freshModels }));
   execFileSync(process.execPath, sync, { cwd, env });

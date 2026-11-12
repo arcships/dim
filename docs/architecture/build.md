@@ -59,7 +59,8 @@ keep a provider's base URL, default model, and curated models local. When onboar
 upstream-backed provider, add its definition to the catalog and its policy to that table.
 
 Sync applies the existing reasoning overrides and replaces the complete catalog after
-validation. A sync that produces the same content preserves the file and its timestamp.
+validation. Sync rejects a candidate that removes every bundled model from a provider
+that had models. A sync that produces the same content preserves the file and its timestamp.
 A fetch or validation failure leaves the catalog as it was. Review and commit the complete
 catalog after a sync. Model entries occupy individual lines for review. Upstream responses
 and intermediate model lists stay in memory.

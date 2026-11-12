@@ -129,6 +129,9 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
   for (const modelId of policy.mediaModels ?? []) {
     models.set(modelId, { ...models.get(modelId), ...mediaOverlay(id, local(modelId)) })
   }
+  if (models.size === 0 && provider.models.length > 0) {
+    throw new Error(`Provider ${id}: sync would remove every bundled model`)
+  }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
   const result = { ...provider, models: applyReasoningOffOverrides(id, [...models.values()], overrides).map(toCatalogModel), metadata }
@@ -296,6 +299,14 @@ function validateCatalog(catalog) {
     if (!isRecord(metadata?.raw) || !Array.isArray(models)) throw new Error(`Provider ${id} requires raw metadata and a models array`)
     if (metadata.lookupOnly && metadata.customModels) throw new Error(`Provider ${id}: model ownership is ambiguous`)
     assertUniqueModelIds(models, id, "modelId")
+    for (const { modelId, capabilities } of models) {
+      for (const key of ["contextWindow", "maxOutputTokens"]) {
+        const limit = capabilities?.[key]
+        if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+          throw new Error(`Provider ${id}: model ${modelId} ${key} must be a positive safe integer`)
+        }
+      }
+    }
   }
 }
 
