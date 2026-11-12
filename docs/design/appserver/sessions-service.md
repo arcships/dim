@@ -417,7 +417,7 @@ the same turn. Errors: `session_closed`, `branch_missing`, `reloading`, and `fai
 `{sessionId, branchId, inputId, reason?}` → `{status: "deleted", sequence}` or `{status: "notHeld"}`.
 
 Agents gets S1's InputQueue with `Session::service::<InputQueue>` on that branch, calls
-`withdraw(InputWithdrawData { input_id, reason }, None)` and returns its decision. S1 replies once it has written
+`withdraw(InputWithdrawData { input_id, reason, steer: None })` and returns its decision. S1 replies once it has written
 `input/deleted`, which is then committed but not necessarily published, so for `deleted` Agents waits for that
 publication before replying, as `input` does (D8); a branch that closes or fails first replies `publication_unknown`.
 S2 adds no semantics: no ownership check, since a caller withdraws by the `input_id` it received (contract §9.3), no

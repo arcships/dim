@@ -19,10 +19,10 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 /// What InputQueue writes for an input it decided on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Decision {
     Apply(String, InputMode),
-    Delete(String),
+    Delete(String, Option<InputMessageData>),
 }
 /// InputQueue's answer to one `input/withdraw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +32,8 @@ pub enum Withdrawal {
     /// Unknown, already applied or already deleted: nothing was written.
     NotHeld,
 }
+
+type WithdrawalAnswer = (Withdrawal, Option<Arc<AgentEvent>>);
 
 /// One committed input until Loop consumes it.
 struct Entry {
@@ -89,14 +91,14 @@ impl QueueState {
                 }
                 Vec::new()
             }
-            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id),
+            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id, data.steer.clone()),
             _ => Vec::new(),
         }
     }
     fn input(&mut self, id: &str, mode: InputMode, handover: Option<&str>) -> Vec<Decision> {
         if let Some(turn_id) = handover {
             if self.turn.as_deref() != Some(turn_id) {
-                return vec![Decision::Delete(id.to_owned())];
+                return vec![Decision::Delete(id.to_owned(), None)];
             }
             self.entries.push(Entry {
                 id: id.to_owned(),
@@ -134,7 +136,7 @@ impl QueueState {
         self.entries.retain(|entry| {
             let ended = matches!(&entry.kind, EntryKind::Handover { turn_id } if turn_id == turn);
             if ended {
-                decisions.push(Decision::Delete(entry.id.clone()));
+                decisions.push(Decision::Delete(entry.id.clone(), None));
             }
             !ended
         });
@@ -152,14 +154,14 @@ impl QueueState {
         }
         decisions
     }
-    fn withdraw(&mut self, id: &str) -> Vec<Decision> {
+    fn withdraw(&mut self, id: &str, steer: Option<InputMessageData>) -> Vec<Decision> {
         match self.entries.iter().position(|entry| {
             entry.id == id && !matches!(entry.kind, EntryKind::Input { released: true, .. })
         }) {
             Some(index) => {
                 let entry = self.entries.remove(index);
                 self.queued -= usize::from(matches!(entry.kind, EntryKind::Input { .. }));
-                vec![Decision::Delete(id.to_owned())]
+                vec![Decision::Delete(id.to_owned(), steer)]
             }
             None => Vec::new(),
         }
@@ -197,7 +199,7 @@ pub struct InputQueue {
     timeline: Arc<Timeline>,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
-    answers: Mutex<HashMap<u64, Option<(u64, Withdrawal)>>>,
+    answers: Mutex<HashMap<u64, Option<(u64, WithdrawalAnswer)>>>,
     answered: tokio::sync::Notify,
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
@@ -242,12 +244,9 @@ impl InputQueue {
         }
         let mut state = self.state.lock().unwrap();
         let decisions = state.step(&event);
-        let (published, deleted) = self.write(decisions, event.sequence)?;
+        let (published, answer) = self.write(decisions, event.sequence)?;
         self.publish(published, state.queued);
         if matches!(event.kind, EventKind::InputWithdraw(_)) {
-            let answer = deleted.map_or(Withdrawal::NotHeld, |sequence| Withdrawal::Deleted {
-                sequence,
-            });
             if let Some(waiter) = self.answers.lock().unwrap().get_mut(&event.sequence) {
                 *waiter = Some((published, answer));
             }
@@ -256,29 +255,15 @@ impl InputQueue {
         Ok(())
     }
     /// Withdraws an input by its `input_id` and replies with this queue's
-    /// decision for the command. With `steer`, the command and the new Steer
-    /// input are one batch: the withdrawal takes effect only if the old
-    /// input is still held, the new input is written either way.
-    pub async fn withdraw(
-        &self,
-        command: InputWithdrawData,
-        steer: Option<InputMessageData>,
-    ) -> Result<(Withdrawal, Option<Arc<AgentEvent>>)> {
+    /// decision for the command. Only an accepted withdrawal adopts its
+    /// optional checked Steer candidate, atomically with the deletion.
+    /// A Steer result is committed; callers confirm publication before exposing a receipt.
+    /// Plain withdrawals wait for publication here.
+    pub async fn withdraw(&self, command: InputWithdrawData) -> Result<WithdrawalAnswer> {
         command
             .validate_external()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-        let mut drafts = vec![EventKind::InputWithdraw(command).into()];
-        if let Some(input) = steer {
-            if input.mode != Some(InputMode::Steer) {
-                return Err(AgentError::InvalidInput(
-                    "a replacement input must be Steer".into(),
-                ));
-            }
-            input
-                .validate()
-                .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-            drafts.push(EventKind::InputMessage(input).into());
-        }
+        let drafts = vec![EventKind::InputWithdraw(command).into()];
         let mut waiter = None;
         let appended = self.timeline.append_batch_registered(drafts, |events| {
             self.answers
@@ -292,8 +277,7 @@ impl InputQueue {
             Ok(())
         });
         let _waiter = waiter;
-        let mut events = appended?;
-        let replacement = (events.len() > 1).then(|| events.remove(1));
+        let events = appended?;
         let sequence = events[0].sequence;
         let unknown = || {
             AgentError::PublicationUnknown(format!(
@@ -306,9 +290,9 @@ impl InputQueue {
             {
                 let answers = self.answers.lock().unwrap();
                 if let Some(Some((published, answer))) = answers.get(&sequence)
-                    && self.timeline.sequence() >= *published
+                    && (answer.1.is_some() || self.timeline.sequence() >= *published)
                 {
-                    return Ok((*answer, replacement));
+                    return Ok(answer.clone());
                 }
             }
             if self.timeline.failure().is_some() {
@@ -590,7 +574,7 @@ struct WithdrawParams {
     input_id: String,
     #[serde(default)]
     reason: Option<String>,
-    /// Re-submits the content as Steer in the same batch as the withdrawal.
+    /// Replacement content adopted only when withdrawal is accepted.
     #[serde(default)]
     steer: Option<UserInput>,
 }
@@ -640,7 +624,8 @@ impl DynPlugin for InputMethodsPlugin {
                             return pending::read(&tree, value, &cancel).await;
                         }
                         let p: WithdrawParams = params(value)?;
-                        let queue = tree.get(&p.branch_id)?.service::<InputQueue>()?;
+                        let branch = tree.get(&p.branch_id)?;
+                        let queue = branch.service::<InputQueue>()?;
                         let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
@@ -689,12 +674,27 @@ impl DynPlugin for InputMethodsPlugin {
                                 InputWithdrawData {
                                     input_id: p.input_id,
                                     reason: p.reason,
+                                    steer,
                                 },
-                                steer,
                             )
                             .await?;
                         let mut result = match answer {
                             Withdrawal::Deleted { sequence } => {
+                                if replacement.is_some() {
+                                    let publication = branch.publication();
+                                    let mut progress = publication.watch();
+                                    tokio::select! {
+                                        _ = progress.wait_for(|&(published, closed)| published >= sequence || closed) => {}
+                                        _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                                    }
+                                    if publication.sequence() < sequence {
+                                        return Err(RpcError::app(
+                                            -32000,
+                                            "publication_unknown",
+                                            "committed, but publication was not confirmed; query history after recovery",
+                                        ));
+                                    }
+                                }
                                 serde_json::json!({"status": "deleted", "sequence": sequence})
                             }
                             Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),
