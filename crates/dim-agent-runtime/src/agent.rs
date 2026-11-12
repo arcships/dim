@@ -495,6 +495,21 @@ impl Session {
         }
         self.published(branch)?.input(data).await
     }
+    /// [`Self::input`], also saying whether this call wrote the input; see
+    /// [`Branch::input_commit`].
+    pub async fn input_commit(
+        &self,
+        data: InputMessageData,
+        branch: &str,
+    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
+        if let Some(error) = self.0.owner.faults.failure() {
+            return Err(error);
+        }
+        if self.0.owner.closing.is_cancelled() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.published(branch)?.input_commit(data).await
+    }
     /// Appends a validated batch of input to `branch` as one atomic commit;
     /// see [`Branch::inputs`] for the contract.
     pub async fn inputs(

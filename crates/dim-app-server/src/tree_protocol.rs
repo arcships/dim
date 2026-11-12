@@ -199,6 +199,11 @@ impl BranchState {
 #[derive(Debug, Serialize)]
 pub struct CreateResult {
     pub branch: BranchInfo,
+    /// Work the submit checks did not do, for the caller to show (Hooks
+    /// A.6.2). Only this reply carries them: a branch's first input is its
+    /// prompt, so no check's warning enters it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
 }
 #[derive(Debug, Serialize)]
 pub struct BarrierResult {

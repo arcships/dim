@@ -2674,6 +2674,7 @@ fn an_input_that_never_counted_and_thinking_are_not_told() {
     recorded.push(EventKind::InputWithdraw(InputWithdrawData {
         input_id: withdrawn.clone(),
         reason: None,
+        steer: None,
     }));
     recorded.push(EventKind::InputDeleted(InputDeletedData {
         input_id: withdrawn.clone(),

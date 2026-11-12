@@ -320,21 +320,116 @@ fn definitions_match_the_ts_tool_contracts() {
 }
 
 #[tokio::test]
+async fn write_comparisons_stay_bounded_without_limiting_the_mutation() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put(
+        "large.txt",
+        format!("{}\n", "a".repeat(17 * 1024 * 1024)).as_bytes(),
+    );
+    ok(&workspace
+        .call(&reads, "read", json!({ "path": "large.txt", "limit": 1 }))
+        .await);
+    let result = workspace
+        .call(
+            &reads,
+            "write",
+            json!({ "path": "large.txt", "content": "small\n" }),
+        )
+        .await;
+    ok(&result);
+    assert_eq!(workspace.bytes("large.txt"), b"small\n");
+    assert!(
+        structured(&result)["diff"].is_null(),
+        "Oversized comparisons must not enter durable results"
+    );
+    assert!(text(&result).contains("comparison omitted"));
+    assert!(serde_json::to_vec(&result).unwrap().len() < 1024);
+    assert_eq!(structured(&result)["bytesWritten"], 6);
+    assert!(structured(&result)["revision"].is_string());
+
+    let prefix = "--- /dev/null\n+++ new.txt\n@@ -0,0 +1,1 @@\n+";
+    for (length, recorded) in [
+        (64 * 1024 - prefix.len(), true),
+        (64 * 1024 - prefix.len() + 1, false),
+        (64 * 1024 + 1, false),
+    ] {
+        let content = "é".repeat(length / 2) + if length % 2 == 1 { "a" } else { "" };
+        let result = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "new.txt", "content": content }),
+            )
+            .await;
+        ok(&result);
+        assert_eq!(workspace.bytes("new.txt"), content.as_bytes());
+        if recorded {
+            assert_eq!(structured(&result)["diff"], format!("{prefix}{content}"));
+        } else {
+            assert!(structured(&result)["diff"].is_null());
+            assert!(text(&result).contains("comparison omitted"));
+        }
+        assert!(serde_json::to_vec(&result).unwrap().len() < 512 * 1024);
+        fs::remove_file(workspace.path("new.txt")).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn edits_and_writes_preserve_bom_and_line_endings() {
     let workspace = Workspace::new();
     let reads = branch();
+
+    for (content, hunks) in [("", ""), ("héllo\r\n", "@@ -0,0 +1,1 @@\n+héllo")] {
+        let created = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "new.txt", "content": content }),
+            )
+            .await;
+        ok(&created);
+        assert_eq!(
+            structured(&created)["diff"],
+            format!("--- /dev/null\n+++ new.txt\n{hunks}")
+        );
+        assert_eq!(workspace.bytes("new.txt"), content.as_bytes());
+        fs::remove_file(workspace.path("new.txt")).unwrap();
+    }
+
+    workspace.put("empty.txt", b"");
+    ok(&workspace.read(&reads, "empty.txt").await);
+    for (content, hunks) in [("", ""), ("added\n", "@@ -0,0 +1,1 @@\n+added")] {
+        let overwritten = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "empty.txt", "content": content }),
+            )
+            .await;
+        ok(&overwritten);
+        assert_eq!(
+            structured(&overwritten)["diff"],
+            format!("--- empty.txt\n+++ empty.txt\n{hunks}")
+        );
+    }
 
     workspace.put("crlf.txt", b"one\r\ntwo\r\nthree\r\n");
     ok(&workspace.read(&reads, "crlf.txt").await);
     ok(&workspace.edit(&reads, "crlf.txt", "two", "2a\n2b").await);
     assert_eq!(workspace.bytes("crlf.txt"), b"one\r\n2a\r\n2b\r\nthree\r\n");
-    ok(&workspace
+    let written = workspace
         .call(
             &reads,
             "write",
             json!({ "path": "crlf.txt", "content": "x\ny\n" }),
         )
-        .await);
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- crlf.txt\n+++ crlf.txt\n@@ -1,4 +1,2 @@\n-one\n-2a\n-2b\n-three\n+x\n+y"
+    );
     assert_eq!(workspace.bytes("crlf.txt"), b"x\r\ny\r\n");
 
     workspace.put("bom.txt", b"\xef\xbb\xbfalpha\nbeta\n");
@@ -343,13 +438,18 @@ async fn edits_and_writes_preserve_bom_and_line_endings() {
     assert_eq!(structured(&read)["bom"], "utf8");
     ok(&workspace.edit(&reads, "bom.txt", "beta", "gamma").await);
     assert_eq!(workspace.bytes("bom.txt"), b"\xef\xbb\xbfalpha\ngamma\n");
-    ok(&workspace
+    let written = workspace
         .call(
             &reads,
             "write",
             json!({ "path": "bom.txt", "content": "delta\n" }),
         )
-        .await);
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- bom.txt\n+++ bom.txt\n@@ -1,2 +1,1 @@\n-alpha\n-gamma\n+delta"
+    );
     assert_eq!(workspace.bytes("bom.txt"), b"\xef\xbb\xbfdelta\n");
 
     let mut utf16 = vec![0xff, 0xfe];
@@ -361,6 +461,21 @@ async fn edits_and_writes_preserve_bom_and_line_endings() {
     ok(&workspace.edit(&reads, "utf16.txt", "wörld", "wörld!").await);
     let mut expected = vec![0xff, 0xfe];
     expected.extend(utf16le("héllo\r\nwörld!\r\n"));
+    assert_eq!(workspace.bytes("utf16.txt"), expected);
+    let written = workspace
+        .call(
+            &reads,
+            "write",
+            json!({ "path": "utf16.txt", "content": "héllo\nmöön\n" }),
+        )
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- utf16.txt\n+++ utf16.txt\n@@ -1,2 +1,2 @@\n héllo\n-wörld!\n+möön"
+    );
+    let mut expected = vec![0xff, 0xfe];
+    expected.extend(utf16le("héllo\r\nmöön\r\n"));
     assert_eq!(workspace.bytes("utf16.txt"), expected);
 
     workspace.put("mixed.txt", b"a\r\nb\nc\r\nd\n");

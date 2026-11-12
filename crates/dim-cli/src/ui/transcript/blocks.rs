@@ -453,12 +453,13 @@ pub(crate) fn render_shell(
 }
 
 /// A compaction row shows its state and any failure reason or insufficient-space
-/// mark, with only the summary body behind the `▸`/`▾` disclosure.
+/// mark. Interactive rows show a disclosure for the summary body.
 fn render_compaction(
     state: CompactionState,
     text: &str,
     insufficient: &[CompactionPartSize],
     expanded: bool,
+    interactive: bool,
     width: usize,
     p: &Palette,
 ) -> Vec<String> {
@@ -493,7 +494,9 @@ fn render_compaction(
                 &[("parts", &sizes.join(", "))],
             ));
         }
-        header.push_str(if expanded { " ▾" } else { " ▸" });
+        if interactive {
+            header.push_str(if expanded { " ▾" } else { " ▸" });
+        }
     } else if !text.is_empty() {
         header.push_str(" · ");
         header.push_str(text);
@@ -552,12 +555,13 @@ pub(crate) fn boundary_line(label: &str, width: usize) -> String {
 }
 
 /// Draws one block as rows at `width` columns, without the spacing row and
-/// the document pad that a commit adds.
+/// the document pad that a commit adds. `interactive` enables compaction disclosures.
 pub(crate) fn render_block(
     block: &Block,
     width: usize,
     p: &Palette,
     markdown: &MarkdownRenderer,
+    interactive: bool,
 ) -> Vec<String> {
     match block {
         Block::Banner => Vec::new(),
@@ -618,7 +622,15 @@ pub(crate) fn render_block(
                     _ => crate::sanitize::safe(text),
                 }
             };
-            render_compaction(*state, &shown, insufficient, *expanded, width, p)
+            render_compaction(
+                *state,
+                &shown,
+                insufficient,
+                *expanded,
+                interactive,
+                width,
+                p,
+            )
         }
         Block::Shell(run) => {
             let shown = run.output.len().saturating_sub(SHELL_PREVIEW_LINES);

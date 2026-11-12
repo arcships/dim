@@ -86,13 +86,14 @@ no orphan rows.
 ### 2.3 UI shape and the current renderer
 
 The current CLI draws one `ToolGroup` per model request. Collapsed is one row; `summary` adds one
-row per call; `expanded` adds the call rows and their details. The disclosure is `▸` or `▾`; the
+row per call; `expanded` adds the call rows and their details. Fullscreen disclosures are `▸` or `▾`;
+scrollback omits them, following the [CLI presentation contract](../cli-commands.md#transcript-detail-settings). The
 outcome marks are `✓`, `✗` and the running mark; sections already use a header at indent 2 and
 their rows at indent 3. A child batch currently has no parent in `ViewRow`, so an unchanged client
 would open a second top-level group. That is the rendering bug this design removes.
 
 The v4 shape adds child rows to the existing group. It does not show the code body and does not add
-a second group or a second disclosure:
+a second group. These sketches use fullscreen disclosures:
 
 ```text
 ✓ Ran code · 4 tool calls ...................................... ▸
