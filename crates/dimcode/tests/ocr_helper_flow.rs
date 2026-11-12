@@ -106,7 +106,6 @@ fn line(output: &dim_agent_capabilities::host_platform::ConfinedOutput) -> Value
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Apple Vision under the macOS sandbox"]
 async fn an_image_is_recognized_under_the_confinement() {
     let input = fixture("latin.png");
     let (work, output) = run(&input, "text", None).await;
@@ -124,7 +123,6 @@ async fn an_image_is_recognized_under_the_confinement() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires Apple Vision under the macOS sandbox"]
 async fn a_pdf_rasterizes_only_the_page_without_a_text_layer() {
     let input = fixture("mixed.pdf");
     let (work, output) = run(&input, "layout", None).await;
