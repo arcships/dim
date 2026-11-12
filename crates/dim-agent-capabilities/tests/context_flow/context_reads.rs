@@ -4130,14 +4130,13 @@ async fn a_restore_asks_for_consumptions_only_for_the_inputs_it_adopts() {
                 (kinds == ["input/consumed"]).then_some(ids)
             })
             .collect();
-        // One row and one consumption call per distinct candidate. The line's
-        // own scope has no checkpoint, so the chain's newest row is the first
-        // candidate; a change the prefix delivered settles there, and one it
-        // never received makes the walk step back past that row once. The
-        // consumption calls are what count the walk, since a restore of the
-        // parent line reads the same rows.
+        // The line's own scope has no checkpoint, so the chain's newest row is
+        // read. When the change was never received the row is read again
+        // positioned before it, and the read after that settles; when the
+        // prefix delivered it the newest row is taken outright.
         assert_eq!(
-            rows, 3,
+            rows,
+            if change.inputs.is_empty() { 3 } else { 2 },
             "checkpoint rows read for a change with inputs {:?}",
             change.inputs
         );
@@ -4148,21 +4147,26 @@ async fn a_restore_asks_for_consumptions_only_for_the_inputs_it_adopts() {
                 .is_some(),
             "the child has a prompt state"
         );
+        // One consumption query, over exactly the union of the inputs the
+        // inherited changes after the last request start name: not one per
+        // candidate, and nothing wider than those ids. A System change names no
+        // input, so it contributes nothing and, when it is the only change, no
+        // query is issued at all.
         if change.inputs.is_empty() {
             assert!(
                 asked.is_empty(),
-                "an entry whose change names no input asks nothing: {asked:?}"
+                "a System entry asks about no input: {asked:?}"
             );
         } else {
-            // One consumption call per distinct candidate row: the newest
-            // chain row, and - when its boundary names a change the prefix
-            // never received - the row before it.
-            assert!(
-                (1..=2).contains(&asked.len()),
-                "one consumption call per candidate row: {asked:?}"
-            );
+            let mut expected: Vec<String> = change.inputs.clone();
+            expected.sort();
             for ids in &asked {
-                assert_eq!(ids, &change.inputs, "filtered to the adopted inputs");
+                let mut sorted = ids.clone();
+                sorted.sort();
+                assert_eq!(
+                    sorted, expected,
+                    "the query asks for exactly the inherited inputs: {asked:?}"
+                );
             }
         }
         agent.close().await.unwrap();
@@ -4436,4 +4440,296 @@ async fn a_restore_reads_a_v1_checkpoints_boundary_from_source_through() {
         "the entry the checkpoint carries survives the restore"
     );
     agent.close().await.unwrap();
+}
+
+/// A checkpoint's boundary being delivered does not mean everything it covers
+/// was: a System-delivered change has no inputs, so it is delivered wherever it
+/// is found, and a checkpoint written at it can still cover an earlier removal
+/// the line never received. The line must start from a row positioned before
+/// that removal.
+///
+/// The bundled System sources (`dim/base`, the Session entry) do not change
+/// while a session runs, so the sequence is seeded into the store rather than
+/// driven through a flow. A plugin may declare a source delivered as System, and
+/// such a source can change while main is idle; that is the case this pins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_starts_before_an_undelivered_removal_under_a_later_system_change() {
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    agent.close().await.unwrap();
+    drop(session);
+
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    // (1) main adopts the rule A, delivered by the block `i1`.
+    let adopted = timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "first",
+                    Some(InputMode::Append),
+                )))
+                .with_id("i1"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "r1".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Set {
+                        entry: PromptEntry {
+                            source: "rules".into(),
+                            version: "1".into(),
+                            body: "kept".into(),
+                            scope: scope.clone(),
+                            delivery: PromptDelivery::Context,
+                            order: 0,
+                        },
+                    }],
+                    inputs: vec!["i1".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    let adopted = adopted.last().expect("the adoption").sequence;
+    // A request consumes `i1`, so the adoption was delivered on this prefix.
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "t1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: "i1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    // A checkpoint at the adoption: the rule is live and delivered.
+    let first = timeline
+        .append(
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "prompt-state",
+                    "recovered",
+                    serde_json::to_value(RecoveredSeed {
+                        schema: "prompt-state/v2".into(),
+                        changed_through: Some(dim_agent_types::TimelinePosition {
+                            branch_id: "main".into(),
+                            sequence: adopted,
+                        }),
+                        state: RecoverySeed {
+                            entries: vec![EntryReferenceSeed {
+                                source: "rules".into(),
+                                scope: scope.clone(),
+                                event_id: store
+                                    .read(&key, adopted..=adopted)
+                                    .await
+                                    .unwrap()
+                                    .first()
+                                    .map(|record| record.event.id.clone())
+                                    .expect("the adoption event"),
+                                element_index: 0,
+                            }],
+                            revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r1".into(),
+                            }),
+                            system_revision: None,
+                        },
+                    })
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .into(),
+        )
+        .unwrap()
+        .sequence;
+    // (2) main revokes A, and the retirement input `i2` stays pending.
+    timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "retire",
+                    Some(InputMode::Append),
+                )))
+                .with_id("i2"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "r2".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Revoke {
+                        source: "rules".into(),
+                        scope: scope.clone(),
+                    }],
+                    inputs: vec!["i2".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    // (3) main writes a System-only change B: no inputs, a later revision.
+    let system = timeline
+        .append(
+            EventKind::PromptChanged(PromptChangedData {
+                timeline: "main".into(),
+                revision: "r3".into(),
+                previous: None,
+                reason: PromptChangeReason::Refresh,
+                changes: vec![PromptChange::Set {
+                    entry: PromptEntry {
+                        source: "dim/base".into(),
+                        version: "2".into(),
+                        body: "system text".into(),
+                        scope: scope.clone(),
+                        delivery: PromptDelivery::System,
+                        order: 0,
+                    },
+                }],
+                inputs: Vec::new(),
+            })
+            .into(),
+        )
+        .unwrap()
+        .sequence;
+    // (4) main writes its checkpoint at B, with A already gone.
+    timeline
+        .append(
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "prompt-state",
+                    "recovered",
+                    serde_json::to_value(RecoveredSeed {
+                        schema: "prompt-state/v2".into(),
+                        changed_through: Some(dim_agent_types::TimelinePosition {
+                            branch_id: "main".into(),
+                            sequence: system,
+                        }),
+                        state: RecoverySeed {
+                            entries: Vec::new(),
+                            revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r3".into(),
+                            }),
+                            system_revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r3".into(),
+                            }),
+                        },
+                    })
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .into(),
+        )
+        .unwrap();
+    let head = timeline.committed();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+
+    // (5) the child is cut at main's head and restores.
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent.restore_session(id).await.unwrap();
+    let child = session
+        .branch(
+            "main".into(),
+            head,
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "p2".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+        .unwrap()
+        .unwrap();
+    // The child's prefix never delivered the removal, so the rule is still live
+    // there: its state carries A, and it does not carry B's checkpoint view.
+    assert!(
+        state.entries.values().any(|entry| entry.body == "kept"),
+        "the rule the removal never delivered is still live: {:?}",
+        state
+            .entries
+            .values()
+            .map(|entry| (&entry.source, &entry.body))
+            .collect::<Vec<_>>()
+    );
+    // The gated suffix replay drops the removal it never received and applies
+    // what it did, including the System change's entry, which a configuration
+    // delivers wherever it is found.
+    assert!(
+        state
+            .entries
+            .values()
+            .any(|entry| entry.body == "system text"),
+        "the System entry after the removal applies where it is found"
+    );
+    let _ = first;
+    agent.close().await.unwrap();
+}
+
+/// The shape `prompt-state/v2` writes, restated here so the test seeds the same
+/// row a real checkpoint does.
+#[derive(serde::Serialize)]
+struct RecoveredSeed {
+    schema: String,
+    changed_through: Option<dim_agent_types::TimelinePosition>,
+    state: RecoverySeed,
+}
+
+#[derive(serde::Serialize)]
+struct RecoverySeed {
+    entries: Vec<EntryReferenceSeed>,
+    revision: Option<PromptReference>,
+    system_revision: Option<PromptReference>,
+}
+
+#[derive(serde::Serialize)]
+struct EntryReferenceSeed {
+    source: String,
+    scope: PromptScope,
+    event_id: String,
+    element_index: u64,
 }

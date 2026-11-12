@@ -150,6 +150,157 @@ fn rank(position: &TimelinePosition, segments: &[(String, u64)]) -> Result<(usiz
     Ok((index, position.sequence))
 }
 
+/// Restricts `query` to rows strictly after `at` in prefix order: on `at`'s
+/// branch above its sequence, or on any segment after `at`'s segment. The
+/// mirror of `at_source`.
+fn after_source(
+    owner: &Prompt,
+    query: &mut TimelineQuery,
+    through: u64,
+    at: &TimelinePosition,
+) -> Result<()> {
+    let segments = owner.timeline.segments(through)?;
+    if let Some((own, _)) = segments.last()
+        && *own == at.branch_id
+    {
+        // S is on this line's own branch, so everything after it is too.
+        query.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                query.query.filter.take().expect("source kind filter"),
+                eq("position.branch_id", json!(at.branch_id)),
+                QueryFilter::Compare {
+                    left: QueryOperand::Field {
+                        path: "position.sequence".into(),
+                    },
+                    comparison: QueryComparison::Gt,
+                    right: QueryOperand::Value {
+                        value: json!(at.sequence),
+                    },
+                },
+            ],
+        });
+        return Ok(());
+    }
+    let (last, _) = rank(at, &segments)?;
+    let conditions = segments
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index >= last)
+        .map(|(index, (branch, _))| {
+            let branch_filter = eq("position.branch_id", json!(branch));
+            if index != last {
+                branch_filter
+            } else {
+                QueryFilter::And {
+                    conditions: vec![
+                        branch_filter,
+                        QueryFilter::Compare {
+                            left: QueryOperand::Field {
+                                path: "position.sequence".into(),
+                            },
+                            comparison: QueryComparison::Gt,
+                            right: QueryOperand::Value {
+                                value: json!(at.sequence),
+                            },
+                        },
+                    ],
+                }
+            }
+        })
+        .collect();
+    query.query.filter = Some(QueryFilter::And {
+        conditions: vec![
+            query.query.filter.take().expect("source kind filter"),
+            QueryFilter::Or { conditions },
+        ],
+    });
+    Ok(())
+}
+
+/// The earliest change after the prefix's last request start that this line did
+/// not receive, or `None` when it received them all.
+///
+/// A request consumes every pending input when it starts, so every change at or
+/// before **S**, the last `turn/start`, was delivered. Only a change another
+/// line wrote after **S** can be undelivered, and the earliest such change is
+/// **E**: one query reads them, one `consumed` call over their union of inputs
+/// answers all of them, and E is the first whose inputs are not all consumed.
+async fn earliest_undelivered(owner: &Prompt, through: u64) -> Result<Option<TimelinePosition>> {
+    let mut last_start = request(
+        TimelineQueryScope::Chain,
+        through,
+        &["turn/start"],
+        &["position"],
+    );
+    last_start.query.pick = Some(QueryPick::Last);
+    last_start.page.as_mut().unwrap().limit = NonZeroU64::MIN;
+    let Some(row) = last(owner, last_start).await? else {
+        // Nothing has started a request, so nothing is consumed: every inherited
+        // change is undelivered, and the first one is the answer.
+        return first_undelivered(owner, through, None).await;
+    };
+    let [position] = <[_; 1]>::try_from(row).expect("request start position");
+    let start: TimelinePosition = decode(position)?;
+    if start.branch_id == owner.identity.branch_id {
+        // Every inherited change precedes a request on the line itself.
+        return Ok(None);
+    }
+    first_undelivered(owner, through, Some(start)).await
+}
+
+async fn first_undelivered(
+    owner: &Prompt,
+    through: u64,
+    after: Option<TimelinePosition>,
+) -> Result<Option<TimelinePosition>> {
+    let mut query = request(
+        TimelineQueryScope::Chain,
+        through,
+        &["prompt/changed"],
+        &["position", "data.timeline", "data.inputs"],
+    );
+    if let Some(after) = &after {
+        after_source(owner, &mut query, through, after)?;
+    }
+    let mut changes = Vec::new();
+    let mut after = query.page.as_mut().unwrap().after.clone();
+    loop {
+        let mut page = query.clone();
+        page.page.as_mut().unwrap().after = after.clone();
+        let reply = owner.timeline.query(page).await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("prompt changes after a request start")
+        };
+        for row in rows {
+            let [position, timeline, inputs] =
+                <[_; 3]>::try_from(row.values).expect("change header");
+            let position: TimelinePosition = decode(position)?;
+            let inputs = match inputs {
+                QueryValue::Missing => Vec::new(),
+                inputs => decode(inputs)?,
+            };
+            let timeline: String = decode(timeline)?;
+            if inputs.is_empty() || timeline == owner.identity.branch_id {
+                continue;
+            }
+            changes.push((position, inputs));
+        }
+        let Some(next) = reply.next else { break };
+        after = Some(next);
+    }
+    let union: Vec<String> = changes
+        .iter()
+        .flat_map(|(_, inputs)| inputs.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let received = consumed(owner, &union, through).await?;
+    Ok(changes
+        .into_iter()
+        .find(|(_, inputs)| !inputs.iter().all(|input| received.contains(input)))
+        .map(|(position, _)| position))
+}
+
 fn at_source(
     owner: &Prompt,
     query: &mut TimelineQuery,
@@ -441,56 +592,6 @@ async fn boundary_of(owner: &Prompt, row: &[QueryValue]) -> Result<Boundary> {
 /// A checkpoint row's boundary, whatever schema wrote it.
 struct Boundary {
     changed: Option<TimelinePosition>,
-}
-
-/// The change at `position`, as the boundary it names.
-async fn change_at(
-    owner: &Prompt,
-    through: u64,
-    position: &TimelinePosition,
-) -> Result<PromptChangedData> {
-    let mut query = request(
-        TimelineQueryScope::Chain,
-        through,
-        &["prompt/changed"],
-        &["data.timeline", "data.revision", "data.inputs"],
-    );
-    query.query.filter = Some(QueryFilter::And {
-        conditions: vec![
-            query.query.filter.take().expect("the kind filter"),
-            eq("position.branch_id", json!(position.branch_id)),
-            QueryFilter::Compare {
-                left: QueryOperand::Field {
-                    path: "position.sequence".into(),
-                },
-                comparison: QueryComparison::Eq,
-                right: QueryOperand::Value {
-                    value: json!(position.sequence),
-                },
-            },
-        ],
-    });
-    query.page.as_mut().unwrap().limit = NonZeroU64::MIN;
-    let QueryOutput::Rows { rows } = owner.timeline.query(query).await?.result else {
-        unreachable!("the change at a boundary")
-    };
-    let row = rows
-        .into_iter()
-        .next()
-        .ok_or_else(|| AgentError::fault("Prompt", "missing prompt boundary change"))?;
-    let [timeline, revision, inputs] = <[_; 3]>::try_from(row.values).expect("change header");
-    let inputs = match inputs {
-        QueryValue::Missing => Vec::new(),
-        inputs => decode(inputs)?,
-    };
-    Ok(PromptChangedData {
-        timeline: decode(timeline)?,
-        revision: decode(revision)?,
-        previous: None,
-        reason: PromptChangeReason::Refresh,
-        changes: Vec::new(),
-        inputs,
-    })
 }
 
 impl Projection {
@@ -867,29 +968,25 @@ impl Projection {
                 "data.source_through",
             ],
         );
-        // A checkpoint is its writer's view at a boundary, so a line starts
-        // from the newest one in its chain whose boundary change it received
-        // itself: its own change, a change that names no input, or one whose
-        // inputs were all consumed in its prefix. When the newest row's
-        // boundary names a change it never received, the walk steps back to
-        // the newest row positioned before that change and asks again; the
-        // suffix replay then drops that change and applies the later delivered
-        // ones.
+        // A line starts from the newest checkpoint positioned before its first
+        // undelivered change. A request consumes every pending input when it
+        // starts, so every change at or before the prefix's last `turn/start`
+        // was delivered; only a change another line wrote after it can be
+        // undelivered, and the earliest of those is `E`. The row taken is the
+        // newest one positioned before `E`, or the newest when there is no `E`.
+        // Its boundary then precedes every undelivered change, so all the
+        // changes it covers were delivered and nothing needs rejecting.
         //
-        // The walk is bounded by the changes undelivered at the cut: a request
-        // consumes every pending input when it starts, so only a change an
-        // ancestor wrote after its last request start can be undelivered
-        // there.
-        // The line's own row is the first candidate, and the chain's rows are
-        // the rest. `before` is the boundary of the last row rejected, so each
-        // step reads a distinct row: the chain never re-reads the own row it
-        // just left.
-        let mut before: Option<TimelinePosition> = None;
+        // Cost, constant in the length of history: one read for the last
+        // request start, one for the changes after it, one consumption query
+        // over their union of inputs, and at most two candidate reads, the
+        // line's own row and then the chain's.
+        let undelivered = earliest_undelivered(owner, through).await?;
         let mut scope = TimelineQueryScope::Branch;
         let saved_row = loop {
             let mut query = saved.clone();
             query.scope = scope;
-            at_source(owner, &mut query, through, before.as_ref())?;
+            at_source(owner, &mut query, through, undelivered.as_ref())?;
             let Some(row) = last(owner, query).await? else {
                 if scope == TimelineQueryScope::Branch && !owner.timeline.ancestors().is_empty() {
                     // The line has no checkpoint of its own: the chain's are
@@ -897,30 +994,13 @@ impl Projection {
                     scope = TimelineQueryScope::Chain;
                     continue;
                 }
-                // No row predates the change the line never received. The
-                // gated replay from nothing is right in both directions - a
-                // `Set` and a `Revoke` alike - so restore initializes.
+                // Nothing predates the first undelivered change. The gated
+                // replay from nothing is right in both directions, a `Set` and
+                // a `Revoke` alike, so restore initializes.
                 break None;
             };
             let boundary = boundary_of(owner, &row).await?;
-            let boundary = boundary.changed;
-            let received = match &boundary {
-                None => true,
-                Some(boundary) => {
-                    let change = change_at(owner, through, boundary).await?;
-                    delivered(owner, &owner.identity.branch_id, &change, through).await?
-                }
-            };
-            if received {
-                break Some((row, boundary));
-            }
-            if scope == TimelineQueryScope::Branch {
-                // Its own row does not qualify. Step back past its boundary, so
-                // the chain's next read is the row before it, not this one
-                // again.
-                scope = TimelineQueryScope::Chain;
-            }
-            before = boundary;
+            break Some((row, boundary.changed));
         };
         let mut initialize = false;
         if let Some((row, boundary)) = saved_row {
