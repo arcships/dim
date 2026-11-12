@@ -5933,12 +5933,12 @@ impl App {
             let rows = if expanded {
                 streamed_thinking(&text, elapsed_ms, width, &self.palette)
             } else {
-                render_block(&source, width, &self.palette, &self.markdown)
+                render_block(&source, width, &self.palette, &self.markdown, false)
             };
             let stable = if row.streaming && source_text.is_empty() {
                 0
             } else {
-                render_block(&source, width, &self.palette, &self.markdown).len()
+                render_block(&source, width, &self.palette, &self.markdown, false).len()
             };
             let continues = stream.written > 0;
             let new = &rows[stream.written.min(stable)..stable];
@@ -6709,6 +6709,21 @@ impl App {
             self.redraw_window();
         } else {
             self.refresh_tool_choices();
+            for block in &mut self.history {
+                if let Block::Compaction {
+                    expanded,
+                    text,
+                    detail,
+                    ..
+                } = block
+                {
+                    *expanded = self.tool_detail == Detail::Expanded;
+                    if !*expanded && detail.is_some() {
+                        *text = "".into();
+                    }
+                }
+            }
+            self.sync_compaction_details();
             self.settle_committed_messages();
         }
         self.request_reflow();
@@ -13334,11 +13349,44 @@ mod tests {
                 let frame = reopened.frame((44, 40));
                 let switched = strip_escapes(&reopened.reflow_history(44).join("\n"))
                     + &strip_escapes(&frame.live.join("\n"));
+                assert!(
+                    !switched.contains("The build configuration was checked."),
+                    "switching modes restores the collapsed compaction preset: {switched}"
+                );
                 assert_eq!(
                     switched.contains("Context compacted ▸"),
                     !fullscreen,
                     "{switched}"
                 );
+                if fullscreen {
+                    for detail in [Detail::Collapsed, Detail::Summary, Detail::Expanded] {
+                        reopened.set_fullscreen(true);
+                        let _ = reopened.frame((44, 40));
+                        let block = reopened.dropped
+                            + reopened
+                                .history
+                                .iter()
+                                .position(|block| matches!(block, Block::Compaction { .. }))
+                                .unwrap();
+                        assert!(reopened.click(Some(block), 1, 44));
+                        let toggled = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            toggled.contains("The build configuration was checked."),
+                            detail != Detail::Expanded,
+                            "{toggled}"
+                        );
+                        reopened.set_fullscreen(false);
+                        let _ = reopened.frame((44, 40));
+                        let restored = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            restored.contains("The build configuration was checked."),
+                            detail == Detail::Expanded,
+                            "{restored}"
+                        );
+                        assert!(!restored.contains(['▸', '▾']), "{restored}");
+                        reopened.run_command("tools", "");
+                    }
+                }
             }
         }
     }
@@ -16042,7 +16090,11 @@ mod tests {
             assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
             assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
             drop(body);
-            assert!(drawn.app.click(Some(block), 1, 100));
+            if fullscreen {
+                drawn.app.set_fullscreen(false);
+            } else {
+                assert!(drawn.app.click(Some(block), 1, 100));
+            }
             assert!(
                 matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
             );

@@ -34,7 +34,9 @@ counted (`python ×2, rg`), including shell calls classified as reads or searche
 The header remains one terminal row. Scrollback tool headers and their child
 rows show no disclosure arrows in any detail mode; compaction rows follow the
 same rule. Their details remain controlled by `/tools` and Settings, not by
-clicking individual rows. Fullscreen retains its interactive disclosures.
+clicking individual rows. Fullscreen retains its interactive disclosures,
+including when a header is truncated.
+Returning to scrollback restores compaction bodies to the tool-detail preference.
 Other tools retain their existing header summaries. Summary
 adds one row per call, in call order, naming its tool and input target or command,
 without output, diffs or script bodies. Each row truncates to one terminal row;
