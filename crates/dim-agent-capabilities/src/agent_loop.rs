@@ -56,6 +56,12 @@ struct Turn {
     /// Set for a turn rebuilt after a reload: it ends Failed once its
     /// outstanding operations have terminals, and starts no new work.
     failed: Option<String>,
+    /// The turn's one automatic continuation is spent. ModelRecovery's
+    /// handover continuation and this Loop's continuation for calls that
+    /// were never executed are both §6.2 continuations, so they spend the
+    /// same slot (model-retry-recovery §6.2). Budget recovery is a separate
+    /// contract and does not read it.
+    continued: bool,
 }
 /// An applied input waiting for this Loop to consume it.
 struct Applied {
@@ -219,6 +225,7 @@ impl AgentLoop {
             ending: false,
             interrupted: None,
             failed: None,
+            continued: false,
         });
         self.timeline
             .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
@@ -849,6 +856,7 @@ impl AgentLoop {
                     ending: false,
                     interrupted: None,
                     failed: Some(CAPABILITY_RELOADING.into()),
+                    continued: false,
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -1483,7 +1491,23 @@ impl AgentLoop {
             }
             EventKind::ModelOutputEnd(data) if request.stage == Stage::Model => {
                 match &data.outcome {
-                    ModelOutputOutcome::Failed { error, budget, .. } => {
+                    ModelOutputOutcome::Failed {
+                        error,
+                        budget,
+                        failure,
+                        ..
+                    } => {
+                        // In order: the context-budget recovery keeps its own
+                        // contract and reads neither the turn's continuation nor
+                        // its slot; then one §6.2 continuation for a step whose
+                        // calls were announced and never executed; then an
+                        // output-limit stop, which ends the turn Completed because
+                        // no answer can be completed rather than because one
+                        // failed; then a failure.
+                        let limit = matches!(
+                            failure.as_deref().map(|failure| failure.kind),
+                            Some(ModelFailureKind::OutputLimit)
+                        );
                         if self.policy.is_some()
                             && budget.is_some()
                             && request
@@ -1494,6 +1518,21 @@ impl AgentLoop {
                             let mut source = request.source.clone().expect("checked source");
                             source.recovery = budget.clone();
                             self.next_model(turn, Some(source), event.sequence)?;
+                        } else if !request.started.is_empty()
+                            && !turn.continued
+                            && turn.interrupted.is_none()
+                            && !self.driven()
+                        {
+                            turn.continued = true;
+                            self.binding.release(&request.id);
+                            self.next_model(turn, None, event.sequence)?;
+                        } else if limit && turn.interrupted.is_none() {
+                            self.end(
+                                turn,
+                                TurnOutcome::Completed {
+                                    reason: "output_limit".into(),
+                                },
+                            )?;
                         } else {
                             self.end(
                                 turn,
