@@ -129,6 +129,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon no admite renombrar sesiones"
         }
         "Renaming failed" => "Error al renombrar",
+        "Delete \"{name}\"?" => "¿Eliminar «{name}»?",
+        "Deleted {name}." => "{name} eliminada.",
+        "Nothing was removed: no stored Session {name}." => {
+            "No se eliminó nada: no hay ninguna sesión guardada {name}."
+        }
+        "Delete failed" => "Error al eliminar",
+        "This daemon does not support deleting Sessions" => {
+            "Este daemon no admite eliminar sesiones"
+        }
         "Starting" => "Iniciando",
         "Delegation result" => "Resultado de delegación",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -387,9 +396,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "salir",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter elegir · ←/→ esfuerzo · Ctrl+X borrar guardado · Esc borrar/cerrar"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter elegir + predeterminado · ←/→ esfuerzo · Ctrl+X borrar guardado · Esc borrar/cerrar"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Modelo por defecto para sesiones nuevas en {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Modelo por defecto para sesiones nuevas: {model}",
         "Enter select · Esc clear/close" => "Enter elegir · Esc borrar/cerrar",
         "esc close" => "esc cerrar",
         "Suggestions" => "Sugerencias",
@@ -397,6 +410,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill cargado: {name}",
         "Hook context · {count} line" => "Contexto del hook · {count} línea",
         "Hook context · {count} lines" => "Contexto del hook · {count} líneas",
+        "Stop hook follow-up · {count} line" => "Seguimiento del hook Stop · {count} línea",
+        "Stop hook follow-up · {count} lines" => "Seguimiento del hook Stop · {count} líneas",
         "Commands" => "Comandos",
         "Command Palette" => "Paleta de comandos",
         "No matches" => "Sin coincidencias",
@@ -453,8 +468,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "No hay sesiones guardadas en este espacio de trabajo. Ctrl+S muestra más."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter abrir · Ctrl+S ámbito · Ctrl+R actualizar · Esc cerrar"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter abrir · Ctrl+X eliminar · Ctrl+S ámbito · Ctrl+R actualizar · Esc cerrar"
         }
         "Loading sessions..." => "Cargando sesiones…",
         "No saved sessions yet." => "Sin sesiones guardadas aún.",
@@ -609,6 +624,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "El App Server sigue siendo {server} porque otros clientes lo están usando; este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando, y habla el protocolo v{protocol}, que este cliente {client} no puede usar. No se inició ninguna sesión. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando (conexiones: {connections}, sesiones adjuntas: {attached}, turnos en ejecución: {running}), y habla el protocolo v{protocol}, que este cliente {client} no puede usar. No se inició ninguna sesión. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "El App Server sigue siendo {server} porque otros clientes lo están usando (conexiones: {connections}, sesiones adjuntas: {attached}, turnos en ejecución: {running}); este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."

@@ -110,8 +110,16 @@ are isolated by Session, line, request and call identity, remain in client
 memory only, and are not Timeline facts. The preset affects unchosen and future
 nodes without clearing manual choices. Scrollback already
 written to the terminal remains append-only; fullscreen redraws retained history.
-A hook context's body follows the same rule: collapsed and summary keep it closed,
-only expanded opens it, and a click on the row toggles that row alone.
+A runtime block a hook wrote follows the same rule: collapsed and summary keep
+a hook context's or a `Stop` follow-up's body closed, only expanded opens it,
+and a click on the row toggles that row alone.
+
+In scrollback, expanded thinking streams its complete body into native terminal
+history, without a preview line limit or an omitted-prefix marker. Only the
+unfinished wrapping tail remains live. A streamed thought has a fixed `Thought`
+heading and appends its duration below the body on completion; it never prints
+the body again to replace the heading. Collapsed thinking remains a single-row
+summary. Fullscreen and the line side panel retain their existing previews.
 
 ## Command menu
 
@@ -1174,11 +1182,14 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` removes without the panel's confirmation, and `dimcode
 models PROVIDER inspect MODEL` prints the lines the detail shows.
+
+Enter also writes the default a new Session in this folder reads ([provider management
+§4](appserver/provider-management.md#4-client-integration)).
 
 Bare `/effort` and `/reasoning` open the current model's inline effort picker in both TUI
 modes; explicit-value forms and the line client keep their command behavior. The selection
@@ -1417,24 +1428,11 @@ owner reports the list and its Settings revision with `permission.rules`, and re
 list at that revision with `permission.set_rules`; a stale revision is
 `permission_rules_conflict`.
 
-The row is appended after the three presets, so the existing rows keep their positions. It opens
-this area's panel, and Esc there returns to the Permissions panel.
+The row is in the Permissions panel's Related settings group, after the three presets (see
+[permission controls](#permission-controls)). It opens this area's panel, and Esc there returns
+to Permissions with Command rules still focused.
 
 ```text
-╭─ Permissions ─────────────────────────────────────────────────╮
-│ >                                                             │
-│   Read only            reads only; writes and commands are    │
-│                        refused                                │
-│   Workspace write      writes inside the workspace; asks      │
-│                        outside it                             │
-│   Full access          no path limits; tools run without      │
-│                        asking                                 │
-│   Command rules                                             › │
-│   Process isolation                                Settings › │
-│                                                               │
-│   The preset fixes the path boundary.                         │
-╰──── ↑↓/Tab move · Enter apply · Esc close ────────────────────╯
-
 ╭─ Command rules ───────────────────────────────────────────────╮
 │ >                                                             │
 │   user                                                        │
@@ -1509,7 +1507,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
-| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace. |
+| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace, and `Ctrl+X` deletes one row after a confirmation. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/export` in either terminal UI | Choose Markdown or JSON in a dialog for an opened Session; save a uniquely named file in the CLI current directory. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
@@ -1578,7 +1576,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `!command` / `!!command` | Call the Session's existing `shell.run` in record/private mode, including during a model turn. |
 | `--permission read-only\|workspace-write\|full-access` | Select the preset of a new or resumed Session for `dimcode`, `tui`, `exec` and `exec resume` ([permission controls](#permission-controls)). |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | Read and write the goal of the shown line, in the line client and both terminal UI modes ([goal](#goal)). |
-| `/permissions` | Open the Permissions panel: the three presets with what each one allows, directions to Settings for process isolation, and the Command rules row that lists, adds and removes the user's command rules ([permission controls](#permission-controls)). |
+| `/permissions` | Open the Permissions panel: Permission mode groups the three presets with effective radio markers; Related settings groups the Command rules and Process isolation submenu links. Only the focused entry's Hint explains its scope and consequences ([permission controls](#permission-controls)). |
 | `/approvals`, `/approval` | Compatibility aliases for `/permissions`; preset arguments remain supported. |
 
 `dimcode hooks` writes only the user's hook document, and only through the edit kind: `dimcode hooks
@@ -1738,7 +1736,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1748,7 +1746,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1758,7 +1756,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - A scope change works like a new query: it cancels the pending read, drops the
@@ -1791,6 +1789,27 @@ the selection down.
   workspace, membership in the git set, or no filter.
 - `dimcode --resume ID` resumes a Session of any workspace, and cleanup selects
   across every workspace.
+- `Ctrl+X` removes the selected row after `Delete "{name}"? Enter confirm ·
+  Esc cancel`, where `{name}` is the row's label without its origin tag,
+  captured when the key was pressed — a page, a scope answer or a refresh
+  never retargets the question, and Enter never looks the row up again. The
+  question takes every key: Enter sends `session.delete {sessionId}` (no
+  `requireInactive`, so a Session a turn is running in is deleted too, its
+  close settling the run), every other key cancels it, and Esc does not close
+  the picker. While the daemon answers, the rows stay drawn and no key acts
+  but Esc, which closes the picker: the delete may wait on a slow close, and
+  the outcome is reported in the transcript wherever the operator is.
+  The row leaves on `{deleted:true}` with `Deleted {name}.`, a
+  `{deleted:false}` reply re-reads the first page and says `Nothing was
+  removed: no stored Session {name}.`, an error keeps the row and shows
+  `Delete failed · <daemon's sentence>`, and a daemon without `session.delete`
+  keeps the row and says it cannot delete Sessions. A Session another caller
+  removed before this reply is that `{deleted:false}`: there was nothing left
+  to remove. Deleting the shown Session returns to Home as `/new` does and
+  reports no disconnect, whether the delete succeeded or the close ran and
+  the removal failed (`-32603`): its queued `session.state` and
+  `session.closed` match no Session and are ignored. One row at a time;
+  `dimcode session cleanup` keeps the bulk selector.
 
 ### Session titles
 
@@ -1838,7 +1857,9 @@ and on `false` the command prints `Nothing was removed: no stored Session ID.` o
 and exits 1. An id the daemon holds no rows of is a successful delete that removed
 nothing; that is not a usage error, a malformed command line is. A reply without the
 field, from an App Server before it, reads as a delete: the rows are gone either way,
-which is the state asked for.
+which is the state asked for. The TUI's `/resume` calls the same method on one row
+with the same reply meanings ([the `/resume` picker](#the-resume-picker)) and never
+deletes in bulk.
 
 `dimcode session cleanup` composes deletion from the same two methods, as
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) requires. It
@@ -1865,9 +1886,12 @@ time and can become eligible for deletion:
 Cleanup selects across every workspace, not only the one `/resume` opens on: the
 classes it selects are the ones `/resume` lists by default
 ([classification](appserver/session-classification.md#35-catalog-visibility)): origin
-`client` or `unknown`. An `internal` Session is never selected: a member goes with
-its leader's delete and a launched Session belongs to its plugin. An `acp` Session is
-never selected either; `dimcode session delete ID` deletes one. A Session it does not
+`client` or `unknown`. The list is positive, so an origin it does not name is never
+selected. An `internal` Session is never selected: a member goes with its leader's
+delete and a launched Session belongs to its plugin. An `acp` Session is
+never selected either; `dimcode session delete ID` deletes one. An `automation` one is
+the same: a saved configuration launched it, and the plugin that launched it removes it
+with its own retention. A Session it does not
 select neither counts toward `--keep N` nor appears in the preview.
 
 A Session with a running turn or an attached client is kept: the preview lists the
@@ -2018,6 +2042,10 @@ as conflicts; retry does not replay them over later user changes.
 
 P1 shell prefixes apply only to interactive input. Their execution, recording,
 progress, cancellation and lifetime follow [ShellInput](plugins/ShellInput.md).
+At Home, the first `!` or `!!` command creates and attaches the Session using
+the same launch settings and selected model as the first ordinary message,
+then calls `shell.run` without starting a model turn. A creation failure settles
+the command as failed and leaves Home available for configuration and retry.
 The CLI generates `runId` before sending the request and never retries a run.
 The command after the prefix is passed verbatim; an empty command prints usage.
 While a command is pending, a second shell line reports that the caller already
@@ -2279,19 +2307,9 @@ remain `session.grants.add/remove` ([ADR 012](../adr/012-session-grants.md)).
 | Path scope | Fixed by the preset and Session grants | [file access facts](../adr/014-file-access-facts.md) |
 | Process isolation | Off / Sandboxed · No network / Sandboxed · Network allowed | `execution` settings, not Permission |
 
-```text
-/permissions
-  > Read only        reads only; writes and commands are refused
-    Workspace write  writes inside the workspace; asks outside it
-    Full access      no path limits; tools run without asking
-    Command rules    >
-    Process isolation  Settings >
-  The preset fixes the path boundary.
-```
-
-`↑↓` moves, `Enter` applies the highlighted preset, `Esc` closes. There is no second policy
-control: a preset answers both what may run and what is asked first, so a client never presents
-file scope or process isolation as a permission dimension
+The [Permissions panel](#permissions) groups the Session's preset separately from user-wide
+settings. There is no second policy control: a preset answers both what may run and what is
+asked first, so a client never presents file scope or process isolation as a permission dimension
 ([ADR 018](../adr/018-permission-is-the-preset.md)).
 
 The presets decide by risk, after `disallowedTools` and deny rules, with the existing file checks
@@ -2301,7 +2319,7 @@ taking precedence:
 | --- | --- |
 | `read-only` | Reads of the workspace, system roots, Session-owned files and granted paths run, and other reads ask; Session tools run; file writes, commands, network and unclassified tools are denied |
 | `workspace-write` | Those reads run and other reads ask; workspace file writes and Session tools run; writes to system roots or Session-owned files are denied; other outside writes without a matching write grant, commands, network and unclassified tools ask |
-| `full-access` | Every tool call runs without asking |
+| `full-access` | Skips preset approval; explicit denials and process isolation remain in force |
 
 A deny rule applies under every preset. An allow rule only turns a question into a run for a
 simple command; it never lifts a denial. The product and configured daemon profiles create
@@ -2486,10 +2504,11 @@ approves nor cancels work by that fact alone.
 same preset picker as compatibility aliases. The control applies to `main`; selecting a preset
 uses the current policy and version, preserving the tool lists. A failed save neither changes remembered choices nor falls back to another preset.
 
-The Process isolation row links to the Settings control; Esc returns to this panel.
+The Process isolation row links to the Settings control; Esc returns to this panel with that row focused.
 The Command rules row opens the management panel
 of [The command rules area](#the-command-rules-area), where the rules are listed, added and
-removed; Esc there returns to this panel.
+removed; Esc there returns to this panel with Command rules focused. Both TUI modes preserve
+focus on return, including when Permissions was opened from Settings.
 
 Arguments after `/permissions` in the terminal UI open that panel instead of being ignored, and
 it opens holding one line that says where arguments work — the line prompt and `dimcode
@@ -2497,26 +2516,47 @@ permissions` — which stands above the panel's answers until the user's first k
 long the opening read takes; the compact grammar belongs to the line prompt.
 
 ```text
-Permissions (main branch)
-> Read only        reads only; writes and commands are refused
-  Workspace write  writes inside the workspace; asks outside it
-  Full access      no path limits; tools run without asking
-  Command rules                             >
-  Process isolation                 Settings >
-
-The preset fixes the path boundary.
-
-↑↓/Tab move · Enter apply · Esc close
+╭─ Permissions ──────────────────────────────────────────────────────────╮
+│ Permission mode                                                        │
+│   ( ) Read only                                                        │
+│   (*) Workspace write                                                  │
+│   ( ) Full access                                                      │
+│ Related settings                                                       │
+│   Command rules  ›                                                     │
+│   Process isolation  ›                                                 │
+│                                                                        │
+│ Hint: Current session; remembered for new sessions. Workspace writes    │
+│       allowed; commands, network and ungranted outside access usually   │
+│       ask.                                                             │
+╰──── ↑↓/Tab move · Enter keep mode · Esc close ──────────────────────────╯
 ```
 
-Each row states what its preset allows and what it asks, so the choice needs no second menu.
-Merely opening the panel writes nothing; `Enter` writes the preset through the versioned update,
-and the tool lists are preserved. The notes state that the preset fixes the path boundary and
-point to Settings for process isolation.
+The two group headings are not selectable. Their titles use bold accent text, aligned two
+columns to the left of the choices, without scope captions. The panel title remains in
+the border and explanations remain below the choices. Color and indentation distinguish
+headings from selectable content without adding rows on short terminals.
+`(*)` marks the effective preset, independently of
+the focused row; other presets use `( )`. Focus uses the existing selection highlight.
+Related settings use `›`, not radio markers. Live policy updates change the effective marker
+without moving focus. Only the focused entry's explanation appears in Hint. For presets,
+it states that the choice applies to the current Session and is remembered for new Sessions;
+the startup behavior remains defined by [Startup selection](#startup-selection). Read only denies
+writes and commands while external reads may
+ask; Workspace write permits workspace writes and usually asks for commands, network and
+ungranted outside access; Full access skips preset approval and reevaluates pending calls on
+the target branch, while explicit denials and isolation remain. Command rules are user-wide;
+allow rules only skip asks, never denials. Process isolation's Hint identifies its user-wide
+scope; it opens Settings, affects new
+processes and is independent of the permission mode.
 
-Choosing Full access explains that explicit denies remain and process
-isolation is unchanged; it does not claim every call will run. No combined permissive shortcut
-appears in an approval prompt.
+`↑↓`/`Tab` move between entries and `Esc` closes. The footer says `Enter use mode` for an
+inactive preset, `Enter keep mode` for the effective preset, or `Enter open` for a submenu.
+Merely opening or navigating the panel writes nothing. With a Session, `Enter` on a preset reads
+the current policy; only if the focused preset differs does it write a versioned update,
+preserving the tool lists. Keeping the already-effective preset writes no policy update.
+A successful selection still saves the preference for later Sessions, even when no policy update
+was needed (see [Startup selection](#startup-selection)); on Home the marker reflects that
+preference until a Session exists. No combined permissive shortcut appears in an approval prompt.
 
 At the line prompt the no-argument command prints the effective preset and numbered command rules
 when supported. The printed rules and revision are kept for `remove`.
@@ -2540,7 +2580,7 @@ Command rules (user scope, every Session):
 | Form | Calls | Conflict |
 | --- | --- | --- |
 | `/permissions` | `session.permission.get` on `main`; `permission.rules`; existing execution settings read | none |
-| Preset selection in the panel | `get`, then `update` preserving the tool lists | Re-read before any retry; never replace the tool lists |
+| Preset selection in the panel (with a Session) | `get`; only if the preset differs, `update` preserving the tool lists | Re-read before any retry; if the requested preset is now effective, write nothing; never replace the tool lists |
 | `/permissions PRESET` | `get`; for `full-access` a `[y/N]` confirmation where Enter, any other answer, EOF and Ctrl+C mean No; then `update` with the read version and otherwise unchanged policy | `permission_conflict`: read again, print the current policy, write nothing; the user decides again |
 | `/permissions allow\|deny exact\|prefix COMMAND` | `permission.rules`; unless the same rule exists, `set_rules(revision, rules + rule)`, then print the new list | read again and retry, at most 3 attempts: adding does not depend on the other rules |
 | `/permissions remove N` | `set_rules(listing revision, listing without rule N)`, then print the new list | `permission_rules_conflict`: read again, print the current list, remove nothing |
