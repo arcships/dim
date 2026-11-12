@@ -1,9 +1,10 @@
 use dim_agent_runtime::{AgentError, Result, panic_message};
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags};
 use rutis::host::ErrorKind;
 use rutis::{Ctx, Plugin};
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -531,6 +532,36 @@ fn storage(error: impl std::fmt::Display) -> AgentError {
     AgentError::Storage(error.to_string())
 }
 
+/// The rows `PRAGMA foreign_key_check` reports, counted by `(table, parent)`.
+/// It returns one row per offending row, so the count needs no ordering and no
+/// second pass: the reference counts are what an upgrade compares.
+fn violations(connection: &Connection) -> Result<BTreeMap<(String, String), i64>> {
+    let mut counts = BTreeMap::new();
+    let mut check = connection
+        .prepare("SELECT * FROM pragma_foreign_key_check")
+        .map_err(storage)?;
+    let mut rows = check.query([]).map_err(storage)?;
+    while let Some(row) = rows.next().map_err(storage)? {
+        let table: String = row.get(0).map_err(storage)?;
+        let parent: String = row.get(2).map_err(storage)?;
+        *counts.entry((table, parent)).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// The first `(table, parent)` pair an upgrade left with more violations than
+/// it found, with both counts. A pair that is unchanged or smaller is a state
+/// the store already documented, which a retry converges.
+fn grew(
+    after: BTreeMap<(String, String), i64>,
+    before: &BTreeMap<(String, String), i64>,
+) -> Option<(String, String, i64, i64)> {
+    after.into_iter().find_map(|(pair, count)| {
+        let found = before.get(&pair).copied().unwrap_or(0);
+        (count > found).then_some((pair.0, pair.1, found, count))
+    })
+}
+
 /// The store upgrade a running daemon reports beside the store, when the note
 /// there is that kind: the process to wait for and the formats it moves
 /// between.
@@ -975,6 +1006,9 @@ impl SqliteStorage {
             ))
         };
         let mut upgraded_from = None;
+        // What the store left dangling before any upgrade step ran, by
+        // `(table, parent)`; read only on the upgrade path.
+        let mut violations_before: BTreeMap<(String, String), i64> = BTreeMap::new();
         if actual.is_empty() {
             for (_, sql) in SCHEMA
                 .iter()
@@ -1033,6 +1067,10 @@ impl SqliteStorage {
                 } else {
                     version
                 };
+                // What the store already leaves dangling, before any step runs:
+                // an interrupted `drop_session` or `copy_fork_rows` is a state
+                // the store documents, not damage.
+                violations_before = violations(&connection).map_err(storage)?;
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= upgrade_from) {
                     if *from == 26 {
                         connection.execute_batch(V27_COLUMNS).map_err(storage)?;
@@ -1174,23 +1212,22 @@ impl SqliteStorage {
             connection.execute_batch(sql).map_err(storage)?;
         }
         // The transaction ran with foreign keys off (see its opening), so an
-        // upgrade checks what a business write would have: a reference a step
-        // left dangling refuses the store rather than admitting it. An
-        // ordinary open writes nothing, so it needs no pass.
+        // upgrade compares the violations it found with the ones it leaves: a
+        // pair whose count grew refuses the store, and one that is unchanged or
+        // shrank passes. The upgrade must not hide a violation it created, not
+        // repair one — `drop_session` and `copy_fork_rows` leave deliberate
+        // interrupted states that a retry converges, and they name pairs such as
+        // `timeline_events → timeline_branches` that no rebuild of
+        // `agent_sessions` can change. An ordinary open writes nothing, so it
+        // needs no pass.
         if upgraded_from.is_some()
-            && let Some((table, parent)) = connection
-                .prepare("PRAGMA foreign_key_check")
-                .and_then(|mut check| {
-                    check
-                        .query_row([], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(2)?))
-                        })
-                        .optional()
-                })
-                .map_err(storage)?
+            && let Some((table, parent, before, after)) = grew(
+                violations(&connection).map_err(storage)?,
+                &violations_before,
+            )
         {
             return Err(storage(format!(
-                "the upgraded store at {} holds a row of {table} that names no {parent}; the database was preserved",
+                "the upgraded store at {} holds {after} rows of {table} that name no {parent}, against {before} before the upgrade; the database was preserved",
                 path.display()
             )));
         }
