@@ -151,6 +151,105 @@ async fn submit(client: &mut Client, sid: &str, branch: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_preview_resolves_startup_without_creating_sessions_or_saving_choices() {
+    let home = std::env::temp_dir().join(format!("dim-preview-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.model.preview"))
+    );
+    let provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":provider,"displayName":"Preview fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":(["alpha","beta"].map(|name| json!({"modelId":name,"displayName":name,"status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)})))
+    })).await);
+    let automatic = client
+        .rpc("session.model.preview", json!({"cwd":home}))
+        .await;
+    assert_ok(&automatic);
+    assert_eq!(
+        automatic["result"]["model"],
+        json!({"providerId":provider,"modelId":"alpha"})
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":provider,"modelId":"beta"}),
+            )
+            .await,
+    );
+    let global = client
+        .rpc("session.model.preview", json!({"cwd":home}))
+        .await;
+    assert_ok(&global);
+    assert_eq!(global["result"]["model"]["modelId"], "beta");
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"cwd":home,"providerId":provider,"modelId":"alpha"}),
+            )
+            .await,
+    );
+    let before = client.rpc("provider.management", json!({})).await;
+    assert_ok(&before);
+    for (params, expected) in [
+        (json!({"cwd":home}), "alpha"),
+        (
+            json!({"cwd":home,"model":{"provider":provider,"modelId":"beta"}}),
+            "beta",
+        ),
+        (
+            json!({"cwd":home,"model":{"modelId":"beta"},"startup":{}}),
+            "beta",
+        ),
+        (
+            json!({"cwd":home,"model":{"modelId":"direct-model"},"startup":startup("http://127.0.0.1:1/v1", "openai-compatible", "preview-secret")}),
+            "direct-model",
+        ),
+    ] {
+        let preview = client.rpc("session.model.preview", params).await;
+        assert_ok(&preview);
+        assert_eq!(preview["result"]["model"]["modelId"], expected);
+        assert!(!preview.to_string().contains("preview-secret"));
+        assert!(
+            server.agent().unwrap().sessions().is_empty(),
+            "Preview must not create a Session"
+        );
+    }
+    let invalid = client
+        .rpc(
+            "session.model.preview",
+            json!({"cwd":home,"model":{"modelId":"missing"},"startup":{}}),
+        )
+        .await;
+    assert!(invalid.get("error").is_some(), "{invalid}");
+    assert!(server.agent().unwrap().sessions().is_empty());
+    let after = client.rpc("provider.management", json!({})).await;
+    assert_eq!(before["result"], after["result"]);
+    let created = client.rpc("session.create", json!({"cwd":home})).await;
+    assert_ok(&created);
+    assert_eq!(
+        created["result"]["model"],
+        json!({"providerId":provider,"modelId":"alpha"}),
+        "Previewing beta and a direct model must not change the workspace default"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    let db = std::fs::read(home.join("native/dimcode.sqlite")).unwrap();
+    assert!(!String::from_utf8_lossy(&db).contains("preview-secret"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn temporary_startup_connections_execute_all_formats_without_sharing_or_persisting_secrets() {
     let home = std::env::temp_dir().join(format!("dim-startup-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();

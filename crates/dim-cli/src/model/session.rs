@@ -1152,8 +1152,8 @@ pub enum Update {
         format: crate::export::Format,
         path: std::path::PathBuf,
     },
-    /// The session's adopted configuration: `provider / model`, and the
-    /// reasoning effort it sends when it carries one, label the status line.
+    /// The startup preview or Session's adopted configuration: `provider / model`
+    /// and its effective reasoning effort label the status line.
     Ready(Configuration),
     /// What the session's model offers, once its catalog entry is known:
     /// image input, and the priority/default service tiers of `/fast`.
