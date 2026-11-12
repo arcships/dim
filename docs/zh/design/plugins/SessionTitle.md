@@ -111,7 +111,7 @@ flowchart TB
   subgraph STORE["SessionStore 元数据（持久）"]
     MD["revision、标题文本、来源 auto 或 manual"]
   end
-  CONF["SessionConfig：interactive、collaborationRole"]
+  CONF["SessionConfig：interactive、collaborationRole、initialTitle"]
   CFG["session-title：enabled、maxLength、model"]
   MEM["在途生成、失败次数（内存）"]:::new
   FUI -->|"仅文本"| MEM
@@ -192,6 +192,15 @@ DimOAuth 自己判断 providerId 是否适用，并拥有专用接口、账号�
 SessionTitle 不接触凭据或 issuer，DimOAuth 不写 Session 元数据、不决定降级。
 模型选择所有者、AuxiliaryModel、模型执行、Timeline 和 Dispatcher 不增加标题分流策略，也没有额外接线插件。
 
+### 3.4 创建时请求的标题
+
+`sessions.launch` 可以携带 `title`，即调用方已经知道的那个标签（[sessions 服务 §6.1](../appserver/sessions-service.md#61-launch)）。Agents 把它存进新 Session 的固定配置 `initialTitle`；标题的唯一写入者仍是 SessionTitle，因此调用方写下的标题从不直接到达存储。
+
+- **只写一次。** 只有在存储的 revision 为 0 时才写。之后的重命名或清空不会在重载时被撤销：配置里一直保留 `initialTitle`，而一旦已有标题，这一部分就跳过写入。`setTitle` 返回 `conflict` 表示别的写入者先给了标题，那个标题胜出。
+- **文本规则。** 就是 `session.rename` 的规则：去掉首尾空白；为空、含控制字符或行分隔符时什么都不写。长度按兜底标题的方式截到操作者的 `maxLength`，标点保留：`title_text` 去掉标点是因为它处理模型输出，而这段文本是调用方的。
+- **时机。** 写入在 `apply` 之后、Session 发布之后，在部件自己的任务里进行，因此启动回复可能先到。标题通知发出后行上就有标题，与重命名走的是同一条路径。
+- **对所有 Session。** 交互与非交互都一样：初始标题不需要模型，也不受生成资格的约束。生成保持原有门槛（[§4](#4-时序与冲突)）；已有标题的 Session 本来就会被生成跳过。
+
 ## 4. 时序与冲突
 
 ```mermaid
@@ -212,6 +221,7 @@ revision 检查就是复检：手动标题总是胜出。
 | 场景 | 顺序 | 结果 | 负责方 |
 | --- | --- | --- | --- |
 | 成员 Session（`collaborationRole`），或非交互 Session | `SessionConfig` | 从不生成；允许重命名 | SessionTitle |
+| 创建时请求了标题的 Session（`initialTitle`） | `SessionConfig`、revision 0 | 按重命名的文本规则与 `maxLength` 写入一次 manual 标题；之后的重命名或清空在重载后仍然胜出（§3.4） | SessionTitle |
 | 生成完成前出现第二条输入 | — | 跳过（在途） | SessionTitle |
 | 第一条输入已删除 | input < `input/deleted` | 从未被采用：不用它生成标题；下一条被采用且符合条件的输入触发 (A9) | SessionTitle |
 | 生成路径失败 | — | 输入文本兜底（§3.3）；存储失败且仍无标题时可以重试（A5） | SessionTitle |
@@ -324,7 +334,7 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 | 步骤 | 路径 |
 | --- | --- |
 | 监听 | 该部分在每个 Session 的副本于 `apply` 中监听自身 Session 的 `session/{sessionId}`，筛选 main input/applied，登记自持任务后返回；`sessionLifecycle.closing()` 或副本清理结束自持工作 |
-| 资格 | C4 创建快照：`interactive !== false && collaborationRole === "leader"`；原生省略值表示 true |
+| 资格 | C4 创建快照：`interactive !== false && collaborationRole === "leader"`（用于生成）；原生省略值表示 true。创建时请求的初始标题（`initialTitle`，§3.4）对交互与非交互 Session 都写入：它不需要模型，文本属于调用方 |
 | 触发 | 收到位于 `N` 的 `input/applied` 时：若不具资格、已禁用、有在途生成或失败次数 ≥ 3（A5）则跳过；否则启动一个归属插件生命周期的生成任务 |
 | 检查 | `sessionMetadata.read({sessionId})`：已有任何标题则跳过；记下 revision `r` |
 | 读取 | 既有 sessions.history 以 atLeast=N 固定已发布 T >= N，再按 through=T 分页 (S2 A.5)。选取第一条有 user 内容、或是 Goal 的 `goal:state` 记录 (含 objective)，且 input/applied 的输入；没有该输入/文本则不生成 (A8/A10) |

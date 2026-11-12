@@ -343,7 +343,7 @@ impl TasksPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => {
+            Event::Pick { id, .. } => {
                 let Some(task) = self.tasks.iter().find(|task| task.id == id).cloned() else {
                     return Effect::None;
                 };

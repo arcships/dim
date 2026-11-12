@@ -179,6 +179,8 @@ impl Display {
                     for line in crate::projection::context_lines(&user.content) {
                         self.record(&line)?;
                     }
+                } else if let Some(line) = crate::projection::raw_input_line(&data.blocks) {
+                    self.record(&line)?;
                 }
             }
             EventContent::Text(data) => {

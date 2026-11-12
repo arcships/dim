@@ -368,6 +368,7 @@ const V16_ADDITIONS: &[&str] = &[
 const AGENT_SESSIONS_V25: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENT_SESSIONS_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
 const AGENT_SESSIONS_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))";
+const AGENT_SESSIONS_V42: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')))";
 const AGENTS_V25: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
 const AGENTS_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)), owner_session_id TEXT REFERENCES agent_sessions(session_id))";
 const V27_ADDITIONS: &[&str] = &[
@@ -452,6 +453,23 @@ fn drop_v40(connection: &Connection) {
 }
 const SESSION_OWNERS_V37: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))";
 const SESSION_OWNERS_V38: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)))";
+/// Rewrites `agent_sessions` at its text before v42, as test fixtures do when
+/// they take a live store back to an earlier format: #1421 widened the
+/// column's CHECK, and the format gate compares the statement verbatim.
+fn without_automation_origin(connection: &Connection) {
+    connection
+        .execute_batch(&format!(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TEMP TABLE sessions_before_v42 AS SELECT * FROM agent_sessions;
+             DROP INDEX agent_sessions_by_leader;
+             DROP TABLE agent_sessions;
+             {AGENT_SESSIONS_V30};
+             CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+             INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM sessions_before_v42;
+             DROP TABLE sessions_before_v42;"
+        ))
+        .unwrap();
+}
 fn schema_of(version: u32) -> Vec<String> {
     let mut statements: Vec<String> = V13_SCHEMA
         .iter()
@@ -470,7 +488,7 @@ fn schema_of(version: u32) -> Vec<String> {
         .chain(V37_ADDITIONS.iter().filter(|_| version >= 37))
         .chain(V39_ADDITIONS.iter().filter(|_| version >= 39))
         .chain(V40_ADDITIONS.iter().filter(|_| version >= 40))
-        .chain(["CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'"].iter().filter(|_| version >= 42))
+        .chain(["CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'"].iter().filter(|_| version >= 43))
         .filter(|sql| version <= 24 || !sql.starts_with("CREATE INDEX timeline_events_by_end "))
         .map(|sql| sql.replace("(version = 13)", &format!("(version = {version})")))
         .map(|sql| {
@@ -510,6 +528,13 @@ fn schema_of(version: u32) -> Vec<String> {
                 sql
             } else {
                 sql.replace(SESSION_OWNERS_V37, SESSION_OWNERS_V38)
+            }
+        })
+        .map(|sql| {
+            if version < 42 {
+                sql
+            } else {
+                sql.replace(AGENT_SESSIONS_V30, AGENT_SESSIONS_V42)
             }
         })
         .collect();
@@ -4300,6 +4325,22 @@ async fn upgrades_in_place_once(database: &Database, connection: Connection, fro
     }
     let before: Vec<_> = kept.iter().map(|table| rows(&connection, table)).collect();
     assert!(before.iter().filter(|rows| !rows.is_empty()).count() >= 7);
+    // A store at or past v36 already holds the member index rows its writes
+    // built, which no later step recomputes; the documented records are
+    // inserted under a later format, so they get them here.
+    if from >= 36 {
+        let sessions = connection
+            .prepare("SELECT session_id FROM agent_sessions")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for session in sessions {
+            dim_app_server::storage::initialize_session_member_index(&connection, &session)
+                .unwrap();
+        }
+    }
     drop(connection);
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -7565,6 +7606,292 @@ async fn a_v31_store_upgrades_in_place_once() {
         .unwrap();
     assert_eq!(schema(&connection), schema_of(31));
     upgrades_in_place_once(&database, connection, 31).await;
+}
+
+#[tokio::test]
+async fn both_committed_v42_formats_upgrade_once_preserving_rows_and_accepting_automation() {
+    for timeline in [false, true] {
+        let database = Database::new();
+        let connection = Connection::open(&database.0).unwrap();
+        let mut statements = if timeline {
+            schema_of(43)
+                .into_iter()
+                .map(|sql| {
+                    sql.replace("(version = 43)", "(version = 42)")
+                        .replace(AGENT_SESSIONS_V42, AGENT_SESSIONS_V30)
+                })
+                .collect()
+        } else {
+            schema_of(42)
+        };
+        statements.sort_by_key(|sql| {
+            !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
+        });
+        for sql in statements {
+            connection.execute_batch(&sql).unwrap();
+        }
+        connection
+            .execute("INSERT INTO agent_store_format VALUES (42)", [])
+            .unwrap();
+        upgrades_in_place_once(&database, connection, 42).await;
+        let connection = Connection::open(&database.0).unwrap();
+        connection.execute("INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) SELECT 'automation', config, created_at_ms, 'automation' FROM agent_sessions WHERE session_id='s1'", []).unwrap();
+        assert!(
+            connection
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE name='timeline_events_branch_interrupts'",
+                    [],
+                    |_| Ok(())
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+}
+
+/// #1421: the step that rebuilds `agent_sessions` for the `automation` origin
+/// keeps every business row and every Session `internal`, recreates each
+/// object `SCHEMA` places on the table, and leaves the SQL of the tables that
+/// reference it unchanged.
+#[tokio::test]
+async fn a_v41_store_upgrades_in_place_once_keeping_internal_launches() {
+    let database = Database::new();
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(41);
+    statements.sort_by_key(|sql| {
+        !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
+    });
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (41)", [])
+        .unwrap();
+    assert_eq!(schema(&connection), schema_of(41));
+    let referencing: Vec<(String, String)> = connection
+        .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name != 'agent_sessions' \
+             AND sql LIKE '%REFERENCES agent_sessions(%' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        referencing.len() >= 8,
+        "every table that references the rebuilt one is compared: {referencing:?}"
+    );
+    assert!(
+        referencing
+            .iter()
+            .any(|(name, _)| name == "session_catalog"),
+        "{referencing:?}"
+    );
+    upgrades_in_place_once(&database, connection, 41).await;
+    let connection = Connection::open(&database.0).unwrap();
+    for (name, sql) in &referencing {
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name=?1",
+                    [name],
+                    |row| { row.get::<_, String>(0) }
+                )
+                .unwrap(),
+            *sql,
+            "the rebuild leaves the referencing table {name} as it was"
+        );
+    }
+    let indexed: Vec<String> = connection
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE tbl_name='agent_sessions' AND type='index' AND sql IS NOT NULL ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(indexed, ["agent_sessions_by_leader"]);
+    for (session, expected) in [("s1", "client"), ("member", "internal")] {
+        let origin: String = connection
+            .query_row(
+                "SELECT origin FROM agent_sessions WHERE session_id=?1",
+                [session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            origin, expected,
+            "{session} keeps the origin it was stored with"
+        );
+    }
+    connection
+        .execute(
+            "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+             SELECT 'automation', config, created_at_ms, 'automation' FROM agent_sessions WHERE session_id='s1'",
+            [],
+        )
+        .unwrap();
+    // The catalog's own condition, over the upgraded table: the row a launch
+    // created before this format stays out of the automation class.
+    let automation: Vec<String> = connection
+        .prepare("SELECT session_id FROM agent_sessions WHERE origin != 'automation' ORDER BY session_id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(automation, ["member", "s1"]);
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) \
+                 SELECT 'bogus', config, created_at_ms, 'bogus' FROM agent_sessions WHERE session_id='s1'",
+                [],
+            )
+            .is_err(),
+        "the widened CHECK still refuses an origin it does not name"
+    );
+}
+
+/// A v41 store whose upgrade runs with foreign keys off, as the startup
+/// transaction does, and whose rows are the documented example: the shape the
+/// interrupted-state tests start from.
+fn v41_store_with_example_rows(database: &Database) -> Connection {
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(41);
+    statements.sort_by_key(|sql| {
+        !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
+    });
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (41)", [])
+        .unwrap();
+    insert_documented_records(&connection, BUSINESS_TABLES);
+    write_documented_context_switches(&connection);
+    for session in connection
+        .prepare("SELECT session_id FROM agent_sessions")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    {
+        dim_app_server::storage::initialize_session_member_index(&connection, &session).unwrap();
+    }
+    assert_eq!(schema(&connection), schema_of(41));
+    connection
+}
+
+/// #1421: an upgrade passes over the rows an interrupted `drop_session` left.
+/// It removes `timeline_branches` and `agent_sessions` in its first chunk and
+/// the events in later ones, so an interruption leaves `timeline_events`
+/// naming a branch and a Session that are gone. The store documents that state
+/// and a retry converges, so the upgrade must neither refuse it nor repair it.
+#[tokio::test]
+async fn a_v41_store_interrupted_mid_delete_upgrades_and_keeps_its_orphans() {
+    let database = Database::new();
+    let connection = v41_store_with_example_rows(&database);
+    // The first chunk committed; the event chunks did not.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             DELETE FROM session_catalog WHERE session_id='s1';
+             DELETE FROM session_owners WHERE session_id='s1';
+             DELETE FROM timeline_branches WHERE session_id='s1';
+             DELETE FROM agent_sessions WHERE session_id='s1';",
+        )
+        .unwrap();
+    let events: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id='s1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(events > 0, "the interrupted delete left its events behind");
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(41));
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_events WHERE session_id='s1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        events,
+        "the orphaned events are still there"
+    );
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(dangling >= events, "the orphans still dangle");
+}
+
+/// #1421: the same for an interrupted `copy_fork_rows`, which writes the
+/// fork's branch rows before its Session row: an interruption leaves a branch
+/// naming a Session that does not exist yet.
+#[tokio::test]
+async fn a_v41_store_interrupted_mid_fork_upgrades_and_keeps_its_orphans() {
+    let database = Database::new();
+    let connection = v41_store_with_example_rows(&database);
+    // `copy_fork_rows` writes the branch row in its first chunk and the
+    // Session row in its last, so an interruption names exactly
+    // `timeline_branches → agent_sessions`.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO timeline_branches VALUES ('fork', 'main', '{\"id\":\"main\"}', 0);",
+        )
+        .unwrap();
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dangling, 1, "the fork's branch names no Session");
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(41));
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_branches WHERE session_id='fork'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "the interrupted fork's branch is still there"
+    );
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dangling, 1, "and it still dangles");
 }
 
 /// A store upgrade that outlives `startup_timeout` still opens while it

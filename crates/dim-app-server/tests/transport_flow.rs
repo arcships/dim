@@ -2544,6 +2544,9 @@ async fn unmounted_management_preserves_mock_sessions_and_wire_admission() {
 #[path = "transport_flow/worktrees.rs"]
 mod worktrees;
 
+#[path = "transport_flow/provider_selection_scope.rs"]
+mod provider_selection_scope;
+
 /// The `create_at` of the newest Session-activity event in `events`, `None`
 /// when the list holds none (issue #1099): the value the stored
 /// `updated_at_ms` and the listings' `updatedAt` derive from. Each module

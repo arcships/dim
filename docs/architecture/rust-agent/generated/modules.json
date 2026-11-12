@@ -4743,7 +4743,8 @@
       "parent": "dim_cli::ui",
       "file": "crates/dim-cli/src/ui/approvals_panel.rs",
       "unexpandedMacros": [
-        "format"
+        "format",
+        "vec"
       ]
     },
     {
@@ -9645,8 +9646,10 @@
         "path Decision::Ask",
         "path Decision::Deny",
         "path Permission",
+        "path PermissionState",
         "use crate::permission::Decision",
-        "use crate::permission::Permission"
+        "use crate::permission::Permission",
+        "use crate::permission::PermissionState"
       ]
     },
     {
@@ -9690,6 +9693,14 @@
       "references": [
         "path Names",
         "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::approval",
+      "to": "dim_agent_runtime::state",
+      "references": [
+        "path StateCell",
+        "use dim_agent_runtime::StateCell"
       ]
     },
     {
@@ -21853,6 +21864,7 @@
       "from": "dim_agent_types::markup::tests",
       "to": "dim_agent_types::markup",
       "references": [
+        "use super::element",
         "use super::escaped",
         "use super::runtime_context",
         "use super::runtime_element"
@@ -23223,6 +23235,8 @@
         "path Empty",
         "path PROTOCOL_VERSION",
         "path SessionId",
+        "path SessionOrigin",
+        "path SessionOrigin::Automation",
         "path SessionOrigin::Internal",
         "path session_cwd",
         "use crate::protocol::Empty",
@@ -33946,6 +33960,7 @@
       "references": [
         "path Result",
         "path crate::Error",
+        "path crate::daemon_too_old",
         "use crate::Result"
       ]
     },
@@ -33954,6 +33969,7 @@
       "to": "dim_cli::args",
       "references": [
         "path Options",
+        "path crate::args::Action::DaemonStop",
         "use crate::args::Options",
         "use crate::args::SERVER_REQUIREMENT"
       ]
@@ -34331,6 +34347,7 @@
       "references": [
         "path crate::projection::context_lines",
         "path crate::projection::failure_phrase",
+        "path crate::projection::raw_input_line",
         "path crate::projection::retry_seconds",
         "path crate::projection::user_text"
       ]
@@ -36986,6 +37003,7 @@
         "path dim_agent_types::CollaborationRequestData",
         "path dim_agent_types::ContextCompactionData",
         "path dim_agent_types::ExecStartedData",
+        "path dim_agent_types::InputBlock",
         "path dim_agent_types::InputBlock::Raw",
         "path dim_agent_types::ProviderPresentation",
         "path dim_agent_types::ToolUseData",
@@ -37024,6 +37042,7 @@
       "from": "dim_cli::projection",
       "to": "dim_agent_types::markup",
       "references": [
+        "path markup::element",
         "path markup::runtime_context",
         "path markup::runtime_element",
         "use dim_agent_types::markup"
@@ -37126,6 +37145,7 @@
         "path RowKind::Compaction",
         "path RowKind::Error",
         "path RowKind::HookContext",
+        "path RowKind::HookFollowUp",
         "path RowKind::Shell",
         "path RowKind::Status",
         "path RowKind::StreamingAssistant",
@@ -37287,6 +37307,7 @@
       "to": "dim_cli::model::view",
       "references": [
         "path CompactionState",
+        "path RowKind",
         "path RowKind::Error",
         "path TaskOutcome::Completed",
         "path TaskOutcome::Failed",
@@ -38150,6 +38171,7 @@
         "path Command::Compact",
         "path Command::CompactionDetails",
         "path Command::Configure",
+        "path Command::DeleteSession",
         "path Command::Earlier",
         "path Command::EndLine",
         "path Command::Export",
@@ -38219,6 +38241,13 @@
         "path CompactReply::Unsupported",
         "path ContextReading",
         "path DIM_OAUTH_ID",
+        "path DeleteOutcome",
+        "path DeleteOutcome::ClosedNotRemoved",
+        "path DeleteOutcome::Deleted",
+        "path DeleteOutcome::Failed",
+        "path DeleteOutcome::NothingRemoved",
+        "path DeleteOutcome::Unsupported",
+        "path DeleteReply",
         "path DraftPart",
         "path DraftPart::Block",
         "path DraftPart::Paste",
@@ -38276,6 +38305,7 @@
         "path Update::ApprovalPending",
         "path Update::Compacted",
         "path Update::Context",
+        "path Update::Deleted",
         "path Update::EffortChoices",
         "path Update::Exported",
         "path Update::Failed",
@@ -38283,6 +38313,7 @@
         "path Update::IsolationBackend",
         "path Update::Login",
         "path Update::Management",
+        "path Update::ModelDefault",
         "path Update::ModelFeatures",
         "path Update::ModelPolicy",
         "path Update::Models",
@@ -38333,6 +38364,8 @@
         "use crate::model::session::CompactReply",
         "use crate::model::session::ContextReading",
         "use crate::model::session::DIM_OAUTH_ID",
+        "use crate::model::session::DeleteOutcome",
+        "use crate::model::session::DeleteReply",
         "use crate::model::session::DraftPart",
         "use crate::model::session::EmptyProvider",
         "use crate::model::session::EmptyReason",
@@ -38453,6 +38486,8 @@
       "from": "dim_cli::session_host",
       "to": "dim_cli::session_command",
       "references": [
+        "path crate::session_command::Deleted",
+        "path crate::session_command::reason",
         "path crate::session_command::set_title"
       ]
     },
@@ -39481,6 +39516,7 @@
         "path Event::None",
         "path Event::Pick",
         "path Event::Refresh",
+        "path Item::heading",
         "path Item::new",
         "path ListPanel",
         "path ListPanel::new",
@@ -40718,6 +40754,8 @@
       "references": [
         "path crate::DAEMON_BUSY",
         "path crate::DAEMON_BUSY_COUNTS",
+        "path crate::DAEMON_TOO_OLD",
+        "path crate::DAEMON_TOO_OLD_COUNTS",
         "path crate::DAEMON_UPGRADING"
       ]
     },
@@ -40739,6 +40777,13 @@
         "path Locale::ZhCn",
         "path Locale::ZhHant",
         "path Locale::from_env_value"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::i18n::tests",
+      "to": "dim_cli::session_command",
+      "references": [
+        "path crate::session_command::DELETE_UNSUPPORTED"
       ]
     },
     {
@@ -40818,6 +40863,13 @@
       "to": "dim_cli::ui::i18n::zh_hant",
       "references": [
         "path zh_hant::lookup"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::i18n::tests",
+      "to": "dim_cli::ui::sessions_panel",
+      "references": [
+        "path crate::ui::sessions_panel::HINT"
       ]
     },
     {
@@ -43813,15 +43865,30 @@
       "references": [
         "path Command",
         "path Command::ListSessions",
+        "path DeleteOutcome",
+        "path DeleteOutcome::ClosedNotRemoved",
+        "path DeleteOutcome::Deleted",
+        "path DeleteOutcome::Failed",
+        "path DeleteOutcome::NothingRemoved",
+        "path DeleteOutcome::Unsupported",
         "path SessionItem",
         "path SessionsScope",
         "path SessionsScope::All",
         "path SessionsScope::Local",
         "path stored_title",
         "use crate::model::session::Command",
+        "use crate::model::session::DeleteOutcome",
         "use crate::model::session::SessionItem",
         "use crate::model::session::SessionsScope",
         "use crate::model::session::stored_title"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::sessions_panel",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe_line",
+        "use crate::sanitize::safe_line"
       ]
     },
     {
@@ -43864,6 +43931,7 @@
       "references": [
         "path Effect",
         "path Effect::Close",
+        "path Effect::DeleteSession",
         "path Effect::None",
         "path Effect::Refresh",
         "path Effect::Resume",
@@ -43882,6 +43950,8 @@
       "to": "dim_cli::ui::terminal::input",
       "references": [
         "path KeyCode::Char",
+        "path KeyCode::Enter",
+        "path KeyCode::Esc",
         "path KeyEvent",
         "path Modifiers::CTRL",
         "use crate::ui::terminal::KeyCode",
@@ -43902,6 +43972,8 @@
       "to": "dim_cli::model::session",
       "references": [
         "path Command::ListSessions",
+        "path DeleteOutcome::Deleted",
+        "path DeleteOutcome::Failed",
         "path SessionItem",
         "path SessionsScope",
         "path SessionsScope::Local"
@@ -43933,10 +44005,12 @@
       "from": "dim_cli::ui::sessions_panel::tests",
       "to": "dim_cli::ui::terminal::input",
       "references": [
+        "path KeyCode",
         "path KeyCode::Char",
         "path KeyCode::Down",
         "path KeyCode::Enter",
         "path KeyCode::Up",
+        "path KeyEvent",
         "path KeyEvent::new",
         "path Modifiers::CTRL",
         "path Modifiers::NONE",
@@ -45170,6 +45244,7 @@
         "path RowKind::Compaction",
         "path RowKind::Error",
         "path RowKind::HookContext",
+        "path RowKind::HookFollowUp",
         "path RowKind::Other",
         "path RowKind::Shell",
         "path RowKind::Status",
@@ -45352,7 +45427,8 @@
       "from": "dim_cli::ui::transcript::blocks",
       "to": "dim_cli::projection",
       "references": [
-        "path crate::projection::hook_context_label"
+        "path crate::projection::hook_context_label",
+        "path crate::projection::hook_follow_up_label"
       ]
     },
     {
@@ -45468,7 +45544,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
-        "path Block::HookContext",
+        "path Block::Hook",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
@@ -45477,10 +45553,14 @@
         "path Block::Thinking",
         "path Block::ToolGroup",
         "path Block::User",
+        "path HookRow",
+        "path HookRow::Context",
+        "path HookRow::FollowUp",
         "path Tone::Danger",
         "path Tone::Muted",
         "path Tone::Warning",
         "use crate::ui::transcript::block::Block",
+        "use crate::ui::transcript::block::HookRow",
         "use crate::ui::transcript::block::Tone"
       ]
     },
@@ -45792,6 +45872,7 @@
         "path Command::Compact",
         "path Command::CompactionDetails",
         "path Command::Configure",
+        "path Command::DeleteSession",
         "path Command::Earlier",
         "path Command::EndLine",
         "path Command::Export",
@@ -45857,6 +45938,12 @@
         "path CompactReply::Unsupported",
         "path ContextReading",
         "path DIM_OAUTH_ID",
+        "path DeleteOutcome::ClosedNotRemoved",
+        "path DeleteOutcome::Deleted",
+        "path DeleteOutcome::Failed",
+        "path DeleteOutcome::NothingRemoved",
+        "path DeleteOutcome::Unsupported",
+        "path DeleteReply",
         "path ManagementAction",
         "path ManagementAction::Add",
         "path ManagementAction::List",
@@ -45890,6 +45977,7 @@
         "path Update::ApprovalPending",
         "path Update::Compacted",
         "path Update::Context",
+        "path Update::Deleted",
         "path Update::EffortChoices",
         "path Update::Exported",
         "path Update::Failed",
@@ -45899,6 +45987,7 @@
         "path Update::Login",
         "path Update::Management",
         "path Update::MemberConversation",
+        "path Update::ModelDefault",
         "path Update::ModelFeatures",
         "path Update::ModelPolicy",
         "path Update::Models",
@@ -45949,6 +46038,8 @@
         "use crate::model::session::CompactReply",
         "use crate::model::session::ContextReading",
         "use crate::model::session::DIM_OAUTH_ID",
+        "use crate::model::session::DeleteOutcome",
+        "use crate::model::session::DeleteReply",
         "use crate::model::session::DraftPart",
         "use crate::model::session::ManagementAction",
         "use crate::model::session::ManagementRefusal",
@@ -46046,6 +46137,13 @@
       "references": [
         "path crate::sanitize::safe",
         "path crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui",
+      "to": "dim_cli::session_command",
+      "references": [
+        "path crate::session_command::DELETE_UNSUPPORTED"
       ]
     },
     {
@@ -46275,6 +46373,7 @@
         "path Effect::ClearModelPreferences",
         "path Effect::Close",
         "path Effect::Connected",
+        "path Effect::DeleteSession",
         "path Effect::EditManagement",
         "path Effect::EditPrompt",
         "path Effect::EndLine",
@@ -46684,7 +46783,7 @@
         "path Block::Compaction",
         "path Block::Error",
         "path Block::Failure",
-        "path Block::HookContext",
+        "path Block::Hook",
         "path Block::Line",
         "path Block::LoadMore",
         "path Block::Note",
@@ -46715,6 +46814,8 @@
         "path live_thinking",
         "path render_block",
         "path render_shell",
+        "path streamed_thinking",
+        "path thinking_prefix",
         "path width_of",
         "use crate::ui::transcript::blocks::SHELL_PREVIEW_LINES",
         "use crate::ui::transcript::blocks::THINKING_ROWS",
@@ -46724,6 +46825,8 @@
         "use crate::ui::transcript::blocks::render_block",
         "use crate::ui::transcript::blocks::render_shell",
         "use crate::ui::transcript::blocks::settled_thinking",
+        "use crate::ui::transcript::blocks::streamed_thinking",
+        "use crate::ui::transcript::blocks::thinking_prefix",
         "use crate::ui::transcript::blocks::width_of"
       ]
     },
@@ -47142,6 +47245,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::settings_panel",
       "references": [
+        "path Setting::Permission",
         "path Setting::ThinkingDetails",
         "path Setting::ToolDetails"
       ]
@@ -47236,6 +47340,7 @@
         "path ImageRead",
         "path LOAD_MORE",
         "path ManagementDraft",
+        "path OVERLAY_MAX_ROWS",
         "path PendingPrompt",
         "path Prompt",
         "path Prompt::Ask",
@@ -52438,6 +52543,10 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "Operation::SessionRead"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "PermissionPreset::FullAccess"
     },
     {
       "module": "dim_cli::ui::tui::tests",

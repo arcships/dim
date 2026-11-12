@@ -1425,14 +1425,14 @@ impl<'a> Compiler<'a> {
             )
         } else {
             (
-                "physical p,json_each(p.body,'$.records') r WHERE".to_owned(),
+                "physical p,json_each(CASE WHEN p.kind IN ('step/text','step/thinking') THEN p.body END,'$.records') r WHERE".to_owned(),
                 "r.value",
             )
         };
         format!("{physical}, base AS NOT MATERIALIZED (
           SELECT ord,branch,sequence AS seq,kind,coalesce(event_id,json_extract(body,'$.record.event.id')) AS event_id,user_presence,context_render,context_state,
             body AS wire,0 AS output,NULL AS turn_id,NULL AS request_id FROM physical
-            WHERE kind NOT IN ('step/text','step/thinking') OR json_extract(body,'$.encoding')='event'
+            WHERE CASE WHEN kind IN ('step/text','step/thinking') THEN json_extract(body,'$.encoding')='event' ELSE 1 END
           UNION ALL
           SELECT p.ord,p.branch,json_extract({value},'$.event.sequence'),p.kind,json_extract({value},'$.event.id'),NULL,p.context_render,p.context_state,
             {value},1,json_extract(p.body,'$.turn_id'),json_extract(p.body,'$.request_id')
@@ -2486,6 +2486,32 @@ fn selected_properties(
     expand_outputs: bool,
     #[cfg(feature = "testing")] statistics: &Statistics,
 ) -> Result<Vec<Vec<QueryValue>>> {
+    if fields.iter().all(|field| {
+        matches!(
+            *field,
+            "position" | "position.sequence" | "position.branch_id"
+        )
+    }) {
+        return Ok(positions
+            .iter()
+            .map(|&(ordinal, sequence)| {
+                let branch = &scope.segments[ordinal].branch_id;
+                fields
+                    .iter()
+                    .map(|field| QueryValue::Value {
+                        value: match *field {
+                            "position.sequence" => serde_json::json!(sequence),
+                            "position.branch_id" => serde_json::json!(branch),
+                            "position" => {
+                                serde_json::json!({"branch_id": branch, "sequence": sequence})
+                            }
+                            _ => unreachable!("selected position field"),
+                        },
+                    })
+                    .collect()
+            })
+            .collect());
+    }
     let mut compiler = Compiler {
         fields: Vec::new(),
         parameters: Vec::new(),

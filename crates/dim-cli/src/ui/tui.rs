@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use crate::management::{self, editor};
 use crate::model::session::{
-    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DraftPart, ManagementAction,
-    ManagementRefusal, ManagementRequest, ManagementResult, PromptField, PromptSetting,
-    RenameReply, SessionPort, SubmitMode, SuggestionSetting, SwitchKind, Update,
+    Area, Command, CompactReply, ContextReading, DIM_OAUTH_ID, DeleteOutcome, DeleteReply,
+    DraftPart, ManagementAction, ManagementRefusal, ManagementRequest, ManagementResult,
+    PromptField, PromptSetting, RenameReply, SessionPort, SubmitMode, SuggestionSetting,
+    SwitchKind, Update,
 };
 #[cfg(test)]
 use crate::model::shell::Outcome as ShellOutcome;
@@ -64,7 +65,7 @@ use crate::ui::title::WindowTitle;
 use crate::ui::transcript::block::{Block, Tone, group_rows, opens_group, project_row};
 use crate::ui::transcript::blocks::{
     SHELL_PREVIEW_LINES, boundary_line, gutter_text, live_thinking, render_block, render_shell,
-    width_of,
+    streamed_thinking, thinking_prefix, width_of,
 };
 #[cfg(test)]
 use crate::ui::transcript::blocks::{THINKING_ROWS, settled_thinking};
@@ -115,6 +116,11 @@ enum Placement {
     Stream,
     /// More of the streamed block the last `Stream` began.
     Continue,
+    Thought {
+        id: String,
+        stream: ThoughtStream,
+        finished: bool,
+    },
 }
 
 /// `config.json` key of the fullscreen mouse switch (`"on"` / `"off"`).
@@ -966,6 +972,19 @@ impl ModelLabel {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+struct ThoughtStream {
+    written: usize,
+    block: Option<usize>,
+}
+
+struct ThoughtFrame {
+    stream: ThoughtStream,
+    commit: String,
+    source: Block,
+    tail: Vec<String>,
+}
+
 struct App {
     host: Box<dyn SessionPort>,
     composer: Composer,
@@ -999,6 +1018,7 @@ struct App {
     exit_code: Option<i32>,
     failure_committed: bool,
     planner: StreamPlanner,
+    thoughts: HashMap<String, ThoughtStream>,
     commits: CommitState,
     markdown: MarkdownRenderer,
     palette: Palette,
@@ -1100,7 +1120,7 @@ struct App {
     settings_return: Option<Setting>,
     /// A surface was opened from the Permissions page: closing it goes back
     /// to the page, as Process isolation and Command rules do.
-    permissions_return: bool,
+    permissions_return: Option<ApprovalsPanel>,
     /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
     /// and the wheel to the terminal.
     pub mouse: bool,
@@ -1426,6 +1446,7 @@ impl App {
             exit_code: None,
             failure_committed: false,
             planner: StreamPlanner::new(),
+            thoughts: HashMap::new(),
             commits: CommitState::default(),
             markdown,
             palette,
@@ -1473,7 +1494,7 @@ impl App {
             service_tiers: false,
             jump: None,
             settings_return: None,
-            permissions_return: false,
+            permissions_return: None,
             mouse,
             notify,
             notifications: Vec::new(),
@@ -2551,6 +2572,38 @@ impl App {
                 };
                 self.reports.push(Block::Status { text, tone });
             }
+            Update::Deleted(reply) => {
+                let DeleteReply {
+                    session_id,
+                    name,
+                    outcome,
+                } = reply;
+                let (text, tone) = match &outcome {
+                    DeleteOutcome::Deleted => {
+                        (tf("Deleted {name}.", &[("name", &name)]), Tone::Muted)
+                    }
+                    DeleteOutcome::NothingRemoved => (
+                        tf(
+                            "Nothing was removed: no stored Session {name}.",
+                            &[("name", &name)],
+                        ),
+                        Tone::Warning,
+                    ),
+                    DeleteOutcome::Unsupported => (
+                        t(crate::session_command::DELETE_UNSUPPORTED).to_owned(),
+                        Tone::Warning,
+                    ),
+                    DeleteOutcome::ClosedNotRemoved(message) | DeleteOutcome::Failed(message) => (
+                        [t("Delete failed"), " · ", message.as_str()].concat(),
+                        Tone::Warning,
+                    ),
+                };
+                if let Some(Prompt::Sessions(panel)) = &mut self.prompt {
+                    panel.settled(&session_id, &outcome);
+                    self.sync_sessions();
+                }
+                self.reports.push(Block::Status { text, tone });
+            }
             Update::Oauth { attempt, event } => {
                 let effect = match &mut self.prompt {
                     Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
@@ -2717,6 +2770,16 @@ impl App {
                     let running = self.shell.take().expect("shell run");
                     self.shell_done(running, result);
                 }
+            }
+            Update::ModelDefault { folder, model } => {
+                let notice = match folder {
+                    Some(folder) => tf(
+                        "Default for new sessions in {folder}: {model}",
+                        &[("folder", &crate::ui::tilde(&folder)), ("model", &model)],
+                    ),
+                    None => tf("Default for new sessions: {model}", &[("model", &model)]),
+                };
+                self.notices.push(notice);
             }
             Update::Notice(text) => {
                 self.notices.push(t(&text).to_owned());
@@ -2910,7 +2973,7 @@ impl App {
                     p.handle_key(key, self.snapshot.as_ref().expect("attached queue"))
                 }
                 Prompt::Export(p) => match p.handle_key(key) {
-                    ListEvent::Pick(format) => Effect::Export(if format == "markdown" {
+                    ListEvent::Pick { id: format, .. } => Effect::Export(if format == "markdown" {
                         crate::export::Format::Markdown
                     } else {
                         crate::export::Format::Json
@@ -3655,6 +3718,9 @@ impl App {
                 self.composer.clear();
                 self.host.send(Command::Resume(id));
             }
+            Effect::DeleteSession { session_id, name } => {
+                self.host.send(Command::DeleteSession { session_id, name });
+            }
             Effect::Refresh => match &mut self.prompt {
                 Some(Prompt::Providers(_)) => self.host.send(Command::ListProviders),
                 Some(Prompt::Plugins(_)) => self.host.send(Command::ListPlugins),
@@ -3670,9 +3736,13 @@ impl App {
                 )));
             }
             Effect::OpenArea { area, note } => {
-                // A surface opened from the Permissions page returns there on
-                // Esc; any other caller opens with no return.
-                self.permissions_return = matches!(self.prompt, Some(Prompt::Approvals(_)));
+                self.permissions_return = match self.prompt.take() {
+                    Some(Prompt::Approvals(panel)) => Some(panel),
+                    prompt => {
+                        self.prompt = prompt;
+                        None
+                    }
+                };
                 self.open_management(area, note);
             }
             Effect::StopTask {
@@ -3740,11 +3810,13 @@ impl App {
             Effect::Setting(setting) => {
                 let from_permissions = setting == Setting::Isolation
                     && matches!(self.prompt, Some(Prompt::Approvals(_)));
+                if from_permissions && let Some(Prompt::Approvals(panel)) = self.prompt.take() {
+                    self.permissions_return = Some(panel);
+                }
                 let settings_return = self.settings_return;
                 self.setting(setting);
                 if from_permissions {
                     self.settings_return = settings_return;
-                    self.permissions_return = true;
                 }
             }
             Effect::EditPrompt(field) => {
@@ -3892,12 +3964,14 @@ impl App {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                label,
             } => {
                 self.prompt = None;
                 self.host.send(Command::SelectModel {
                     provider_id,
                     model_id,
                     reasoning_effort,
+                    label,
                 });
             }
             Effect::SetEffort { model, value } => {
@@ -3935,10 +4009,11 @@ impl App {
                 policy,
             }),
         }
-        if self.prompt.is_none() && std::mem::take(&mut self.permissions_return) {
-            self.open_prompt(Prompt::Approvals(ApprovalsPanel::new(
-                &self.permission_policy,
-            )));
+        if self.prompt.is_none()
+            && let Some(mut panel) = self.permissions_return.take()
+        {
+            panel.set_policy(&self.permission_policy);
+            self.open_prompt(Prompt::Approvals(panel));
         }
         if self.prompt.is_none()
             && let Some(setting) = self.settings_return.take()
@@ -4480,7 +4555,7 @@ impl App {
                         *text = "".into();
                     }
                 }
-                Block::HookContext { expanded, .. } => *expanded = detail == Detail::Expanded,
+                Block::Hook { expanded, .. } => *expanded = detail == Detail::Expanded,
                 Block::Error { expanded, .. } => *expanded = detail != Detail::Collapsed,
                 _ => {}
             }
@@ -5242,8 +5317,27 @@ impl App {
                     self.stream_block = Some(self.dropped + self.history.len() - 1);
                 }
                 Placement::Continue => self.rewrite_stream_block(source),
+                Placement::Thought {
+                    id,
+                    mut stream,
+                    finished,
+                } => {
+                    if let Some(index) = stream.block.and_then(|id| id.checked_sub(self.dropped)) {
+                        self.history[index] = source;
+                    } else {
+                        stream.block = Some(self.dropped + self.history.len());
+                        self.record(source);
+                    }
+                    if finished {
+                        self.thoughts.remove(&id);
+                    } else {
+                        self.thoughts.insert(id, stream);
+                    }
+                }
             }
-            frame.commits.push(text);
+            if !text.is_empty() {
+                frame.commits.push(text);
+            }
         }
         if !self.awaiting_window
             && let Some(kind) = self.pending_boundary.take()
@@ -5868,6 +5962,83 @@ impl App {
         true
     }
 
+    fn thought_frames(&mut self, width: usize) -> HashMap<String, ThoughtFrame> {
+        let mut frames = HashMap::new();
+        let Some(snapshot) = &self.snapshot else {
+            return frames;
+        };
+        if self.fullscreen {
+            return frames;
+        }
+        let expanded = self.thinking_detail == Detail::Expanded;
+        for row in snapshot.rows.iter().skip(self.window_floor) {
+            if row.kind != RowKind::Thinking || row.text.trim().is_empty() {
+                continue;
+            }
+            if let Some(previous) = &row.provisional_id
+                && let Some(stream) = self.thoughts.remove(previous)
+            {
+                self.thoughts.insert(row.row_id.clone(), stream);
+            }
+            if !(row.streaming && expanded) && !self.thoughts.contains_key(&row.row_id) {
+                continue;
+            }
+            if row.streaming && !expanded {
+                continue;
+            }
+            let mut stream = *self.thoughts.entry(row.row_id.clone()).or_default();
+            let text = crate::sanitize::safe(&row.text).replace("**", "");
+            let source_text = if row.streaming {
+                thinking_prefix(&text, width)
+            } else {
+                text.clone()
+            };
+            let elapsed_ms = if row.streaming { None } else { row.elapsed_ms };
+            let source = Block::Thinking {
+                text: source_text.clone(),
+                elapsed_ms,
+                expanded,
+                streamed: true,
+            };
+            let rows = if expanded {
+                streamed_thinking(&text, elapsed_ms, width, &self.palette)
+            } else {
+                render_block(&source, width, &self.palette, &self.markdown)
+            };
+            let stable = if row.streaming && source_text.is_empty() {
+                0
+            } else {
+                render_block(&source, width, &self.palette, &self.markdown).len()
+            };
+            let continues = stream.written > 0;
+            let new = &rows[stream.written.min(stable)..stable];
+            let commit = if new.is_empty() {
+                String::new()
+            } else if continues {
+                pad_block(new)
+            } else {
+                chunk(new)
+            };
+            stream.written = stable;
+            frames.insert(
+                row.row_id.clone(),
+                ThoughtFrame {
+                    stream,
+                    commit,
+                    source,
+                    tail: rows.into_iter().skip(stable).collect(),
+                },
+            );
+        }
+        self.thoughts.retain(|id, _| {
+            snapshot
+                .rows
+                .iter()
+                .any(|row| row.row_id == *id && !row.text.trim().is_empty())
+        });
+        frames
+    }
+
     /// Commits owed this frame and the live rows (unclosed streaming tail,
     /// the reasoning preview and running tools, in transcript order).
     #[allow(clippy::type_complexity)]
@@ -5875,6 +6046,7 @@ impl App {
         if !self.arm_window() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
+        let thought_frames = self.thought_frames(width);
         let Some(snapshot) = &self.snapshot else {
             return (Vec::new(), Vec::new(), Vec::new());
         };
@@ -5885,7 +6057,7 @@ impl App {
 
         enum LiveItem {
             Text(String),
-            Thinking(String),
+            Thinking(usize),
             Tool(usize),
             Row(usize),
         }
@@ -5916,7 +6088,7 @@ impl App {
                 }
                 RowKind::Thinking if row.text.trim().is_empty() => {}
                 RowKind::Thinking if row.streaming => {
-                    live_items.push(LiveItem::Thinking(row.text.clone()));
+                    live_items.push(LiveItem::Thinking(index));
                 }
                 RowKind::ToolCall if !opens_group(&snapshot.rows, index) => {}
                 RowKind::ToolCall
@@ -6042,6 +6214,19 @@ impl App {
         let draw = |index: usize,
                     finalized: Option<crate::ui::transcript::stream::Batch>|
          -> (String, Option<(Block, Placement)>) {
+            if let Some(thought) = thought_frames.get(&snapshot.rows[index].row_id) {
+                return (
+                    thought.commit.clone(),
+                    Some((
+                        thought.source.clone(),
+                        Placement::Thought {
+                            id: snapshot.rows[index].row_id.clone(),
+                            stream: thought.stream,
+                            finished: true,
+                        },
+                    )),
+                );
+            }
             match (snapshot.rows[index].kind, finalized) {
                 (RowKind::AssistantMessage, Some(batch)) if batch.lines.is_empty() => {
                     (String::new(), None)
@@ -6144,8 +6329,33 @@ impl App {
                     }
                     _ => Vec::new(),
                 },
-                LiveItem::Thinking(text) => {
-                    live_thinking(text, self.thinking_detail == Detail::Expanded, width, p)
+                LiveItem::Thinking(index) => {
+                    let row = &snapshot.rows[*index];
+                    if let Some(thought) = thought_frames.get(&row.row_id) {
+                        if !thought.commit.is_empty() {
+                            commits.push(thought.commit.clone());
+                            sources.push((
+                                thought.source.clone(),
+                                Placement::Thought {
+                                    id: row.row_id.clone(),
+                                    stream: thought.stream,
+                                    finished: false,
+                                },
+                            ));
+                        }
+                        if thought.stream.written > 0 {
+                            tail.extend(thought.tail.iter().map(|r| format!("{pad}{r}")));
+                            continue;
+                        }
+                        thought.tail.clone()
+                    } else {
+                        live_thinking(
+                            &row.text,
+                            self.thinking_detail == Detail::Expanded,
+                            width,
+                            p,
+                        )
+                    }
                 }
                 LiveItem::Tool(index) => {
                     tail_groups.push((tail.len() + 1, snapshot.rows[*index].row_id.clone()));
@@ -6176,6 +6386,7 @@ impl App {
     fn switch_line(&mut self, line: String) {
         self.release_compaction_details();
         self.planner.reset();
+        self.thoughts.clear();
         self.commits = CommitState::default();
         self.answered.clear();
         self.runs = Runs::default();
@@ -6248,6 +6459,7 @@ impl App {
         }
         self.session_id = session_id;
         self.planner.reset();
+        self.thoughts.clear();
         self.commits = CommitState::default();
         self.answered.clear();
         if !matches!(self.prompt, Some(Prompt::Report(_))) {
@@ -6381,6 +6593,7 @@ impl App {
     /// line switch draws a line's.
     fn rebuild_window(&mut self, floor: usize) {
         self.planner.reset();
+        self.thoughts.clear();
         self.commits = CommitState::default();
         self.window_floor = floor;
         self.history_floor = floor;
@@ -6464,7 +6677,7 @@ impl App {
             }
             Some(
                 Block::Thinking { expanded, .. }
-                | Block::HookContext { expanded, .. }
+                | Block::Hook { expanded, .. }
                 | Block::Error { expanded, .. },
             ) => *expanded = !*expanded,
             _ => return false,
@@ -6685,10 +6898,32 @@ impl App {
 
     /// The history for a scrollback rewrite, laid out for `cols` columns,
     /// one string per row: the newest `REWRITE_MAX_ROWS` rows at most.
-    fn reflow_history(&self, cols: usize) -> Vec<String> {
+    fn reflow_history(&mut self, cols: usize) -> Vec<String> {
+        let width = cols.saturating_sub(2 + MARGIN).max(1);
+        let frames = self.thought_frames(width);
+        for (id, stream) in &mut self.thoughts {
+            if let Some(frame) = frames.get(id) {
+                if let Some(index) = stream.block.and_then(|id| id.checked_sub(self.dropped)) {
+                    self.history[index] = frame.source.clone();
+                    stream.written = frame.stream.written;
+                } else {
+                    stream.written = 0;
+                }
+            } else {
+                stream.written = 0;
+            }
+        }
         let mut chunks = Vec::new();
         let mut rows = 0;
-        for source in self.history.iter().rev() {
+        for (index, source) in self.history.iter().enumerate().rev() {
+            if self.thoughts.iter().any(|(id, stream)| {
+                stream.block == Some(self.dropped + index) && !frames.contains_key(id)
+            }) {
+                continue;
+            }
+            if matches!(source, Block::Thinking { text, .. } if text.is_empty()) {
+                continue;
+            }
             let chunk: Vec<String> = raw_rows(&self.render_source(source, cols)).collect();
             rows += chunk.len();
             chunks.push(chunk);
@@ -7927,7 +8162,12 @@ mod tests {
                      notes: bool| {
             let mut drawn = Drawn::new((40, 8), None, true);
             drawn.app.fullscreen = fullscreen;
-            let mut natural = None;
+            let max_panel_rows = if fullscreen {
+                OVERLAY_MAX_ROWS
+            } else {
+                live_panel_rows(usize::MAX, 0, 0)
+            };
+            let mut expected_rows = None;
             let mut reached = false;
             let mut budgets = Vec::new();
             for height in 8..=40u16 {
@@ -7981,9 +8221,16 @@ mod tests {
                     "{title} {size:?} fullscreen={fullscreen}: a {budget}-row budget drew {} rows: {live:#?}",
                     panel.len()
                 );
-                if natural.is_none() && !panel.is_empty() {
-                    natural =
-                        Some(render(&open(), &drawn.app, visible_width(&panel[0]), 100).len());
+                if expected_rows.is_none() && !panel.is_empty() {
+                    expected_rows = Some(
+                        render(
+                            &open(),
+                            &drawn.app,
+                            visible_width(&panel[0]),
+                            max_panel_rows,
+                        )
+                        .len(),
+                    );
                 }
                 let text = panel.join("\n");
                 if !panel.is_empty() {
@@ -8080,7 +8327,7 @@ mod tests {
                         "{title} {size:?} fullscreen={fullscreen}: the keys: {screen}"
                     );
                 }
-                if natural.is_some_and(|natural| panel.len() >= natural) {
+                if expected_rows.is_some_and(|rows| panel.len() == rows) {
                     reached = true;
                     break;
                 }
@@ -8093,7 +8340,7 @@ mod tests {
             }
             assert!(
                 reached,
-                "{title} fullscreen={fullscreen}: never reached {natural:?}"
+                "{title} fullscreen={fullscreen}: never reached {expected_rows:?} rows"
             );
         };
 
@@ -10454,6 +10701,159 @@ mod tests {
     }
 
     #[test]
+    fn permissions_focus_tracks_hints_and_survives_policy_updates_and_submenus() {
+        use dim_agent_types::{PermissionPolicy, PermissionPreset};
+
+        for fullscreen in [false, true] {
+            for size in [(100, 32), (40, 24), (32, 12)] {
+                let action_hint = |text: &str, action: &str| {
+                    let hint = if size.1 >= 24 { action } else { "Esc close" };
+                    assert!(text.contains(hint), "{hint} is missing: {text}");
+                };
+                for from_settings in [false, true] {
+                    let mut drawn = Drawn::new(size, None, true);
+                    drawn.app.fullscreen = fullscreen;
+                    let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    drawn.app.host = Box::new(Recorder(sent.clone()));
+                    if from_settings {
+                        drawn.app.open_settings(Setting::Permission);
+                        drawn.key(KeyCode::Enter);
+                    } else {
+                        typed(&mut drawn.app, "/permissions");
+                        drawn.key(KeyCode::Enter);
+                    }
+                    let render = |drawn: &mut Drawn| {
+                        let frame = drawn.app.frame(size);
+                        let bytes = if fullscreen {
+                            FullScreen::new(size, true).render(
+                                &frame,
+                                size,
+                                &drawn.app.palette,
+                                &drawn.app,
+                            )
+                        } else {
+                            Screen::new(size, true).render(&frame, size)
+                        };
+                        let mut emu =
+                            crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+                        emu.feed(&bytes);
+                        emu.rows_text()
+                            .join("\n")
+                            .replace('│', " ")
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    };
+                    let initial = render(&mut drawn);
+                    assert!(initial.contains("(*) Workspace write"), "{initial}");
+                    action_hint(&initial, "Enter keep mode");
+                    if size.0 == 100 {
+                        assert!(initial.contains("Permission mode"));
+                        assert!(initial.contains("Related settings"));
+                    }
+                    assert!(!initial.contains("This session"));
+                    assert!(!initial.contains("All sessions"));
+                    if size.1 >= 24 {
+                        assert!(initial.contains("Current session; remembered for new sessions."));
+                    }
+                    drawn.key(KeyCode::Home);
+                    drawn.key(KeyCode::Up);
+                    let read_only = render(&mut drawn);
+                    action_hint(&read_only, "Enter use mode");
+                    if size.1 >= 24 {
+                        assert!(read_only.contains("Writes and commands"));
+                        assert!(read_only.contains("denied;"));
+                        assert!(read_only.contains("external reads may"));
+                        assert!(!read_only.contains("Workspace writes allowed;"));
+                        assert_eq!(read_only.matches("Hint:").count(), 1);
+                    }
+                    drawn.key(KeyCode::Tab);
+                    action_hint(&render(&mut drawn), "Enter keep mode");
+                    drawn.key(KeyCode::Down);
+                    let full = render(&mut drawn);
+                    action_hint(&full, "Enter use mode");
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::FullAccess,
+                        ..Default::default()
+                    })));
+                    let refreshed = render(&mut drawn);
+                    assert!(refreshed.contains("(*) Full access"), "{refreshed}");
+                    action_hint(&refreshed, "Enter keep mode");
+                    if size.1 >= 24 {
+                        assert!(refreshed.contains("Skips preset approval;"));
+                        assert!(!refreshed.contains("Writes and commands denied;"));
+                    }
+                    drawn.key(KeyCode::Down);
+                    let rules = render(&mut drawn);
+                    assert!(rules.contains("Command rules"), "{rules}");
+                    action_hint(&rules, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(rules.contains("User-wide command rules."));
+                        assert!(!rules.contains("Skips preset approval;"));
+                    }
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::WorkspaceWrite,
+                        ..Default::default()
+                    })));
+                    let refreshed = render(&mut drawn);
+                    action_hint(&refreshed, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(refreshed.contains("(*) Workspace write"));
+                        assert!(refreshed.contains("User-wide command rules."));
+                    }
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(
+                        sent.borrow().last(),
+                        Some(Command::Management(ManagementRequest {
+                            area: Area::Permissions,
+                            action: ManagementAction::List,
+                        }))
+                    ));
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::ReadOnly,
+                        ..Default::default()
+                    })));
+                    drawn.key(KeyCode::Esc);
+                    let returned = render(&mut drawn);
+                    action_hint(&returned, "Enter open");
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(drawn.app.prompt, Some(Prompt::Management(_))));
+                    drawn.key(KeyCode::Esc);
+                    drawn.key(KeyCode::End);
+                    drawn.key(KeyCode::BackTab);
+                    drawn.key(KeyCode::Tab);
+                    let isolation = render(&mut drawn);
+                    assert!(isolation.contains("Process isolation"), "{isolation}");
+                    action_hint(&isolation, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(isolation.contains("Opens Settings;"));
+                        assert!(isolation.contains("user-wide,"));
+                        assert!(!isolation.contains("User-wide command rules."));
+                    }
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(sent.borrow().last(), Some(Command::ReadIsolation)));
+                    drawn.key(KeyCode::Esc);
+                    let returned = render(&mut drawn);
+                    action_hint(&returned, "Enter open");
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(drawn.app.prompt, Some(Prompt::Isolation(_))));
+                    drawn.key(KeyCode::Esc);
+                    drawn.key(KeyCode::Esc);
+                    if from_settings {
+                        assert!(matches!(drawn.app.prompt, Some(Prompt::Settings(_))));
+                    } else {
+                        assert!(drawn.app.prompt.is_none());
+                    }
+                    assert!(!sent.borrow().iter().any(|command| matches!(
+                        command,
+                        Command::SetPermission(_) | Command::SaveIsolation { .. }
+                    )));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_permission_choice_applies_the_preset_and_keeps_it_for_new_sessions() {
         use dim_agent_types::{PermissionPolicy, PermissionPreset};
         let home = tempfile::tempdir().unwrap();
@@ -10474,16 +10874,20 @@ mod tests {
         })));
         app.run_command("permissions", "");
         let rendered = app.frame((112, 40));
-        let frame = rendered
-            .overlay
-            .as_ref()
-            .map_or(&rendered.live, |overlay| &overlay.rows)
-            .join("\n");
+        let frame = crate::ui::render::panel::strip_escapes(
+            &rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n"),
+        );
         for line in [
             "Read only",
             "Workspace write",
             "Full access",
-            "The preset fixes the path boundary",
+            "Permission mode",
+            "Related settings",
+            "Writes and commands denied; external reads may ask.",
         ] {
             assert!(frame.contains(line), "{line} is missing: {frame}");
         }
@@ -10683,6 +11087,7 @@ mod tests {
                 failure: None,
                 reportable: false,
                 row_id: text.into(),
+                provisional_id: None,
                 kind,
                 text: text.into(),
                 display: None,
@@ -11074,6 +11479,7 @@ mod tests {
                         failure: None,
                         reportable: false,
                         row_id: (*id).into(),
+                        provisional_id: None,
                         kind: RowKind::AssistantMessage,
                         text: (*text).into(),
                         display: None,
@@ -11646,6 +12052,7 @@ mod tests {
                 failure: None,
                 reportable: false,
                 row_id: "r1".into(),
+                provisional_id: None,
                 kind: RowKind::UserMessage,
                 text: "line work".into(),
                 display: None,
@@ -11775,6 +12182,7 @@ mod tests {
                     failure: None,
                     reportable: false,
                     row_id: format!("u{n}"),
+                    provisional_id: None,
                     kind: RowKind::UserMessage,
                     text: format!("ask {n}"),
                     display: None,
@@ -11819,6 +12227,7 @@ mod tests {
             reportable: false,
             display: None,
             row_id: "u1".into(),
+            provisional_id: None,
             kind: RowKind::UserMessage,
             text: "find the leak".into(),
             streaming: false,
@@ -11851,6 +12260,7 @@ mod tests {
             reportable: false,
             display: None,
             row_id: "stopped-1".into(),
+            provisional_id: None,
             kind: RowKind::Status,
             text: "stopped".into(),
             streaming: false,
@@ -11906,6 +12316,363 @@ mod tests {
             .app
             .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
         drawn
+    }
+
+    #[test]
+    fn expanded_thinking_streams_into_native_history_without_repeating_on_completion() {
+        let paragraphs = (1..=45)
+            .map(|n| format!("Step{n:02}: inspect the lock before waiting."))
+            .collect::<Vec<_>>();
+        for synchronized in [false, true] {
+            for separator in ["\n\n", " "] {
+                let mut drawn = Drawn::new((72, 20), Some(0), synchronized);
+                drawn.app.thinking_detail = Detail::Expanded;
+                let mut thought = (*message(false)).clone();
+                thought.kind = RowKind::Thinking;
+                thought.streaming = true;
+                for end in 1..=paragraphs.len() {
+                    thought.row_id = if end < 10 {
+                        "progress"
+                    } else {
+                        "thinking-event"
+                    }
+                    .into();
+                    thought.provisional_id = (end >= 10).then(|| "progress".into());
+                    thought.text = paragraphs[..end].join(separator);
+                    show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+                    if end == 20 {
+                        drawn.size = (45, 20);
+                        drawn.emu = crate::ui::render::testterm::Emu::new(45, 20);
+                        let rows = drawn.app.reflow_history(45);
+                        let frame = drawn.app.frame(drawn.size);
+                        let wanted = drawn.screen.wanted_for(drawn.size, frame.live.len());
+                        let mut bytes = drawn.screen.rewrite(drawn.size, &rows, wanted);
+                        bytes.extend(drawn.screen.render(&frame, drawn.size));
+                        drawn.emu.feed(&bytes);
+                    }
+                    let transcript = drawn.transcript();
+                    for n in 1..=end {
+                        assert_eq!(
+                            transcript.matches(&format!("Step{n:02}:")).count(),
+                            1,
+                            "{transcript}"
+                        );
+                    }
+                }
+                assert!(
+                    drawn
+                        .emu
+                        .scrollback
+                        .iter()
+                        .any(|row| row.contains("Step01:"))
+                );
+                let before = drawn.transcript();
+                drawn.draw();
+                assert_eq!(drawn.transcript(), before);
+                let anchor = drawn.anchor();
+                thought.streaming = false;
+                thought.elapsed_ms = Some(2700);
+                show(&mut drawn, vec![std::sync::Arc::new(thought)]);
+                let transcript = drawn.transcript();
+                for n in 1..=45 {
+                    assert_eq!(
+                        transcript.matches(&format!("Step{n:02}:")).count(),
+                        1,
+                        "{transcript}"
+                    );
+                }
+                assert!(transcript.contains("Thought for 2.7s"), "{transcript}");
+                assert_eq!(transcript.matches("◆ Thought").count(), 2, "{transcript}");
+                assert!(drawn.transcript().contains("Step45:"));
+                assert_eq!(drawn.anchor(), anchor);
+            }
+        }
+    }
+
+    #[test]
+    fn thinking_preserves_history_when_its_identity_changes_while_collapsed() {
+        use crate::projection::Projection;
+        use serde_json::json;
+
+        for finish_while_collapsed in [false, true] {
+            let mut drawn = Drawn::new((72, 20), Some(0), false);
+            drawn.app.thinking_detail = Detail::Expanded;
+            let mut projection = Projection::default();
+            let text = (1..=30)
+                .map(|n| format!("Step{n:02}: inspect the lock before waiting."))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            projection.progress(
+                &serde_json::from_value(json!({
+                    "sessionId": "s1", "branchId": "main", "requestId": "r1",
+                    "text": "", "textOffset": 0, "thinking": text, "thinkingOffset": 0,
+                }))
+                .unwrap(),
+            );
+            show(&mut drawn, projection.snapshot().rows);
+            assert!(
+                drawn
+                    .emu
+                    .scrollback
+                    .iter()
+                    .any(|row| row.contains("Step01:"))
+            );
+
+            let toggle = |drawn: &mut Drawn| {
+                drawn.app.open_settings(Setting::ThinkingDetails);
+                press(&mut drawn.app, KeyCode::Char(' '));
+                press(&mut drawn.app, KeyCode::Esc);
+                assert!(drawn.app.take_reflow_request());
+                let rows = drawn.app.reflow_history(drawn.size.0 as usize);
+                let frame = drawn.app.frame(drawn.size);
+                let wanted = drawn.screen.wanted_for(drawn.size, frame.live.len());
+                drawn.emu = crate::ui::render::testterm::Emu::new(72, 20);
+                let mut bytes = drawn.screen.rewrite(drawn.size, &rows, wanted);
+                bytes.extend(drawn.screen.render(&frame, drawn.size));
+                drawn.emu.feed(&bytes);
+            };
+            toggle(&mut drawn);
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "id": "thought-event", "sequence": 1, "create_at": 1000,
+                    "type": "step", "name": "thinking",
+                    "data": {"turn_id": "t1", "request_id": "r1",
+                        "delta": format!("{text}\n\nStep31: saved after collapsing.")},
+                }))
+                .unwrap(),
+            );
+            show(&mut drawn, projection.snapshot().rows);
+            let finish: crate::wire::Event = serde_json::from_value(json!({
+                "sequence": 2, "create_at": 4500, "type": "step", "name": "text",
+                "data": {"turn_id": "t1", "request_id": "r1", "delta": "Answer."},
+            }))
+            .unwrap();
+            if finish_while_collapsed {
+                projection.apply("main", &finish);
+                show(&mut drawn, projection.snapshot().rows);
+            }
+            toggle(&mut drawn);
+            let assert_body = |drawn: &Drawn| {
+                let transcript = drawn.transcript();
+                for n in 1..=31 {
+                    assert_eq!(
+                        transcript.matches(&format!("Step{n:02}:")).count(),
+                        1,
+                        "finish_while_collapsed={finish_while_collapsed}: {transcript}"
+                    );
+                }
+            };
+            assert_body(&drawn);
+            if !finish_while_collapsed {
+                projection.apply("main", &finish);
+                show(&mut drawn, projection.snapshot().rows);
+                assert_body(&drawn);
+                assert!(drawn.transcript().contains("Thought for 3.5s"));
+            }
+        }
+    }
+
+    #[test]
+    fn thinking_commits_settlement_when_collapsed_before_the_completion_frame() {
+        use crate::projection::Projection;
+        use serde_json::json;
+
+        for draw_completion in [false, true] {
+            let mut drawn = Drawn::new((72, 20), Some(0), false);
+            drawn.app.thinking_detail = Detail::Expanded;
+            let mut projection = Projection::default();
+            let text = (1..=20)
+                .map(|n| format!("Step{n:02}: inspect the lock before waiting."))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "id": "thought", "sequence": 1, "create_at": 1000,
+                    "type": "step", "name": "thinking",
+                    "data": {"turn_id": "t1", "request_id": "r1", "delta": text},
+                }))
+                .unwrap(),
+            );
+            show(&mut drawn, projection.snapshot().rows);
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "sequence": 2, "create_at": 2500, "type": "step", "name": "text",
+                    "data": {"turn_id": "t1", "request_id": "r1", "delta": "Answer."},
+                }))
+                .unwrap(),
+            );
+            let mut snapshot = projection.snapshot();
+            snapshot.session_id = "s1".into();
+            snapshot.focus = "main".into();
+            snapshot.history_complete = true;
+            drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+            if draw_completion {
+                drawn.draw();
+            }
+            drawn.app.open_settings(Setting::ThinkingDetails);
+            press(&mut drawn.app, KeyCode::Char(' '));
+            press(&mut drawn.app, KeyCode::Esc);
+            assert!(drawn.app.take_reflow_request());
+            let rows = drawn.app.reflow_history(72);
+            let frame = drawn.app.frame(drawn.size);
+            let wanted = drawn.screen.wanted_for(drawn.size, frame.live.len());
+            drawn.emu = crate::ui::render::testterm::Emu::new(72, 20);
+            let mut bytes = drawn.screen.rewrite(drawn.size, &rows, wanted);
+            bytes.extend(drawn.screen.render(&frame, drawn.size));
+            drawn.emu.feed(&bytes);
+            for _ in 0..2 {
+                let transcript = drawn.transcript();
+                assert_eq!(
+                    transcript.matches("Thought for 1.5s").count(),
+                    1,
+                    "draw_completion={draw_completion}: {transcript}"
+                );
+                drawn.draw();
+            }
+        }
+    }
+
+    #[test]
+    fn thinking_commits_opening_rows_after_an_earlier_answer_finishes_revealing() {
+        use crate::projection::Projection;
+        use serde_json::json;
+
+        for finish_while_held in [false, true] {
+            let mut drawn = Drawn::new((72, 20), Some(0), false);
+            drawn.app.thinking_detail = Detail::Expanded;
+            let mut projection = Projection::default();
+            let answer = format!(
+                "AnswerFirst: {} AnswerLast.",
+                "waiting for output. ".repeat(80)
+            );
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "sequence": 1, "create_at": 1, "type": "step", "name": "text",
+                    "data": {"turn_id": "t0", "request_id": "r0", "delta": answer},
+                }))
+                .unwrap(),
+            );
+            show(&mut drawn, projection.snapshot().rows);
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "sequence": 2, "create_at": 2, "type": "step", "name": "model-output-end",
+                    "data": {"turn_id": "t0", "request_id": "r0", "status": "completed",
+                        "finish_reason": "end_turn"},
+                }))
+                .unwrap(),
+            );
+            let text = (1..=20)
+                .map(|n| format!("Step{n:02}: inspect the lock before waiting."))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            projection.apply(
+                "main",
+                &serde_json::from_value(json!({
+                    "id": "thought", "sequence": 3, "create_at": 1000,
+                    "type": "step", "name": "thinking",
+                    "data": {"turn_id": "t1", "request_id": "r1", "delta": text},
+                }))
+                .unwrap(),
+            );
+            show(&mut drawn, projection.snapshot().rows);
+            drawn.draw();
+            let finish: crate::wire::Event = serde_json::from_value(json!({
+                "sequence": 4, "create_at": 2500, "type": "step", "name": "text",
+                "data": {"turn_id": "t1", "request_id": "r1", "delta": "AnswerNext."},
+            }))
+            .unwrap();
+            if finish_while_held {
+                projection.apply("main", &finish);
+                show(&mut drawn, projection.snapshot().rows);
+            }
+            assert!(!drawn.transcript().contains("Step01:"));
+            let (pace, shown) = drawn.app.revealed.get_mut("assistant-r0").unwrap();
+            *shown = pace.advance(Instant::now() + Duration::from_secs(1), answer.len(), true);
+            drawn.draw();
+            let assert_body = |drawn: &Drawn| {
+                let transcript = drawn.transcript();
+                for n in 1..=20 {
+                    assert_eq!(
+                        transcript.matches(&format!("Step{n:02}:")).count(),
+                        1,
+                        "finish_while_held={finish_while_held}: {transcript}"
+                    );
+                }
+                assert!(
+                    transcript.find("AnswerLast.").unwrap() < transcript.find("Step01:").unwrap()
+                );
+            };
+            assert_body(&drawn);
+            if !finish_while_held {
+                projection.apply("main", &finish);
+                show(&mut drawn, projection.snapshot().rows);
+            }
+            assert_body(&drawn);
+            assert_eq!(drawn.transcript().matches("Thought for 1.5s").count(), 1);
+        }
+    }
+
+    #[test]
+    fn thinking_keeps_every_character_across_wrapping_and_detail_changes() {
+        for text in [
+            "Inspect **the locking boundary** before waiting. ".repeat(20),
+            "先检查**锁的边界**，等待任务前释放资源。\n\n继续检查下一步！".repeat(20),
+            format!("prefix {} suffix", "abcdefghij".repeat(80)),
+        ] {
+            let mut drawn = Drawn::new((34, 20), Some(0), false);
+            drawn.app.thinking_detail = Detail::Expanded;
+            let mut thought = (*message(false)).clone();
+            thought.kind = RowKind::Thinking;
+            thought.streaming = true;
+            for end in text.char_indices().map(|(at, c)| at + c.len_utf8()) {
+                thought.text = text[..end].into();
+                show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+            }
+            let body = |transcript: String| {
+                transcript
+                    .lines()
+                    .filter_map(|row| row.trim_start().strip_prefix('▎'))
+                    .filter(|row| !row.contains('◆'))
+                    .flat_map(str::chars)
+                    .filter(|c| !c.is_whitespace() && *c != '\0')
+                    .collect::<String>()
+            };
+            let expected: String = text
+                .replace("**", "")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            assert_eq!(body(drawn.transcript()), expected);
+            for expanded in [false, true] {
+                drawn.app.thinking_detail = if expanded {
+                    Detail::Expanded
+                } else {
+                    Detail::Collapsed
+                };
+                let rows = drawn.app.reflow_history(drawn.size.0 as usize);
+                let frame = drawn.app.frame(drawn.size);
+                let wanted = drawn.screen.wanted_for(drawn.size, frame.live.len());
+                drawn.emu = crate::ui::render::testterm::Emu::new(34, 20);
+                let mut bytes = drawn.screen.rewrite(drawn.size, &rows, wanted);
+                bytes.extend(drawn.screen.render(&frame, drawn.size));
+                drawn.emu.feed(&bytes);
+                if expanded {
+                    assert_eq!(body(drawn.transcript()), expected);
+                } else {
+                    assert!(drawn.transcript().contains("Thinking…"));
+                    assert!(body(drawn.transcript()).is_empty());
+                }
+            }
+            thought.streaming = false;
+            thought.elapsed_ms = Some(1500);
+            show(&mut drawn, vec![std::sync::Arc::new(thought)]);
+            assert_eq!(body(drawn.transcript()), expected);
+        }
     }
 
     #[test]
@@ -12055,7 +12822,7 @@ mod tests {
                 .app
                 .history
                 .iter()
-                .any(|block| matches!(block, Block::User { .. } | Block::HookContext { .. })),
+                .any(|block| matches!(block, Block::User { .. } | Block::Hook { .. })),
             "neither the message nor its hook context is committed while unread"
         );
         show(&mut drawn, vec![message(false), hook()]);
@@ -12069,7 +12836,7 @@ mod tests {
             .app
             .history
             .iter()
-            .position(|block| matches!(block, Block::HookContext { .. }))
+            .position(|block| matches!(block, Block::Hook { .. }))
             .expect("its hook context commits with it");
         assert!(
             user < hook,
@@ -12091,7 +12858,7 @@ mod tests {
             .app
             .history
             .iter()
-            .position(|block| matches!(block, Block::HookContext { .. }))
+            .position(|block| matches!(block, Block::Hook { .. }))
             .expect("its hook context is committed with it");
         let stop = drawn
             .app

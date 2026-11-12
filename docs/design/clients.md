@@ -58,7 +58,7 @@ Dashed boxes are outside this repository (Desktop) or not implemented (remote de
 | Provider management for every client | [Provider management](appserver/provider-management.md) |
 | Child tool batches: v4 envelope, v3 visibility and client grouping | [Child tool batches](appserver/child-tool-batches.md) |
 
-The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
+The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The CLI asks a daemon for its own version and accepts the highest one below it, down to v3, only to replace the daemon this executable runs or to stop the home's daemon; it never runs a Session below its own version. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
 
 ### Member tool approval
 
@@ -251,12 +251,12 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| New, resume, Session list | done; `/resume` opens on the local scope — the launch workspace, or its repository's worktrees once git answers — and `Ctrl+S` toggles it with every workspace; two states, never three. It labels each row by creation origin and hides ACP Sessions unless the preference says otherwise | done (grouped by directory) | [Session classification](appserver/session-classification.md), [CLI commands](cli-commands.md#the-resume-picker) |
+| New, resume, Session list | done; `/resume` opens on the local scope — the launch workspace, or its repository's worktrees once git answers — and `Ctrl+S` toggles it with every workspace; two states, never three. It labels each row by creation origin and hides ACP Sessions unless the preference says otherwise; a Scheduler launch is a fourth origin class, listable through `session.catalog`'s `withAutomationSessions`, which `/resume` does not send yet | done (grouped by directory; it hides the internal and automation classes and has no ACP preference yet) | [Session classification](appserver/session-classification.md), [CLI commands](cli-commands.md#the-resume-picker) |
 | Export conversation | done in the line client, both terminal UIs and `dimcode session export` | — | [CLI commands](cli-commands.md) |
 | `/timeline` and message actions | done in the TUI; it also replaces `/history`'s paging | — | [Timeline UI §4.6](timeline-ui.md#46-timeline-jumping-to-a-message) |
 | Titles | automatic: done (optional SessionTitle package); manual rename: designed | — | [SessionTitle](plugins/SessionTitle.md) |
 | Fork | designed in the CLI (server `session.fork` done) | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
-| Deletion and cleanup | designed in the CLI (server `session.delete` done) | later phase | same |
+| Deletion and cleanup | done: `dimcode session delete`/`cleanup`, and one row at a time in `/resume` | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
 | File rollback, file and conversation rollback | out | out | [overview](overview.md) App. A |
 | Request snapshot export | done (`dimcode export`); filters: designed | — | [Timeline export](appserver/timeline-export.md) |
 

@@ -7,6 +7,64 @@ use serde_json::{Value, json};
 use std::num::NonZeroU64;
 
 #[tokio::test]
+async fn position_projection_returns_inline_and_packed_coordinates_without_a_second_body_query() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let records = vec![
+        record(
+            1,
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "summary",
+                    "saved",
+                    json!({"payload": "x".repeat(64 * 1024)}),
+                )
+                .unwrap(),
+            ),
+        ),
+        text(2, "first"),
+        text(3, "second"),
+    ];
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let query = fields(&["position", "position.sequence", "position.branch_id"]);
+    parity(&store, &memory, &scope(3), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &query, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("position rows")
+    };
+    assert_eq!(rows.len(), 3);
+    assert!(
+        store
+            .take_query_statistics()
+            .iter()
+            .all(|statement| statement.stage != "selected_properties")
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn scalar_projection_of_non_output_events_keeps_missing_and_null_without_output_expansion() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -546,6 +604,7 @@ async fn v37_text_upgrade_removes_opaque_documents_without_losing_query_candidat
     drop(db);
     let connection = Connection::open(&database.0).unwrap();
     drop_v40(&connection);
+    without_automation_origin(&connection);
     connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 37)); INSERT INTO agent_store_format VALUES(37);").unwrap();
     for sql in V36_ADDITIONS
         .iter()
@@ -1490,13 +1549,22 @@ async fn a_v34_submission_index_upgrade_preserves_duplicate_identities_and_reope
     drop_v40(&connection);
     connection
         .execute_batch(
-            "BEGIN; DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP INDEX timeline_input_submissions;
+            "PRAGMA foreign_keys=OFF;
+        BEGIN; DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP INDEX timeline_input_submissions;
         DROP TABLE session_owners;
         CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)));
         CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);
+        CREATE TEMP TABLE sessions_rows AS SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions;
+        DROP INDEX agent_sessions_by_leader;
+        DROP TABLE agent_sessions;
+        CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')));
+        CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+        INSERT INTO agent_sessions(session_id, config, created_at_ms, leader_session_id, origin) SELECT session_id, config, created_at_ms, leader_session_id, origin FROM sessions_rows;
+        DROP TABLE sessions_rows;
         DROP TABLE agent_store_format;
         CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 34));
-        INSERT INTO agent_store_format VALUES (34); COMMIT;",
+        INSERT INTO agent_store_format VALUES (34); COMMIT;
+        PRAGMA foreign_keys=ON;",
         )
         .unwrap();
     assert_eq!(schema(&connection), schema_of(34));
@@ -1785,6 +1853,7 @@ async fn text_candidates_survive_output_merging_reopen_fork_and_session_deletion
         0
     );
     drop_v40(&connection);
+    without_automation_origin(&connection);
     connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP TABLE session_owners; CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3))); CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id); DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 35)); INSERT INTO agent_store_format VALUES(35);").unwrap();
     drop(connection);
     let db = SqliteStorage::open(database.0.clone()).unwrap();

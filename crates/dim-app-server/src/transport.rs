@@ -734,6 +734,7 @@ async fn run_connection(
                                                 methods.push("session.catalog.origins");
                                                 methods.push("session.catalog.workspaces");
                                                 methods.push("session.catalog.includeClosed");
+                                                methods.push("session.catalog.automation");
                                             }
                                             methods
                                         } else {

@@ -407,6 +407,7 @@ async fn indexed_pending_sets_keep_old_pages_and_do_not_read_closed_or_other_gro
             if size == 128 {
                 let connection = Connection::open(&database.0).unwrap();
                 drop_v40(&connection);
+                without_automation_origin(&connection);
                 connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 36)); INSERT INTO agent_store_format VALUES (36);").unwrap();
                 for sql in V36_ADDITIONS
                     .iter()
@@ -662,7 +663,7 @@ fn unposted_filter() -> QueryFilter {
 #[tokio::test]
 async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_identity_after_upgrade()
  {
-    for broken in [false, true] {
+    for (source, broken) in [(41, false), (41, true), (42, false), (42, true)] {
         let database = Database::new();
         let db = SqliteStorage::open(database.0.clone()).unwrap();
         let store = SqliteTimelineStore::new(db.clone());
@@ -738,7 +739,10 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         drop(db);
         {
             let connection = Connection::open(&database.0).unwrap();
-            connection.execute_batch("DROP INDEX timeline_events_branch_interrupts; DELETE FROM timeline_member_roots WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DELETE FROM timeline_member_origins WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1') OR index_id='exec/v1'; DELETE FROM timeline_member_terminals WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 41)); INSERT INTO agent_store_format VALUES(41);").unwrap();
+            if source == 41 {
+                without_automation_origin(&connection);
+            }
+            connection.execute_batch(&format!("DROP INDEX timeline_events_branch_interrupts; DELETE FROM timeline_member_roots WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DELETE FROM timeline_member_origins WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1') OR index_id='exec/v1'; DELETE FROM timeline_member_terminals WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {source})); INSERT INTO agent_store_format VALUES({source});")).unwrap();
             if broken {
                 connection.execute("UPDATE timeline_events SET body=json_set(body,'$.record.event.data.task_id',json('[{}]')) WHERE session_id='external' AND sequence=13", []).unwrap();
             }
@@ -746,8 +750,8 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         if broken {
             assert!(SqliteStorage::open(database.0.clone()).is_err());
             let connection = Connection::open(&database.0).unwrap();
-            assert_eq!(marker(&connection), [41]);
-            assert_eq!(schema(&connection), schema_of(41));
+            assert_eq!(marker(&connection), [source]);
+            assert_eq!(schema(&connection), schema_of(source as u32));
             let count: i64 = connection
                 .query_row(
                     "SELECT count(*) FROM timeline_member_roots WHERE index_id='exec-wake/v1'",
@@ -762,7 +766,7 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
             continue;
         }
         let db = SqliteStorage::open(database.0.clone()).unwrap();
-        assert_eq!(db.upgraded_from(), Some(41));
+        assert_eq!(db.upgraded_from(), Some(source as u32));
         let store = SqliteTimelineStore::new(db.clone());
         let query = QuerySpec {
             filter: Some(unposted_filter()),
