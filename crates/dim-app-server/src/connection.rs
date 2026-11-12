@@ -729,8 +729,13 @@ impl Connection {
                 }
                 (Some(&p.session_id), None)
             }
+            // A delete reads none of the Session's records, so its recorded
+            // protocol version cannot matter: any version may remove any id.
+            // An empty id is still invalid input, as for every Session call.
             Call::Delete(p) => {
-                self.authorize_version(rpc, &p.session_id)?;
+                if p.session_id.is_empty() {
+                    return Err(RpcError::invalid("sessionId must not be empty"));
+                }
                 (None, None)
             }
             Call::Fork(p) => {
@@ -802,17 +807,19 @@ impl Connection {
         }
         Ok(())
     }
-    /// A Session belongs to the protocol version that created it; the
-    /// refusal names both versions, so the operator can tell the two builds
-    /// apart. A Session without a readable owner row has no recorded version
-    /// and is refused without one. An empty id names no Session at all: it is
-    /// invalid input, not a closed Session.
+    /// A Session belongs to the protocol version that created it, and a
+    /// connection may use it from that version on: the recorded version is a
+    /// lower bound, not an equality. Only a Session recorded later than this
+    /// connection is refused, and the refusal names both versions so the
+    /// operator can tell the two builds apart. A Session without a readable
+    /// owner row has no recorded version and is refused without one. An empty
+    /// id names no Session at all: it is invalid input, not a closed Session.
     fn authorize_version(&self, rpc: &RpcService, id: &str) -> Result<(), RpcError> {
         if id.is_empty() {
             return Err(RpcError::invalid("sessionId must not be empty"));
         }
         let message = match rpc.index.version_of(id) {
-            Some(recorded) if recorded != self.protocol_version() => format!(
+            Some(recorded) if recorded > self.protocol_version() => format!(
                 "Session was created by protocol version {recorded}; this connection speaks {}",
                 self.protocol_version()
             ),
@@ -1074,7 +1081,9 @@ impl Connection {
                         sessions.into_iter().map(move |s| (host.clone(), s))
                     })
                     .filter(|(_, session)| {
-                        rpc.index.version_of(session.id()) == Some(self.protocol_version())
+                        rpc.index
+                            .version_of(session.id())
+                            .is_some_and(|recorded| recorded <= self.protocol_version())
                     })
                     .map(|(host, s)| {
                         let status = s.state("main").map_err(RpcError::from)?;

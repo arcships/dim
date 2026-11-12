@@ -79,7 +79,7 @@ are Rust methods over the native store, not services: only Agents calls them.
 | Kind | Rpc built-in, next to `session.create` and `session.close`. It is not a `sessionMethods` entry, because a Session cannot unload itself through one of its own parts. It is not a management method either: it acts on one Session, and Rpc's Session checks apply |
 | Protocol | v3. v1 and v2 get `unknown_method` ("Method requires protocol v3"). `hello.features` lists it under the conditions that list `session.create`. The protocol version stays 3: clients discover new built-ins through `hello.features`, as they discover `session.summaries` |
 | Callers | Every connection that may call `session.close`, under the same profile rules: in a protected profile, local transports only. Paired devices (P3) are decided in RemoteGateway's compatibility table together with the other Session built-ins |
-| Session version | A Session's recorded protocol version must equal the connection's (`session_protocol_version`), as for every Session built-in. A Session with no readable owner row has no recorded version, so the check passes |
+| Session version | A Session is openable by a connection whose protocol version is at least its recorded one (`session_protocol_version` otherwise), as for every Session built-in. `session.delete` is the exception: it reads none of the Session's records, so it removes a Session of any recorded version. A Session with no readable owner row has no recorded version, so the check passes. `session_owners.protocol_version` records the version that created the Session: it is a historical fact read for the Code Mode exclusion and copied by forks, not a capability any caller rewrites |
 | Damaged Sessions | Deleted by id. A delete reads none of the Session's records, so a Session that fails validation or has no available owner can be deleted; Rpc's unavailable-Session check does not apply to `session.delete` |
 | Reply | `{deleted: true}` once this call removed the Session: its stored rows, or, in a daemon without a native store, a loaded Session. An unknown or already deleted id also succeeds, with `{deleted: false}`: nothing of the id was removed, and the client's retry finds no rows. The field is added to the reply, so a client of an older App Server reads `{}` as the same success it was |
 
@@ -207,7 +207,7 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 | `{deleted: true}` or `{deleted: false}` | The rows were removed, or there were none | Session gone; its unowned files go in the sweep |
 | `unknown_method` (-32601) | Protocol v1 or v2 | Unchanged |
 | `invalid_params` (-32602) | `sessionId` missing or not a string | Unchanged |
-| `session_protocol_version` | S belongs to another protocol version | Unchanged |
+| `session_protocol_version` | Only for a Session recorded by a *newer* protocol version than the connection speaks; a delete never answers it | Removed from this method |
 | `session_active` (-32000) | `requireInactive` and S, or a Session the delete would remove with it, is in use (§3.2 step 1) | Unchanged: nothing is removed and nothing is closed. The message says why: a turn is running, a background task holds it, or how many requests and subscriptions use it. A line that failed or is closing is not a reason: it keeps no Session |
 | `product_integration_pending` | The profile does not serve Session execution | Unchanged |
 | `-32603` "Session operation failed" | Step 3 failed (`Locked`, `DirectoryNotEmpty`, `Unsynced`, I/O, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
@@ -297,7 +297,7 @@ partial failure would still need per-id results.
 | Item | Rule |
 | --- | --- |
 | Kind | Rpc built-in. It creates a Session, as `session.create` does, from another Session's cut (Agents) |
-| Protocol and callers | As for `session.delete` (§3.1). The source must belong to the connection's protocol version, and the fork gets that version |
+| Protocol and callers | As for `session.delete` (§3.1). The source's recorded version must not exceed the connection's, and the fork records the source's version |
 | `at` | The last `main` sequence the fork inherits. 0 inherits no event |
 | Reply | The fork's id and its `main` head once it is published. The client then attaches |
 | No other params | No `branchId` or configuration fields. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
@@ -515,7 +515,7 @@ so no fork relation is needed.
 | `unknown_method` | Protocol v1 or v2 | Nothing created |
 | `invalid_params`, `session_invalid_input` | Param shape, a cut `session.branch_create` rejects at the same position, or a cut that is not a rest point (§6.2) | Nothing created |
 | `session_closed` | The source is unknown or deleted, also when its delete commits before the fork transaction | Nothing created |
-| `session_protocol_version` | The source belongs to another protocol version | Nothing created |
+| `session_protocol_version` | The source is recorded by a newer protocol version than the connection speaks (records the source's version, §6.1) | Nothing created |
 | `session_build_failed` | F's build fails | F rolled back |
 | `-32603` "Session operation failed" | Storage failure, including F's copied rows failing validation | Nothing committed, or F rolled back |
 

@@ -225,6 +225,8 @@ mod web_entry;
 
 #[path = "transport_flow/prompt_suggestion.rs"]
 mod prompt_suggestion;
+#[path = "transport_flow/protocol_version.rs"]
+mod protocol_version;
 #[path = "transport_flow/workflow.rs"]
 mod workflow;
 
