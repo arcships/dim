@@ -2069,6 +2069,14 @@ fn sources<'a>(
                 QueryFilter::And { conditions } => conditions
                     .iter()
                     .find_map(|condition| necessary(condition, kinds, compiler)),
+                QueryFilter::Or { conditions } if !conditions.is_empty() => conditions
+                    .iter()
+                    .map(|condition| {
+                        necessary(condition, kinds, compiler)
+                            .map(|table| format!("SELECT ord,seq,physical FROM {table}"))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(|sources| format!("({})", sources.join(" UNION "))),
                 _ => None,
             }
         }

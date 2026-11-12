@@ -7,6 +7,100 @@ use serde_json::{Value, json};
 use std::num::NonZeroU64;
 
 #[tokio::test]
+async fn alternative_text_candidates_seek_positions_without_scanning_unrelated_inputs() {
+    let mut costs = Vec::new();
+    for inputs in [100u64, 1_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let records: Vec<_> = (1..=inputs)
+            .map(|sequence| {
+                record(
+                    sequence,
+                    EventKind::InputMessage(InputMessageData::text(
+                        if sequence == 1 {
+                            "foundwordx foundwordy".into()
+                        } else {
+                            format!("Ordinary message {sequence}: {}", "content ".repeat(128))
+                        },
+                        None,
+                    )),
+                )
+            })
+            .collect();
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut measured = Vec::new();
+        for (terms, expected) in [
+            (["absentwordx", "absentwordy"], false),
+            (["foundwordx", "foundwordy"], true),
+        ] {
+            let alternatives = QueryFilter::Or {
+                conditions: terms
+                    .into_iter()
+                    .map(|term| QueryFilter::TextCandidate {
+                        field: "data".into(),
+                        partition_by: vec![],
+                        terms: vec![term.into()],
+                    })
+                    .collect(),
+            };
+            let mut query = fields(&["id"]);
+            query.select = QuerySelect::Exists;
+            query.filter = Some(QueryFilter::And {
+                conditions: vec![eq("kind", json!("input/message")), alternatives],
+            });
+            store.record_query_statistics();
+            let result = store.query(&scope(inputs), &query, None).await.unwrap();
+            assert!(
+                matches!(result.result, dim_agent_runtime::QueryOutput::Exists { exists } if exists == expected)
+            );
+            let statistics = store.take_query_statistics();
+            measured.push(statistics.iter().map(|stat| stat.vm_steps).sum::<i32>());
+            parity(&store, &memory, &scope(inputs), &query).await;
+            query.select = QuerySelect::Fields {
+                fields: vec!["id".into()],
+            };
+            parity(&store, &memory, &scope(inputs), &query).await;
+            let Some(QueryFilter::And { conditions }) = &mut query.filter else {
+                unreachable!()
+            };
+            let QueryFilter::Or { conditions } = &mut conditions[1] else {
+                unreachable!()
+            };
+            conditions.push(eq("id", json!(format!("event-{inputs}"))));
+            parity(&store, &memory, &scope(inputs), &query).await;
+        }
+        println!("Alternative text candidates inputs={inputs} VM={measured:?}");
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1]
+            .iter()
+            .zip(&costs[0])
+            .all(|(large, small)| large < &(small * 2)),
+        "10x more unrelated inputs must not cause a history scan: {costs:?}"
+    );
+}
+
+#[tokio::test]
 async fn recovery_relations_bound_all_physical_roles_before_projection() {
     let mut costs = Vec::new();
     for unrelated in [100, 5_000] {

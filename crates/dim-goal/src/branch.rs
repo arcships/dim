@@ -960,7 +960,7 @@ impl Owner {
                     select: QuerySelect::Fields {
                         fields: vec!["position.sequence".into(), "kind".into()],
                     },
-                    group_by: vec!["kind".into()],
+                    group_by: Vec::new(),
                     pick: Some(QueryPick::Last),
                     order_by: vec![QueryOrder {
                         key: QueryOrderKey::Position,

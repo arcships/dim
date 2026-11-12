@@ -24,7 +24,7 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)、[#1147](https://gi
 
 | 查询 | 必要结果 |
 | --- | --- |
-| 本地 opening | 最后 branch/start 或 session/forked 的位置和类型。 |
+| 本地 opening | branch/start 或 session/forked 合并范围中的最后一条位置和类型；不按 kind 分组、不计算历史条数。Store 分别按类型索引定位末条，再取较晚位置。 |
 | Goal 候选 | 本地 input/message 的 Goal 标记候选，只取必要位置、身份和 blocks，按原语义解释完整状态、触发、旧 key 和补偿。 |
 | 删除引用 | 将本页完整状态实际引用的 after 位置去重，按最多128个已知位置一批查询原输入及该 ID 的删除关联；trigger 通过原始紧邻位置配对。不读取全部普通输入的删除位置，不读正文。 |
 | 原始紧邻位置 | 必要处按位置点查类型和 submission_id；候选页相邻不等于原始相邻。 |
