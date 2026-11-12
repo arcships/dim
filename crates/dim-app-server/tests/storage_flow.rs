@@ -7810,28 +7810,6 @@ async fn a_v31_store_upgrades_in_place_once() {
     upgrades_in_place_once(&database, connection, 31).await;
 }
 
-#[tokio::test]
-async fn a_v38_store_upgrades_in_place_once() {
-    let database = Database::new();
-    let connection = Connection::open(&database.0).unwrap();
-    let mut statements = schema_of(38);
-    statements.sort_by_key(|sql| !sql.starts_with("CREATE TABLE"));
-    for sql in statements {
-        connection.execute_batch(&sql).unwrap();
-    }
-    connection
-        .execute("INSERT INTO agent_store_format VALUES (38)", [])
-        .unwrap();
-    assert_eq!(schema(&connection), schema_of(38));
-    upgrades_in_place_once(&database, connection, 38).await;
-    let connection = Connection::open(&database.0).unwrap();
-    assert_ne!(
-        schema(&connection),
-        schema_of(38),
-        "v38's exact-schema gate rejects the upgraded store"
-    );
-}
-
 /// #1421: the step that rebuilds `agent_sessions` for the `automation` origin
 /// keeps every business row and every Session `internal`, recreates each
 /// object `SCHEMA` places on the table, and leaves the SQL of the tables that
@@ -8738,7 +8716,7 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
 mod position_queries;
 
 #[tokio::test]
-async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() {
+async fn main_and_branch_formats_upgrade_to_v43_without_reinterpreting_their_markers() {
     for (version, main_layout) in [
         (37, true),
         (38, true),
@@ -8795,6 +8773,10 @@ async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() 
         }
         let facts = rows(&connection, "timeline_events");
         let owners = rows(&connection, "session_owners");
+        let business: Vec<_> = BUSINESS_TABLES
+            .iter()
+            .map(|table| (*table, rows(&connection, table)))
+            .collect();
         drop(connection);
         let mut before = Vec::new();
         dim_app_server::storage::export_timeline(database.0.clone(), "s1", &mut before)
@@ -8824,6 +8806,19 @@ async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() 
             "facts changed: v{version}, main={main_layout}"
         );
         assert_eq!(rows(&connection, "session_owners"), owners);
+        if version == 42 {
+            for (table, expected) in &business {
+                assert_eq!(rows(&connection, table), *expected, "v42 rows in {table}");
+            }
+        }
+        assert_eq!(schema(&connection), schema_of(43));
+        if !main_layout {
+            assert_ne!(
+                schema(&connection),
+                schema_of(version),
+                "v{version}'s exact-schema gate rejects the upgraded store"
+            );
+        }
         assert_eq!(
             connection
                 .query_row("SELECT version FROM agent_store_format", [], |row| row

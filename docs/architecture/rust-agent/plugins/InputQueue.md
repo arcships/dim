@@ -103,7 +103,7 @@ the deleted input again. A candidate in `input/withdraw.steer` is not itself an
 adopted input and never enters model context. The owner contract is
 [Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal),
 and its durable form is the
-[v42 format decision](../../../design/appserver/native-storage-format.md#v42-conditional-queued-input-steer).
+[v43 format decision](../../../design/appserver/native-storage-format.md#v43-conditional-queued-input-steer).
 
 Recovery fixes a published cutoff, selects ordinary and handover current members,
 then reads first applied/withdraw controls for each page of at most 128 identities.
