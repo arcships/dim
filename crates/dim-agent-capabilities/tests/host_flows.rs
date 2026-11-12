@@ -420,6 +420,37 @@ async fn the_continuation_reads_the_closure_result_of_the_announced_call() {
 }
 
 #[tokio::test]
+async fn an_incomplete_call_reports_a_malformed_response() {
+    // A stream that stops normally with partial arguments is the same
+    // user-visible defect as one that reports unparseable arguments, so it
+    // carries the same failure kind instead of `unknown`.
+    let (events, agent) = run_cuts(Cut::IncompleteCallAtStop, 2).await;
+    let failure = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a failed terminal carrying facts");
+    assert_eq!(failure.kind, ModelFailureKind::MalformedResponse);
+    assert!(
+        failure
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("before its tool arguments were complete")),
+        "{:?}",
+        failure.reason
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_call_announced_and_never_executed_continues_the_turn_once() {
     for cut in [
         Cut::CallAtMaxTokens,
