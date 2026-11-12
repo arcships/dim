@@ -41,7 +41,7 @@ Branch terminal lookup uses the existing text candidate for a generated UUID, fo
 
 An unavailable Usage number does not block restoration. Its first actual request can perform the existing Loop projection plus Policy's first contribution projection; subsequent initialized requests reuse the number. Count these two first-request projections separately from zero cold-history projections. Prompt's public state publication still copies its public snapshot; only repeated temporary copies were removed. Existing three-format tool rendering remains necessary for terminal blocks whose source row has left the bounded window.
 
-## 6. Release measurement on the long-session fixture
+## 6. Earlier v43 measurement on the long-session fixture
 
 Source `cd6bbce4fcaf8079e2faf52bd1a7b40192841a5a`, native v43, release binary SHA-256 `dcac7e5a1b14ff8624eec16b85264560c52ac38239d00d199f890f9ff8b46e1e`. The fixture has about 25,049 physical event rows and 1,000 mock turns. Each cell below contains two independent cold CLI PTY samples; the 256 MiB limit includes the probe, CLI, daemon and new file cache, with swap disabled. Files were verified nonresident before every sample. Baseline source is `6164eab570f9c896b673294798258d29db8b517d`.
 
@@ -51,7 +51,7 @@ Source `cd6bbce4fcaf8079e2faf52bd1a7b40192841a5a`, native v43, release binary SH
 | Completed external work | 195.9 / 202.4 | 198.2 / 204.0 | 220 / 220 | 153.8 / 153.8 | 3.9 / 3.8 |
 | 2.43 MB compaction, no statistics | 228.6 / 221.8 | 211.8 / 213.8 | 230 / 240 | 165.0 / 164.9 | 8.5 / 8.5 |
 
-The 200 ms end-to-end target is not met. The ordinary fixture regressed. Initial display selection changed from the latest turn to a fixed tail, so these are user-flow comparisons, not isolated query speedups. At 192 MiB, editable times were 247.5–258.5, 196.7–205.0 and 212.7–218.9 ms respectively, without limit or OOM events.
+At this earlier revision the 200 ms end-to-end target was not met and the ordinary fixture regressed. Section 7 records the current measurement. Initial display selection changed from the latest turn to a fixed tail, so these are user-flow comparisons, not isolated query speedups. At 192 MiB, editable times were 247.5–258.5, 196.7–205.0 and 212.7–218.9 ms respectively, without limit or OOM events.
 
 The compaction's 594 overflow pages fell from seven reads (17,031,168 bytes) to two reads (4,866,048 bytes) in one summary SELECT. A separate VFS diagnostic verified this; its timings are excluded. Forcing a materialized raw JSON or JSONB intermediate increased that query's measured CPU median from 2.24 ms to 5.32/6.03 ms and copied the whole body, so it was rejected. A supplementary mixed-kind position query also increased body reads and was removed. Position-only projections still reuse selected coordinates.
 
@@ -62,3 +62,58 @@ A separate direct-protocol diagnostic, without a CLI or UI registration, measure
 One ordinary opening produced 13 existing facts (5,095 JSON bytes): one resume, four date facts, six client-presence input/application facts and two execution-setting facts. There were no new recovery snapshots or Usage numeric backfills. These writes still maintain indexes and WAL.
 
 First upgrade is separate: one cold product sample from v41, Timeline-v42 and main-v42 took 320.3, 312.6 and 322.9 ms under 256 MiB, peaking near 206 MiB. Under 192 MiB they took 309.3, 317.9 and 312.1 ms, reached the limit and triggered reclaim (64–90 max events), with no OOM or swap. Upgrade includes missing relationship construction and main's before/after foreign-key checks; ordinary v43 opening performs neither historical pass. Two samples per normal fixture and one per upgrade source are evidence about this machine and workload, not a universal latency guarantee.
+
+
+## 7. Indexed display measurement, native v44
+
+Measured implementation: `396ddcd95`, compared with `a524b9668` on the same three disposable fixtures. Changed release binary SHA-256: `7da2b5029a51bfc0da6c7693ec74a0d3f00f498400eae9e787f1c28a22f4db99`; baseline: `42964815a191908237f56fc5081c5029ae1fad36a2058055f8c3d828508bde80`. Subsequent documentation edits do not change either binary. Both use native v44; this display change adds no index, format upgrade, business event or persistent cache.
+
+The ordinary fixture has 25,049 physical event rows, 1,000 mock turns and 10,667,080 event-body bytes. The completed-work fixture has 25,954 rows and 10,943,264 body bytes. The compaction fixture has 25,050 rows and 13,127,097 body bytes, including the 2.43 MB replacement. These are test fixtures, not a production-session sample.
+
+### Cold launch through editable history
+
+Each cell contains two independent actual CLI PTY runs. Before every run the disposable database, executable and configuration files were synced, evicted and verified nonresident. Each run starts a new daemon; system libraries retain their natural cache state. The 256 MiB/no-swap cgroup includes the probe, CLI, daemon and newly populated file cache. No compiler runs during measurement. All samples had zero limit/OOM events. Format preparation occurs outside the normal-load timer; this round does not remeasure first upgrade.
+
+| Fixture | Before editable ms | After editable ms | Before daemon CPU ms | After daemon CPU ms | Before group peak MiB | After group peak MiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Saved statistics | 233.7 / 233.8 | 163.7 / 163.8 | 270 / 280 | 160 / 160 | 157.6 / 153.5 | 154.7 / 154.0 |
+| Completed external work | 210.2 / 199.2 | 160.8 / 157.9 | 240 / 230 | 170 / 160 | 153.9 / 154.3 | 155.4 / 155.5 |
+| Compaction, no statistics | 196.7 / 201.2 | 167.0 / 165.9 | 210 / 220 | 160 / 160 | 164.4 / 164.2 | 166.8 / 170.8 |
+
+All six changed samples meet 200 ms on this machine and these fixtures. Two samples per fixture are not a latency percentile or a guarantee for arbitrary sessions. Compared by sample means, elapsed time falls about 30%, 22% and 16%; daemon CPU falls about 42%, 30% and 26%. This combines indexed display selection and removing catalog/permission/skills replies from the CLI's initial-history wait; it does not isolate their individual timing contributions. The latter replies still arrive through the existing worker and are applied after display is available.
+
+Memory does not show a general reduction. At editable history, changed full-group anonymous memory is 32.5–34.3 MiB versus 33.2–34.9 MiB before. Changed file memory is 116.9–128.1 MiB versus 115.1–121.4 MiB. The compaction group's peak increases about 2.4–6.6 MiB. These editable-time categories and the group peak are different samples and must not be subtracted to invent a peak allocation breakdown. File pages were populated during the measured run, not retained as a precondition.
+
+| Fixture | Before daemon read-call MiB | After daemon read-call MiB | Before daemon physical-read MiB | After daemon physical-read MiB |
+| --- | --- | --- | --- | --- |
+| Saved statistics | 3.99 / 4.02 | 4.68 / 4.72 | 23.13 / 22.91 | 24.16 / 23.91 |
+| Completed external work | 3.89 / 3.70 | 4.01 / 4.06 | 23.13 / 23.51 | 24.51 / 24.60 |
+| Compaction, no statistics | 7.92 / 7.88 | 8.38 / 8.40 | 23.90 / 23.79 | 24.76 / 25.71 |
+
+Read-call and physical-read bytes increase in this comparison. Kind-based pages contain more selected display events than equal-sized raw-position windows, so this is not an equal-payload I/O comparison. The confirmed benefit is latency and CPU, not lower disk traffic or lower total memory. Remaining work includes actual selected bodies, inline compaction JSON pages, owner opening and its existing writes, executable/library pages, transport and rendering. This run does not independently time each remaining source. Post-teardown event totals include close events and are not startup-write counts.
+
+### Query work and pagination
+
+The selector uses the existing kind index. Ordinary events supply sequence coordinates; packed text supplies only its sequence bounds, from which the requested logical coordinates are produced. Each kind contributes at most the page limit plus one coordinates; only the final selected page loads bodies. No candidate-body JSON expansion or whole-history filtering is required for this query shape.
+
+The existing public storage flow compares native and memory results, clipped packed boundaries, cursor direction and the default ordering. Across two measured kind-position pages, histories with 100 and 1,000 source items both execute 247 SQLite VM instructions in the recorded selection statements, with zero full-scan steps, SQL sorts or automatic indexes. Branch-head validation remains enabled and is outside these selection counters. This is evidence for this query shape and fixture, not a claim that all Fields queries have constant cost.
+
+An earlier trial (`18b04472d`) used the generic mixed-kind selector, which decoded packed candidates before the final page bound. It reached 200–204 ms on the ordinary fixture and raised group memory to about 167 MiB. Replacing that candidate expansion with coordinate-only indexed selection removed the added work. No cache or new index was needed.
+
+The following direct-protocol diagnostics reuse normal caches and exclude the CLI. Their elapsed times are not cold acceptance results. The earlier-page probe begins at a fixed head minus 128; it is not a click after the first page in the table. CPU resolution is 10 ms. Initial diagnostics can include outstanding opening work. Web rows measure the Web pagination policy through RPC, not browser paint time.
+
+| Fixture / policy | Pages before → after | Returned events before → after | Payload bytes before → after | RPC elapsed ms before → after | Daemon CPU ms before → after |
+| --- | --- | --- | --- | --- | --- |
+| Ordinary / initial | 2 → 2 | 94 → 128 | 24,737 → 47,629 | 75.1 → 55.5 | 60 → 20 |
+| Completed / initial | 1 → 1 | 49 → 64 | 10,677 → 13,070 | 36.1 → 17.6 | 20 → 10 |
+| Compaction / initial | 1 → 1 | 57 → 64 | 12,976 → 14,925 | 41.0 → 23.8 | 30 → 10 |
+| Ordinary / earlier | 4 → 2 | 327 → 512 | 153,001 → 284,275 | 489.0 → 233.8 | 330 → 10 |
+| Completed / earlier | 4 → 4 | 737 → 1,024 | 176,873 → 363,854 | 547.7 → 310.1 | 370 → 30 |
+| Compaction / earlier | 4 → 1 | 246 → 256 | 137,227 → 159,008 | 455.7 → 131.6 | 320 → 10 |
+| Ordinary / Web initial | 4 → 2 | 343 → 128 | 140,889 → 47,629 | 387.3 → 40.5 | 250 → 10 |
+| Completed / Web initial | 4 → 1 | 605 → 64 | 133,576 → 13,070 | 373.9 → 12.8 | 280 → 10 |
+| Compaction / Web initial | 4 → 1 | 310 → 64 | 145,311 → 14,925 | 365.3 → 18.4 | 250 → 10 |
+
+The window remains bounded, not guaranteed full: all input/message events remain eligible, and Shell/Hook or other internal input content may not form a chat entry. The existing four-page cap therefore remains reachable, as the completed-work earlier-page probe shows. No prefix index or source classification is introduced. The initial page has 64 selected events and earlier pages 256; these are event counts, not rendered-message counts.
+
+Validation for this increment: 102 relevant Rust flow cases and 17 Web cases passed, including the corrected ACP window fixture and final storage/history reruns; one existing ACP case remains ignored. Affected all-target Clippy, Web type checking, formatting and ADR checks passed. Earlier workspace-wide evidence belongs to the preceding commits; the full workspace suite was not rerun for this increment.
