@@ -345,6 +345,10 @@ function branchNotice(text: string, mode: string | undefined): BranchNotice | un
     const branch = attr(text, "branch")
     return branch === undefined ? undefined : { kind: "source-ended", branch }
   }
+  // One follow-up input carries one block: Hooks writes it in `Branch::stop`
+  // (hooks/runner.rs), one Queue input per round. Taking the first match is
+  // safe while that holds, so a second writer has to keep the shape or change
+  // this reader.
   if (opensElement(text, "dim-hooks") && hookKind(text) === "follow-up") {
     const body = unescape(elementBody(text, "</dim-hooks>")).trim()
     return { kind: "hook-follow-up", body, lines: Math.max(1, body.split("\n").length) }

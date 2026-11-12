@@ -1781,6 +1781,11 @@ pub(crate) fn result_text(result: &ToolResult) -> String {
 /// The attribute search stops at the opening tag's `>` on purpose: a hook's
 /// body escapes `<` and `>` but not `"`, so its text can hold a literal
 /// `kind="follow-up"` and must not answer for the marker.
+///
+/// One follow-up input carries one block: Hooks writes it in `Branch::stop`
+/// (`hooks/runner.rs`), one Queue input per round from
+/// `vec![raw(follow_up, None)]`. Both callers take the first match, so a
+/// second writer has to keep that shape or change this reader.
 fn hook_follow_up(text: &str) -> Option<String> {
     if markup::element(text)? != "dim-hooks" {
         return None;
