@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// A fresh directory for one call, removed with it.
+/// A fresh directory for one call.
 fn scratch() -> PathBuf {
     let path =
         std::env::temp_dir().join(format!("dim-ocr-helper-{}", uuid::Uuid::new_v4().simple()));
@@ -27,8 +27,11 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Runs `dimcode ocr-helper` under its confinement.
-async fn run(input: &Path, extra_args: &[&str]) -> Result<ConfinedOutput, ConfinedError> {
-    let base = scratch();
+async fn run(
+    base: &Path,
+    input: &Path,
+    extra_args: &[&str],
+) -> Result<ConfinedOutput, ConfinedError> {
     let work = base.join("work");
     let tmp = base.join("tmp");
     let cache = base.join("cache");
@@ -85,10 +88,28 @@ fn line(output: &ConfinedOutput) -> Value {
     serde_json::from_str(lines[0]).unwrap()
 }
 
+#[cfg(target_arch = "aarch64")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "Manual Apple Vision acceptance; see #1446"]
+async fn an_image_is_recognized_under_the_confinement() {
+    let base = scratch();
+    let output = run(&base, &fixture("latin.png"), &[]).await.unwrap();
+    assert!(output.confined);
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let payload = line(&output);
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["pageCount"], 1);
+    let text = std::fs::read_to_string(base.join("work/text.txt")).unwrap();
+    assert!(
+        text.to_ascii_lowercase().contains("dimcode"),
+        "recognized text: {text:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unknown_flag_is_a_typed_exit_two() {
     let input = fixture("latin.png");
-    let output = run(&input, &["--bogus"]).await.unwrap();
+    let output = run(&scratch(), &input, &["--bogus"]).await.unwrap();
     assert!(output.confined);
     assert_eq!(output.status.code(), Some(2));
     let payload = line(&output);
@@ -98,8 +119,8 @@ async fn an_unknown_flag_is_a_typed_exit_two() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_input_is_a_typed_exit_two() {
-    let input = scratch().join("missing.png");
-    let output = run(&input, &[]).await;
+    let base = scratch();
+    let output = run(&base, &base.join("missing.png"), &[]).await;
     // The confinement refuses a read path that does not exist before the
     // helper starts.
     assert!(output.is_err());
