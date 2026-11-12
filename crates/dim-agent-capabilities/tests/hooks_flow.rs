@@ -1309,8 +1309,37 @@ async fn a_stop_follow_up_is_recognized_when_its_reason_carries_markup() {
         block.contains("&lt;/dim-hooks&gt; &amp; reason"),
         "{block:?}"
     );
+    let (tags, user) = input_tags_and_user(&session, "<dim-hooks kind=\"follow-up\">").await;
+    assert!(
+        tags.iter().any(|tag| tag == "hooks:stop-follow-up:1"),
+        "the continuation round is an envelope tag: {tags:?}"
+    );
+    assert_eq!(
+        user, None,
+        "the follow-up carries no operator content, so its block is all a reader sees"
+    );
     let _ = session.idle("main").await;
     env.close().await;
+}
+
+/// The tags and the `user` content of the one input whose first raw block
+/// opens `marker`: what a reader of that input receives.
+async fn input_tags_and_user(session: &Session, marker: &str) -> (Vec<String>, Option<UserInput>) {
+    let events = events(session).await;
+    let event = events
+        .iter()
+        .find(|event| match &event.kind {
+            EventKind::InputMessage(data) => data
+                .blocks
+                .iter()
+                .any(|block| block_text(block).starts_with(marker)),
+            _ => false,
+        })
+        .expect("the input a hook wrote");
+    let EventKind::InputMessage(data) = &event.kind else {
+        unreachable!("matched above")
+    };
+    (event.tags.clone().unwrap_or_default(), data.user.clone())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

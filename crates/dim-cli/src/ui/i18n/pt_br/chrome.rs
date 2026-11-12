@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon não aceita renomear sessões"
         }
         "Renaming failed" => "Falha ao renomear",
+        "Delete \"{name}\"?" => "Excluir \"{name}\"?",
+        "Deleted {name}." => "{name} excluída.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Nada foi excluído: nenhuma sessão armazenada {name}."
+        }
+        "Delete failed" => "Falha ao excluir",
+        "This daemon does not support deleting Sessions" => {
+            "Este daemon não aceita excluir sessões"
+        }
         "Starting" => "Iniciando",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -387,6 +396,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill carregado: {name}",
         "Hook context · {count} line" => "Contexto do hook · {count} linha",
         "Hook context · {count} lines" => "Contexto do hook · {count} linhas",
+        "Stop hook follow-up · {count} line" => "Seguimento do hook Stop · {count} linha",
+        "Stop hook follow-up · {count} lines" => "Seguimento do hook Stop · {count} linhas",
         "Commands" => "Comandos",
         "Command Palette" => "Paleta de comandos",
         "No matches" => "Sem resultados",
@@ -443,8 +454,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Sem sessões salvas neste espaço de trabalho. Ctrl+S mostra mais."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter abrir · Ctrl+S escopo · Ctrl+R atualizar · Esc fechar"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter abrir · Ctrl+X excluir · Ctrl+S escopo · Ctrl+R atualizar · Esc fechar"
         }
         "Loading sessions..." => "Carregando sessões…",
         "No saved sessions yet." => "Sem sessões salvas.",

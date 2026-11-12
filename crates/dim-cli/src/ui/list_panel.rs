@@ -273,6 +273,18 @@ impl ListPanel {
         }
     }
 
+    /// Drops the row `id`, keeping the selection on a row that is still
+    /// shown: the row at the same place takes over, and the last one keeps
+    /// the selection on the row before it.
+    pub fn remove(&mut self, id: &str) {
+        let Some(at) = self.items.iter().position(|item| item.id == id) else {
+            return;
+        };
+        self.items.remove(at);
+        let count = self.shown().iter().filter(|item| !item.heading).count();
+        self.selected = self.selected.min(count.saturating_sub(1));
+    }
+
     /// Rows for the current filter: headings only while nothing is typed.
     fn shown(&self) -> Vec<&Item> {
         let query = self.filter.text().trim().to_lowercase();
