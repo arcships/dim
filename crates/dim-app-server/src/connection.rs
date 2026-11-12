@@ -729,9 +729,14 @@ impl Connection {
                 }
                 (Some(&p.session_id), None)
             }
-            // A delete reads none of the Session's records, so its recorded
-            // protocol version cannot matter: any version may remove any id.
-            // An empty id is still invalid input, as for every Session call.
+            // A delete names rows the storage format defines and removes them
+            // by session id alone (`storage/timeline.rs` `drop_session`), and a
+            // daemon opens only a store format it knows: an unknown one is
+            // refused at open (`storage/sqlite.rs`). So every row this daemon
+            // can see, it understands and can remove, while the recorded
+            // protocol version only shapes projections. That is why it does not
+            // gate the delete. An empty id is still invalid input, as for every
+            // Session call.
             Call::Delete(p) => {
                 if p.session_id.is_empty() {
                     return Err(RpcError::invalid("sessionId must not be empty"));
