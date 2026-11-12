@@ -292,12 +292,6 @@ impl Config {
                 if !matches!(result.outcome.as_str(), "adopted" | "unchanged") {
                     return Err(Error::internal_error());
                 }
-                if let Some(model) = &mut self.model {
-                    let mut preferences = model.model_preferences.take().unwrap_or_default();
-                    preferences.reasoning_effort =
-                        (value != PROVIDER_DEFAULT).then(|| value.to_owned());
-                    model.model_preferences = Some(preferences);
-                }
             }
             "model" => {
                 #[derive(Deserialize)]

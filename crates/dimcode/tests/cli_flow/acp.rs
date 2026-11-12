@@ -1362,6 +1362,16 @@ fn effort(value: &Value) -> &Value {
         .unwrap_or_else(|| panic!("no effort option: {value}"))
 }
 
+/// A `context/configured` fact carrying this flow's model, declaration and
+/// adopted preferences, as the public view gives them.
+fn configured(id: &str, sequence: u64, preferences: Value) -> Value {
+    let mut event = configured_event(sequence, "model", preferences);
+    event["id"] = json!(id);
+    event["data"]["capability_snapshot"] =
+        declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+    event
+}
+
 /// An adopted capability snapshot whose reasoning declaration is `reasoning`,
 /// or none when it is null.
 fn declaration(reasoning: Value) -> Value {
@@ -1568,11 +1578,18 @@ fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference()
             &catalog,
             json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
         );
+        // The App Server publishes the adopted fact before it replies, so the
+        // reply can only report a value the owner has already committed.
         let update = wire.read("session.model.update");
         assert_eq!(
             update["params"],
             json!({"sessionId":"session","branchId":"main",
                 "modelPreferences":{"reasoningEffort":"high"}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"high"}))}),
         );
         wire.reply(
             &update,
@@ -1583,6 +1600,11 @@ fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference()
             cleared["params"],
             json!({"sessionId":"session","branchId":"main",
                 "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-10", 10, json!({}))}),
         );
         wire.reply(
             &cleared,
@@ -1612,6 +1634,150 @@ fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference()
         "provider-default",
         "{cleared}"
     );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_keeps_the_adopted_effort_when_a_clear_changes_nothing() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] = declaration(
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+        );
+        record["modelPreferences"] = json!({"reasoningEffort":"medium"});
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear restores the declaration the Session already sends, so the
+        // owner reports `unchanged` and publishes no fact.
+        let cleared = wire.read("session.model.update");
+        assert_eq!(
+            cleared["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"unchanged","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
+    // The reply precedes the update this write publishes.
+    let update = peer.frame();
+    assert_eq!(update["method"], "session/update", "{update}");
+    let option = update["params"]["update"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap();
+    assert_eq!(option["currentValue"], "medium", "{option}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_reports_an_adopted_clear_from_the_fact_that_precedes_the_reply() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","medium","high"]}));
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear changes the configuration, so the fact is published
+        // before the reply.
+        let cleared = wire.read("session.model.update");
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"medium"}))}),
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
     peer.close();
     daemon.join().unwrap();
 }
