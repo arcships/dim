@@ -78,7 +78,7 @@ impl Window {
     /// Releases whole wire pages in forward order under a 300-identity budget.
     /// The newest page and, when found, the newest page with transcript rows
     /// remain whole even above that budget. This does not read more pages.
-    /// The cursor remains at a server-provided batch boundary for earlier reads.
+    /// The cursor remains at a server-provided position for earlier reads.
     pub fn take(&mut self) -> Vec<Event> {
         self.initial = false;
         let mut rows = HashSet::new();
@@ -122,6 +122,9 @@ fn rows_of<'a>(event: &'a Event, mut row: impl FnMut((u8, &'a str, &'a str))) {
                 row((2, &data.request_id, &result.call_id));
             }
         }
+        EventContent::CompactionStart(_)
+        | EventContent::Compaction(_)
+        | EventContent::CompactionSummary(_) => row((3, &event.id, "")),
         _ => {}
     }
 }

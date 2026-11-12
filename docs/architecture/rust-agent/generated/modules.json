@@ -47544,6 +47544,9 @@
       "to": "dim_client::wire",
       "references": [
         "path Event",
+        "path EventContent::Compaction",
+        "path EventContent::CompactionStart",
+        "path EventContent::CompactionSummary",
         "path EventContent::Input",
         "path EventContent::Text",
         "path EventContent::ToolCompleted",

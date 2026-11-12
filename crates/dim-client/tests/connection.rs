@@ -191,4 +191,16 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
         matches!(&items[1].content, EventContent::CompactionSummary(summary) if summary.strategy=="summary")
     );
     assert_eq!(items[1].id, "compaction-2");
+    let page: DisplayPage = serde_json::from_value(json!({
+        "items":[{"id":"summary","sequence":50,"create_at":2,
+            "type":"display","name":"compaction","data":{"strategy":"summary"}}],
+        "through":50,"nextAfter":50,"nextBefore":50,"done":false
+    }))
+    .unwrap();
+    let mut summary = Window::default();
+    assert!(
+        summary.push(page.into()).unwrap(),
+        "a visible compaction must not trigger earlier history reads"
+    );
+    assert_eq!(summary.take().len(), 1);
 }
