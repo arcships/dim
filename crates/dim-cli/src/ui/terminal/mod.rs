@@ -268,6 +268,9 @@ impl Terminal {
     /// Switches to the fullscreen interface's alternate screen with mouse
     /// reporting, or back to the shell's screen. Queued behind the frames
     /// already written, so they land on the screen they were drawn for.
+    /// With Kitty, queues the source pop, screen switch and destination push
+    /// together. Success acknowledges queueing, not an atomic terminal write.
+    /// An unavailable writer returns an error; callers must end the interface.
     pub fn set_fullscreen(&mut self, on: bool) -> io::Result<()> {
         if on == modes::is_live(Mode::AltScreen) {
             return Ok(());
