@@ -131,6 +131,36 @@ async fn start(store: &Store) -> (RunningServer, Client, Sessions) {
     (server, client, sessions)
 }
 
+/// Waits until SessionTitle serves `rename` on `id`: while the part loads it
+/// answers `service_reloading`, and a served one answers the invalid title.
+async fn serve_rename(client: &mut Client, id: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client
+                .rpc("session.rename", json!({"sessionId":id,"title":0}))
+                .await;
+            if reply.is_err_and(|error| dim_client::app_error(&error) == Some("invalid_params")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("SessionTitle serves rename");
+}
+
+/// The `session.summaries` entry of `id`, whatever it holds.
+async fn entry_of(client: &mut Client, id: &str) -> Value {
+    let listed = client.rpc("session.summaries", json!({})).await.unwrap();
+    listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["sessionId"] == id)
+        .unwrap_or_else(|| panic!("session.summaries lists {id}: {listed}"))
+        .clone()
+}
+
 /// The title entry of `id`, once its notice has arrived. The caller attaches
 /// first: a notice reaches only a client the Session is attached to.
 async fn titled(client: &mut Client, id: &str, text: &str, source: &str) -> Value {
@@ -300,6 +330,111 @@ async fn a_requested_title_with_a_control_character_writes_nothing() {
         .iter()
         .find(|entry| entry["sessionId"] == id)
         .unwrap();
+    assert_eq!(entry["title"], Value::Null, "{entry}");
+    assert_eq!(entry["titleRevision"], 0, "{entry}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A fork starts untitled whatever its source was seeded with
+/// (session-deletion-and-fork §6.3, SessionTitle A7): the seed is the creating
+/// caller's, so the fork's record does not carry it and a reload does not
+/// write the source's stale label either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_a_renamed_launch_stays_untitled_across_a_restart() {
+    let store = Store::new();
+    let (server, mut client, sessions) = start(&store).await;
+    let launched = sessions
+        .launch(json!({"cwd":store.0,"origin":"automation","title":"Nightly build"}))
+        .await;
+    assert_eq!(launched["ok"], true, "{launched}");
+    let source = launched["value"]["sessionId"].as_str().unwrap().to_owned();
+    client
+        .rpc("session.attach", json!({"sessionId":source}))
+        .await
+        .unwrap();
+    titled(&mut client, &source, "Nightly build", "manual").await;
+    when_served(
+        &mut client,
+        "session.rename",
+        json!({"sessionId":source,"title":"  Renamed by hand  "}),
+    )
+    .await;
+    titled(&mut client, &source, "Renamed by hand", "manual").await;
+
+    let forked = client
+        .rpc("session.fork", json!({"sessionId":source,"at":0}))
+        .await
+        .unwrap();
+    let fork = forked["sessionId"].as_str().unwrap().to_owned();
+    serve_rename(&mut client, &fork).await;
+    let entry = entry_of(&mut client, &fork).await;
+    assert_eq!(entry["origin"], "client", "{entry}");
+    assert_eq!(entry["title"], Value::Null, "{entry}");
+    assert_eq!(entry["titleRevision"], 0, "{entry}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    // The reload is what would write a seed the record had kept: a loaded
+    // Session's configuration comes from that record.
+    let (server, mut client, _) = start(&store).await;
+    client
+        .rpc("session.attach", json!({"sessionId":fork}))
+        .await
+        .unwrap();
+    serve_rename(&mut client, &fork).await;
+    let loaded = server
+        .agent()
+        .unwrap()
+        .get_session(&fork)
+        .expect("the attached fork is loaded")
+        .config()
+        .initial_title
+        .clone();
+    assert_eq!(loaded, None, "the fork's record carries no seed");
+    let entry = entry_of(&mut client, &fork).await;
+    assert_eq!(entry["title"], Value::Null, "{entry}");
+    assert_eq!(entry["titleRevision"], 0, "{entry}");
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The same when the source still carries its launch title: the fork does not
+/// inherit it, then or after a reload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_an_untouched_launch_stays_untitled_across_a_restart() {
+    let store = Store::new();
+    let (server, mut client, sessions) = start(&store).await;
+    let launched = sessions
+        .launch(json!({"cwd":store.0,"origin":"automation","title":"Nightly build"}))
+        .await;
+    assert_eq!(launched["ok"], true, "{launched}");
+    let source = launched["value"]["sessionId"].as_str().unwrap().to_owned();
+    client
+        .rpc("session.attach", json!({"sessionId":source}))
+        .await
+        .unwrap();
+    titled(&mut client, &source, "Nightly build", "manual").await;
+
+    let forked = client
+        .rpc("session.fork", json!({"sessionId":source,"at":0}))
+        .await
+        .unwrap();
+    let fork = forked["sessionId"].as_str().unwrap().to_owned();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let (server, mut client, _) = start(&store).await;
+    client
+        .rpc("session.attach", json!({"sessionId":fork}))
+        .await
+        .unwrap();
+    serve_rename(&mut client, &fork).await;
+    let entry = entry_of(&mut client, &fork).await;
     assert_eq!(entry["title"], Value::Null, "{entry}");
     assert_eq!(entry["titleRevision"], 0, "{entry}");
     drop(client);

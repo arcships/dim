@@ -7710,6 +7710,138 @@ async fn a_v41_store_upgrades_in_place_once_keeping_internal_launches() {
     );
 }
 
+/// A v41 store whose upgrade runs with foreign keys off, as the startup
+/// transaction does, and whose rows are the documented example: the shape the
+/// interrupted-state tests start from.
+fn v41_store_with_example_rows(database: &Database) -> Connection {
+    let connection = Connection::open(&database.0).unwrap();
+    let mut statements = schema_of(41);
+    statements.sort_by_key(|sql| {
+        !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
+    });
+    for sql in statements {
+        connection.execute_batch(&sql).unwrap();
+    }
+    connection
+        .execute("INSERT INTO agent_store_format VALUES (41)", [])
+        .unwrap();
+    insert_documented_records(&connection, BUSINESS_TABLES);
+    write_documented_context_switches(&connection);
+    for session in connection
+        .prepare("SELECT session_id FROM agent_sessions")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    {
+        dim_app_server::storage::initialize_session_member_index(&connection, &session).unwrap();
+    }
+    assert_eq!(schema(&connection), schema_of(41));
+    connection
+}
+
+/// #1421: an upgrade passes over the rows an interrupted `drop_session` left.
+/// It removes `timeline_branches` and `agent_sessions` in its first chunk and
+/// the events in later ones, so an interruption leaves `timeline_events`
+/// naming a branch and a Session that are gone. The store documents that state
+/// and a retry converges, so the upgrade must neither refuse it nor repair it.
+#[tokio::test]
+async fn a_v41_store_interrupted_mid_delete_upgrades_and_keeps_its_orphans() {
+    let database = Database::new();
+    let connection = v41_store_with_example_rows(&database);
+    // The first chunk committed; the event chunks did not.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             DELETE FROM session_catalog WHERE session_id='s1';
+             DELETE FROM session_owners WHERE session_id='s1';
+             DELETE FROM timeline_branches WHERE session_id='s1';
+             DELETE FROM agent_sessions WHERE session_id='s1';",
+        )
+        .unwrap();
+    let events: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id='s1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(events > 0, "the interrupted delete left its events behind");
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(41));
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_events WHERE session_id='s1'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        events,
+        "the orphaned events are still there"
+    );
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(dangling >= events, "the orphans still dangle");
+}
+
+/// #1421: the same for an interrupted `copy_fork_rows`, which writes the
+/// fork's branch rows before its Session row: an interruption leaves a branch
+/// naming a Session that does not exist yet.
+#[tokio::test]
+async fn a_v41_store_interrupted_mid_fork_upgrades_and_keeps_its_orphans() {
+    let database = Database::new();
+    let connection = v41_store_with_example_rows(&database);
+    // `copy_fork_rows` writes the branch row in its first chunk and the
+    // Session row in its last, so an interruption names exactly
+    // `timeline_branches → agent_sessions`.
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO timeline_branches VALUES ('fork', 'main', '{\"id\":\"main\"}', 0);",
+        )
+        .unwrap();
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dangling, 1, "the fork's branch names no Session");
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(41));
+    db.close().await.unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_branches WHERE session_id='fork'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1,
+        "the interrupted fork's branch is still there"
+    );
+    let dangling: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(dangling, 1, "and it still dangles");
+}
+
 /// A store upgrade that outlives `startup_timeout` still opens while it
 /// reports progress, and the CLI's progress note exists while it runs and is
 /// gone after the successful open.
