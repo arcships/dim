@@ -88,11 +88,13 @@ flowchart LR
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p72
   p18 -->|"dim_app_server::settings::SettingsService"| p72
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p71
+  p3 -->|"dim_app_server::control::ProcessActivity"| p71
   p9 -->|"dim_app_server::methods::ManagementMethods"| p71
   p13 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p71
   p37 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p71
   p71 -->|"dim_event_hub::bridge::EventHub"| p75
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p70
+  p3 -->|"dim_app_server::control::ProcessActivity"| p70
   p9 -->|"dim_app_server::methods::ManagementMethods"| p70
   p13 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p70
   p18 -->|"dim_app_server::settings::SettingsService"| p70
@@ -145,6 +147,7 @@ flowchart LR
   p18 -->|"dim_app_server::settings::SettingsService"| p40
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p39
   p37 -->|"dim_app_server::agents::AgentDirectory"| p39
+  p3 -->|"dim_app_server::control::ProcessActivity"| p39
   p18 -->|"dim_app_server::settings::SettingsService"| p39
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p39
   p8 -->|"dim_app_server::storage::timeline::SessionStore"| p39

@@ -28,7 +28,12 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<(), Box<dyn std::er
 }
 
 /// Runs a process that serves the App Server: closes every descriptor above
-/// standard error that the process inherited, then runs [`run_with`].
+/// standard error that the process inherited, runs `acquire`, then runs
+/// [`run_with`].
+///
+/// `acquire` is where the process takes descriptors it must keep for its
+/// lifetime, such as a lock: any taken earlier is closed with the inherited
+/// ones.
 ///
 /// This is the only entry that does that, and a process `main` calls it as
 /// the first thing it does, before it opens anything it needs: the
@@ -38,9 +43,11 @@ pub fn process_entry(
     args: impl IntoIterator<Item = String>,
     managed_provider: Option<crate::managed_provider::ManagedProviderRow>,
     install: fn(&mut AgentBuilder),
+    acquire: fn() -> Result<(), String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     close_inherited_descriptors();
+    acquire()?;
     run_with(args, managed_provider, install)
 }
 

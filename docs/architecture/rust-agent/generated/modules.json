@@ -6472,9 +6472,13 @@
       "file": "crates/dim-cli/src/update.rs",
       "unexpandedMacros": [
         "cfg",
+        "crossterm::execute",
         "env",
         "format",
-        "vec"
+        "tokio::pin",
+        "tokio::select",
+        "vec",
+        "writeln"
       ]
     },
     {
@@ -20769,6 +20773,7 @@
         "path SchedulerPlugin",
         "path SchedulerPlugin::new",
         "path SchedulerPlugin::new_with_testing",
+        "path methods::DeliveryHolds::default",
         "use methods::ScheduleJobs",
         "use methods::SchedulerPlugin"
       ]
@@ -21059,6 +21064,7 @@
       "to": "dim_agent_scheduler::runs",
       "references": [
         "path Delivery",
+        "path DeliveryState::Delivering",
         "path SchedulerError",
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
@@ -21070,6 +21076,7 @@
         "path stamp",
         "use crate::runs",
         "use crate::runs::Delivery",
+        "use crate::runs::DeliveryState",
         "use crate::runs::SchedulerError",
         "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
@@ -21111,6 +21118,15 @@
       "references": [
         "path InputMode",
         "use dim_agent_types::InputMode"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_app_server::control",
+      "references": [
+        "path ProcessActivity",
+        "path dim_app_server::ProcessHold",
+        "use dim_app_server::ProcessActivity"
       ]
     },
     {
@@ -22303,9 +22319,12 @@
       "to": "dim_app_server::control",
       "references": [
         "mod control",
+        "path ProcessActivity",
         "path ServerControl",
         "path ServerControlPlugin::new",
         "path control",
+        "use control::ProcessActivity",
+        "use control::ProcessHold",
         "use control::ServerControl",
         "use control::ServerControlPlugin"
       ]
@@ -22745,6 +22764,7 @@
         "path InUse::Held",
         "path InUse::Running",
         "path Session",
+        "path dim_agent_runtime::SessionPause",
         "use dim_agent_runtime::Agent",
         "use dim_agent_runtime::InUse",
         "use dim_agent_runtime::Session"
@@ -22783,6 +22803,7 @@
         "path AgentError::Build",
         "path AgentError::Closed",
         "path AgentError::InvalidInput",
+        "path AgentError::Reloading",
         "path AgentError::Storage",
         "path AgentError::aggregate",
         "path AgentError::fault",
@@ -22942,6 +22963,16 @@
       "references": [
         "mod tests",
         "path tests::creation_held"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents",
+      "to": "dim_app_server::control",
+      "references": [
+        "path ProcessActivity",
+        "path ProcessHold",
+        "use crate::ProcessActivity",
+        "use crate::ProcessHold"
       ]
     },
     {
@@ -24844,6 +24875,7 @@
         "path RpcError::from",
         "path RpcError::invalid",
         "path RpcError::reloading",
+        "path RpcError::service",
         "path RpcError::wire",
         "path dim_agent_capabilities::methods::valid_name",
         "path params",
@@ -25778,6 +25810,13 @@
       "references": [
         "path UiExtensions",
         "use crate::ui_extensions::UiExtensions"
+      ]
+    },
+    {
+      "from": "dim_app_server::control",
+      "to": "dim_agent_runtime::agent",
+      "references": [
+        "path dim_agent_runtime::SessionPause"
       ]
     },
     {
@@ -33361,12 +33400,12 @@
         "path Action::SessionRename",
         "path Action::Timeline",
         "path Action::Tui",
+        "path Action::Update",
         "path Action::Version",
         "path Action::Web",
         "path Action::WebInstall",
         "path Options",
         "path Options::parse",
-        "path args",
         "use args::Action",
         "use args::Options"
       ]
@@ -33395,7 +33434,6 @@
         "path client::DaemonNotice",
         "path client::StoreUpgrade",
         "path client::connect_inner",
-        "path client::shutdown",
         "path client::stop",
         "path client::web_assets"
       ]
@@ -33741,9 +33779,6 @@
       "from": "dim_cli",
       "to": "dim_cli::ui::tui",
       "references": [
-        "path ui::tui::Leave::Exit",
-        "path ui::tui::Leave::Restart",
-        "path ui::tui::Restart",
         "path ui::tui::is_interactive"
       ]
     },
@@ -33752,7 +33787,9 @@
       "to": "dim_cli::update",
       "references": [
         "mod update",
-        "path update::registry"
+        "path update::hold_installation",
+        "path update::registry",
+        "path update::run"
       ]
     },
     {
@@ -36550,7 +36587,6 @@
       "from": "dim_cli::model::session",
       "to": "dim_cli::update",
       "references": [
-        "path crate::update::Install",
         "path crate::update::Offer"
       ]
     },
@@ -36928,11 +36964,9 @@
       "from": "dim_cli::plugins",
       "to": "dim_cli::ui::tui",
       "references": [
-        "path Leave",
         "path WebOpened",
         "path ui::tui::print_web_panel",
         "path ui::tui::run",
-        "use crate::ui::tui::Leave",
         "use crate::ui::tui::WebOpened"
       ]
     },
@@ -38267,7 +38301,6 @@
         "path Command::SuggestionRespond",
         "path Command::TaskHistory",
         "path Command::ToggleWeb",
-        "path Command::UpgradeInstall",
         "path Command::Usage",
         "path Command::WatchMember",
         "path Command::WatchTaskOutput",
@@ -38385,7 +38418,6 @@
         "path Update::Toast",
         "path Update::TurnCompleted",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::Usage",
         "path Update::UsageReport",
         "path Update::Web",
@@ -38600,7 +38632,6 @@
         "path update",
         "path update::available",
         "path update::enabled",
-        "path update::install",
         "use crate::update"
       ]
     },
@@ -42758,13 +42789,6 @@
     },
     {
       "from": "dim_cli::ui::prompts",
-      "to": "dim_cli::update",
-      "references": [
-        "path crate::update::Install"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::prompts",
       "to": "dim_client::question",
       "references": [
         "path Answer",
@@ -45986,7 +46010,6 @@
         "path Command::SuggestionRespond",
         "path Command::TaskHistory",
         "path Command::ToggleWeb",
-        "path Command::UpgradeInstall",
         "path Command::Usage",
         "path Command::WatchMember",
         "path Command::WatchTaskOutput",
@@ -46083,7 +46106,6 @@
         "path Update::Toast",
         "path Update::TurnCompleted",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::Usage",
         "path Update::UsageReport",
         "path Update::Web",
@@ -46464,7 +46486,6 @@
         "path Effect::RefreshAccountModels",
         "path Effect::ResetIsolation",
         "path Effect::ResetPrompt",
-        "path Effect::Restart",
         "path Effect::Resume",
         "path Effect::RetryApproval",
         "path Effect::Runtime",
@@ -46482,13 +46503,11 @@
         "path Effect::ThemePreview",
         "path Effect::ThemeRestore",
         "path Effect::Timeline",
-        "path Effect::UpgradeInstall",
         "path Effect::UpgradeSkip",
         "path EffortPrompt",
         "path EffortPrompt::new",
         "path ExitConfirm",
         "path ExitConfirm::new",
-        "path ExitConfirm::restart",
         "path ExitReason",
         "path ExitReason::AgentRunning",
         "path ExitReason::AskUserPending",
@@ -46963,7 +46982,6 @@
       "references": [
         "path UpgradeDialog",
         "path UpgradeDialog::new",
-        "path UpgradeDialog::outcome",
         "use crate::ui::upgrade_dialog::UpgradeDialog"
       ]
     },
@@ -47123,7 +47141,6 @@
         "path Update::SuggestionSetting",
         "path Update::Switched",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::UsageReport",
         "path Update::Withdrawn",
         "path crate::model::session::Account",
@@ -47447,7 +47464,6 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::update",
       "references": [
-        "path crate::update::Install",
         "path crate::update::Offer"
       ]
     },
@@ -47478,7 +47494,6 @@
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
-        "path tf",
         "use crate::ui::i18n::t",
         "use crate::ui::i18n::tf"
       ]
@@ -47490,8 +47505,6 @@
         "path Effect",
         "path Effect::Close",
         "path Effect::None",
-        "path Effect::Restart",
-        "path Effect::UpgradeInstall",
         "path Effect::UpgradeSkip",
         "use crate::ui::prompts::Effect"
       ]
@@ -47563,6 +47576,27 @@
     },
     {
       "from": "dim_cli::update",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path dim_agent_capabilities::host_platform::ProcessTree::spawn"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
+      "to": "dim_cli",
+      "references": [
+        "path crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
+      "to": "dim_cli::plugins",
+      "references": [
+        "path crate::plugins::Signals::listen"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
       "to": "dim_cli::update::tests",
       "references": [
         "mod tests"
@@ -47572,7 +47606,8 @@
       "from": "dim_cli::update",
       "to": "dim_cli::version",
       "references": [
-        "path crate::version::RELEASE"
+        "path crate::version::RELEASE",
+        "path crate::version::VERSION"
       ]
     },
     {

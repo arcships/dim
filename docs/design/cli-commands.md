@@ -1513,6 +1513,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 
 | Entry | Behavior |
 | --- | --- |
+| `dimcode update` | Install the latest version on this installation's channel with its original package manager and install prefix, without starting a Session or daemon. |
 | `dimcode tui [-p TEXT] [--image PATH ...]` | Open the existing interactive scrollback client; `-p` sends TEXT as its first message ([starting with a first message](#starting-with-a-first-message)). |
 | `dimcode acp [--agent ID]` | Serve ACP over stdin/stdout through the client-host [AcpGateway](plugins/AcpGateway.md); lifecycle and unsupported features follow its contract. |
 | `dimcode exec [-p TEXT] [--image PATH ...] [--json]` | Run text and/or local images and exit; read redirected stdin when `-p` is absent. |
@@ -2125,21 +2126,153 @@ feature list are not implemented.
 
 ## Update dialog
 
-The existing update dialog uses the same actions in fullscreen and scrollback.
-It fits the available columns and rows: long version, command and error text
-wraps, with Up/Down scrolling when needed. The title and action row remain
-visible. If the actions do not fit on one row, show the focused action and its
-index; Left/Right and Tab/BackTab still cycle all actions, Enter confirms and
-Esc closes. Wide terminals retain the existing confirmation layout when it fits.
+`dimcode update` (also `dim update` and `dima update`) explicitly installs the
+current package's channel tag: alpha follows `alpha`, beta follows `beta`, and
+stable follows `latest`. It detects the package manager from where this executable lives,
+preserving the npm prefix and the alpha package's identity. It does not consult
+automatic-update preferences or skipped versions. Admission and activation follow
+the coordinated client/server upgrade contract below; the command creates no Session.
+The package manager resolves the tag and performs the install;
+its output is captured so installation logs do not scroll the screen. On a terminal,
+one progress row redraws in place with a spinner, the package and channel, and elapsed
+seconds. It shortens the label before the channel and elapsed time, fits the terminal
+width without wrapping, and clears before success or an error is printed. All progress
+and result messages use stderr; stdout is empty. Redirecting stderr produces one start
+message and the final result without animation or terminal control sequences. Redirecting
+only stdout leaves the progress and result on the terminal. Elapsed time is not a completion
+percentage. Ctrl+C, SIGTERM, or a progress-output failure cancels installation: the command
+terminates and waits for the installer process tree before returning nonzero. Termination
+does not roll back changes the package manager already made. A failure exits nonzero with
+the installer's error. An unknown installation layout, including a source checkout,
+fails with manual installation or rebuild instructions.
+
+The launcher sets `DIMCODE_NPM_PACKAGE` to `dimcode` or `dimcode-alpha`; other values
+are rejected before starting an installer. Without it, the build selects its default
+package. This value selects the package, not the release channel. `DIMCODE_NPM_REGISTRY`
+selects the registry for automatic availability checks only; installation uses the
+package manager's own registry configuration. The installer has no fixed time limit:
+elapsed time reports how long it has run, not proof that it is making progress. The
+operator can interrupt a stalled install; the command waits for process-tree cleanup.
+
+Every `dimcode` process started from a recognised package installation (client, App
+Server or installer, in any home) holds an OS file lock on `.dimcode-update.lock` at the
+detected manager root: shared for a client or server until it exits, exclusive for the
+installer until its cleanup ends. The lock is outside the replaced packages and shared by
+all homes and package identities in that root. `update` refuses with a nonzero exit,
+before starting its package manager, while any other process holds the lock, and a client
+or server fails to start while an update holds it. A lock file that exists but cannot be
+opened also fails the starting process, so a recognised consumer never runs unregistered.
+The lock file is created readable by every user and remains in place after release;
+deleting it while an update runs would allow another inode to be locked independently.
+
+Older builds hold no lock, so `update` also refuses until `.dimcode-consumers` exists at
+the manager root. After exiting every client and stopping every old server, the operator
+runs `update --confirm-legacy-exited`, which creates the marker and installs. The flag
+vouches for older processes only and never overrides a live lock. Source builds and
+unrecognised layouts hold no lock and are not updated.
+
+```text
+$ dima update
+| Updating dimcode-alpha (alpha) · 5s
+
+24 columns:
+| Updatin… (alpha) · 5s
+```
+
+The same row becomes the result when installation finishes:
+
+```text
+$ dima update
+Updated dimcode-alpha on the alpha channel.
+```
+
+The update dialog installs nothing. It names the new version and the command to run
+(`dima update` for a recognised installation, else the package manager's own command)
+once every client has exited and the server has stopped, and offers `Skip this version`
+and `Close`. It uses the same layout in fullscreen and scrollback. It fits the available
+columns and rows: long version and command text wraps, with Up/Down scrolling when
+needed. The title and action row remain visible. If the actions do not fit on one row,
+show the focused action and its index; Left/Right and Tab/BackTab still cycle all
+actions, Enter confirms and Esc closes. Wide terminals retain the confirmation layout
+when it fits.
 
 ```text
 +- Update available --------+
 | Version 0.12.0-alpha.124  |
 | is available (you have   |
-| > Later 3/3              |
+| > Close 2/2              |
 | Left/Right Tab Enter Esc |
 +----------- Up/Down 1-2/7-+
 ```
+
+### Coordinated client/server upgrade
+
+Installing files and activating a new client/server are separate outcomes.
+
+- The command must not interrupt an attached client, a running turn, a tool operation,
+  or detached background work. When the installation is in use, refuse before changing
+  its packages and identify the blockers so the operator can finish work and retry.
+  Unknown occupancy is not permission to proceed. The scope is the shared installation,
+  not just the selected home: another home can use the same executable and bundled files.
+- With an existing idle embedded daemon, serialize the upgrade against new starts and
+  connections, obtain an atomic idle decision, await the old server's shutdown, install
+  on the current channel, then use the newly installed client to start and handshake with
+  the successor. Report package installation and server activation separately; a failed
+  handshake is not a completed upgrade. If no daemon was running, leave it stopped and
+  say that the next client launch will use the new build.
+- Do not kill or silently replace other interactive clients. Do not manage an external
+  `--server` installation as though it belonged to this package. Do not roll back a
+  database format to recover from an installation or startup failure.
+- The existing daemon replacement contract remains owned by the
+  [terminal client](plugins/Tui.md). Its idle decision must cover all accepted work,
+  including detached work, before the updater can rely on it. A read of Session summaries
+  followed by an unconditional shutdown is not a safe upgrade admission mechanism.
+- Protocol compatibility and access to existing Sessions must be checked independently
+  of package/build equality. Incompatible live servers or stored Sessions require a
+  specific explanation and a safe supported path, not a forced stop or silent omission.
+- Acceptance includes a real client/server flow with an attached Session and active tool
+  work, detached background work, multiple clients/homes sharing an installation, idle
+  handover, installation/startup failure, and protocol changes. Windows must also exercise
+  replacement while the updater itself is running; POSIX process-image behavior does not
+  establish Windows safety.
+
+Installing a new release while old consumers remain active would instead require isolated
+versioned payloads, including plugins and Web assets, and a separate activation decision.
+It is not achieved by leaving the old daemon's executable mapped while replacing its files.
+
+#### Mechanism requirements
+
+The refusal policy above is enforced by the installation leases and the process admission
+below; the remaining items need alignment with the lifecycle and launch owners (#1457).
+
+- **Blocked requirement:** an idle decision must remain true until the old process releases
+  its resources. `Session::in_use` is a query, not a freeze; `Session::unload_if_idle` requires
+  its host to exclude new uses. Excluding concurrent hello/attach alone cannot exclude
+  new work originating in Scheduler or other process plugins.
+- **Lifecycle requirement:** the process owner needs an atomic, non-blocking quiescence
+  operation covering accepted work and creation/input admission. It refuses while work is
+  owned; success prevents new work until shutdown completes or the admission is released.
+  Refusal must not cancel accepted work. Reuse Session leases and activity holds, rather
+  than interpreting each business plugin's state from the updater. The owner specifies
+  the language-neutral face and verifies concurrent input, creation and detached work.
+- **Installation leases:** every CLI and App Server process started from a recognised
+  package installation holds a shared OS file lock on `.dimcode-update.lock` at the manager
+  root, in any home, until it exits. `update` takes the lock exclusively and refuses without
+  starting its package manager while any lease exists; a leaseholder fails to start while an
+  update holds the lock. The OS releases a lease when its process dies, so a crash never
+  leaves a stale occupant. A source build or unrecognised layout holds no lease and is never
+  updated.
+- **First migration:** older builds hold no lease, so a lease-aware install cannot prove
+  they have exited. Until `.dimcode-consumers` exists at the manager root, `update` refuses.
+  After exiting every client and stopping every old server, the operator runs
+  `update --confirm-legacy-exited`, which creates the marker and installs. The flag trusts
+  that statement for older processes only: a live lease still refuses.
+- **Remaining:** quiescing process admission before shutdown, safe replacement on Windows,
+  and successor activation by the new client are not part of the command yet.
+- **Effects and ownership:** quiescence changes admission, not Timeline order, batching,
+  recovery formats or already accepted work. The App Server/lifecycle owners implement
+  and verify the generic operation; native launch and installation owners implement the
+  cross-process leases and new-client activation. The updater consumes those contracts.
 
 ## Terminal interaction
 

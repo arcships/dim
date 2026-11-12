@@ -9,7 +9,8 @@
       "pluginFiles",
       "workflowFiles",
       "managementMethods",
-      "partRegistry"
+      "partRegistry",
+      "processActivity"
     ],
     "provides": {
       "workflowRuns": {
