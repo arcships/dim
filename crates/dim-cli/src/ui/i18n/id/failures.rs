@@ -1,6 +1,9 @@
 //! Indonesian model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => {
+            "Detail tidak tersedia; tutup lalu buka untuk mencoba lagi"
+        }
         "The response above is incomplete." => "Respons di atas tidak lengkap.",
         "Could not reach the provider, or the connection dropped" => {
             "Tidak dapat menjangkau provider, atau koneksi terputus"

@@ -167,7 +167,7 @@ onMounted(() => void toEnd())
               @toggle="expandedGroups[entry.key] = !expandedGroups[entry.key]"
               @toggle-item="expandedItems[$event] = !expandedItems[$event]"
             />
-            <TimelineUserMessage v-else-if="entry.row.kind === 'user'" :text="entry.row.text" :skills="entry.row.skills" :at="entry.row.at" :quotable="quotable" :branchable="branchable === true" @branch="onBranch(entry.row, $event)" @quote="emit('quote', $event)" />
+            <TimelineUserMessage v-else-if="entry.row.kind === 'user'" :text="entry.row.text" :skills="entry.row.skills" :hooks="entry.row.hooks" :at="entry.row.at" :quotable="quotable" :branchable="branchable === true" @branch="onBranch(entry.row, $event)" @quote="emit('quote', $event)" />
             <article v-else-if="entry.row.kind === 'assistant'" class="timeline-row" data-role="assistant">
               <strong class="sr-only">{{ t("chat.assistant") }}</strong>
               <ChatMarkdown :content="entry.row.text" :final="!entry.row.streaming" :message-id="entry.row.key" />
@@ -195,6 +195,15 @@ onMounted(() => void toEnd())
             </p>
             <p v-else-if="entry.row.kind === 'source-idle'" class="timeline-line-notice">{{ t("timeline.lineWaiting", { id: entry.row.branch, status: entry.row.status }) }}</p>
             <p v-else-if="entry.row.kind === 'source-ended'" class="timeline-line-notice">{{ t("timeline.lineEnded", { id: entry.row.branch }) }}</p>
+            <div v-else-if="entry.row.kind === 'hook-follow-up'" class="timeline-hook">
+              <button type="button" class="timeline-hook-row" :aria-expanded="expandedDetails[entry.row.key] === true" @click="toggleDetails(entry.row.key)">
+                <span>{{ t("timeline.hookFollowUp", { count: entry.row.lines }, entry.row.lines) }}</span>
+                <ChevronDown :size="14" :class="{ 'is-expanded': expandedDetails[entry.row.key] === true }" aria-hidden="true" />
+              </button>
+              <div v-if="expandedDetails[entry.row.key]" class="timeline-hook-body">
+                <div v-for="(line, index) in entry.row.body.split('\n')" :key="index">{{ line }}</div>
+              </div>
+            </div>
             <div v-else-if="entry.row.kind === 'error'" class="notice-row error-row" role="alert">
               <span>{{ entry.row.text }}</span>
               <template v-if="entry.row.details">
@@ -250,6 +259,12 @@ onMounted(() => void toEnd())
 .error-details-toggle { justify-self: start; padding: 0; border: 0; background: none; color: var(--muted-foreground); font-size: var(--text-xs); text-decoration: underline; cursor: pointer; }
 .error-details-toggle:hover, .error-details-toggle:focus-visible { color: var(--foreground); }
 .error-details { display: grid; gap: 2px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.timeline-hook { display: grid; gap: var(--space-1); color: var(--muted-foreground); font-size: var(--text-sm); }
+.timeline-hook-row { justify-self: start; display: flex; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none; color: var(--muted-foreground); font: inherit; cursor: pointer; }
+.timeline-hook-row:hover, .timeline-hook-row:focus-visible { color: var(--foreground); }
+.timeline-hook-row svg { transition: transform var(--duration-hover) ease; }
+.timeline-hook-row svg.is-expanded { transform: rotate(180deg); }
+.timeline-hook-body { display: grid; gap: 2px; padding-left: var(--space-4); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 .jump-latest-enter-from { opacity: 0; transform: translateY(4px); }
 @media (prefers-reduced-motion: reduce) {

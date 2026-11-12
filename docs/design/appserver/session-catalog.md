@@ -47,26 +47,27 @@ It does not own:
 
 ### 3.1 `session.catalog`
 
-`session.catalog {limit?, cursor?, query?, cwd?, withPreview?, includeClosed?} -> {sessions: SessionSummary[], nextCursor?: string}`
+`session.catalog {limit?, cursor?, query?, cwd?, withPreview?, withInternal?, withAcpSessions?, withAutomationSessions?, includeClosed?} -> {sessions: SessionSummary[], nextCursor?: string}`
 
 | Item | Rule |
 | --- | --- |
 | Kind | Rpc built-in. Agents answers it from the catalog projection, joined with the `agent_sessions` rows and the title metadata; Rpc validates the envelope |
 | Protocol | v3. v1 and v2 reply `unknown_method` ("Method requires protocol v3"), as they do for `session.summaries` |
-| Discovery | `hello.features` lists it only while a native store is open, the condition `session.fork` uses, so a client that does not see it keeps using `session.summaries`. Without a store there is no projection to page, and `session.summaries` answers from the loaded Sessions as today (§3.3). `session.catalog.workspaces` and `session.catalog.includeClosed` are listed beside it, under the same condition: the first tells a client that `cwd` accepts a set, and the second that it accepts `includeClosed` |
+| Discovery | `hello.features` lists it only while a native store is open, the condition `session.fork` uses, so a client that does not see it keeps using `session.summaries`. Without a store there is no projection to page, and `session.summaries` answers from the loaded Sessions as today (§3.3). `session.catalog.workspaces` and `session.catalog.includeClosed` are listed beside it, under the same condition: the first tells a client that `cwd` accepts a set, the second that it accepts `includeClosed`, and `session.catalog.automation` that it accepts `withAutomationSessions` |
 | `limit` | 1 to 200, default 50. A larger one is rejected, not clamped, as `history`'s `limit` is |
-| `cursor` | Opaque. It encodes the last returned row's `(updatedAt, sessionId)` and a digest of the request's `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions` and `includeClosed`; it pages by keyset, and a client echoes it back unchanged. `cwd` enters the digest as its canonical set: `"a"` and `["a"]` are one filter, and so are `["a","b"]` and `["b","a"]`. It is not a Session id |
+| `cursor` | Opaque. It encodes the last returned row's `(updatedAt, sessionId)` and a digest of the request's `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions`, `withAutomationSessions` and `includeClosed`; it pages by keyset, and a client echoes it back unchanged. `cwd` enters the digest as its canonical set: `"a"` and `["a"]` are one filter, and so are `["a","b"]` and `["b","a"]`. It is not a Session id |
 | Order | `updatedAt` descending, then `sessionId` ascending |
 | `query` | Case-insensitive, literal substring match over the four fields the picker searches today — the Session id, the workspace, the model id and the preview — plus the title and the provider id, which its search text never holds. At query time a SQL function the store registers on its connection lowercases the query and each field with `str::to_lowercase`, the picker's fold; the match is `instr(fold(field), fold(query)) > 0` field by field, so it is literal and `%` and `_` match only themselves. It is applied in the catalog query before the page boundary. The model is read from the stored Session config, the value `session.summaries` reports, so the query decodes no event |
 | `cwd` | Exact match on the workspace, applied before the page boundary. A string selects one workspace; a non-empty array of strings selects any of them, deduplicated and held in path order. An empty array, or an element that is not a string, is refused `invalid_params` |
 | `withPreview` | Boolean, default `false`. `true` keeps only rows whose preview is not NULL, applied before the page boundary, so a client that hides preview-less rows receives a full page of rows it shows; the projection's partial index over previews keeps that read bounded ([native storage format](native-storage-format.md#556-v23-格式决定)) |
 | `withInternal` | Boolean, default `false`. `true` lists the Sessions whose origin is `internal`; `false` drops them, applied before the page boundary. What the class means and who writes it: [Session classification](session-classification.md#35-catalog-visibility) |
 | `withAcpSessions` | Boolean, default `false`. `true` lists the Sessions whose origin is `acp`; `false` drops them, applied before the page boundary. A Session of an unknown origin (`unknown`) is always listed |
+| `withAutomationSessions` | Boolean, default `false`. `true` lists the Sessions whose origin is `automation` — work a saved configuration launched with no person present; `false` drops them, applied before the page boundary. It selects that class alone: it lists neither `internal` rows nor the ACP class, and `withInternal` does not list `automation` rows. What the class means and who writes it: [Session classification §3.5](session-classification.md#35-catalog-visibility) |
 | `includeClosed` | Boolean, default `false`, with the meaning `session.summaries` gives it (§3.3): `true` removes the process-local closed filter and marks a closed Session's row `closed: true`. It is part of the cursor's filter set |
 | Reply | `SessionSummary` entries, the shape `session.summaries` returns: a `SessionInfo` record — `origin` and `parentSessionId` among its fields ([Session classification](session-classification.md#33-reported-fields)) — with `preview`, `updatedAt` and `closed`, false for a Session this daemon did not close (§3.3). `nextCursor` is absent on the last page |
 
 A `cursor` that does not decode, or whose digest does not match the request's `query`, `cwd`, `withPreview`,
-`withInternal`, `withAcpSessions` and `includeClosed`, is rejected as `invalid_params` rather than treated as the
+`withInternal`, `withAcpSessions`, `withAutomationSessions` and `includeClosed`, is rejected as `invalid_params` rather than treated as the
 first page, so a client cannot silently read the catalog from the start again, or continue one filter set by the key
 of another. `cwd`
 compares there as its canonical set: a one-element list and a single workspace are the same filter, and so are two
@@ -79,7 +80,7 @@ model, and no filter decodes an event. Registering that function needs rusqlite'
 dependency. The fold runs at query time, so no folded value is stored and none has to be kept in step with the title
 or the model.
 
-The two classification filters prune rows while the query walks its activity index and the page stops after one row
+The three classification filters prune rows while the query walks its activity index and the page stops after one row
 past its limit, so a filtered page costs one page plus the rows it hides, and visits only the `agent_sessions` row it
 already joins. They add no index: the cost and the reason are
 [Session classification §3.6](session-classification.md#36-cost-of-a-listing).
@@ -90,7 +91,8 @@ The order is the projection's activity time, newest first, with the Session id b
 contiguous run of one total order and the same store always pages the same way. The cursor is the last row's key, not
 a position: a Session that becomes active between two pages moves to the first page, and the later pages neither
 repeat nor skip any other Session. It also carries the filters it was taken under (§3.1), so a page boundary can be
-continued only by the same `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions` and `includeClosed`. A set
+continued only by the same `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions`,
+`withAutomationSessions` and `includeClosed`. A set
 of workspaces pages across its Sessions in that one order; its cursor continues under the same set in any order, and
 under no other set or single workspace. A single workspace's cursor continues under that workspace written as a one-element list.
 
@@ -141,9 +143,12 @@ do not outlive the daemon's filter set, so a client reads the first page again.
 the first 256 `main` events, and it is batch-complete as today's read is: the batch that holds sequence 256 is read
 whole, so a user input just past 256 in that batch is inside it. The first `input/message` that carries a user part
 among the window's events decides the preview: that part's text blocks joined with newlines, cut to 120 characters and
-ending in `…` when the text is longer. The decision is final — a first user message whose text is empty (an image-only
-message, for example) leaves `preview` NULL and no later message fills it, and a Session with no such message in the
-window keeps NULL. The projection applies the same rule live as in the backfill: a batch may set `preview` only while
+ending in `…` when the text is longer. A text block after the first that starts with a runtime marker is context a
+capability appended after the operator's words (Hooks A.6.2, Skills §9), so it stays out of the preview; the first
+block is the operator's whatever it opens with. The decision is final — a first user message whose text is empty (an
+image-only message, or one whose text is all appended context, for example) leaves `preview` NULL and no later message
+fills it, and a Session with no such message in the window keeps NULL. The projection applies the same rule live as in
+the backfill: a batch may set `preview` only while
 the row's preview is still undecided and the deciding message lies in the window, and once decided it never changes.
 Backfilled and live rows are therefore column-identical
 ([native storage format](native-storage-format.md#556-v23-格式决定)). Dropping or narrowing the window would be a
@@ -218,7 +223,9 @@ own design owns its interaction.
 - **Visibility.** The picker asks for conversations: `withInternal` off, and `withAcpSessions` from its persisted
   "Show ACP sessions" preference, off by default. It sends either only when `session.catalog.origins` is advertised,
   labels a row by the origin it reports, and shows the parent of an internal row it lists
-  ([Session classification §3.8](session-classification.md#38-client-requirements)).
+  ([Session classification §3.8](session-classification.md#38-client-requirements)). The automation class is a filter
+  this picker does not send in this change: a client that lists it sends `withAutomationSessions: true` only when
+  `session.catalog.automation` is advertised.
 - **Fallback.** A daemon that does not advertise the method is listed through `session.summaries`.
 
 ```text
@@ -290,21 +297,22 @@ page boundary. The CLI's `/resume` owns its scopes and the key that cycles them
   preview; all apply before the page boundary.
 - A `%` or `_` in `query` matches only that character.
 - A page with `withPreview` returns `limit` rows even when many preview-less Sessions precede them in the order.
-- A cursor returned for one combination of `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions` and
-  `includeClosed` is rejected as `invalid_params` when replayed with another.
+- A cursor returned for one combination of `query`, `cwd`, `withPreview`, `withInternal`, `withAcpSessions`,
+  `withAutomationSessions` and `includeClosed` is rejected as `invalid_params` when replayed with another.
 - A page with a two-workspace `cwd` lists both workspaces' Sessions in the stated order, and paging with a small
   `limit` crosses from one workspace into the other.
 - A cursor taken under a `cwd` set is accepted under the same set in another order, and refused under any other set or
   single workspace; a cursor taken under a single workspace is accepted under that workspace written as a one-element
   list.
 - An empty `cwd` array, and an array with an element that is not a string, are refused `invalid_params`.
-- A daemon with a native store advertises `session.catalog.workspaces` and `session.catalog.includeClosed` beside
-  `session.catalog`.
+- A daemon with a native store advertises `session.catalog.workspaces`, `session.catalog.includeClosed` and
+  `session.catalog.automation` beside `session.catalog`.
 - `includeClosed` lists a Session this daemon closed with `closed: true`, and the default read leaves it out; a read
   after a restart on the same store lists it again with no closed mark.
 - A page holds rows of the classes it asked for: with 60 internal Sessions newer than 50 conversations, a 50-row page
   with `withInternal` off holds 50 conversations, and paging returns the rest exactly once; `withAcpSessions` behaves
-  the same for ACP rows, and `unknown` rows are always listed.
+  the same for ACP rows, and `unknown` rows are always listed. `withAutomationSessions` selects its own class alone:
+  it lists no `internal` row, and `withInternal` lists no `automation` row.
 - `session.summaries` still lists every stored Session, internal and ACP ones included, with the two fields every v3
   item carries.
 - A Session created and never written to is listed from its creation with `updatedAt` equal to its creation time and

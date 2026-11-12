@@ -303,12 +303,7 @@ pub const COMMANDS: &[Command] = &[
     slash("keys", "show the key bindings", &[], Needs::Nothing),
     Command {
         requires_exact_name: true,
-        ..slash(
-            "report",
-            "report the most recent error",
-            &[],
-            Needs::Nothing,
-        )
+        ..slash("report", "report the current session", &[], Needs::Nothing)
     },
     Command {
         key: Some("Ctrl+C Ctrl+C"),

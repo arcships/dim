@@ -110,6 +110,8 @@ While a line is shown, the composer's bottom border names its path from `main`, 
 
 `after message N` counts the user messages in the parent's history, its inherited ones included, at the cut.
 
+The workspace half of that label gives way before the line does. Beside a wide left status it shortens as a whole first — the path's front is cut, then the branch is dropped, then the path alone is cut — instead of disappearing, and only a border with no room for any of those forms drops it. A shown line keeps the three forms it has: the whole place, `⑂` alone, then nothing, so line information is never displaced by path information. The label names the workspace the Session works in rather than the directory the process was started in, and it follows a Session attached elsewhere — an explicit `--cwd`, a `/resume` into another worktree — together with that workspace's branch. Home, which has no Session yet, names the launch workspace again. File mentions, pasted paths and dropped files keep the local `--cwd` base instead ([CLI attachment input](cli-attachment-input.md)), so after a cross-workspace resume the label can name a different directory than they do; when it does, the `@` picker names that base in its title.
+
 ### 4.6 `/timeline`: jumping to a message
 
 The Timeline's points are its user messages. Tab walks them one at a time from the newest; `/timeline` lists them all, as the desktop client's message rail does: each row is the message and the first text of its answer.
@@ -189,6 +191,12 @@ A pending row keeps its text and its cut, and draws in the muted colour without 
 An applied input can stay pending across a stop, which is the state the next turn consumes ([interrupt](../architecture/rust-agent/interrupt.md)). While idle, the queue explains that it waits for the next message; it does not imply that incorporation is still running. The stopped row remains historical transcript, not a live activity indicator.
 
 A row the interface commits itself, outside the transcript rows — a notice, a `!!` run, the failure line, the boundary of a resume — is not part of that ordering, and can stand above a pending message.
+
+A user message's row carries the operator's words. Context the runtime appended after them for the model is not theirs, and a client may draw it as a row of its own directly under the message: the CLI draws a hook's context that way, one muted `Hook context · N lines` row per `dim-hooks` block, its body behind the detail setting. Such a row is not a message: it takes no part in this ordering, carries no cut, and is not counted by the message rail, `/timeline` or the earlier-history page. It never wears the user colour or bar.
+
+A context row belongs to its message's group rather than to the transcript in general, so it never says anything about that message on its own. While the message is pending in the scrollback tail, its context rows stay there directly after it, and append-only scrollback commits neither: the row is not a settled row, so it cannot force the message out of the tail. Once the message settles — the model consumed it, or a later settled row forced the commit — its context rows commit with it, in the content's order, right after it. Whatever settles the message therefore settles its context rows; there is no second flag for a client to keep in step. Fullscreen keeps its own rule: the message is committed where it was said, so its context rows are too, and a pending message redrawn in place does not move them.
+
+A `Stop` hook's follow-up is one muted row too: `Stop hook follow-up · N lines`, pushed where the input was written rather than under any message. Its body is the hook's words for the model, so only `/tools` expanded or a click opens it. It is not a message either — no cut, no rail, no count — and it never joins a message's group: a follow-up is a later input, so it is a settled row of its own and stands after the message it followed even when that message was still pending when the follow-up landed.
 
 The pending style is the terminal UI's: Web's v1 `session.event` filters `input/consumed` ([event-driven flows](../architecture/rust-agent/event-driven-flows.md)), so a Web message still reads as sent.
 

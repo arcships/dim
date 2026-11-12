@@ -9,8 +9,168 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use support::*;
 
+/// #1421: a launch-target job's Session is listable through the automation
+/// filter, carries the job's name as its manual title, and reports the
+/// `automation` origin on every read. SessionTitle is installed here, so the
+/// title is the one its own writer commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn scheduler_reports_do_not_replace_the_first_operator_input_for_titles() {
+async fn a_launch_target_fires_and_the_catalog_lists_its_session() {
+    let store = Store::new();
+    std::fs::create_dir(store.0.join("scheduler")).unwrap();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    dim_session_title::install(&mut builder);
+    dim_agent_scheduler::install(&mut builder);
+    defaults::install(&mut builder);
+    defaults::mock_model_hosts(&mut builder);
+    defaults::tool_host(&mut builder, Arc::new(MockTools));
+    dim_app_server::collaboration::install(&mut builder);
+    let mut config = ServerConfig {
+        product_home: Some(store.0.clone()),
+        unix_path: Some(store.0.join("server.sock")),
+        ..store.config()
+    };
+    config.session_defaults.tools = Some(vec!["echo".into(), "schedule".into()]);
+    config.session_defaults.permission_policy.preset =
+        dim_agent_types::PermissionPreset::FullAccess;
+    let http = tokio::spawn(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, _requests) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new()
+                    .route("/{*path}", axum::routing::post(complete))
+                    .with_state(sent),
+            )
+            .await
+            .unwrap()
+        });
+        format!("http://{address}/v1")
+    });
+    let server = serve(builder, config).await.unwrap();
+    let agent = server.agent().unwrap();
+    let mut client = client(&server).await;
+    let provider = "018ec73f-0000-7000-8000-00000000000b";
+    let base_url = http.await.unwrap();
+    client.rpc("provider.create",json!({"providerId":provider,"displayName":"Launch fixture",
+        "connection":{"driverKind":"openai-compatible","baseUrl":base_url,"auth":{"type":"anonymous"}},
+        "models":[{"modelId":"main","displayName":"Main","status":"active","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000,16_384)}],"enabled":true})).await.unwrap();
+    client
+        .rpc(
+            "provider.select",
+            json!({"providerId":provider,"modelId":"main"}),
+        )
+        .await
+        .unwrap();
+    configure(&mut client, json!({"enabled":false})).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "Nightly build",
+                "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Review the project",
+                "target": {"kind": "launch", "cwd": store.0}}}),
+        )
+        .await
+        .unwrap();
+    let job = saved["job"]["id"].as_str().unwrap().to_owned();
+    let started = client
+        .rpc("schedule.run_now", json!({"job_id":job}))
+        .await
+        .unwrap();
+    let run = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let history = client
+                .rpc("schedule.history", json!({"job_id":job,"limit":50}))
+                .await
+                .unwrap();
+            if let Some(run) = history["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["run_id"] == started["run_id"])
+                && !matches!(
+                    run["state"].as_str(),
+                    Some("delivering" | "launching" | "submitted" | "running")
+                )
+            {
+                break run.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(run["state"], "delivered", "{run}");
+    let launched = run["session_id"].as_str().unwrap().to_owned();
+
+    let listed = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let page = client
+                .rpc(
+                    "session.catalog",
+                    json!({"withAutomationSessions":true,"limit":100}),
+                )
+                .await
+                .unwrap();
+            if page["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["sessionId"] == launched.as_str())
+            {
+                return page;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the automation filter lists the launched Session");
+    let row = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == launched.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(row["origin"], "automation", "{row}");
+    assert_eq!(row["title"], "Nightly build", "{row}");
+    assert_eq!(row["titleSource"], "manual", "{row}");
+    assert_eq!(row["cwd"], json!(store.0), "{row}");
+    let default = client
+        .rpc("session.catalog", json!({"limit":100}))
+        .await
+        .unwrap();
+    assert!(
+        !default["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["sessionId"] == launched.as_str()),
+        "the default page leaves it out: {default}"
+    );
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":launched}))
+        .await
+        .unwrap();
+    assert_eq!(attached["origin"], "automation");
+    // The launched Session's own branch took the delivery, so the job really
+    // ran in it rather than only recording an id.
+    let session = agent.get_session(&launched).unwrap();
+    let history = branch_events(&session, "main", ..).await.unwrap();
+    assert!(
+        history.iter().any(|event| matches!(&event.kind, EventKind::InputMessage(data)
+            if data.submission_id.as_deref() == Some(format!("scheduler:{}", run["run_id"].as_str().unwrap()).as_str()))),
+        "the delivery reached the launched Session"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scheduled_delivery_does_not_replace_the_first_operator_input_for_titles() {
     let store = Store::new();
     std::fs::create_dir(store.0.join("scheduler")).unwrap();
     let mut builder = AgentBuilder::new(AgentConfig::default());

@@ -59,6 +59,67 @@ fn home_browsing_and_exit_need_no_session_in_both_tui_modes() {
 }
 
 #[test]
+fn first_shell_command_creates_once_without_submitting_a_model_turn() {
+    for fullscreen in [false, true] {
+        for private in [false, true] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&[]);
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                wire.created();
+                let attach = wire.read("session.attach");
+                wire.reply(&attach, attach_record(&attach));
+                let history = wire.read("session.history");
+                wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+                for text in ["printf first-shell", "printf second-shell"] {
+                    let run = wire.read("shell.run");
+                    assert_eq!(run["params"]["sessionId"], "session");
+                    assert_eq!(run["params"]["branchId"], "main");
+                    assert_eq!(run["params"]["command"], text);
+                    assert_eq!(run["params"]["mode"], if private { "private" } else { "record" });
+                    wire.reply(&run, json!({"runId":run["params"]["runId"],"status":"completed","exitCode":0,"output":format!("{text}-output\n"),"truncated":false,"durationMs":1}));
+                    if text == "printf first-shell" {
+                        wire.no_context();
+                    }
+                }
+                let submit = wire.read("session.submit");
+                assert_eq!(submit["params"]["sessionId"], "session");
+                assert_eq!(submit["params"]["text"], "next message");
+                wire.reply(&submit, json!({"event":{}}));
+                wire.event(9, "text", json!({"turn_id":"next","request_id":"model","delta":"message accepted"}));
+                assert_eq!(wire.trailing_request(), None);
+            });
+            let mut command = command(&home);
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until("Welcome to DIM");
+            terminal.write(if private {
+                b"!!printf first-shell\r"
+            } else {
+                b"!printf first-shell\r"
+            });
+            terminal.until("first-shell-output");
+            terminal.write(if private {
+                b"!!printf second-shell\r"
+            } else {
+                b"!printf second-shell\r"
+            });
+            terminal.until("second-shell-output");
+            terminal.write(b"next message\r");
+            terminal.until("message accepted");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+            assert!(!terminal.transcript.contains("Sign in with /login"));
+        }
+    }
+}
+
+#[test]
 fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
     for fullscreen in [false, true] {
         for draft in [false, true] {
@@ -896,6 +957,19 @@ fn startup_environment_is_not_read_by_help_version_or_management() {
             }
             assert!(text.contains("--autocompact"));
             assert!(text.contains("--model"));
+            let (_, entries) = text.split_once("\nCommands:\n").unwrap();
+            let (entries, _) = entries.split_once("\nModel startup:\n").unwrap();
+            for line in entries.lines().filter(|line| !line.is_empty()) {
+                assert!(
+                    line == "Options:" || line.starts_with("  "),
+                    "help entries and descriptions must be indented: {line:?}"
+                );
+            }
+            assert!(text.contains("\n                                  -p sends TEXT"));
+            assert!(text.contains("\n  dimcode exec --model model-id --effort high"));
+            for line in text.lines() {
+                assert!(line.len() <= 80, "help exceeds 80 columns: {line:?}");
+            }
         }
         assert!(!text.contains("invalid-secret"));
     }

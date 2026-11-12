@@ -1556,6 +1556,8 @@ mod tests {
         tail: Vec<String>,
         /// Queued messages shown above the composer.
         queue: usize,
+        /// Background task rows shown above the composer.
+        tasks: usize,
         panel: usize,
         replaced: bool,
     }
@@ -1567,10 +1569,11 @@ mod tests {
         }
 
         /// The next frame: the tail grows, folds or is committed, a panel
-        /// opens, changes or closes, a question takes the composer's place.
+        /// opens, changes or closes, a question takes the composer's place,
+        /// or the background task row appears, changes and leaves.
         fn step(&mut self) -> Frame {
             let mut commits = Vec::new();
-            match self.rng.below(9) {
+            match self.rng.below(10) {
                 0 | 1 => {
                     for _ in 0..1 + self.rng.below(3) {
                         let row = self.label("t");
@@ -1603,6 +1606,7 @@ mod tests {
                 }
                 5 | 6 => self.panel = self.rng.below(7) as usize,
                 7 => self.replaced = !self.replaced,
+                8 => self.tasks = self.rng.below(3) as usize,
                 _ => self.queue = self.rng.below(3) as usize,
             }
             self.frame(commits)
@@ -1611,6 +1615,7 @@ mod tests {
         fn frame(&self, commits: Vec<String>) -> Frame {
             let mut live: Vec<String> = self.tail.clone();
             live.extend((0..self.queue).map(|n| format!("queued {n}")));
+            live.extend((0..self.tasks).map(|n| format!("◐ {} · cargo build {n}m", self.tasks)));
             let anchor = live.len();
             if self.replaced {
                 live.push("DOCK question".to_owned());
@@ -1661,6 +1666,7 @@ mod tests {
                 next: 0,
                 tail: Vec::new(),
                 queue: 0,
+                tasks: 0,
                 panel: 0,
                 replaced: false,
             };
@@ -1739,6 +1745,7 @@ mod tests {
                 next: 0,
                 tail: Vec::new(),
                 queue: 0,
+                tasks: 0,
                 panel: 0,
                 replaced: false,
             };

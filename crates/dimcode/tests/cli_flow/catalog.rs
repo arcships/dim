@@ -920,3 +920,397 @@ fn tui_resume_skips_the_repository_scope_a_daemon_cannot_read() {
     assert!(terminal.wait().success());
     daemon.join().unwrap();
 }
+/// Two stored Sessions the picker lists, and the launch workspace.
+fn two_sessions() -> Value {
+    json!({"sessions":[
+        {"sessionId":"session","cwd":"/workspace","title":"Shown session","preview":"shown preview","model":{"providerId":"test","modelId":"model"},"updatedAt":9},
+        {"sessionId":"other","cwd":"/workspace","title":"Other session","preview":"other preview","model":{"providerId":"test","modelId":"model"},"updatedAt":8}
+    ]})
+}
+
+/// Ctrl+X deletes the selected row: the row leaves on the reply, the picker
+/// stays open, and nothing is detached.
+#[test]
+fn tui_resume_ctrl_x_deletes_the_selected_row_and_keeps_the_shown_session() {
+    let home = Home::new();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog", "session.delete"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        let delete = wire.read("session.delete");
+        assert_eq!(delete["params"], json!({"sessionId":"other"}));
+        wire.reply(&delete, json!({"deleted": true}));
+        // The row leaves on the reply, not on a second catalog read.
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+            assert!(
+                !line.contains("session.catalog") && !line.contains("session.summaries"),
+                "the delete must remove the row without reading the catalog again: {line}"
+            );
+            line.clear();
+        }
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Shown session");
+    terminal.write(b"\x1b[B"); // select the second row
+    terminal.until("Other session");
+    terminal.write(b"\x18"); // Ctrl+X
+    terminal.until("\"Other session\"? Enter confirm");
+    terminal.write(b"\r");
+    terminal.until("Deleted Other session.");
+    // The picker stays open, the other row remains, and no detach was sent.
+    terminal.until("Shown session");
+    assert!(!terminal.transcript.contains("session.detach"));
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// A delete can wait on a slow close, so Esc leaves the picker while the
+/// reply is outstanding and the outcome is still reported in the transcript
+/// afterwards.
+#[test]
+fn tui_resume_esc_leaves_the_picker_while_the_delete_is_in_flight() {
+    let home = Home::new();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let (deleting, delete_started) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog", "session.delete"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        let delete = wire.read("session.delete");
+        assert_eq!(delete["params"], json!({"sessionId":"other"}));
+        deleting.send(()).unwrap();
+        released.recv_timeout(PATIENCE).unwrap();
+        wire.reply(&delete, json!({"deleted": true}));
+        no_catalog(wire);
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Shown session");
+    terminal.write(b"\x1b[B");
+    terminal.until("Other session");
+    terminal.write(b"\x18");
+    terminal.until("\"Other session\"? Enter confirm");
+    terminal.write(b"\r");
+    delete_started.recv_timeout(PATIENCE).unwrap();
+    // Esc leaves while the delete is unanswered, even though no other key acts.
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    release.send(()).unwrap();
+    // Closed before the reply: the outcome still reaches the transcript.
+    terminal.until("Deleted Other session.");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// Deleting the shown Session leaves for Home on the reply: the daemon sends
+/// `session.state` and `session.closed` before `{deleted:true}` (the real
+/// order), and the queued notices then match no Session and are ignored. The
+/// draft typed before the delete is gone, as after `/new`.
+#[test]
+fn tui_resume_deletes_the_shown_session_and_returns_home() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let workspace = std::fs::canonicalize(&home.0).unwrap();
+        let workspace = workspace.to_str().unwrap().to_owned();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.catalog", "session.delete", "session.create.modelFromSession"]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            let first = wire.read("session.catalog");
+            wire.reply(&first, two_sessions());
+            let delete = wire.read("session.delete");
+            assert_eq!(delete["params"], json!({"sessionId":"session"}));
+            // The real order: the close notices, then the reply.
+            wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":false}));
+            wire.notice("session.closed", json!({"sessionId":"session"}));
+            wire.reply(&delete, json!({"deleted": true}));
+            // Home's first message creates a new Session.
+            let create = wire.read("session.create");
+            assert!(
+                create["params"]["sessionId"].is_null(),
+                "the next message must create a Session, not submit to the deleted one: {create}"
+            );
+            wire.reply(&create, json!({"sessionId":"fresh","sequence":8,"model":{"providerId":"test","modelId":"model"}}));
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+            wire.no_context();
+            wire.hold();
+        });
+        let mut command = home.command();
+        command.args(["--cwd", &workspace]);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        // A draft typed before the delete is gone afterwards, as after /new.
+        terminal.write(b"draft before the delete");
+        terminal.write(b"\x0f"); // Ctrl+O stashes the draft and opens the palette
+        terminal.write(b"resume\r");
+        terminal.until("Shown session");
+        terminal.write(b"\x18");
+        terminal.until("\"Shown session\"? Enter confirm");
+        terminal.write(b"\r");
+        terminal.until("─ new session ─");
+        terminal.until("Deleted Shown session.");
+        // The draft typed before the delete is gone, as after /new: the
+        // frames drawn since Home do not carry it.
+        let home_at = terminal.transcript.rfind("─ new session ─").unwrap();
+        assert!(
+            !terminal.transcript[home_at..].contains("draft before the delete"),
+            "the draft must be cleared with the switch: {}",
+            &terminal.transcript[home_at..]
+        );
+        assert!(
+            !terminal
+                .transcript
+                .contains("Session closed while attached"),
+            "{}",
+            terminal.transcript
+        );
+        assert!(
+            !terminal.transcript.contains("Disconnected"),
+            "{}",
+            terminal.transcript
+        );
+        assert!(
+            !terminal.transcript.contains("Error:"),
+            "{}",
+            terminal.transcript
+        );
+        // The daemon asserts the next message creates a Session; send one.
+        terminal.write(b"hello\r");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+/// A daemon without `session.delete`: the picker says so and sends nothing.
+#[test]
+fn tui_resume_delete_keeps_the_row_when_the_daemon_cannot_delete() {
+    let home = Home::new();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Shown session");
+    terminal.write(b"\x18");
+    terminal.until("\"Shown session\"? Enter confirm");
+    terminal.write(b"\r");
+    terminal.until("This daemon does not support deleting Sessions");
+    terminal.until("Shown session");
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// A failed delete keeps the row; a `{deleted:false}` reply re-reads the
+/// first page and reports that nothing was removed.
+#[test]
+fn tui_resume_delete_keeps_the_row_on_a_failure_and_refreshes_when_nothing_removed() {
+    let home = Home::new();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog", "session.delete"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        let delete = wire.read("session.delete");
+        wire.send(json!({"jsonrpc":"2.0","id":delete["id"],"error":{"code":-32000,"message":"fixture storage_failed"}}));
+        let delete = wire.read("session.delete");
+        wire.reply(&delete, json!({"deleted": false}));
+        // Nothing-removed re-reads the first page.
+        let again = wire.read("session.catalog");
+        wire.reply(&again, two_sessions());
+        no_catalog(wire);
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Shown session");
+    terminal.write(b"\x18");
+    terminal.until("\"Shown session\"? Enter confirm");
+    terminal.write(b"\r");
+    terminal.until("Delete failed · fixture storage_failed");
+    terminal.until("Shown session");
+    terminal.write(b"\x18");
+    terminal.until("\"Shown session\"? Enter confirm");
+    terminal.write(b"\r");
+    terminal.until("Nothing was removed: no stored Session Shown session.");
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// A shown Session's delete answering `-32603` lands Home: the close already
+/// ran, and the queued `session.closed` must not produce a disconnect report.
+#[test]
+fn tui_resume_delete_after_the_close_lands_home() {
+    let home = Home::new();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog", "session.delete"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        let delete = wire.read("session.delete");
+        assert_eq!(delete["params"], json!({"sessionId":"session"}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":false}));
+        wire.notice("session.closed", json!({"sessionId":"session"}));
+        wire.send(json!({"jsonrpc":"2.0","id":delete["id"],"error":{"code":-32603,"message":"Session operation failed"}}));
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Shown session");
+    terminal.write(b"\x18");
+    terminal.until("\"Shown session\"? Enter confirm");
+    terminal.write(b"\r");
+    terminal.until("─ new session ─");
+    terminal.until("Delete failed · Session operation failed");
+    assert!(
+        !terminal
+            .transcript
+            .contains("Session closed while attached"),
+        "{}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal.transcript.contains("Disconnected"),
+        "{}",
+        terminal.transcript
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+/// The picker's hint is drawn translated in a non-English locale.
+#[test]
+fn the_resume_hint_is_drawn_translated() {
+    let home = Home::new();
+    fs::write(home.0.join("config.json"), r#"{"locale":"zh-CN"}"#).unwrap();
+    let workspace = std::fs::canonicalize(&home.0).unwrap();
+    let workspace = workspace.to_str().unwrap().to_owned();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.catalog"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let first = wire.read("session.catalog");
+        wire.reply(&first, two_sessions());
+        no_catalog(wire);
+    });
+    let mut command = home.command();
+    command.args(["--cwd", &workspace]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/resume\r");
+    terminal.until("Ctrl+X");
+    let plain = strip_ansi(&terminal.transcript);
+    assert!(
+        plain.contains("Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"),
+        "the hint must be drawn translated: {plain}"
+    );
+    assert!(!plain.contains("Enter open · Ctrl+S scope"));
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}

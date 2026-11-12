@@ -133,6 +133,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Dieser Daemon unterstützt das Umbenennen von Sitzungen nicht"
         }
         "Renaming failed" => "Umbenennen fehlgeschlagen",
+        "Delete \"{name}\"?" => "Sitzung „{name}“ löschen?",
+        "Deleted {name}." => "{name} gelöscht.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Es wurde nichts entfernt: keine gespeicherte Sitzung {name}."
+        }
+        "Delete failed" => "Löschen fehlgeschlagen",
+        "This daemon does not support deleting Sessions" => {
+            "Dieser Daemon unterstützt das Löschen von Sitzungen nicht"
+        }
         "Starting" => "Startet",
         "Delegation result" => "Delegationsergebnis",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -385,14 +394,22 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "beenden",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter wählen · ←/→ Aufwand · Ctrl+X Gespeichertes löschen · Esc leeren/schließen"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter wählen + Standard · ←/→ Aufwand · Ctrl+X Gespeichertes löschen · Esc leeren/schließen"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Standardmodell für neue Sitzungen in {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Standardmodell für neue Sitzungen: {model}",
         "Enter select · Esc clear/close" => "Enter wählen · Esc leeren/schließen",
         "esc close" => "esc schließen",
         "Suggestions" => "Vorschläge",
         "Skills" => "Skills",
         "Skill loaded: {name}" => "Skill geladen: {name}",
+        "Hook context · {count} line" => "Hook-Kontext · {count} Zeile",
+        "Hook context · {count} lines" => "Hook-Kontext · {count} Zeilen",
+        "Stop hook follow-up · {count} line" => "Stop-Hook-Folgeeingabe · {count} Zeile",
+        "Stop hook follow-up · {count} lines" => "Stop-Hook-Folgeeingabe · {count} Zeilen",
         "Commands" => "Befehle",
         "Command Palette" => "Befehlspalette",
         "No matches" => "Keine Treffer",
@@ -449,8 +466,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Noch keine gespeicherten Sessions in diesem Arbeitsbereich. Ctrl+S zeigt mehr."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter öffnen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter öffnen · Ctrl+X löschen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
         }
         "Loading sessions..." => "Lade Sessions…",
         "No saved sessions yet." => "Noch keine gespeicherten Sessions.",
@@ -536,6 +553,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "zeichne Diagramm… {count} Zeilen",
         // notify.rs
         "Task complete" => "Aufgabe erledigt",
+        "Background task finished: {label}" => "Hintergrundaufgabe beendet: {label}",
+        "Background task failed: {label}" => "Hintergrundaufgabe fehlgeschlagen: {label}",
+        "Background task stopped: {label}" => "Hintergrundaufgabe gestoppt: {label}",
         "Permission needed: {tool}" => "Freigabe nötig: {tool}",
         "Question waiting for your answer" => "Frage wartet auf Antwort",
         "Notify when agent needs you" => "Benachrichtigen, wenn Agent Eingabe braucht",
@@ -604,6 +624,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden; dieser {client}-Client nutzt ihn ebenfalls. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden, und er spricht Protokoll v{protocol}, das dieser {client}-Client nicht nutzen kann. Es wurde keine Sitzung gestartet. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden (Verbindungen: {connections}, angehängte Sitzungen: {attached}, laufende Turns: {running}), und er spricht Protokoll v{protocol}, das dieser {client}-Client nicht nutzen kann. Es wurde keine Sitzung gestartet. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden (Verbindungen: {connections}, angehängte Sitzungen: {attached}, laufende Turns: {running}); dieser {client}-Client nutzt ihn ebenfalls. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."

@@ -61,7 +61,7 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 | --- | --- | --- | --- | --- |
 | `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
 | `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令 | false | `Drain` |
-| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立 | false | `Drain` |
+| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立。带 `cwd` 时只读该作用域的行，该文件夹没有行时返回 `null`；工作区优先于全局是一条 `configuration` 规则，不属于此读取 | false | `Drain` |
 | `provider.catalog` | `{providerId}` | 既有 `{catalog}` 和 `ProviderModel`，**不修改** | false | `Drain` |
 
 省略 ID 返回全部已知条目，包含未登录账号；指定 ID 返回该项或明确错误。
@@ -214,9 +214,11 @@ create/update 相同的 URL/header/network 校验。测试修改后的 base URL 
 
 Provider 持久保存的偏好供客户端读取；[F3 客户端](../../../design/model-configuration.md) 把偏好和其所属的**完整 `{providerId,modelId}`** 一起传给既有
 session.create/session.model.update。指定目标不可用就报错，不去掉目标重试或回退其他模型。
-服务端不自动应用保存偏好；显式目标省略偏好仍从目录默认开始，包括模型声明的默认推理档位和
-服务层级；无目标 F3 只改已采用模型的
-指定参数。`/fast` 仍只修改当前 Session；保存 serviceTier 是持久 fast/tier 选择，但只有客户端
+服务端不自动应用保存偏好；显式目标省略偏好仍从目录默认开始，包括模型声明的默认推理档位、
+服务层级和推理摘要；无目标 F3 只改已采用模型的
+指定参数。哪些目录声明会被应用、其余为何只描述模型，见
+[模型配置规则](../../../design/model-configuration.md#model-parameters)。
+`/fast` 仍只修改当前 Session；保存 serviceTier 是持久 fast/tier 选择，但只有客户端
 显式传入才生效。其他消费模型不自动继承聊天偏好。
 
 用量复用已交付的 `account.usage {providerId} -> Usage`：原生 account namespace 转发
@@ -602,7 +604,10 @@ credential clear 和 enabled:false，修复只 clear 导致已启用记录缺凭
 刷新后的列表先于操作结果提示送达选择器，用户看到提示后重试时使用刷新后的目录版本。
 非交互入口为 `dimcode models PROVIDER --clear-preferences MODEL`，先重读版本再同样更新。
 两者都不改当前 Session 已采用的模型；发现和采用失败不会自动删除历史偏好。
-`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型；若强度被切换过，
+`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型，并写入该文件夹中
+下一个 Session 读取的默认值：该文件夹已有工作区选择时写工作区作用域，否则写全局作用域，
+`expectedVersion` 取自同一作用域。写工作区时确认行写明该文件夹，写全局时确认行不提文件夹。
+若强度被切换过，
 先把它存成该模型的 `reasoningEffort`，再连同其余已保存偏好一起发送。编辑提供方的模型列表属于
 Models 管理领域（[CLI 命令 § Models 领域](../cli-commands.md#models-领域)）：`/models` 的
 `Edit models` 与 `dimcode models PROVIDER add|edit|set|remove|inspect` 读取
@@ -632,7 +637,7 @@ catalog 条目带 `zdr: true` 的模型在推理强度前显示 `ZDR` 标签，�
 ```text
 Select a model
 > Provider / model          ZDR  ‹ high ›
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 ```text

@@ -1204,3 +1204,603 @@ async fn a_model_that_does_not_reason_by_default_adopts_its_off_declaration() {
     .await
     .unwrap();
 }
+
+/// The fake OpenAI Responses provider: records every request body and streams
+/// a short reply.
+async fn responses(
+    State(capture): State<Arc<Capture>>,
+    Json(body): Json<Value>,
+) -> impl axum::response::IntoResponse {
+    capture.requests.lock().unwrap().push(body);
+    let payload: String = [
+        json!({"type":"response.created","response":{"id":"resp-1","created_at":1,"model":"fixture"}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg-1","role":"assistant","phase":"commentary","content":[]}}),
+        json!({"type":"response.content_part.added","item_id":"msg-1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}),
+        json!({"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":"ok"}),
+        json!({"type":"response.output_text.done","item_id":"msg-1","output_index":0,"content_index":0,"text":"ok"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","role":"assistant","phase":"commentary","content":[]}}),
+        json!({"type":"response.completed","response":{"id":"resp-1","created_at":1,"model":"fixture","status":"completed","usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}),
+    ]
+    .iter()
+    .map(|data| format!("data: {data}\n\n"))
+    .collect();
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+        payload,
+    )
+}
+
+/// A model descriptor declaring `summaries` beside its effort, on the OpenAI
+/// Responses protocol: the reasoning-off control there is a native `none`
+/// effort, so `none` is always offered.
+fn summarising(model_id: &str, default: Option<&str>, options: &[&str]) -> Value {
+    let mut offered = options.to_vec();
+    if !offered.contains(&"none") {
+        offered.push("none");
+    }
+    let mut value = model_with_off(model_id, None, default, &offered, None, true);
+    value["metadata"]["reasoning"]["summaries"] = json!(true);
+    value["metadata"]["reasoning"]["visibility"] = json!("summary");
+    value
+}
+
+/// The request body with the prompt replaced by its message roles. Every
+/// fixture sends the same session prompt and none of these tests is about it,
+/// but every other field is compared exactly as sent.
+fn wire_shape(body: &Value) -> Value {
+    let mut shape = body.clone();
+    shape["input"] = json!(
+        body["input"]
+            .as_array()
+            .map(|input| input
+                .iter()
+                .map(|message| message["role"].clone())
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    shape
+}
+
+/// The fake endpoint the summary tests share: Responses, Chat and Messages on
+/// one port, all recording into one capture.
+async fn summary_endpoint() -> (Arc<Capture>, String, tokio::task::JoinHandle<()>) {
+    let capture = Arc::new(Capture::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/responses", post(responses))
+        .route("/v1/chat/completions", post(completions))
+        .route("/v1/messages", post(messages))
+        .fallback(google)
+        .with_state(capture.clone());
+    let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (capture, format!("http://{endpoint}"), http)
+}
+
+/// The summary style the last request carried, if any.
+fn sent_summary(capture: &Capture) -> Option<String> {
+    let body = capture.requests.lock().unwrap().last().cloned()?;
+    body.get("reasoning")
+        .and_then(|reasoning| reasoning.get("summary"))
+        .or_else(|| body.get("reasoningSummary"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The effort the last request carried on any protocol this file drives,
+/// including the OpenAI Responses `reasoning` object.
+fn sent_reasoning_effort(capture: &Capture) -> Option<String> {
+    let body = capture.requests.lock().unwrap().last().cloned()?;
+    body.get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| sent_effort(capture))
+}
+
+/// 1. A declared summary reaches the request beside the effort it summarizes,
+/// and 2(a). an explicit `none` effort sends none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declared_summary_reaches_the_request_beside_the_effort() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("declared-summary");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let provider = "018ec73f-0000-7000-8000-000000000301";
+        create_provider(
+            &mut client,
+            provider,
+            "openai-responses",
+            &format!("{base}/v1"),
+            vec![summarising(
+                "summarised",
+                Some("medium"),
+                &["low", "medium", "high"],
+            )],
+        )
+        .await;
+
+        // The declared default effort carries the declared summary.
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"summarised"}}),
+            )
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_reasoning_effort(&capture).as_deref(), Some("medium"));
+        assert_eq!(sent_summary(&capture).as_deref(), Some("detailed"));
+
+        // An explicit `none` suppresses it: asking a provider to summarize the
+        // reasoning the same request just turned off is not a request dim sends.
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"summarised"},
+                    "modelPreferences":{"reasoningEffort":"none"}}),
+            )
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        // The effort itself still reaches the wire as a native `none`; what
+        // must not follow it is a summary.
+        assert_eq!(
+            sent_reasoning_effort(&capture).as_deref(),
+            Some("none"),
+            "{wire}"
+        );
+        assert_eq!(sent_summary(&capture), None, "{wire}");
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// 2(b) and 3. An update to `none` drops the summary, an update back to a
+/// concrete effort sends it again, and a clear returns to the declared default
+/// with the summary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_update_keeps_the_summary_in_step_with_the_effort() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("summary-update");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let provider = "018ec73f-0000-7000-8000-000000000302";
+        create_provider(
+            &mut client,
+            provider,
+            "openai-responses",
+            &format!("{base}/v1"),
+            vec![summarising(
+                "summarised",
+                Some("medium"),
+                &["low", "medium", "high"],
+            )],
+        )
+        .await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"summarised"}}),
+            )
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_summary(&capture).as_deref(), Some("detailed"));
+
+        // Off: nothing a later update could carry back in.
+        assert_ok(
+            &client
+                .rpc(
+                    "session.model.update",
+                    json!({"sessionId":session_id,"branchId":"main",
+                        "modelPreferences":{"reasoningEffort":"none"}}),
+                )
+                .await,
+        );
+        turn(&mut client, &session_id, "off").await;
+        let wire = last_body(&capture);
+        assert_eq!(
+            sent_reasoning_effort(&capture).as_deref(),
+            Some("none"),
+            "{wire}"
+        );
+        assert_eq!(sent_summary(&capture), None, "{wire}");
+
+        // Back on: the summary returns with the effort it summarizes.
+        assert_ok(
+            &client
+                .rpc(
+                    "session.model.update",
+                    json!({"sessionId":session_id,"branchId":"main",
+                        "modelPreferences":{"reasoningEffort":"high"}}),
+                )
+                .await,
+        );
+        turn(&mut client, &session_id, "on").await;
+        assert_eq!(sent_reasoning_effort(&capture).as_deref(), Some("high"));
+        assert_eq!(sent_summary(&capture).as_deref(), Some("detailed"));
+
+        // A clear returns to the declared default, summary included.
+        assert_ok(
+            &client
+                .rpc(
+                    "session.model.update",
+                    json!({"sessionId":session_id,"branchId":"main",
+                        "modelPreferences":{"reasoningEffort":{"action":"clear"}}}),
+                )
+                .await,
+        );
+        turn(&mut client, &session_id, "cleared").await;
+        assert_eq!(sent_reasoning_effort(&capture).as_deref(), Some("medium"));
+        assert_eq!(sent_summary(&capture).as_deref(), Some("detailed"));
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// 4. A declaration with no effort adds nothing: the request is byte-identical
+/// to the one `1efbd75df` sends, which reaches the model as a plain system
+/// prompt with no reasoning block. The expectation is the captured baseline,
+/// not a hand-written one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_summary_declaration_with_no_effort_sends_nothing() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("summary-no-effort");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let provider = "018ec73f-0000-7000-8000-000000000303";
+        create_provider(
+            &mut client,
+            provider,
+            "openai-responses",
+            &format!("{base}/v1"),
+            vec![summarising("longcat", None, &[])],
+        )
+        .await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"longcat"}}),
+            )
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        assert!(wire.get("reasoning").is_none(), "{wire}");
+        // The baseline body captured at 1efbd75df for this fixture.
+        assert_eq!(
+            wire_shape(&wire),
+            json!({
+                "model": "longcat",
+                "input": ["system", "user", "user", "user", "user", "user"],
+                "max_output_tokens": 4096,
+                "include": ["reasoning.encrypted_content"],
+                "store": false,
+                "stream": true,
+            }),
+            "{wire}"
+        );
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// 5. The same declaration on a protocol with no place for a summary style
+/// adopts successfully and sends no summary field anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_summary_declaration_is_not_sent_where_it_is_not_expressible() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("summary-not-expressible");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+
+        for (provider, driver, base_url, off) in [
+            (
+                "018ec73f-0000-7000-8000-000000000304",
+                "openai-compatible",
+                format!("{base}/v1"),
+                json!({"kind":"thinking_type","value":"disabled"}),
+            ),
+            (
+                "018ec73f-0000-7000-8000-000000000305",
+                "anthropic",
+                base.clone(),
+                json!({"kind":"thinking_type","value":"disabled"}),
+            ),
+            (
+                "018ec73f-0000-7000-8000-000000000306",
+                "gemini",
+                format!("{base}/v1"),
+                json!({"kind":"thinking_budget","value":0}),
+            ),
+        ] {
+            // Not a Responses route: the declaration spells its own off
+            // mapping and offers no native `none`.
+            let mut declared = summarising("declared", Some("medium"), &["low", "medium"]);
+            declared["metadata"]["reasoning"]["effortOptions"] = json!(["low", "medium"]);
+            declared["metadata"]["reasoning"]["off"] = off;
+            create_provider(&mut client, provider, driver, &base_url, vec![declared]).await;
+
+            let created = client
+                .rpc(
+                    "session.create",
+                    json!({"cwd":directory,"tools":[],
+                        "model":{"provider":provider,"modelId":"declared"}}),
+                )
+                .await;
+            assert_ok(&created);
+            let session_id = created["result"]["sessionId"].clone();
+            turn(&mut client, &session_id, "hello").await;
+            let wire = last_body(&capture);
+            assert_eq!(sent_summary(&capture), None, "{driver}: {wire}");
+            assert!(wire.get("reasoningSummary").is_none(), "{driver}: {wire}");
+            assert!(
+                wire.get("reasoning")
+                    .and_then(|reasoning| reasoning.get("summary"))
+                    .is_none(),
+                "{driver}: {wire}"
+            );
+        }
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// 7. A model that declares nothing sends nothing new: the whole body matches
+/// the baseline captured at `1efbd75df`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_model_that_declares_no_summary_sends_the_baseline_body() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("summary-silent");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let provider = "018ec73f-0000-7000-8000-000000000307";
+        create_provider(
+            &mut client,
+            provider,
+            "openai-responses",
+            &format!("{base}/v1"),
+            vec![model("silent", Some("medium"), &["low", "medium", "high"])],
+        )
+        .await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"silent"}}),
+            )
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        // Baseline at 1efbd75df: the adapter's own default already sends
+        // `detailed` beside a concrete effort, so the body is unchanged.
+        assert_eq!(
+            wire_shape(&wire),
+            json!({
+                "model": "silent",
+                "input": ["developer", "user", "user", "user", "user", "user"],
+                "max_output_tokens": 4096,
+                "include": ["reasoning.encrypted_content"],
+                "store": false,
+                "reasoning": {"effort": "medium", "summary": "detailed"},
+                "stream": true,
+            }),
+            "{wire}"
+        );
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// #1377 r3: a configuration stored under a `--model-config` profile lands in a
+/// store a product daemon later opens, and `session.model.update` starts from
+/// that stored configuration. The profile's model file can put a style in the
+/// generic `reasoning.summary` field, so the rule sees a style it did not write:
+/// it keeps a `concise`, and re-derives a `detailed` that has no effort to follow.
+/// Both shapes of that are pinned: an update that moves the effort to `none`, and
+/// a configuration carrying no effort at all on a model that declares none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stored_generic_summary_keeps_its_style_and_follows_the_effort() {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (capture, base, http) = summary_endpoint().await;
+        let directory = directory("stored-generic-summary");
+        let provider = "018ec73f-0000-7000-8000-000000000308";
+
+        // The product daemon creates the Provider the profile names, so the
+        // product catalog can resolve it after the profile wrote the store.
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "openai-responses",
+            &format!("{base}/v1"),
+            vec![
+                summarising("summarised", Some("medium"), &["low", "medium", "high"]),
+                summarising("silent", None, &[]),
+            ],
+        )
+        .await;
+        server.child.kill().await.unwrap();
+
+        // The profile's own configuration: an effort beside the style, or — for
+        // `silent` — no effort at all, so the stored configuration carries only
+        // the style. `sent` is the summary the profile's own first turn carries,
+        // which it passes through untouched; `expected` is what the product
+        // daemon's rule keeps once it finalizes the configuration again.
+        for (model, style, effort, update, sent, expected) in [
+            (
+                "summarised",
+                "concise",
+                "low",
+                Some(json!({"reasoningEffort":"high"})),
+                Some("concise"),
+                Some("concise"),
+            ),
+            (
+                "summarised",
+                "detailed",
+                "low",
+                Some(json!({"reasoningEffort":"none"})),
+                Some("detailed"),
+                None,
+            ),
+            (
+                "silent",
+                "detailed",
+                "",
+                Some(json!({"reasoningEffort":{"action":"clear"}})),
+                Some("detailed"),
+                None,
+            ),
+        ] {
+            let configuration = directory.join(format!("{model}-{style}.json"));
+            let mut reasoning = json!({"summary":style});
+            if !effort.is_empty() {
+                reasoning["effort"] = json!(effort);
+            }
+            std::fs::write(
+                &configuration,
+                serde_json::to_vec(&json!({
+                    "defaultModel":{"providerId":provider,"modelId":model},
+                    "providers":[{"id":provider,"kind":"openai-responses",
+                        "baseUrl":format!("{base}/v1"),
+                        "models":[{
+                            "id":model,"contextWindow":32_000,
+                            "maxOutputTokens":4_096,
+                            "config":{"maxTokens":4096,"reasoning":reasoning}
+                        }]}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let mut configured = launch_configured(&directory, &configuration).await;
+            let mut profile = connect(&configured).await;
+            let created = profile
+                .rpc(
+                    "session.create",
+                    json!({"cwd":directory,"tools":[],
+                        "model":{"provider":provider,"modelId":model}}),
+                )
+                .await;
+            assert_ok(&created);
+            let session_id = created["result"]["sessionId"].clone();
+            turn(&mut profile, &session_id, "hello").await;
+            assert_eq!(
+                sent_summary(&capture).as_deref(),
+                sent,
+                "{model} {style}: the summary the first turn carries"
+            );
+            configured.child.kill().await.unwrap();
+
+            // The product daemon reopens the store and finalizes the stored
+            // configuration again, so the rule sees what the profile wrote.
+            let mut server = launch_product(&directory).await;
+            let mut client = connect(&server).await;
+            assert_ok(
+                &client
+                    .rpc(
+                        "session.model.update",
+                        json!({"sessionId":session_id,"branchId":"main",
+                            "modelPreferences":update}),
+                    )
+                    .await,
+            );
+            let stored = stored_configuration(&directory, &session_id).await;
+            let generic = stored
+                .pointer("/config/reasoning/summary")
+                .and_then(Value::as_str);
+            let provider = stored
+                .pointer("/config/providerOptions/openai/summary")
+                .and_then(Value::as_str);
+            assert_eq!(
+                provider.or(generic),
+                expected,
+                "{model} {style}: the style the body carries: {stored}"
+            );
+            if expected.is_some() {
+                // A kept style stays in the field it was configured in.
+                assert_eq!(generic, Some(style), "{model} {style}: {stored}");
+            } else {
+                assert_eq!(generic, None, "{model} {style}: {stored}");
+            }
+            server.child.kill().await.unwrap();
+        }
+
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The newest stored `context/configured` settings of `session`, read after the
+/// daemon that wrote them exited.
+async fn stored_configuration(directory: &std::path::Path, session_id: &Value) -> Value {
+    let database = directory.join("state/dimcode.sqlite");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let read = (|| -> Option<Value> {
+            let connection = rusqlite::Connection::open(&database).ok()?;
+            let body: String = connection
+                .query_row(
+                    "SELECT body FROM timeline_events WHERE session_id=?1
+                     AND branch_id='main' AND kind='context/configured'
+                     ORDER BY sequence DESC LIMIT 1",
+                    [session_id.as_str()?],
+                    |row| row.get(0),
+                )
+                .ok()?;
+            let record: Value = serde_json::from_str(&body).ok()?;
+            Some(record.pointer("/record/event/data/settings")?.clone())
+        })();
+        if let Some(settings) = read {
+            return settings;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no stored configuration"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

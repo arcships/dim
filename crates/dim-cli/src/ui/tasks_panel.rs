@@ -4,8 +4,8 @@
 //! conversation; Workflow details show the owner's stored stages and logs.
 
 use crate::model::view::{
-    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutputState, TaskTarget,
-    TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
+    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutcome, TaskOutputState,
+    TaskTarget, TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
 };
 use crate::sanitize::safe;
 use crate::ui::i18n::t;
@@ -218,7 +218,7 @@ impl TasksPanel {
                 *text = finish.text.clone();
                 *state = TaskOutputState::Finished {
                     status: finish.status,
-                    failed: finish.failed,
+                    outcome: finish.outcome,
                 };
             }
         }
@@ -343,7 +343,7 @@ impl TasksPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => {
+            Event::Pick { id, .. } => {
                 let Some(task) = self.tasks.iter().find(|task| task.id == id).cloned() else {
                     return Effect::None;
                 };
@@ -371,7 +371,7 @@ impl TasksPanel {
                     .map_or(TaskOutputState::Loading, |finish| {
                         TaskOutputState::Finished {
                             status: finish.status,
-                            failed: finish.failed,
+                            outcome: finish.outcome,
                         }
                     }),
             },
@@ -428,6 +428,32 @@ impl TasksPanel {
             (TaskKind::Member(MemberTarget::Session(id)), DetailBody::Member { .. }) => Some(id),
             _ => None,
         }
+    }
+
+    pub fn compaction_targets(&self) -> Vec<crate::model::view::CompactionTarget> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        let (
+            TaskKind::Member(MemberTarget::Session(session_id)),
+            DetailBody::Member { snapshot, .. },
+        ) = (&detail.task.kind, &detail.body)
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let detail = row.compaction.as_ref()?.detail.as_ref()?;
+                Some(crate::model::view::CompactionTarget {
+                    session_id: session_id.clone(),
+                    branch_id: "main".into(),
+                    event_id: detail.event_id.clone(),
+                    sequence: detail.sequence,
+                })
+            })
+            .collect()
     }
 
     pub fn output(&mut self, target: &TaskTarget, text: Option<String>, state: TaskOutputState) {
@@ -515,9 +541,13 @@ impl TasksPanel {
                         format!("{}: {}", t("Output read failed"), safe(error)),
                         &p.danger,
                     ),
-                    TaskOutputState::Finished { status, failed } => (
+                    TaskOutputState::Finished { status, outcome } => (
                         t(status).to_owned(),
-                        if *failed { &p.danger } else { &p.muted },
+                        if *outcome == TaskOutcome::Failed {
+                            &p.danger
+                        } else {
+                            &p.muted
+                        },
                     ),
                 };
                 content.push(fg(&truncate_cells(&status, inner), color));
@@ -648,7 +678,7 @@ impl TasksPanel {
                 title = format!("{}: {title}", t("Delegation result"));
                 content.push(fg(
                     t(finish.status),
-                    if finish.failed { &p.danger } else { &p.muted },
+                    if finish.failed() { &p.danger } else { &p.muted },
                 ));
                 lines.extend(
                     wrap_cells(&safe(&finish.text), inner)

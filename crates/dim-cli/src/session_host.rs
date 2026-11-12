@@ -22,24 +22,26 @@ use crate::args::Options;
 use crate::client::{self, Client, Message};
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
-    DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ManagementReply,
-    ModelItem, ModelList, ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart,
-    PluginItem, PluginReply, PromptField, PromptSetting, ProviderAction, ProviderEntry,
-    RuntimeAction, RuntimeItem, RuntimesError, SandboxBackend, SessionItem, SessionPort,
-    SessionsScope, SubagentModelPolicy, SuggestionSetting, SwitchKind, Update, Usage, stored_title,
+    DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider, EmptyReason,
+    ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelPolicyUpdate,
+    NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply, PromptField,
+    PromptSetting, ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, RuntimesError,
+    SandboxBackend, SessionItem, SessionPort, SessionsScope, SubagentModelPolicy,
+    SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
 };
 use crate::projection::Projection;
 use crate::wire::{
-    Attached, CatalogModel, Configuration, Created, Event, EventContent, Progress,
-    ProviderCatalogSnapshot,
+    Attached, CatalogModel, Configuration, Created, DisplayNotice, Event, EventContent,
+    EventNotice, Progress, ProviderCatalogSnapshot,
 };
 use crate::{
     configure, mcp, permission, session_create_from_options, session_create_params, update,
 };
 
+mod compaction;
 mod inventory;
 mod member;
 mod report;
@@ -255,6 +257,7 @@ struct Worker {
     /// The Session `/new` left: still attached until the next one is entered.
     parked: String,
     projection: Projection,
+    retired_inputs: std::collections::HashMap<String, bool>,
     question_responses: Vec<(u64, String, crate::question::Call)>,
     approval_details: std::collections::BTreeMap<u64, MemberDetailRead>,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
@@ -275,6 +278,7 @@ struct Worker {
     task_stops: Option<StopBatch>,
     workflow: WorkflowReads,
     members: Members,
+    compaction: compaction::CompactionReads,
     output: Option<OutputWatch>,
     /// The admitted read can outlive its detail; false discards that old reply.
     output_request: Option<(u64, bool)>,
@@ -305,6 +309,7 @@ struct Worker {
     /// finished, a run on main ended, a compaction result arrived on main, or
     /// the session or its model changed.
     context_stale: bool,
+    context_request: Option<(u64, bool)>,
     /// The last `model/usage` on main, folded from the events so `/usage`
     /// can report its cache read share.
     last_usage: Option<LastUsage>,
@@ -419,6 +424,7 @@ async fn run(
         worker.poll_task_stops().await;
         worker.poll_workflow().await;
         worker.poll_context().await;
+        worker.poll_compaction().await;
         let workflow_poll = worker
             .workflow
             .next_at
@@ -433,20 +439,22 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 if worker.session_id.is_empty()
-                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
+                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..) | Command::ShellRun { .. })
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
                         worker.send(Update::StartupFailed(error.to_string()));
                         break;
                     }
-                    worker.send(Update::SubmitNotSent(
-                        if worker.options.startup.is_some() || worker.model_session.is_some() {
-                            error.to_string()
-                        } else {
-                            no_session(&error)
-                        },
-                    ));
+                    let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
+                        error.to_string()
+                    } else {
+                        no_session(&error)
+                    };
+                    worker.send(match command {
+                        Command::ShellRun { run_id, .. } => Update::ShellDone { run_id, result: Err(error) },
+                        _ => Update::SubmitNotSent(error),
+                    });
                     continue;
                 }
                 if matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
@@ -499,14 +507,6 @@ struct WebToggled {
     open: bool,
     #[serde(default)]
     url: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventNotice {
-    session_id: String,
-    branch_id: String,
-    event: Event,
 }
 
 #[derive(Deserialize)]
@@ -647,6 +647,7 @@ impl Worker {
             parked: String::new(),
             model_session: None,
             projection: Projection::default(),
+            retired_inputs: Default::default(),
             question_responses: Vec::new(),
             approval_details: Default::default(),
             cursors: Default::default(),
@@ -663,6 +664,7 @@ impl Worker {
             task_stops: None,
             workflow: WorkflowReads::default(),
             members: Members::default(),
+            compaction: Default::default(),
             output: None,
             output_request: None,
             catalog_request: None,
@@ -677,6 +679,7 @@ impl Worker {
             login: None,
             login_callbacks: unbounded_channel(),
             context_stale: false,
+            context_request: None,
             last_usage: None,
             compact_requests: Vec::new(),
             refilled_catalogs: Default::default(),
@@ -817,11 +820,14 @@ impl Worker {
                 .await?;
             self.ui_id = None;
         }
-        let attached: Attached = match self
+        let mut params = json!({"sessionId": session_id});
+        if self
             .client
-            .typed("session.attach", json!({"sessionId": session_id}))
-            .await
+            .supports(&["session.history.display", "session.history.detail"])
         {
+            params["display"] = json!(true);
+        }
+        let attached: Attached = match self.client.typed("session.attach", params).await {
             Ok(attached) => attached,
             Err(error)
                 if kind != SwitchKind::New
@@ -831,11 +837,10 @@ impl Worker {
                 self.send(Update::Switched {
                     session_id: String::new(),
                     kind,
+                    cwd: None,
                 });
                 self.reportable(
                     crate::report::Captured::observed(
-                        &session_id,
-                        "main",
                         crate::report::Operation::SessionRead,
                         dim_client::app_error(&error),
                         error.to_string(),
@@ -897,7 +902,11 @@ impl Worker {
                 .map_err(|error| format!("permission: unavailable ({error})"));
             self.send(Update::Permissions(policy));
         }
-        self.send(Update::Switched { session_id, kind });
+        self.send(Update::Switched {
+            session_id,
+            kind,
+            cwd: self.session_cwd.clone(),
+        });
         self.refresh_skills().await;
         self.context_stale = true;
         self.publish();
@@ -1157,8 +1166,6 @@ impl Worker {
                 if let Err(error) = opened
                     && !self.reportable(
                         crate::report::Captured::observed(
-                            &session_id,
-                            &parent,
                             crate::report::Operation::BranchCreate,
                             dim_client::app_error(&error),
                             error.to_string(),
@@ -1197,8 +1204,6 @@ impl Worker {
                     Err(error) => {
                         if !self.reportable(
                             crate::report::Captured::observed(
-                                &session_id,
-                                "main",
                                 crate::report::Operation::SessionFork,
                                 dim_client::app_error(&error),
                                 error.to_string(),
@@ -1301,22 +1306,21 @@ impl Worker {
                 }
             }
             // Home, not a Session: the first message creates one.
-            Command::NewSession => {
-                if !self.session_id.is_empty() {
-                    self.parked = self.invalidate_projection();
-                    self.send(Update::Permissions(Ok(dim_agent_types::PermissionPolicy {
-                        preset: self
-                            .options
-                            .permission
-                            .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
-                        ..Default::default()
-                    })));
-                    self.send(Update::Context(None));
-                    self.send(Update::Switched {
-                        session_id: String::new(),
-                        kind: SwitchKind::New,
-                    });
+            Command::NewSession => self.home(),
+            Command::DeleteSession { session_id, name } => {
+                let outcome = self.delete_session(&session_id).await;
+                let shown = session_id == self.session_id;
+                // The shown Session leaves with the close: the notices queued
+                // behind the reply then match no Session and are ignored, so
+                // they raise no disconnect report.
+                if shown && outcome.ends_session() {
+                    self.home();
                 }
+                self.send(Update::Deleted(DeleteReply {
+                    session_id,
+                    name,
+                    outcome,
+                }));
             }
             Command::Resume(session_id) => {
                 if let Some(preset) = self.options.permission
@@ -1383,29 +1387,7 @@ impl Worker {
             }
             Command::CloseSessions => self.cancel_catalog().await?,
             Command::Usage => {
-                let reading = self.context_usage().await;
-                // Pages land oldest first: until `main`'s history has
-                // finished loading, an earlier page's older request is not
-                // the newest, so the segment waits for `done`.
-                let loaded = self
-                    .task_history
-                    .get("main")
-                    .is_some_and(|history| history.done);
-                let cached = self
-                    .last_usage
-                    .filter(|_| loaded)
-                    .and_then(|usage| usage.percent());
-                match reading {
-                    Ok(usage) => {
-                        let mut line = usage.describe();
-                        if let Some(cached) = cached {
-                            line.push_str(" · last request cached ");
-                            line.push_str(&cached);
-                        }
-                        self.report(line, false)
-                    }
-                    Err(error) => self.report(error.to_string(), true),
-                }
+                self.request_context(true).await;
                 if self
                     .model
                     .as_ref()
@@ -1416,7 +1398,7 @@ impl Worker {
                 }
             }
             Command::Compact => self.compact().await,
-            Command::ErrorReport(request) => self.report_request(request).await,
+            Command::Report(request) => self.report_request(request).await,
             Command::Export(format) => {
                 let extension = match format {
                     crate::export::Format::Markdown => "md",
@@ -1803,13 +1785,6 @@ impl Worker {
                 command,
                 private,
             } => {
-                if self.session_id.is_empty() {
-                    self.send(Update::ShellDone {
-                        run_id,
-                        result: Err(NO_SESSION.to_owned()),
-                    });
-                    return Ok(());
-                }
                 if self.shell.is_some() {
                     self.send(Update::ShellDone {
                         run_id,
@@ -1940,9 +1915,10 @@ impl Worker {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                label,
             } => {
                 if let Err(error) = self
-                    .select_model(provider_id, model_id, reasoning_effort)
+                    .select_model(provider_id, model_id, reasoning_effort, label)
                     .await
                 {
                     self.send(Update::Notice(format!("Model switch failed: {error}")));
@@ -1996,6 +1972,14 @@ impl Worker {
                     self.watch_task_output(target);
                 }
             }
+            Command::CompactionDetails {
+                projection_id,
+                targets,
+            } => {
+                if projection_id == self.projection_id {
+                    self.compaction_targets(targets);
+                }
+            }
             Command::WatchMember {
                 projection_id,
                 member_id,
@@ -2041,17 +2025,21 @@ impl Worker {
                 self.report_failure(result);
             }
             Command::InputControl { input_id, action } => {
+                if let Some(notified) = self.retired_inputs.get_mut(&input_id) {
+                    if !std::mem::replace(notified, true) {
+                        self.send(Update::Notice(QUEUE_LEFT.into()));
+                    }
+                    return Ok(());
+                }
+                let Some(user) = self.shown().held_input(&input_id).cloned() else {
+                    return Ok(());
+                };
                 let mut params = json!({
                     "sessionId": self.session_id,
                     "branchId": self.focus,
                     "inputId": input_id,
                 });
-                let user = self.shown().held_input(&input_id).cloned();
                 if action == "steer" {
-                    let Some(user) = &user else {
-                        self.send(Update::Notice(QUEUE_LEFT.into()));
-                        return Ok(());
-                    };
                     params["steer"] = json!(user);
                 }
                 #[derive(Deserialize)]
@@ -2062,17 +2050,19 @@ impl Worker {
                     .client
                     .typed::<Withdrawn>("session.input.withdraw", params)
                     .await;
-                match (result, user) {
-                    (Ok(withdrawn), _) if withdrawn.status == "notHeld" => {
+                if let Ok(withdrawn) = &result {
+                    self.retired_inputs
+                        .insert(input_id, withdrawn.status == "notHeld");
+                }
+                match result {
+                    Ok(withdrawn) if withdrawn.status == "notHeld" => {
                         self.send(Update::Notice(QUEUE_LEFT.into()))
                     }
-                    (Ok(withdrawn), Some(user))
-                        if withdrawn.status == "deleted" && action == "withdraw" =>
-                    {
+                    Ok(withdrawn) if withdrawn.status == "deleted" && action == "withdraw" => {
                         self.send(Update::Withdrawn(user));
                     }
-                    (Ok(_), _) => {}
-                    (Err(error), _) => self.send(Update::Notice(error.to_string())),
+                    Ok(_) => {}
+                    Err(error) => self.send(Update::Notice(error.to_string())),
                 }
             }
         }
@@ -2091,42 +2081,36 @@ impl Worker {
             )
     }
 
-    /// The main branch's context window as `session.context.usage`
-    /// estimates it.
-    async fn context_usage(&mut self) -> crate::Result<ContextUsage> {
-        self.client
-            .typed(
+    async fn request_context(&mut self, report: bool) {
+        if let Some((_, requested_report)) = &mut self.context_request {
+            *requested_report |= report;
+            return;
+        }
+        self.context_stale = false;
+        match self
+            .client
+            .send(
                 "session.context.usage",
                 json!({"sessionId": self.session_id, "branchId": "main"}),
             )
             .await
-            .map_err(
-                |error| match error.downcast_ref::<client::RpcError>().and_then(app_error) {
-                    Some("context_not_configured") => {
-                        "Context usage is known once a model has answered in this session".into()
-                    }
-                    Some("context_model_failed") => {
-                        "Context usage needs the model's capabilities; select the model again"
-                            .into()
-                    }
-                    Some("unknown_method") => "This daemon does not track context usage".into(),
-                    _ => error,
-                },
-            )
+        {
+            Ok(request) => self.context_request = Some((request, report)),
+            Err(error) => {
+                self.send(Update::Context(None));
+                if report {
+                    self.report(error.to_string(), true);
+                }
+            }
+        }
     }
 
     /// Refreshes the composer's context reading once it is stale; a session
     /// whose usage is unknown shows none.
     async fn poll_context(&mut self) {
-        if !std::mem::take(&mut self.context_stale) || self.session_id.is_empty() {
-            return;
+        if self.context_stale && !self.session_id.is_empty() && self.context_request.is_none() {
+            self.request_context(false).await;
         }
-        let reading = self.context_usage().await.ok().map(|usage| ContextReading {
-            input: usage.input(),
-            window: usage.window(),
-            threshold: tokens(usage.threshold_tokens),
-        });
-        self.send(Update::Context(reading));
     }
 
     /// Asks the shown line to compact; committed outcomes reach its transcript.
@@ -2161,6 +2145,64 @@ impl Worker {
             crate::session_command::set_title(&mut self.client, &self.session_id, title.as_deref())
                 .await;
         self.send(Update::Renamed(reply));
+    }
+
+    /// Home, not a Session: the first message creates one. `/new`, and a
+    /// delete of the shown Session, leave to it the same way, so the composer
+    /// and the `─ new session ─` boundary are what `/new` leaves.
+    fn home(&mut self) {
+        if self.session_id.is_empty() {
+            return;
+        }
+        self.parked = self.invalidate_projection();
+        self.send(Update::Permissions(Ok(dim_agent_types::PermissionPolicy {
+            preset: self
+                .options
+                .permission
+                .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
+            ..Default::default()
+        })));
+        self.send(Update::Context(None));
+        self.send(Update::Switched {
+            session_id: String::new(),
+            kind: SwitchKind::New,
+            cwd: None,
+        });
+    }
+
+    /// `session.delete {sessionId}` for one row of `/resume`, without
+    /// `requireInactive`: the issue asks the picker to delete a Session a
+    /// turn is running in, which the close in the delete settles.
+    ///
+    /// The reply alone decides, because an attached Session is loaded and
+    /// so a `-32603` can only follow a close: every other error comes before
+    /// it and changes nothing.
+    async fn delete_session(&mut self, session_id: &str) -> DeleteOutcome {
+        if !self.client.supports(&["session.delete"]) {
+            return DeleteOutcome::Unsupported;
+        }
+        match self
+            .client
+            .typed::<crate::session_command::Deleted>(
+                "session.delete",
+                json!({"sessionId": session_id}),
+            )
+            .await
+        {
+            Ok(reply) if reply.deleted == Some(false) => DeleteOutcome::NothingRemoved,
+            Ok(_) => DeleteOutcome::Deleted,
+            Err(error) => {
+                let close_ran = error
+                    .downcast_ref::<client::RpcError>()
+                    .is_some_and(|rpc| rpc.code == -32603);
+                let reason = crate::session_command::reason(&error);
+                if close_ran {
+                    DeleteOutcome::ClosedNotRemoved(reason)
+                } else {
+                    DeleteOutcome::Failed(reason)
+                }
+            }
+        }
     }
 
     async fn goal(&mut self, request: crate::goal::Request) {
@@ -2322,8 +2364,12 @@ impl Worker {
                     });
                 }
             }
-            "session.event" => {
-                let notice: EventNotice = serde_json::from_value(params)?;
+            "session.event" | "session.display" => {
+                let notice: EventNotice = if method == "session.display" {
+                    serde_json::from_value::<DisplayNotice>(params)?.into()
+                } else {
+                    serde_json::from_value(params)?
+                };
                 if notice.session_id == self.session_id {
                     // Live only: history pages arrive as `session.history`
                     // replies applied by `apply`, so they spend no read.
@@ -3477,12 +3523,14 @@ impl Worker {
     /// Switches the session's model, or at home the one the first message
     /// starts a session on, then makes it the default for new ones.
     /// A cycled `reasoning_effort` is saved first, then sent with the model's
-    /// other saved preferences.
+    /// other saved preferences. `label` is the picker row's text, which the
+    /// default's confirmation names back.
     async fn select_model(
         &mut self,
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        label: String,
     ) -> crate::Result<()> {
         #[derive(Deserialize)]
         struct Updated {
@@ -3566,7 +3614,7 @@ impl Worker {
             self.context_stale = true;
             updated.model
         };
-        if let Err(error) = self.make_default(&model).await {
+        if let Err(error) = self.make_default(&model, &label).await {
             self.send(Update::Notice(format!(
                 "The model was not saved as the default: {error}"
             )));
@@ -3574,23 +3622,37 @@ impl Worker {
         Ok(())
     }
 
-    /// Saves the global default model over the selection read just before,
-    /// as `provider.select` requires its current version.
-    async fn make_default(&mut self, model: &ModelId) -> crate::Result<()> {
-        #[derive(Deserialize)]
-        struct Current {
-            selection: Option<Selection>,
-        }
-        #[derive(Deserialize)]
-        struct Selection {
-            version: u32,
-        }
-        let current: Current = self.client.typed("provider.selection", json!({})).await?;
+    /// Writes `model` as the default the next Session in the launch workspace
+    /// reads: the workspace's own row when the folder has one, else `global`.
+    /// Each scope is read for the version `provider.select` replaces, and the
+    /// interface names the scope it wrote.
+    async fn make_default(&mut self, model: &ModelId, label: &str) -> crate::Result<()> {
+        let workspace = self.options.workspace().as_str().to_owned();
+        let folder_request = self
+            .client
+            .send("provider.selection", json!({"cwd": workspace}))
+            .await?;
+        let global_request = self.client.send("provider.selection", json!({})).await?;
+        let folder = self.client.response(folder_request).await;
+        let global = self.client.response(global_request).await;
+        let folder = selection_version(folder?)?;
+        let global = selection_version(global?)?;
+        let (scope, expected) = match folder {
+            Some(version) => (Some(workspace), Some(version)),
+            None => (None, global),
+        };
         let mut params = json!({"providerId": model.provider_id, "modelId": model.model_id});
-        if let Some(selection) = current.selection {
-            params["expectedVersion"] = json!(selection.version);
+        if let Some(cwd) = &scope {
+            params["cwd"] = json!(cwd);
+        }
+        if let Some(expected) = expected {
+            params["expectedVersion"] = json!(expected);
         }
         self.client.rpc("provider.select", params).await?;
+        self.send(Update::ModelDefault {
+            folder: scope,
+            model: label.to_owned(),
+        });
         Ok(())
     }
 
@@ -3912,6 +3974,66 @@ impl Worker {
         id: u64,
         result: Result<serde_json::Value, client::RpcError>,
     ) -> crate::Result<()> {
+        if self.owns_compaction(id) {
+            self.compaction_reply(result);
+            return Ok(());
+        }
+        if self
+            .context_request
+            .as_ref()
+            .is_some_and(|(request, _)| *request == id)
+        {
+            let (_, report) = self
+                .context_request
+                .take()
+                .expect("matched context request");
+            let reading = result
+                .map_err(|error| match app_error(&error) {
+                    Some("context_not_configured") => {
+                        "Context usage is known once a model has answered in this session"
+                            .to_owned()
+                    }
+                    Some("context_model_failed") => {
+                        "Context usage needs the model's capabilities; select the model again"
+                            .to_owned()
+                    }
+                    Some("unknown_method") => "This daemon does not track context usage".to_owned(),
+                    _ => error.to_string(),
+                })
+                .and_then(|value| {
+                    serde_json::from_value::<ContextUsage>(value)
+                        .map_err(|error| format!("Invalid context usage reply: {error}"))
+                });
+            self.send(Update::Context(reading.as_ref().ok().map(|usage| {
+                ContextReading {
+                    input: usage.input(),
+                    window: usage.window(),
+                    threshold: tokens(usage.threshold_tokens),
+                }
+            })));
+            if report {
+                match reading {
+                    Ok(usage) => {
+                        let mut line = usage.describe();
+                        let loaded = self
+                            .task_history
+                            .get("main")
+                            .is_some_and(|history| history.done);
+                        if let Some(cached) = self
+                            .last_usage
+                            .filter(|_| loaded)
+                            .and_then(|usage| usage.percent())
+                        {
+                            line.push_str(" · last request cached ");
+                            line.push_str(&cached);
+                        }
+                        self.report(line, false);
+                    }
+                    Err(error) => self.report(error, true),
+                }
+            }
+            return Ok(());
+        }
         if self
             .catalog_request
             .as_ref()
@@ -4119,7 +4241,18 @@ impl Worker {
         Ok(())
     }
 
+    /// Applies an event the live stream carried: a task it ends is news.
     fn apply(&mut self, branch_id: &str, event: Event) {
+        self.fold(branch_id, event, false);
+    }
+
+    /// Applies an event a read of recorded history replayed: a task it ends
+    /// had already ended, so it is history (`Projection::replay`).
+    fn replay(&mut self, branch_id: &str, event: Event) {
+        self.fold(branch_id, event, true);
+    }
+
+    fn fold(&mut self, branch_id: &str, event: Event, replayed: bool) {
         if branch_id == "main"
             && event.sequence > self.model_through
             && let EventContent::Configuration(configuration) = &event.content
@@ -4132,7 +4265,7 @@ impl Worker {
         let captured = if self.report_available()
             && (branch_id == self.focus || self.side.as_deref() == Some(branch_id))
         {
-            crate::report::Captured::event(&self.session_id, branch_id, &event)
+            crate::report::Captured::event(&event)
         } else {
             None
         };
@@ -4145,7 +4278,10 @@ impl Worker {
         {
             line.cursor = event.sequence;
             let previous_rows = line.projection.rows().len();
-            line.projection.apply(branch_id, &event);
+            match replayed {
+                true => line.projection.replay(branch_id, &event),
+                false => line.projection.apply(branch_id, &event),
+            }
             inline_shown = inline_report && line.projection.mark_reportable_error(previous_rows);
         }
         let cursor = self.cursors.entry(branch_id.to_owned()).or_default();
@@ -4159,7 +4295,12 @@ impl Worker {
         {
             self.send(Update::Permissions(Ok(data.policy.clone())));
         }
-        if branch_id == "main" && matches!(event.content, EventContent::Compaction(_)) {
+        if branch_id == "main"
+            && matches!(
+                event.content,
+                EventContent::Compaction(_) | EventContent::CompactionSummary(_)
+            )
+        {
             self.context_stale = true;
         }
         if branch_id == "main"
@@ -4171,7 +4312,10 @@ impl Worker {
             });
         }
         let previous_rows = self.projection.rows().len();
-        self.projection.apply(branch_id, &event);
+        match replayed {
+            true => self.projection.replay(branch_id, &event),
+            false => self.projection.apply(branch_id, &event),
+        }
         if let Some(error) = captured
             && (!inline_report
                 || self.projection.mark_reportable_error(previous_rows)
@@ -4300,6 +4444,13 @@ impl Worker {
 
     fn publish(&mut self) {
         self.publish_at = None;
+        self.retired_inputs.retain(|id, _| {
+            self.projection.held_input(id).is_some()
+                || self
+                    .lines
+                    .values()
+                    .any(|line| line.projection.held_input(id).is_some())
+        });
         let mut snapshot = match self.lines.get(&self.focus).filter(|_| self.focus != "main") {
             Some(line) => line.projection.snapshot(),
             None => self.projection.snapshot(),
@@ -4445,6 +4596,22 @@ pub(crate) async fn adopt_startup(
             format!("Cannot adopt startup configuration for resumed Session: {error}")
         })?;
     Ok(())
+}
+
+/// The version of a `provider.selection` reply's row, `None` when the scope
+/// holds none: the value `provider.select` replaces for that same scope.
+fn selection_version(reply: serde_json::Value) -> crate::Result<Option<u32>> {
+    #[derive(Deserialize)]
+    struct Selection {
+        version: u32,
+    }
+    #[derive(Deserialize)]
+    struct Current {
+        selection: Option<Selection>,
+    }
+    let current: Current =
+        serde_json::from_value(reply).map_err(|_| "Invalid provider.selection response")?;
+    Ok(current.selection.map(|selection| selection.version))
 }
 
 pub(crate) async fn saved_model_preferences(

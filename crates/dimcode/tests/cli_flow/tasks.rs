@@ -731,16 +731,29 @@ fn tui_task_inventory_discards_old_pages_and_queued_retries_after_resuming_the_s
             "through":1,"nextAfter":1,"done":true}),
         );
         state(wire, "child");
-        child_inventory(
-            wire,
-            "child",
-            json!([pending_command(
-                "fresh-child",
-                1,
-                2000,
-                "fresh child command"
-            )]),
-        );
+        let mut complete = std::collections::HashSet::new();
+        while complete.len() < 2 {
+            let request = wire.frame();
+            let branch = request["params"]["branchId"].as_str().unwrap();
+            assert!(["main", "child"].contains(&branch), "obsolete inventory: {request}");
+            let through = if branch == "main" { 1 } else { 8 };
+            let result = match request["method"].as_str().unwrap() {
+                "session.input.pending" => json!({"branchId":branch,"through":through,"inputs":[],"next":null}),
+                "session.exec.pending" => {
+                    let (id, label) = if branch == "main" { ("fresh-main", "fresh main command") } else { ("fresh-child", "fresh child command") };
+                    json!({"branchId":branch,"through":through,"tasks":[pending_command(id,1,2000,label)],"next":null})
+                }
+                "session.turn.get" => {
+                    if request["params"].get("through").is_some() {
+                        complete.insert(branch.to_owned());
+                    }
+                    json!({"branchId":branch,"through":through,"turn":null,"output":null})
+                }
+                method => panic!("unexpected current inventory request: {method}"),
+            };
+            wire.reply(&request, result);
+        }
+        wire.event(2,"text",json!({"turn_id":"fresh","request_id":"fresh","delta":"fresh inventories settled"}));
         let mut stops = Vec::new();
         for _ in 0..2 {
             let stop = wire.read("session.exec.stop");
@@ -791,6 +804,7 @@ fn tui_task_inventory_discards_old_pages_and_queued_retries_after_resuming_the_s
     );
     terminal.write(b"\r");
     terminal.until("resumed session");
+    terminal.until("fresh inventories settled");
     terminal.write(b"/tasks\r");
     terminal.until("fresh child command");
     assert!(
@@ -947,20 +961,22 @@ fn tui_task_controls_queued_before_a_replacement_never_retarget_it() {
         let main = wire.read("session.history");
         wire.reply(
             &main,
-            json!({"events":[command("old",1,1000,"old attachment command")],
-            "through":1,"nextAfter":1,"done":true}),
+            json!({"events":[],"through":0,"nextAfter":0,"done":true}),
         );
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
-        let usage = wire.read("session.context.usage");
+        event(
+            wire,
+            "main",
+            command("old", 1, 1000, "old attachment command"),
+        );
+        let catalog = wire.read("provider.list");
         ready.send(()).unwrap();
         control.recv_timeout(Duration::from_secs(10)).unwrap();
-        wire.reply(
-            &usage,
-            json!({"contextWindow":2000,"outputTokens":100,"thresholdTokens":1500,
-            "estimatedInputTokens":50,"baselineSource":"fixture"}),
-        );
+        wire.reply(&catalog, json!({"providers":[]}));
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
         // `/new` goes home without a Session; the queued stop reaches nothing.
         let mut line = String::new();
         assert_eq!(
@@ -971,9 +987,11 @@ fn tui_task_controls_queued_before_a_replacement_never_retarget_it() {
     });
     let mut terminal = Terminal::resume_tui(home.command());
     terminal.until("test / model");
-    terminal.write(b"/usage\r");
+    terminal.write(b"/tasks\r");
+    terminal.until("old attachment command");
+    terminal.write(b"\x1b[27u/models\r");
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
-    terminal.write(b"/new\r/tasks\r\x18queued-proof");
+    terminal.write(b"\x1b[27u/new\r/tasks\r\x18queued-proof");
     terminal.until("No matching tasks.");
     proceed.send(()).unwrap();
     terminal.until("Task attachment changed; reopen the panel before stopping work");
@@ -1040,6 +1058,104 @@ fn tui_task_stop_all_keeps_admitted_targets_after_a_session_switch() {
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();
+}
+
+/// An end the task history read restores is history, not news (zerob13's
+/// report on #1400). The worker publishes an empty snapshot first, the
+/// delayed reply replays a saved `exec/started` and `exec/ended`, and no
+/// notification follows; the end the live stream carries after attach raises
+/// exactly one, and a stop reports as stopped.
+#[test]
+fn tui_task_end_restored_by_history_is_not_notified_but_a_live_one_is() {
+    let home = Home::new();
+    // The test releases the delayed history reply and then the live end.
+    let (go_history, history_gate) = std::sync::mpsc::channel();
+    let (go_live, live_gate) = std::sync::mpsc::channel();
+    let notification = "\x1b]9;DIM: Background task";
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        // The reply lands after the worker published its empty snapshot.
+        history_gate.recv_timeout(PATIENCE).unwrap();
+        let ended_at = now_ms();
+        wire.reply(
+            &history,
+            json!({"events":[
+                command("replayed", 3, ended_at - 60_000, "replayed build"),
+                fact("replayed-end", 4, ended_at - 1_000, "exec", "ended",
+                    json!({"task_id":"replayed","status":"completed",
+                           "result":{"content":"done","structuredContent":{"exitCode":0}}})),
+            ],"through":8,"nextAfter":8,"done":true}),
+        );
+        live_gate.recv_timeout(PATIENCE).unwrap();
+        // The live stream's own end, in the shape the command owner writes
+        // for a user stop: `Cancelled` with `isError` set.
+        let started_at = now_ms();
+        event(
+            wire,
+            "main",
+            command("live", 9, started_at - 12_000, "live build"),
+        );
+        event(
+            wire,
+            "main",
+            fact(
+                "live-end",
+                10,
+                started_at,
+                "exec",
+                "ended",
+                json!({"task_id":"live","status":"cancelled",
+                   "result":{"content":"Command cancelled by user.","isError":true}}),
+            ),
+        );
+        wire.hold();
+    });
+    let mut command = home.command();
+    command
+        .env("TERM_PROGRAM", "iTerm.app")
+        .env("TERM", "xterm-256color");
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    go_history.send(()).unwrap();
+    // The projection applied the restored end, so the row is there to see.
+    terminal.write(b"/tasks\r");
+    terminal.until("replayed build");
+    terminal.until("Completed");
+    assert!(
+        !terminal.transcript.contains(notification),
+        "a restored end must not notify: {}",
+        terminal.transcript
+    );
+    terminal.write(b"\x1b[27u");
+    go_live.send(()).unwrap();
+    terminal.until("Background task stopped: live build");
+    assert_eq!(
+        terminal.transcript.matches(notification).count(),
+        1,
+        "the live end notifies once: {}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal.transcript.contains("Background task finished"),
+        "the cancelled task is not reported as finished: {}",
+        terminal.transcript
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 #[test]
@@ -1456,11 +1572,13 @@ fn tui_main_history_failure_is_visible_and_disables_submission() {
             } else {
                 wire.send(json!({"jsonrpc":"2.0","id":history["id"],"error":{"code":-32000,"message":"main store unreadable","data":{"appError":"storage_failed"}}}));
             }
-            wire.no_context();
             while let Some(line) = wire.trailing_request() {
                 let request:Value=serde_json::from_str(&line).unwrap();
-                assert_eq!(request["method"],"account.providers","failed main history must not accept a hidden turn: {line}");
-                wire.reply(&request,json!([]));
+                match request["method"].as_str().unwrap() {
+                    "session.context.usage" => assert_eq!(request["params"],json!({"sessionId":"session","branchId":"main"})),
+                    "account.providers" => wire.reply(&request,json!([])),
+                    _ => panic!("failed main history must not accept a hidden turn: {line}"),
+                }
             }
         });
         let mut launch = home.command();

@@ -1,6 +1,6 @@
 use super::Worker;
 use crate::model::session::Update;
-use crate::report::{Action, Captured, Draft, Prepared, Reply, Request, session_admission_failed};
+use crate::report::{Action, Captured, Draft, Reply, Request, Target, session_admission_failed};
 use serde_json::{Value, json};
 
 impl Worker {
@@ -19,7 +19,7 @@ impl Worker {
     pub(super) async fn report_request(&mut self, request: Request) {
         let Request { panel, action } = request;
         let reply = match action {
-            Action::Prepare(error) => self.prepare_report(error).await,
+            Action::Prepare(target) => self.prepare_report(target).await,
             Action::Plan {
                 draft,
                 redact,
@@ -65,56 +65,36 @@ impl Worker {
         self.report_reply(panel, reply);
     }
 
-    async fn prepare_report(&mut self, error: Captured) -> crate::Result<Reply> {
-        let process_report = self.client.offers("report.prepare");
-        if !error.session.is_empty() {
-            match self.prepare_session_report(&error).await {
-                Ok(Some(prepared)) => return Ok(Reply::Prepared(Some(error.session), prepared)),
-                Ok(None) => {}
-                Err(failure)
-                    if process_report
-                        && (session_admission_failed(&failure)
-                            || matches!(
-                                dim_client::app_error(&failure),
-                                Some(
-                                    "unknown_method"
-                                        | "report_cancelled"
-                                        | "service_reloading"
-                                        | "service_unavailable"
-                                )
-                            )) => {}
-                Err(failure) => return Err(failure),
+    async fn prepare_report(&mut self, target: Target) -> crate::Result<Reply> {
+        let unavailable = "Reporting is unavailable on this App Server";
+        let session = match target {
+            Target::Session(session) => session,
+            Target::Error(error) if self.client.offers("report.prepare") => {
+                return self
+                    .client
+                    .typed("report.prepare", error.params())
+                    .await
+                    .map(|prepared| Reply::Prepared(None, prepared));
             }
-        }
-        if !process_report {
-            return Err("Error reporting is unavailable on this App Server".into());
-        }
-        self.client
-            .typed::<Prepared>("report.prepare", error.params(false))
-            .await
-            .map(|prepared| Reply::Prepared(None, prepared))
-    }
-
-    async fn prepare_session_report(
-        &mut self,
-        error: &Captured,
-    ) -> crate::Result<Option<Prepared>> {
+            Target::Error(_) => return Err(unavailable.into()),
+        };
         let method = "session.report.prepare";
-        if self.session_id != error.session || !self.methods.contains(method) {
+        if self.session_id != session || !self.methods.contains(method) {
             if !self.client.offers("session.methods") {
-                return Ok(None);
+                return Err(unavailable.into());
             }
             let table: dim_client::wire::MethodTable = self
                 .client
-                .typed("session.methods", json!({"sessionId": error.session}))
+                .typed("session.methods", json!({"sessionId": session}))
                 .await?;
             if !table.methods.iter().any(|entry| entry.name == method) {
-                return Ok(None);
+                return Err(unavailable.into());
             }
         }
-        let mut params = error.params(true);
-        params["sessionId"] = json!(error.session);
-        self.client.typed(method, params).await.map(Some)
+        self.client
+            .typed(method, json!({"sessionId": session}))
+            .await
+            .map(|prepared| Reply::Prepared(Some(session), prepared))
     }
 
     pub(super) fn report_reply(&self, panel: u64, result: crate::Result<Reply>) {
@@ -154,7 +134,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     #[tokio::test]
-    async fn only_session_admission_is_reportable_and_fallback_keeps_the_error_private() {
+    async fn report_routes_sessions_and_keeps_admission_errors_private() {
         let home = tempfile::tempdir().unwrap();
         let endpoint = home.path().join("daemon.sock");
         let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
@@ -176,11 +156,6 @@ mod tests {
                     .unwrap();
                 request["params"].clone()
             };
-            let failure = |code: &str| {
-                json!({"error":{
-                    "code":-32000, "message":"private detail", "data":{"appError":code}
-                }})
-            };
             exchange("hello", json!({"result":{
                 "instanceId":"report-test", "serverVersion":"test", "protocolVersion":4,
                 "features":["session.create","session.history","session.methods","report.prepare"],
@@ -190,38 +165,37 @@ mod tests {
             exchange("session.detach", internal.clone()).await;
             let attach = exchange("session.attach", internal.clone()).await;
             assert_eq!(attach["sessionId"], "original");
-            let listed =
-                json!({"result":{"methods":[{"name":"session.report.prepare","mutating":true}]}});
-            for (methods, prepare_failure) in [
-                (internal.clone(), None),
-                (json!({"result":{"methods":[]}}), None),
-                (listed.clone(), Some(failure("unknown_method"))),
-                (listed.clone(), Some(failure("report_cancelled"))),
-                (listed, Some(internal)),
-            ] {
-                let table = exchange("session.methods", methods).await;
-                assert_eq!(table["sessionId"], "original");
-                if let Some(prepare_failure) = prepare_failure {
-                    let params = exchange("session.report.prepare", prepare_failure).await;
-                    assert_eq!(params["sessionId"], "original");
-                    assert!(!params.to_string().contains("private detail"));
-                }
-                let params = exchange(
-                    "report.prepare",
-                    json!({"result":{
-                        "reportId":"r1", "plan":{
-                            "planId":"p1", "generation":{"kind":"local"},
-                            "evidence":{"unavailable":"no_reference"}, "instructionsStatus":"none"
-                        }
-                    }}),
-                )
-                .await;
-                assert_eq!(params["error"]["kind"], "observed");
-                assert!(params["error"]["observed"]["code"].is_null());
-                assert_eq!(params.as_object().unwrap().len(), 1);
-                assert!(!params.to_string().contains("private detail"));
-                assert!(!params.to_string().contains("original"));
-            }
+            let prepared = |evidence| {
+                json!({"result":{
+                    "reportId":"r1", "plan":{
+                        "planId":"p1", "generation":{"kind":"local"},
+                        "evidence":evidence, "instructionsStatus":"none"
+                    }
+                }})
+            };
+            let params = exchange(
+                "report.prepare",
+                prepared(json!({"unavailable":"no_reference"})),
+            )
+            .await;
+            assert_eq!(params["error"]["kind"], "observed");
+            assert!(params["error"]["observed"]["code"].is_null());
+            assert_eq!(params.as_object().unwrap().len(), 1);
+            assert!(!params.to_string().contains("private detail"));
+            assert!(!params.to_string().contains("original"));
+
+            let table = exchange(
+                "session.methods",
+                json!({"result":{"methods":[{"name":"session.report.prepare","mutating":true}]}}),
+            )
+            .await;
+            assert_eq!(table, json!({"sessionId":"shown"}));
+            let params = exchange(
+                "session.report.prepare",
+                prepared(json!({"timeline":{"recent":[]}})),
+            )
+            .await;
+            assert_eq!(params, json!({"sessionId":"shown"}));
         });
         let client = dim_client::Client::connect(&dim_client::ConnectionConfig {
             endpoint,
@@ -277,18 +251,28 @@ mod tests {
         assert!(matches!(error.operation, Operation::SessionRead));
         worker.session_id = "other".into();
         worker.methods.insert("session.report.prepare".into());
-        for panel in 0..5 {
-            worker
-                .report_request(Request {
-                    panel,
-                    action: Action::Prepare(error.clone()),
-                })
-                .await;
-            assert!(matches!(
-                receiver.try_recv().unwrap(),
-                Update::ReportReply { panel: received, reply: Reply::Prepared(None, _) } if received == panel
-            ));
-        }
+        worker
+            .report_request(Request {
+                panel: 1,
+                action: Action::Prepare(Target::Error(error)),
+            })
+            .await;
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            Update::ReportReply {
+                panel: 1,
+                reply: Reply::Prepared(None, _)
+            }
+        ));
+        worker
+            .report_request(Request {
+                panel: 2,
+                action: Action::Prepare(Target::Session("shown".into())),
+            })
+            .await;
+        assert!(
+            matches!(receiver.try_recv().unwrap(), Update::ReportReply { panel: 2, reply: Reply::Prepared(Some(session), _) } if session == "shown")
+        );
         daemon.await.unwrap();
     }
 }

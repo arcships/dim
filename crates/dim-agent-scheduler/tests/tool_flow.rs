@@ -137,6 +137,9 @@ async fn create_session(client: &mut Client, home: &Path, interactive: bool) -> 
 }
 
 /// The protocol sentences §5.1 puts in the `schedule` declaration.
+/// The `dim-scheduler` guide entry's own sentence (design §5.2).
+const GUIDE_ENTRY: &str = "a scheduled job's saved prompt, delivered when the job runs";
+
 const PROTOCOL_SENTENCES: [&str; 4] = [
     "Manage scheduled jobs across this host, including other workspaces.",
     "A job delivers its saved prompt to the branch that saved it, on its schedule.",
@@ -212,7 +215,7 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         "the declaration carries no policy sentence"
     );
     assert!(
-        texts.contains("the scheduler's account of how the run ended, information, not a request"),
+        texts.contains(GUIDE_ENTRY),
         "the dim-scheduler guide entry reaches the model"
     );
     assert!(
@@ -405,7 +408,6 @@ async fn the_factory_description_replaces_the_declaration() {
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
     let texts = dim_agent_scheduler::SchedulerTexts {
         description: "CANDIDATE DESCRIPTION for the schedule tool.".into(),
-        ..Default::default()
     };
     dim_agent_scheduler::install_with(&mut builder, texts).unwrap();
     let server = serve(
@@ -453,7 +455,7 @@ async fn the_factory_description_replaces_the_declaration() {
         "the shipped description is replaced, not appended: {texts}"
     );
     assert!(
-        texts.contains("the scheduler's account of how the run ended, information, not a request"),
+        texts.contains(GUIDE_ENTRY),
         "the dim-scheduler guide entry is unchanged"
     );
 
@@ -636,7 +638,7 @@ async fn a_tool_update_keeps_the_stored_launch_target() {
         .typed("schedule.run_now", json!({"job_id": job_id}))
         .await
         .unwrap();
-    assert_eq!(accepted["state"], "launching", "{accepted}");
+    assert_eq!(accepted["state"], "delivering", "{accepted}");
     let run = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let history: Value = client
@@ -648,10 +650,7 @@ async fn a_tool_update_keeps_the_stored_launch_target() {
                 .unwrap()
                 .iter()
                 .find(|run| run["run_id"] == accepted["run_id"])
-                && !matches!(
-                    run["state"].as_str(),
-                    Some("launching" | "submitted" | "running")
-                )
+                && run["state"] != json!("delivering")
             {
                 return run.clone();
             }
@@ -660,7 +659,7 @@ async fn a_tool_update_keeps_the_stored_launch_target() {
     })
     .await
     .expect("the launch target still launches");
-    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["state"], "delivered", "{run}");
     assert_eq!(run["session_origin"], "launch", "{run}");
 
     drop(client);

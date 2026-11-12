@@ -118,7 +118,7 @@ struct GenerationRun {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Prepare {
-    error: ErrorReference,
+    error: Option<ErrorReference>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -208,15 +208,21 @@ impl Reports {
     }
 
     async fn prepare(self: &Arc<Self>, caller: &Caller, value: Value) -> Result<Value, RpcError> {
+        if value.get("error").is_some_and(Value::is_null) {
+            return Err(RpcError::invalid("Expected an error reference"));
+        }
         if let Some(observed) = value.pointer("/error/observed")
             && observed.to_string().len() > INPUT_LIMIT
         {
             return Err(RpcError::invalid("Observed error exceeds 1 KiB"));
         }
         let Prepare { error } = params(value)?;
-        let (snapshot, default_model) = error
-            .capture(self.session.as_ref().map(|session| &*session.tree))
-            .await?;
+        let tree = self.session.as_ref().map(|session| &*session.tree);
+        let (snapshot, default_model) = match (tree, error) {
+            (_, Some(error)) => error.capture(tree).await?,
+            (Some(tree), None) => Snapshot::capture_session(tree).await,
+            (None, None) => return Err(RpcError::invalid("Expected an observed error")),
+        };
         let plan = Plan::local(&snapshot, true, "");
         let id = Uuid::new_v4();
         let mut answer = json!({"reportId": id, "plan": plan});

@@ -1,0 +1,28 @@
+name: Documentation Issue · 文档问题
+description: Report missing, unclear, or outdated documentation. 报告缺失、不清楚或过时的文档。
+labels: [documentation]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/arcships/dim/issues?q=is%3Aissue) before filing. If one matches, add any new details there.
+
+        提交前请[搜索已有 issue](https://github.com/arcships/dim/issues?q=is%3Aissue)。如果已有相同问题，请在原 issue 补充新信息。
+  - type: input
+    id: location
+    attributes:
+      label: Page, command, or example · 页面、命令或示例
+      description: Link to the affected section or say where you expected to find the information. 链接到相关章节，或说明你原本期望在哪里找到这些信息。
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What needs to change? · 哪些内容需要改？
+      description: Explain what is missing, unclear, or out of date. 说明哪些内容缺失、不清楚或已过时。
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction · 建议改法

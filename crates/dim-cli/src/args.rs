@@ -6,276 +6,311 @@ use std::path::{Path, PathBuf};
 /// supplies.
 pub(crate) const SERVER_REQUIREMENT: &str = "--server must name a standalone dim-app-server binary";
 
-pub const HELP: &str = "dimcode [OPTIONS]\n\n\
-Pure Rust scrollback client. With redirected stdin, run one prompt and exit.\n\n\
-Commands:\n\
-  tui [-p TEXT] [--image PATH ...]\n\
-                                   Open the interactive scrollback client;\n\
-                                   -p sends TEXT as its first message\n\
-  acp [--agent ID]                  Serve ACP over stdin/stdout\n\
-  exec [-p TEXT] [--image PATH ...] [--json] [--permission PRESET]\n\
-                                   Run text and/or local images and exit\n\
-  exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]\n\
-  session export SESSION_ID --format markdown|json [--output PATH]\n\
-  session rename SESSION TITLE     Set the manual title; --clear removes it\n\
-  session delete SESSION           Permanently delete a Session\n\
-  session cleanup (--older-than DURATION | --keep N) [--yes]\n\
-                                   Show the Sessions that will go, then\n\
-                                   delete them after confirmation\n\
-  export SESSION_ID [--output PATH] [--database PATH]\n\
-                                   Write a Session's whole Timeline as JSONL;\n\
-                                   it holds prompts, code and tool output.\n\
-                                   --database defaults to the home's\n\
-                                   rust/dimcode.sqlite\n\
-  login [PROVIDER] [--directory URL] [--device] [--redirect-uri URI]\n\
-                                   Sign in to a Provider the daemon describes;\n\
-                                   without PROVIDER, list the accounts it describes\n\
-  account PROVIDER                 Show non-secret account status\n\
-  logout PROVIDER                  Sign out of an account provider\n\
-  models PROVIDER [--refresh | --clear-preferences MODEL\n\
-                  | --set-limits MODEL --context-window N --max-output-tokens N\n\
-                  | --set-missing-limits --context-window N --max-output-tokens N]\n\
-                                   List a Provider's models; --refresh reloads\n\
-                                   the area's list\n\
-  models PROVIDER enable|disable|remove|inspect MODEL\n\
-                                   Enable or disable one model, remove it,\n\
-                                   or print its descriptor\n\
-  models PROVIDER edit MODEL       Edit the model's fields in the editor\n\
-  models PROVIDER set MODEL PATH   Write the model's fields from PATH,\n\
-                                   or from stdin for -\n\
-  models PROVIDER add PATH         Create a model from PATH, or from stdin\n\
-                                   for -\n\
-  mcp list                         List MCP servers and their enablement\n\
-  mcp login ID [--no-browser] [--client-secret]\n\
-                                   Sign in; secrets use hidden terminal input\n\
-  mcp logout ID                    Sign out and report token revocation\n\
-  mcp enable ID                    Enable an MCP server shown by mcp list\n\
-  mcp disable ID                   Disable it; an unlisted ID withdraws only\n\
-                                   this workspace's stored enablement\n\
-  mcp add PATH                     Create an entry from PATH, or from stdin for -\n\
-  mcp import PATH [--yes]          Preview a standard mcpServers document; with\n\
-                                   --yes, import the entries the flags select:\n\
-                                   --replace ID, --rename OLD=NEW and --only ID.\n\
-                                   --source user|project picks the writable\n\
-                                   source (default: user)\n\
-  mcp import --from ID [--yes]     The same preview and import from one known\n\
-                                   store of another local client\n\
-  mcp import --discover [--cwd DIR]\n\
-                                   List those stores with their states; no\n\
-                                   value is printed\n\
-  mcp edit ID                      Edit an entry's patch in the editor\n\
-  mcp set ID PATH                  Write an entry's patch from PATH,\n\
-                                   or from stdin for -\n\
-  mcp remove ID                    Delete an entry\n\
-  mcp test ID                      Probe a stored entry and list its tools\n\
-  mcp inspect ID                   Show an entry's effective configuration\n\
-  mcp disconnect ID                Close an entry's live connections\n\
-  mcp ... ID [--source SOURCE]     Every mcp command that names one stored\n\
-                                   entry takes it: user, project or plugin, as\n\
-                                   mcp list prints it; an ID more than one\n\
-                                   source lists needs it\n\
-  skills list                      List Skills, their sources and states\n\
-  skills enable|disable ID         Turn one Skill on or off\n\
-  skills reload                    Rescan this workspace's Skills\n\
-  hooks list                       List hook handlers, their sources and states\n\
-  hooks enable                     Run this workspace's .dimcode/hooks.json\n\
-  hooks disable                    Stop running this workspace's hooks\n\
-  hooks edit                       Edit the user's hook document\n\
-  hooks set PATH                   Write the user's hook document from PATH,\n\
-                                   or from stdin for -\n\
-  prompt                           List the built-in prompt overrides\n\
-  prompt show NAME                 Print one override (base, summary, skills)\n\
-  prompt edit NAME                 Edit one override in the editor; an\n\
-                                   empty draft writes nothing\n\
-  prompt set NAME PATH             Write one override from PATH, or stdin for -\n\
-  prompt reset NAME                Remove one override\n\
-  scheduled list                   List scheduled jobs, their windows and\n\
-                                   last runs\n\
-  scheduled enable|disable ID      Pause or resume one job\n\
-  scheduled edit ID                Edit a job document in the editor\n\
-  scheduled set ID PATH            Write a job document from PATH,\n\
-                                   or from stdin for -\n\
-  scheduled add PATH               Create a job from PATH, or from stdin for -\n\
-  scheduled remove ID              Delete a job\n\
-  scheduled run ID                 Run a job now\n\
-  scheduled history ID             List a job's recent runs\n\
-  permissions list                 List the user's command rules\n\
-  permissions add PATH             Add one rule from PATH, or from stdin for -\n\
-  permissions remove RULE          Remove a rule, given as one quoted\n\
-                                   'DECISION MATCH COMMAND'\n\
-  workflow list                    List workflow definitions, their sources\n\
-                                   and states\n\
-  workflow enable|disable NAME     Turn a project definition on or off\n\
-  workflow edit NAME               Edit a user definition in the editor\n\
-  workflow set NAME PATH           Write a user definition from PATH,\n\
-                                   or from stdin for -\n\
-  workflow add PATH                Create a definition from PATH,\n\
-                                   or from stdin for -\n\
-  workflow start NAME [PATH]       Start a definition with parameters from PATH\n\
-  workflow history NAME            List a definition's recent runs\n\
-  modality                         List every Modality category and\n\
-                                   operation with its availability, its\n\
-                                   reasons and its default and effective\n\
-                                   model; --json prints the snapshot\n\
-  modality set-default <category>[.<operation>] <provider>/<model>\n\
-                                   Set one operation's default model\n\
-  modality set-default <category>[.<operation>] --clear\n\
-                                   Clear it, restoring automatic resolution\n\
-  modality task list [--state S] [--category C] [--limit N] [--after ID]\n\
-                                   List Modality tasks, newest first\n\
-  modality task status ID          Print a task's state, progress and files\n\
-  modality task wait ID [--out DIR]\n\
-                                   Wait for a task; write its results with --out\n\
-  modality task cancel ID          Cancel a task\n\
-  image generate|edit PROMPT [FILE...] [--mask PATH]\n\
-  image enhance MODE [FILE...]     Submit an image task\n\
-  video generate|edit|enhance PROMPT [FILE...]\n\
-  speech synthesize TEXT\n\
-  speech transcribe FILE\n\
-  music|audio|motion generate PROMPT\n\
-  asset generate PROMPT [FILE...]\n\
-                                   Submit a task and write its results to\n\
-                                   --out (the current directory by default);\n\
-                                   --no-wait prints the task id only\n\
-  ocr FILE [--output-mode text|layout] [--out DIR]\n\
-                                   Recognize the text of an image or PDF;\n\
-                                   a short text prints inline and writes\n\
-                                   nothing, a longer one is written\n\
-                                   --param KEY=VALUE passes one adapter\n\
-                                   parameter: JSON when it parses as JSON,\n\
-                                   a string otherwise, so a string that\n\
-                                   would parse as JSON is written quoted\n\
-                                   (--param 'label=\"true\"')\n\
-  recording [on|off]               Record model requests to the home's\n\
-                                   model-log/recordings.jsonl; prompts, code\n\
-                                   and tool output are written there\n\
-  realtime [--operation voice] [--model PROVIDER/MODEL]\n\
-                                   Open a realtime session; stdin lines are\n\
-                                   text frames and events print as JSON lines\n\
-  plugin list                      List plugins by name, the one in use and its status\n\
-  plugin install PATH|GIT_URL [--ref R] [--id ID] [--no-enable]\n\
-                                   Install a plugin and turn it on\n\
-  plugin install --optional NAME [--id ID] [--no-enable]\n\
-                                   Install an optional plugin the release ships\n\
-  plugin enable NAME [--use ID|builtin|default]\n\
-  plugin disable NAME\n\
-  plugin reload NAME               Reload a plugin after editing it\n\
-  plugin update ID                 Load the latest commit of a Git plugin\n\
-  plugin remove ID\n\
-  runtime list                     List the plugin runtimes and their state\n\
-  runtime install node|python|uv   Turn a plugin runtime on and acquire it\n\
-  runtime config NAME              Set a runtime's --source or --auto and apply it\n\
-  daemon stop                      Gracefully stop an existing daemon\n\
-  daemon vacuum [--database PATH]  Rewrite an offline database to reclaim\n\
-                                   space; --database defaults to the home's\n\
-                                   rust/dimcode.sqlite\n\
-  migration [run|inspect] [--source OLD_HOME]\n\
-                                   Import or inspect Global and CN separately;\n\
-                                   Global stays in ~/.dim, CN in ~/.dimcode;\n\
-                                   confirm stopped clients or use --source-stopped\n\
-  migration list|show TASK|cancel TASK\n\
-                                   Read tasks or request cancellation\n\
-  migration retry TASK [--source OLD_HOME]\n\
-                                   Resume a task, reconciling imported objects\n\
-  web [--port N] [--no-open]       Hold the Web workspace until Ctrl+C
-web --off                        Turn off the daemon-owned Web switch
-web install                      Install this version's Web workspace\n\
-Options:\n\
-  -p, --prompt TEXT                The prompt: exec runs it and exits; tui\n\
-                                   sends it as the first message of an\n\
-                                   interactive session\n\
-  --image PATH                     Add a local image to exec, or to the tui\n\
-                                   first message (repeatable)\n\
-  --resume SESSION_ID              Attach and continue a persisted session\n\
-  --home PATH                      Product home (default: ~/.dimcode)\n\
-  --cwd PATH                       Workspace (default: current directory)\n\
-  --no-tui                         Line client instead of the terminal UI\n\
-  --fullscreen | --scrollback      Terminal UI mode; append 'default' to save it\n\
-  --server PATH                    Run a standalone dim-app-server binary;\n\
-                                   the default runs this executable's\n\
-                                   app-server subcommand\n\
-  --model-config PATH              Explicit API-key model configuration\n\
-  --model ID [--provider ID]        Temporary model selection (also on resume)\n\
-  --effort LEVEL                   Temporary reasoning effort (also on resume)\n\
-  --autocompact auto|TOKENS         Temporary compaction window (k/m suffixes)\n\
-  --permission PRESET              read-only, workspace-write or full-access for a\n\
-                                   new session, or for the resumed main branch\n\
-  -h, --help                       Show this help without starting a daemon\n\
-  -V, --version                    Show version without starting a daemon\n\n\
-Model startup:\n\
-  --model ID overrides DIM_MODEL; --provider optionally names a configured\n\
-    Provider. A bare ID uses the effective Provider or an unambiguous match.\n\
-  --effort LEVEL overrides DIM_EFFORT_LEVEL, then the model's saved effort.\n\
-    LEVEL must be supported by the selected Provider model; service tier is\n\
-    preserved and the override is not saved as a model preference.\n\
-  DIM_BASE_URL + DIM_API_FORMAT select a Session-local direct connection.\n\
-    Both are required; they conflict with --provider and --model-config.\n\
-    A new Session also requires --model or DIM_MODEL; resume can retain its ID.\n\
-    DIM_API_FORMAT: anthropic, openai-chat, openai-responses, openai-compatible,\n\
-      gemini, xai or xai-responses. DIM_BASE_URL may include a gateway prefix.\n\
-  DIM_API_KEY uses x-api-key (anthropic), x-goog-api-key (gemini), or Bearer\n\
-    (other formats). DIM_AUTH_TOKEN uses Bearer for any format. Set at most one.\n\
-  DIM_CUSTOM_HEADERS is newline-separated Name: Value, split at the first colon.\n\
-    Names are case-insensitive; duplicates and generated auth conflicts fail.\n\
-    Credentials and headers require direct mode; anonymous gateways are allowed.\n\
-  DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS declare positive capacities\n\
-    up to 9007199254740991; the request output allowance is derived from them.\n\
-  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,\n\
-    optionally suffixed k/m (1000/1000000). This is not the model capacity.\n\
-  Effort, autocompact and capacity startup controls require the product Provider\n\
-    and cannot be used with --model-config; set API-key generation settings\n\
-    in that configuration file instead.\n\
-  Model overrides with --model-config require --provider, including on resume.\n\
-  Startup overrides apply before the first input, including on resume, without\n\
-    changing saved Providers, preferences, defaults or the daemon environment.\n\
-    Explicit overrides force complete configuration inheritance for new work.\n\
-    DIM_* startup inputs are ignored by help, version and management commands.\n\
-  Examples (keep secrets in the environment, not command arguments):\n\
-    dimcode exec --model model-id --effort high --autocompact 128k -p 'Hello'\n\
-    DIM_BASE_URL=https://gateway.example/prefix DIM_API_FORMAT=openai-chat \\\n\
-      DIM_MODEL=model-id dimcode exec -p 'Hello'\n\
-    dimcode exec resume SESSION_ID --effort low --autocompact auto -p 'Continue'\n\
-  To supply an API connection, use --model-config PATH with a JSON file:\n\
-    defaultModel: {providerId, modelId}; providers: [{id, kind, baseUrl,\n\
-      apiKeyEnv, headers, models: [{id, contextWindow, maxOutputTokens, config}]}].\n\
-  kind selects the API format, not the model name: anthropic, openai-responses,\n\
-    openai-chat, openai-compatible, gemini, xai or xai-responses.\n\
-  baseUrl is the API base URL; the selected format supplies the request path.\n\
-  apiKeyEnv names an environment variable, not the key itself. Keys use\n\
-    x-api-key for anthropic, x-goog-api-key for gemini, or Bearer otherwise.\n\
-  headers is a JSON object for additional request headers, including gateway\n\
-    authentication when needed. Keep credentials out of command arguments.\n\
-  Each model requires contextWindow, maxOutputTokens and config.maxTokens:\n\
-    the total context capacity, output capacity and request output budget.\n\
-  The daemon inherits its launch environment; a later client's environment\n\
-    does not update it. Use a separate --home for a different model config.\n\
-  Example: dimcode --home /path/to/isolated-home --model-config model.json\n\n\
-Ctrl+C stops a running turn and waits for settlement; idle Ctrl+C or EOF exits.\n\
-Without -p, exec reads redirected stdin through EOF, including with --image.\n\
-Idle commands: /export <markdown|json> PATH, /rename TITLE|--clear, /exit.\n\
-PATH is relative to the CLI current directory; ~ is literal.\n\
-/permissions (aliases /approvals, /approval) selects a permission preset in the terminal UI, with\n\
-  Read only, Workspace write and Full access choices, and\n\
-  a Command rules row. Process isolation is in Settings.\n\
-The line prompt accepts PRESET, allow|deny exact|prefix COMMAND, or remove N.\n\
-Approval accepts only y/yes; empty input denies. For a simple exec command, a/always\n\
-  also saves a command rule. Noninteractive approval exits 3.\n\
-The terminal UI offers a newer version on its npm channel (alpha, beta or latest),\n\
-  installs it with the package manager it came from and restarts onto the session;\n\
-  DIMCODE_UPDATE_CHECK=0 skips that check.\n\
-The terminal UI reports the run's state to the terminal (OSC 7501);\n\
-  DIM_TERMINAL_STATUS=off turns that off.\n\
-It also draws a progress bar where the terminal is known to (OSC 9;4);\n\
-  DIM_TERMINAL_PROGRESS=off turns that off, =on draws it in any terminal.\n\
-Questions take option numbers (comma separated for several) or 0 to type your\n\
-  own; empty input on the first question declines. Noninteractive questions exit 3.\n\
-Account commands sign in to every Provider the daemon describes with a login\n\
-  method. A build without the Dim account provider says so and offers API-key\n\
-  Providers instead.\n\
-Exit codes: 0 success, 1 configuration/transport error, a delete that removed\n\
-            nothing, a cleanup in which a delete failed or a result file that\n\
-            already exists, 2 model/turn failure or a failed Modality task,\n\
-            3 interactive approval or answer required, 130 interrupted.\n";
+pub const HELP: &str = r#"dimcode [OPTIONS]
+
+Pure Rust scrollback client. With redirected stdin, run one prompt and exit.
+
+Commands:
+  tui [-p TEXT] [--image PATH ...]
+                                  Open the interactive scrollback client;
+                                  -p sends TEXT as its first message
+  acp [--agent ID]                Serve ACP over stdin/stdout
+  exec [-p TEXT] [--image PATH ...] [--json] [--permission PRESET]
+                                  Run text and/or local images and exit
+  exec resume SESSION_ID [-p TEXT] [--image PATH ...] [--json]
+
+  session export SESSION_ID --format markdown|json [--output PATH]
+  session rename SESSION TITLE    Set the manual title; --clear removes it
+  session delete SESSION          Permanently delete a Session
+  session cleanup (--older-than DURATION | --keep N) [--yes]
+                                  Show the Sessions that will go, then
+                                  delete them after confirmation
+  export SESSION_ID [--output PATH] [--database PATH]
+                                  Write a Session's whole Timeline as JSONL;
+                                  it holds prompts, code and tool output.
+                                  --database defaults to the home's
+                                  rust/dimcode.sqlite
+
+  login [PROVIDER] [--directory URL] [--device] [--redirect-uri URI]
+                                  Sign in to a Provider the daemon describes;
+                                  without PROVIDER, list the accounts
+                                  it describes
+  account PROVIDER                Show non-secret account status
+  logout PROVIDER                 Sign out of an account provider
+  models PROVIDER [--refresh | --clear-preferences MODEL
+                  | --set-limits MODEL --context-window N --max-output-tokens N
+                  | --set-missing-limits --context-window N
+                    --max-output-tokens N]
+                                  List a Provider's models; --refresh reloads
+                                  the area's list
+  models PROVIDER enable|disable|remove|inspect MODEL
+                                  Enable or disable one model, remove it,
+                                  or print its descriptor
+  models PROVIDER edit MODEL      Edit the model's fields in the editor
+  models PROVIDER set MODEL PATH  Write the model's fields from PATH,
+                                  or from stdin for -
+  models PROVIDER add PATH        Create a model from PATH, or from stdin
+                                  for -
+
+  mcp list                        List MCP servers and their enablement
+  mcp login ID [--no-browser] [--client-secret]
+                                  Sign in; secrets use hidden terminal input
+  mcp logout ID                   Sign out and report token revocation
+  mcp enable ID                   Enable an MCP server shown by mcp list
+  mcp disable ID                  Disable it; an unlisted ID withdraws only
+                                  this workspace's stored enablement
+  mcp add PATH                    Create an entry from PATH, or from stdin for -
+  mcp import PATH [--yes]         Preview a standard mcpServers document; with
+                                  --yes, import the entries the flags select:
+                                  --replace ID, --rename OLD=NEW and --only ID.
+                                  --source user|project picks the writable
+                                  source (default: user)
+  mcp import --from ID [--yes]    The same preview and import from one known
+                                  store of another local client
+  mcp import --discover [--cwd DIR]
+                                  List those stores with their states; no
+                                  value is printed
+  mcp edit ID                     Edit an entry's patch in the editor
+  mcp set ID PATH                 Write an entry's patch from PATH,
+                                  or from stdin for -
+  mcp remove ID                   Delete an entry
+  mcp test ID                     Probe a stored entry and list its tools
+  mcp inspect ID                  Show an entry's effective configuration
+  mcp disconnect ID               Close an entry's live connections
+  mcp ... ID [--source SOURCE]    Every mcp command that names one stored
+                                  entry takes it: user, project or plugin, as
+                                  mcp list prints it; an ID more than one
+                                  source lists needs it
+
+  skills list                     List Skills, their sources and states
+  skills enable|disable ID        Turn one Skill on or off
+  skills reload                   Rescan this workspace's Skills
+  hooks list                      List hook handlers, their sources and states
+  hooks enable                    Run this workspace's .dimcode/hooks.json
+  hooks disable                   Stop running this workspace's hooks
+  hooks edit                      Edit the user's hook document
+  hooks set PATH                  Write the user's hook document from PATH,
+                                  or from stdin for -
+  prompt                          List the built-in prompt overrides
+  prompt show NAME                Print one override (base, summary, skills)
+  prompt edit NAME                Edit one override in the editor; an
+                                  empty draft writes nothing
+  prompt set NAME PATH            Write one override from PATH, or stdin for -
+  prompt reset NAME               Remove one override
+
+  scheduled list                  List scheduled jobs, their windows and
+                                  last runs
+  scheduled enable|disable ID     Pause or resume one job
+  scheduled edit ID               Edit a job document in the editor
+  scheduled set ID PATH           Write a job document from PATH,
+                                  or from stdin for -
+  scheduled add PATH              Create a job from PATH, or from stdin for -
+  scheduled remove ID             Delete a job
+  scheduled run ID                Run a job now
+  scheduled history ID            List a job's recent runs
+  permissions list                List the user's command rules
+  permissions add PATH            Add one rule from PATH, or from stdin for -
+  permissions remove RULE         Remove a rule, given as one quoted
+                                  'DECISION MATCH COMMAND'
+  workflow list                   List workflow definitions, their sources
+                                  and states
+  workflow enable|disable NAME    Turn a project definition on or off
+  workflow edit NAME              Edit a user definition in the editor
+  workflow set NAME PATH          Write a user definition from PATH,
+                                  or from stdin for -
+  workflow add PATH               Create a definition from PATH,
+                                  or from stdin for -
+  workflow start NAME [PATH]      Start a definition with parameters from PATH
+  workflow history NAME           List a definition's recent runs
+
+  modality                        List every Modality category and
+                                  operation with its availability, its
+                                  reasons and its default and effective
+                                  model; --json prints the snapshot
+  modality set-default <category>[.<operation>] <provider>/<model>
+                                  Set one operation's default model
+  modality set-default <category>[.<operation>] --clear
+                                  Clear it, restoring automatic resolution
+  modality task list [--state S] [--category C] [--limit N] [--after ID]
+                                  List Modality tasks, newest first
+  modality task status ID         Print a task's state, progress and files
+  modality task wait ID [--out DIR]
+                                  Wait for a task; write its results with --out
+  modality task cancel ID         Cancel a task
+  image generate|edit PROMPT [FILE...] [--mask PATH]
+  image enhance MODE [FILE...]    Submit an image task
+  video generate|edit|enhance PROMPT [FILE...]
+  speech synthesize TEXT
+  speech transcribe FILE
+  music|audio|motion generate PROMPT
+  asset generate PROMPT [FILE...]
+                                  Submit a task and write its results to
+                                  --out (the current directory by default);
+                                  --no-wait prints the task id only
+  ocr FILE [--output-mode text|layout] [--out DIR]
+                                  Recognize the text of an image or PDF;
+                                  a short text prints inline and writes
+                                  nothing, a longer one is written
+                                  --param KEY=VALUE passes one adapter
+                                  parameter: JSON when it parses as JSON,
+                                  a string otherwise, so a string that
+                                  would parse as JSON is written quoted
+                                  (--param 'label="true"')
+  recording [on|off]              Record model requests to the home's
+                                  model-log/recordings.jsonl; prompts, code
+                                  and tool output are written there
+  realtime [--operation voice] [--model PROVIDER/MODEL]
+                                  Open a realtime session; stdin lines are
+                                  text frames and events print as JSON lines
+
+  plugin list                     List plugins by name, the one in use
+                                  and its status
+  plugin install PATH|GIT_URL [--ref R] [--id ID] [--no-enable]
+                                  Install a plugin and turn it on
+  plugin install --optional NAME [--id ID] [--no-enable]
+                                  Install an optional plugin the release ships
+  plugin enable NAME [--use ID|builtin|default]
+  plugin disable NAME
+  plugin reload NAME              Reload a plugin after editing it
+  plugin update ID                Load the latest commit of a Git plugin
+  plugin remove ID
+  runtime list                    List the plugin runtimes and their state
+  runtime install node|python|uv  Turn a plugin runtime on and acquire it
+  runtime config NAME             Set a runtime's --source or --auto
+                                  and apply it
+
+  daemon stop                     Gracefully stop an existing daemon
+  daemon vacuum [--database PATH] Rewrite an offline database to reclaim
+                                  space; --database defaults to the home's
+                                  rust/dimcode.sqlite
+  migration [run|inspect] [--source OLD_HOME]
+                                  Import or inspect Global and CN separately;
+                                  Global stays in ~/.dim, CN in ~/.dimcode;
+                                  confirm stopped clients or use
+                                  --source-stopped
+  migration list|show TASK|cancel TASK
+                                  Read tasks or request cancellation
+  migration retry TASK [--source OLD_HOME]
+                                  Resume a task, reconciling imported objects
+  web [--port N] [--no-open]      Hold the Web workspace until Ctrl+C
+  web --off                       Turn off the daemon-owned Web switch
+  web install                     Install this version's Web workspace
+
+Options:
+  -p, --prompt TEXT               The prompt: exec runs it and exits; tui
+                                  sends it as the first message of an
+                                  interactive session
+  --image PATH                    Add a local image to exec, or to the tui
+                                  first message (repeatable)
+  --resume SESSION_ID             Attach and continue a persisted session
+  --home PATH                     Product home (default: ~/.dimcode)
+  --cwd PATH                      Workspace (default: current directory)
+  --no-tui                        Line client instead of the terminal UI
+  --fullscreen | --scrollback     Terminal UI mode; append 'default' to save it
+  --server PATH                   Run a standalone dim-app-server binary;
+                                  the default runs this executable's
+                                  app-server subcommand
+  --model-config PATH             Explicit API-key model configuration
+  --model ID [--provider ID]      Temporary model selection (also on resume)
+  --effort LEVEL                  Temporary reasoning effort (also on resume)
+  --autocompact auto|TOKENS       Temporary compaction window (k/m suffixes)
+  --permission PRESET             read-only, workspace-write or full-access
+                                  for a new session, or for the resumed main
+                                  branch
+  -h, --help                      Show this help without starting a daemon
+  -V, --version                   Show version without starting a daemon
+
+Model startup:
+  --model ID overrides DIM_MODEL; --provider optionally names a configured
+    Provider. A bare ID uses the effective Provider or an unambiguous match.
+  --effort LEVEL overrides DIM_EFFORT_LEVEL, then the model's saved effort.
+    LEVEL must be supported by the selected Provider model; service tier is
+    preserved and the override is not saved as a model preference.
+  DIM_BASE_URL + DIM_API_FORMAT select a Session-local direct connection.
+    Both are required; they conflict with --provider and --model-config.
+    A new Session also requires --model or DIM_MODEL; resume can retain its ID.
+    DIM_API_FORMAT: anthropic, openai-chat, openai-responses, openai-compatible,
+      gemini, xai or xai-responses. DIM_BASE_URL may include a gateway prefix.
+  DIM_API_KEY uses x-api-key (anthropic), x-goog-api-key (gemini), or Bearer
+    (other formats). DIM_AUTH_TOKEN uses Bearer for any format. Set at most one.
+  DIM_CUSTOM_HEADERS is newline-separated Name: Value, split at the first colon.
+    Names are case-insensitive; duplicates and generated auth conflicts fail.
+    Credentials and headers require direct mode; anonymous gateways are allowed.
+  DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS declare positive capacities
+    up to 9007199254740991; the request output allowance is derived from them.
+  --autocompact overrides DIM_AUTO_COMPACT_WINDOW: auto or a positive count,
+    optionally suffixed k/m (1000/1000000). This is not the model capacity.
+  Effort, autocompact and capacity startup controls require the product Provider
+    and cannot be used with --model-config; set API-key generation settings
+    in that configuration file instead.
+  Model overrides with --model-config require --provider, including on resume.
+  Startup overrides apply before the first input, including on resume, without
+    changing saved Providers, preferences, defaults or the daemon environment.
+    Explicit overrides force complete configuration inheritance for new work.
+    DIM_* startup inputs are ignored by help, version and management commands.
+
+Examples (keep secrets in the environment, not command arguments):
+  dimcode exec --model model-id --effort high --autocompact 128k -p 'Hello'
+  DIM_BASE_URL=https://gateway.example/prefix DIM_API_FORMAT=openai-chat \
+    DIM_MODEL=model-id dimcode exec -p 'Hello'
+  dimcode exec resume SESSION_ID --effort low --autocompact auto -p 'Continue'
+
+API-key configuration:
+  To supply an API connection, use --model-config PATH with a JSON file:
+    defaultModel: {providerId, modelId}; providers: [{id, kind, baseUrl,
+      apiKeyEnv, headers, models: [{id, contextWindow, maxOutputTokens,
+      config}]}].
+  kind selects the API format, not the model name: anthropic, openai-responses,
+    openai-chat, openai-compatible, gemini, xai or xai-responses.
+  baseUrl is the API base URL; the selected format supplies the request path.
+  apiKeyEnv names an environment variable, not the key itself. Keys use
+    x-api-key for anthropic, x-goog-api-key for gemini, or Bearer otherwise.
+  headers is a JSON object for additional request headers, including gateway
+    authentication when needed. Keep credentials out of command arguments.
+  Each model requires contextWindow, maxOutputTokens and config.maxTokens:
+    the total context capacity, output capacity and request output budget.
+  The daemon inherits its launch environment; a later client's environment
+    does not update it. Use a separate --home for a different model config.
+  Example: dimcode --home /path/to/isolated-home --model-config model.json
+
+Interaction:
+  Ctrl+C stops a running turn and waits for settlement;
+    idle Ctrl+C or EOF exits.
+  Without -p, exec reads redirected stdin through EOF, including with --image.
+  Idle commands: /export <markdown|json> PATH, /rename TITLE|--clear, /exit.
+  PATH is relative to the CLI current directory; ~ is literal.
+
+  /permissions (aliases /approvals, /approval) selects a permission preset
+    in the terminal UI, with Read only, Workspace write and Full access
+    choices, and a Command rules row. Process isolation is in Settings.
+  The line prompt accepts PRESET, allow|deny exact|prefix COMMAND, or remove N.
+  Approval accepts only y/yes; empty input denies. For a simple exec command,
+    a/always also saves a command rule. Noninteractive approval exits 3.
+  The terminal UI offers a newer version on its npm channel
+    (alpha, beta or latest), installs it with the package manager it came from
+    and restarts onto the session;
+    DIMCODE_UPDATE_CHECK=0 skips that check.
+  The terminal UI reports the run's state to the terminal (OSC 7501);
+    DIM_TERMINAL_STATUS=off turns that off.
+  A terminal that answers the startup probe's OSC 7501 query draws that record
+    itself, so the window title stops turning there;
+    DIM_TERMINAL_TITLE=always keeps its mark.
+  It also draws a progress bar where the terminal is known to (OSC 9;4);
+    DIM_TERMINAL_PROGRESS=off turns that off, =on draws it in any terminal.
+  Questions take option numbers (comma separated for several) or 0 to type your
+    own; empty input on the first question declines. Noninteractive questions
+    exit 3.
+
+  Account commands sign in to every Provider the daemon describes with a login
+    method. A build without the Dim account provider says so and offers API-key
+    Providers instead.
+
+Exit codes:
+  0 success, 1 configuration/transport error, a delete that removed nothing,
+  a cleanup in which a delete failed or a result file that already exists,
+  2 model/turn failure or a failed Modality task,
+  3 interactive approval or answer required, 130 interrupted.
+"#;
 
 /// What `dimcode modality task` names.
 const USAGE_TASK: &str = "Use modality task list | status ID | wait ID [--out DIR] | cancel ID";

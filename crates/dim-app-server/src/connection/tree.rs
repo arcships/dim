@@ -47,6 +47,12 @@ impl Connection {
             mode: params.mode,
             ..InputMessageData::default()
         };
+        // The checks' contexts are appended to the operator's own content, so
+        // an input that carries none must be refused before the checks run:
+        // otherwise a check's context would be the only content, and the input
+        // it made valid would be written and titled after all.
+        data.validate()
+            .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
         match self
             .submit_check(
                 rpc,
@@ -114,6 +120,7 @@ impl Connection {
         &self,
         rpc: &RpcService,
         params: History,
+        display: bool,
     ) -> Result<Reply, RpcError> {
         if params.latest_turn && params.after.is_some() {
             return Err(RpcError::invalid(
@@ -209,20 +216,11 @@ impl Connection {
             };
             let before = params.before.unwrap_or_else(|| through.saturating_add(1));
             let read = if session.ended_head(branch).is_some() {
-                HistoryRead::Ended(&tree)
+                HistoryRead::Ended(&tree, self.protocol_version())
             } else {
-                HistoryRead::Open(&session)
+                HistoryRead::Open(&session, self.protocol_version())
             };
-            let reply = window_at(
-                &read,
-                branch,
-                before,
-                limit,
-                through,
-                turn,
-                self.protocol_version(),
-            )
-            .await;
+            let reply = window_at(&read, branch, before, limit, through, turn, display).await;
             // The owner is chosen before the read: a line that ends in between
             // answers `BranchEnded`, and the tree serves the same request at its
             // fixed head.
@@ -234,75 +232,150 @@ impl Connection {
                         .is_some_and(|data| data.app_error == "branch_ended") =>
                 {
                     window_at(
-                        &HistoryRead::Ended(&tree),
+                        &HistoryRead::Ended(&tree, self.protocol_version()),
                         branch,
                         before,
                         limit,
                         through,
                         turn,
-                        self.protocol_version(),
+                        display,
                     )
                     .await
                 }
                 other => other,
             };
-            return reply.map(Reply::History);
-        }
-        let events = rpc
-            .index
-            .history_page(&params.session_id, branch, after, limit, through)
-            .await
-            .map_err(history_error)?;
-        // The page's events come from the index; its batch edges come from the
-        // same owner, and a line that ends in between serves them through the
-        // tree at its fixed head (ADR 021 D2).
-        let reply = if session.ended_head(branch).is_some() {
-            let tree = session
-                .session_service::<TreeCommands>()
-                .map_err(history_error)?;
-            forward_at(
-                &HistoryRead::Ended(&tree),
-                branch,
-                events,
-                after,
-                through,
-                self.protocol_version(),
-            )
-            .await
-        } else {
-            match forward_at(
-                &HistoryRead::Open(&session),
-                branch,
-                events.clone(),
-                after,
-                through,
-                self.protocol_version(),
-            )
-            .await
-            {
-                Err(error)
-                    if error
-                        .data
-                        .as_ref()
-                        .is_some_and(|data| data.app_error == "branch_ended") =>
-                {
-                    let tree = session
-                        .session_service::<TreeCommands>()
-                        .map_err(history_error)?;
-                    forward_at(
-                        &HistoryRead::Ended(&tree),
-                        branch,
-                        events,
-                        after,
-                        through,
-                        self.protocol_version(),
-                    )
-                    .await
+            return reply.map(|page| {
+                if display {
+                    Reply::HistoryDisplay(page.into())
+                } else {
+                    Reply::History(page)
                 }
-                other => other,
-            }
+            });
+        }
+        let tree = session
+            .session_service::<TreeCommands>()
+            .map_err(history_error)?;
+        let read = if session.ended_head(branch).is_some() {
+            HistoryRead::Ended(&tree, self.protocol_version())
+        } else {
+            HistoryRead::Open(&session, self.protocol_version())
         };
-        reply.map(Reply::History)
+        let reply = forward_page(&read, branch, after, limit, through, display).await;
+        let reply = match reply {
+            Err(error)
+                if error
+                    .data
+                    .as_ref()
+                    .is_some_and(|data| data.app_error == "branch_ended") =>
+            {
+                forward_page(
+                    &HistoryRead::Ended(&tree, self.protocol_version()),
+                    branch,
+                    after,
+                    limit,
+                    through,
+                    display,
+                )
+                .await
+            }
+            other => other,
+        };
+        reply.map(|page| {
+            if display {
+                Reply::HistoryDisplay(page.into())
+            } else {
+                Reply::History(page)
+            }
+        })
+    }
+
+    pub(super) async fn history_detail(
+        &self,
+        rpc: &RpcService,
+        params: HistoryDetail,
+    ) -> Result<Reply, RpcError> {
+        if params.event_id.is_empty() || params.sequence == 0 {
+            return Err(RpcError::invalid(
+                "A detail requires an event identity and positive sequence",
+            ));
+        }
+        let session = self.session(rpc, &params.session_id)?;
+        let branch = params.branch_id.as_deref().expect("validated branchId");
+        if params.sequence > session.sequence(branch).map_err(history_error)? {
+            return Err(RpcError::invalid("Future detail position"));
+        }
+        let query = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: Some(dim_agent_types::TimelinePosition {
+                branch_id: branch.into(),
+                sequence: params.sequence,
+            }),
+            through: Some(params.sequence),
+            include_publishing: false,
+            query: QuerySpec {
+                filter: Some(QueryFilter::And {
+                    conditions: vec![
+                        completed_compaction(),
+                        QueryFilter::In {
+                            value: QueryOperand::Field { path: "id".into() },
+                            values: vec![params.event_id.clone().into()],
+                        },
+                    ],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data".into()],
+                },
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let reply = match session.query(branch, query.clone()).await {
+            Err(AgentError::BranchEnded(_)) => {
+                session
+                    .session_service::<TreeCommands>()
+                    .map_err(history_error)?
+                    .query(branch.to_owned(), query)
+                    .await
+            }
+            other => other,
+        }
+        .map_err(history_error)?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("detail selects data")
+        };
+        let Some(row) = rows.into_iter().next() else {
+            return Err(RpcError::app(
+                -32000,
+                "detail_not_found",
+                "The completed compaction is not visible at this position",
+            ));
+        };
+        let [QueryValue::Value { value }]: [_; 1] =
+            row.values.try_into().expect("compaction detail data")
+        else {
+            unreachable!("compaction data is present")
+        };
+        let detail = dim_agent_types::CompactionDetail {
+            event_id: params.event_id,
+            sequence: params.sequence,
+            data: serde_json::from_value(value)
+                .map_err(|error| RpcError::wire(-32603, error.to_string()))?,
+        };
+        let encoded = serde_json::value::to_raw_value(&detail)
+            .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
+        if encoded.get().len() > REPLY_FRAME_BYTES {
+            return Err(RpcError::app(
+                -32000,
+                "detail_too_large",
+                "The compaction exceeds the display budget; export the Timeline to read the complete fact",
+            ));
+        }
+        Ok(Reply::HistoryDetail(encoded))
     }
 
     /// The branch's live keyed blocks at `through` (keyed-blocks §2.2): the
@@ -327,9 +400,20 @@ impl Connection {
             let tree = session
                 .session_service::<TreeCommands>()
                 .map_err(history_error)?;
-            scan_keys(&HistoryRead::Ended(&tree), branch, through).await?
+            scan_keys(
+                &HistoryRead::Ended(&tree, self.protocol_version()),
+                branch,
+                through,
+            )
+            .await?
         } else {
-            match scan_keys(&HistoryRead::Open(&session), branch, through).await {
+            match scan_keys(
+                &HistoryRead::Open(&session, self.protocol_version()),
+                branch,
+                through,
+            )
+            .await
+            {
                 // The line ended while the scan ran: the tree serves the same
                 // read at its fixed head (ADR 021 D2).
                 Err(error)
@@ -341,7 +425,12 @@ impl Connection {
                     let tree = session
                         .session_service::<TreeCommands>()
                         .map_err(history_error)?;
-                    scan_keys(&HistoryRead::Ended(&tree), branch, through).await?
+                    scan_keys(
+                        &HistoryRead::Ended(&tree, self.protocol_version()),
+                        branch,
+                        through,
+                    )
+                    .await?
                 }
                 other => other?,
             }
@@ -749,8 +838,8 @@ async fn turn_window(
 /// Timeline, through its Session, or an ended line's stored history, through
 /// the tree that owns its fixed head (ADR 021 D2).
 enum HistoryRead<'a> {
-    Open(&'a Session),
-    Ended(&'a TreeCommands),
+    Open(&'a Session, u32),
+    Ended(&'a TreeCommands, u32),
 }
 
 impl HistoryRead<'_> {
@@ -760,15 +849,15 @@ impl HistoryRead<'_> {
         query: TimelineQuery,
     ) -> Result<dim_agent_runtime::TimelineQueryReply, AgentError> {
         match self {
-            Self::Open(session) => session.query(branch, query).await,
-            Self::Ended(tree) => tree.query(branch.to_owned(), query).await,
+            Self::Open(session, _) => session.query(branch, query).await,
+            Self::Ended(tree, _) => tree.query(branch.to_owned(), query).await,
         }
     }
 
     async fn batch_end(&self, branch: &str, sequence: u64) -> Result<(), AgentError> {
         match self {
-            Self::Open(session) => session.batch_end(branch, sequence).await,
-            Self::Ended(tree) => tree.batch_end(branch.to_owned(), sequence).await,
+            Self::Open(session, _) => session.batch_end(branch, sequence).await,
+            Self::Ended(tree, _) => tree.batch_end(branch.to_owned(), sequence).await,
         }
     }
 }
@@ -967,10 +1056,19 @@ async fn window_at(
     limit: usize,
     through: u64,
     turn: crate::storage::TurnWindow,
-    version: u32,
+    display: bool,
 ) -> Result<wire::HistoryResult, RpcError> {
-    let events = window_page(read, branch, before, limit, through, turn.window_start).await?;
-    history_window(read, branch, events, through, turn, version).await
+    let events = window_page(
+        read,
+        branch,
+        before,
+        limit,
+        through,
+        turn.window_start,
+        display,
+    )
+    .await?;
+    history_window(read, branch, events, through, turn).await
 }
 
 /// The newest events below `before` inside `window_start..=through`
@@ -985,7 +1083,8 @@ async fn window_page(
     limit: usize,
     through: u64,
     window_start: u64,
-) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>, RpcError> {
+    display: bool,
+) -> Result<Vec<HistoryItem>, RpcError> {
     if through > 0 {
         read.batch_end(branch, through)
             .await
@@ -998,24 +1097,12 @@ async fn window_page(
     let Some(end) = batch_end_at_or_below(read, branch, top, window_start).await? else {
         return Ok(Vec::new());
     };
-    let mut low = end
+    let low = end
         .saturating_sub(limit.saturating_sub(1) as u64)
         .max(1)
         .max(window_start);
-    loop {
-        let events = window_events(read, branch, low, end).await?;
-        let Some(first) = events.first().map(|event| event.sequence) else {
-            return Ok(Vec::new());
-        };
-        if low <= window_start || low == 1 {
-            return Ok(events);
-        }
-        let start = batch_start(read, branch, first, window_start).await?;
-        if start >= low {
-            return Ok(events);
-        }
-        low = start;
-    }
+    let low = batch_start(read, branch, low, window_start).await?;
+    window_items(read, branch, low, end, display).await
 }
 
 /// The greatest atomic-batch end at or below `top`, searching no lower than
@@ -1057,13 +1144,26 @@ async fn batch_start(
 }
 
 /// `low..=end` through the source query.
-async fn window_events(
+async fn window_items(
     read: &HistoryRead<'_>,
     branch: &str,
     low: u64,
     end: u64,
-) -> Result<Vec<Arc<dim_agent_types::AgentEvent>>, RpcError> {
+    display: bool,
+) -> Result<Vec<HistoryItem>, RpcError> {
     let limit = end.saturating_sub(low).saturating_add(1).max(1);
+    let filter = if display {
+        QueryFilter::And {
+            conditions: vec![
+                wire::ProductEvent::query_filter(),
+                QueryFilter::Not {
+                    condition: Box::new(completed_compaction()),
+                },
+            ],
+        }
+    } else {
+        wire::ProductEvent::query_filter()
+    };
     let reply = read
         .query(
             branch,
@@ -1076,7 +1176,7 @@ async fn window_events(
                 through: Some(end),
                 include_publishing: false,
                 query: QuerySpec {
-                    filter: None,
+                    filter: Some(filter),
                     select: QuerySelect::Events,
                     group_by: vec![],
                     pick: None,
@@ -1093,7 +1193,111 @@ async fn window_events(
     let QueryOutput::Events { events } = reply.result else {
         unreachable!("event selection returns events")
     };
-    Ok(events.into_iter().map(|row| row.event).collect())
+    let version = match read {
+        HistoryRead::Open(_, version) | HistoryRead::Ended(_, version) => *version,
+    };
+    let mut visible = history_items(events.into_iter().map(|row| row.event).collect(), version)?;
+    if display {
+        let reply = read
+            .query(
+                branch,
+                TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: Some(dim_agent_types::TimelinePosition {
+                        branch_id: branch.into(),
+                        sequence: low,
+                    }),
+                    through: Some(end),
+                    include_publishing: false,
+                    query: QuerySpec {
+                        filter: Some(completed_compaction()),
+                        select: QuerySelect::Fields {
+                            fields: [
+                                "id",
+                                "position.sequence",
+                                "create_at",
+                                "data.start",
+                                "data.strategy",
+                                "data.diagnostics.insufficientSpace",
+                            ]
+                            .map(String::from)
+                            .to_vec(),
+                        },
+                        group_by: vec![],
+                        pick: None,
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: std::num::NonZeroU64::new(limit).unwrap(),
+                        after: None,
+                    }),
+                },
+            )
+            .await
+            .map_err(history_error)?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("display selects summary fields")
+        };
+        for row in rows {
+            let [id, sequence, create_at, start, strategy, insufficient_space]: [_; 6] =
+                row.values.try_into().expect("compaction summary fields");
+            let value = |value| match value {
+                QueryValue::Value { value } => value,
+                _ => unreachable!("required compaction summary field"),
+            };
+            let optional = |value| match value {
+                QueryValue::Missing => None,
+                QueryValue::Value { value } => Some(value),
+                _ => unreachable!("scalar compaction summary field"),
+            };
+            let item = wire::CompactionItem {
+                id: serde_json::from_value(value(id)).expect("event id"),
+                sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
+                create_at: serde_json::from_value(value(create_at)).expect("event creation time"),
+                data: dim_agent_types::CompactionSummary {
+                    start: optional(start)
+                        .map(|value| serde_json::from_value(value).expect("compaction start")),
+                    strategy: serde_json::from_value(value(strategy)).expect("compaction strategy"),
+                    insufficient_space: optional(insufficient_space)
+                        .map(|value| serde_json::from_value(value).expect("insufficient space")),
+                },
+            };
+            let encoded = serde_json::value::to_raw_value(&item)
+                .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
+            visible.push(HistoryItem {
+                sequence: item.sequence,
+                bytes: encoded.get().len(),
+                event: Some(encoded),
+            });
+        }
+        visible.sort_unstable_by_key(|item| item.sequence);
+    }
+    let mut visible = visible.into_iter().peekable();
+    Ok((low..=end)
+        .map(|sequence| {
+            if visible.peek().is_some_and(|item| item.sequence == sequence) {
+                visible.next().unwrap()
+            } else {
+                HistoryItem {
+                    sequence,
+                    bytes: 0,
+                    event: None,
+                }
+            }
+        })
+        .collect())
+}
+
+fn completed_compaction() -> QueryFilter {
+    QueryFilter::And {
+        conditions: [("kind", "context/compaction"), ("data.status", "completed")]
+            .into_iter()
+            .map(|(path, value)| QueryFilter::In {
+                value: QueryOperand::Field { path: path.into() },
+                values: vec![value.into()],
+            })
+            .collect(),
+    }
 }
 
 /// One event of a history page with its encoded form, built once, and size.
@@ -1239,15 +1443,33 @@ async fn batch_end_from(
 /// byte target. A trimmed page is a short page, not the end: `done` is false
 /// and `nextAfter` is its last returned sequence, so the client continues as
 /// it does today.
-async fn forward_at(
+async fn forward_page(
     read: &HistoryRead<'_>,
     branch: &str,
-    events: Vec<Arc<dim_agent_types::AgentEvent>>,
     after: u64,
+    limit: usize,
     through: u64,
-    version: u32,
+    display: bool,
 ) -> Result<wire::HistoryResult, RpcError> {
-    let items = history_items(events, version)?;
+    if after > 0 {
+        read.batch_end(branch, after).await.map_err(history_error)?;
+    }
+    read.batch_end(branch, through)
+        .await
+        .map_err(history_error)?;
+    let mut end = after.saturating_add(limit as u64).min(through);
+    while end < through && end > after {
+        match read.batch_end(branch, end).await {
+            Ok(()) => break,
+            Err(AgentError::InvalidInput(_)) => end += 1,
+            Err(error) => return Err(history_error(error)),
+        }
+    }
+    let items = if end > after {
+        window_items(read, branch, after + 1, end, display).await?
+    } else {
+        Vec::new()
+    };
     let keep = bounded_batches(read, branch, &items, false).await?;
     let next_after = keep
         .end
@@ -1274,12 +1496,10 @@ async fn forward_at(
 async fn history_window(
     read: &HistoryRead<'_>,
     branch: &str,
-    events: Vec<Arc<dim_agent_types::AgentEvent>>,
+    mut items: Vec<HistoryItem>,
     through: u64,
     turn: crate::storage::TurnWindow,
-    version: u32,
 ) -> Result<wire::HistoryResult, RpcError> {
-    let mut items = history_items(events, version)?;
     let keep = bounded_batches(read, branch, &items, true).await?;
     let kept = items.split_off(keep.start);
     let next_before = kept.first().map(|item| item.sequence);

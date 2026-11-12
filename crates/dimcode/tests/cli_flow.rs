@@ -42,6 +42,8 @@ mod permission;
 mod prompt_suggestion;
 #[path = "cli_flow/prompts.rs"]
 mod prompts;
+#[path = "cli_flow/protocol_version.rs"]
+mod protocol_version;
 #[path = "cli_flow/question.rs"]
 mod question;
 #[path = "cli_flow/realtime.rs"]
@@ -2453,6 +2455,176 @@ fn exec_json_interrupt_drains_the_stop_barrier_without_human_stdout() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["method"], "session.event");
     assert!(String::from_utf8_lossy(&output.stderr).contains("Waiting for resource settlement"));
+}
+
+#[test]
+fn session_export_keeps_a_hooks_context_under_its_own_heading() {
+    let home = Home::new();
+    let cli_dir = home.0.join("client");
+    let workspace = home.0.join("workspace");
+    fs::create_dir(&cli_dir).unwrap();
+    fs::create_dir(&workspace).unwrap();
+    let path = cli_dir.join("hooked.md");
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"sequence":2,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[
+                    {"type":"text","text":"why does the parser stall?"},
+                    {"type":"text","text":"<dim-skill name=\"checkin\">\nSkill: checkin\nInstructions:\nBODY\n</dim-skill>"},
+                    {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs `first`\n</dim-hooks>"}
+                ]}}}],
+                "through":8,"nextAfter":8,"done":true}),
+        );
+    });
+    let mut command = home.command();
+    command.current_dir(&cli_dir).args([
+        "session",
+        "export",
+        "session",
+        "--format",
+        "markdown",
+        "--cwd",
+        workspace.to_str().unwrap(),
+        "--output",
+        "hooked.md",
+    ]);
+    let output = command.output().unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let markdown = fs::read_to_string(&path).unwrap();
+    // A loaded Skill's block stays under `### User` as written — adjacent text
+    // blocks have always run together here — and only a hook's context leaves
+    // it, under a heading of its own.
+    let expected = r#"# Session session
+
+Branch: main
+
+
+### User
+
+why does the parser stall?<dim-skill name="checkin">
+Skill: checkin
+Instructions:
+BODY
+</dim-skill>
+
+### Hook context
+
+```text
+read src/parser.rs `first`
+```
+
+"#;
+    assert_eq!(markdown, expected);
+}
+
+/// #1380, #1381: the line client's history says what the TUI says. A message
+/// it replays prints the operator's words, one `Skill loaded` line per loaded
+/// Skill, and one `Hook context · N lines` line per hook context — and never a
+/// marker. The order is the content's: the Skill was loaded before the hook ran.
+/// A `Stop` hook's follow-up, which is its own input after the turn ended,
+/// prints its one label with no body.
+#[test]
+fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"hooked","sequence":7,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":"why does the parser stall?"},
+                     {"type":"text","text":"<dim-skill name=\"checkin\">\nSkill: checkin\nInstructions:\nBODY\n</dim-skill>"},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nSEARCH-MEMORY-FIRST\nis required here\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"hooked-consumed","sequence":8,"create_at":1,"type":"input","name":"consumed",
+                 "data":{"input_id":"hooked"}},
+                {"id":"follow-up","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}}],
+                "through":9,"nextAfter":9,"done":true}),
+        );
+        // The client settles the queue and reads the context gauge in either
+        // order, so answer by method until it leaves.
+        for _ in 0..8 {
+            let mut line = String::new();
+            match wire.0.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    match request["method"].as_str().unwrap_or_default() {
+                        "session.idle" => wire.reply(&request, json!({"sequence":9})),
+                        "session.question.pending" => wire.reply(
+                            &request,
+                            json!({"branchId":"main","through":9,"batches":[],"next":null}),
+                        ),
+                        "session.context.usage" => wire.send(json!({
+                            "jsonrpc":"2.0","id":request["id"],
+                            "error":{"code":-32601,
+                                     "message":"Unknown method: session.context.usage",
+                                     "data":{"appError":"unknown_method"}}})),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch(command);
+    // Wait for the prompt after the replayed history: it appears whatever the
+    // history held, so a missing context line fails at its own assertion
+    // rather than at a wait.
+    terminal.until("> why does the parser stall?");
+    terminal.until("\n> ");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    let plain = terminal.transcript.clone();
+    assert!(
+        plain.contains("> why does the parser stall?"),
+        "the log prints the operator's words:\n{plain}"
+    );
+    assert!(
+        plain.contains("Skill loaded: checkin"),
+        "a loaded Skill keeps its one line, as the TUI shows it:\n{plain}"
+    );
+    assert!(
+        plain.contains("Hook context · 2 lines"),
+        "the log prints the same line the TUI row shows:\n{plain}"
+    );
+    assert!(
+        plain.contains("Stop hook follow-up · 1 line"),
+        "the follow-up's one label reaches the log:\n{plain}"
+    );
+    assert!(
+        !plain.contains("run the suite"),
+        "the log has no disclosure, so the body stays out of it:\n{plain}"
+    );
+    assert!(
+        !plain.contains("<dim-"),
+        "no marker reaches the log:\n{plain}"
+    );
+    let words = plain.find("> why does the parser stall?").unwrap();
+    let skill = plain.find("Skill loaded: checkin").unwrap();
+    let hook = plain.find("Hook context · 2 lines").unwrap();
+    let follow_up = plain.find("Stop hook follow-up · 1 line").unwrap();
+    assert!(
+        words < skill && skill < hook && hook < follow_up,
+        "the lines keep the order the content has:\n{plain}"
+    );
 }
 
 #[test]
@@ -4910,7 +5082,7 @@ fn tui_resizing_during_thinking_preserves_multiline_history() {
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("Ask anything...");
     terminal.raw(b"first user line\nsecond user line\nlast user line\r");
-    terminal.until("Thinking…");
+    terminal.until("Thought");
     for (cols, rows) in [(100, 24), (60, 24), (120, 40), (45, 18), (100, 36)] {
         terminal.consumed = terminal.transcript.len();
         let size = libc::winsize {
@@ -5543,15 +5715,23 @@ fn tui_effort_without_a_session_answers_the_no_session_notice_and_sends_nothing(
 }
 
 #[test]
-fn tui_shell_without_a_session_settles_with_the_no_session_notice() {
+fn tui_shell_session_creation_failure_settles_with_the_no_session_notice() {
     let home = Home::new();
     let (quieted, quiet_done) = std::sync::mpsc::channel();
-    let daemon = no_session_daemon(&home, quieted);
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let create = wire.read("session.create");
+        wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{
+            "code":-32000,"message":"no model configured","data":{"appError":"provider_failed"}}}));
+        wire.quiet(Duration::from_millis(1200));
+        let _ = quieted.send(());
+        assert_eq!(wire.trailing_request(), None);
+    });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("Ask anything...");
     terminal.write(b"!echo hi\r");
-    // The settled shell block carries the notice as its status, and the
-    // status line repeats it; neither the block nor the row stays running.
     terminal.until("failed: Sign in with /login");
     terminal.until("Shell: Sign in with");
     quiet_done.recv_timeout(PATIENCE).unwrap();
@@ -5633,6 +5813,11 @@ fn tui_at_mentions_pick_files_from_the_working_directory() {
         let hello = wire.read("hello");
         wire.reply(&hello,json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods","provider.list"]}));
         let attach = wire.read("session.attach");
+        // `/workspace` deliberately differs from the `--cwd project` this
+        // flow launched with: `@` completes local paths against the selected
+        // `--cwd`, never against the directory a daemon reports, so the
+        // reported workspace is not readable here and the picker still
+        // offers the project's files.
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");
         wire.reply(&history,json!({"events":[],"through":8,"nextAfter":8,"done":true}));
@@ -8758,9 +8943,9 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             wire.reply(&stop, json!({"sequence":13}));
             wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":false}));
             wire.no_context();
-            let delete = wire.read("session.input.withdraw");
-            assert_eq!(delete["params"]["inputId"], "steer this");
-            wire.reply(&delete, json!({"status":"notHeld"}));
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["text"], "next input");
+            wire.reply(&submit, json!({"event":{}}));
             wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"consumed","sequence":14,"create_at":1,"type":"input","name":"consumed","data":{"input_id":"steer this"}}}));
             wire.hold();
         });
@@ -8797,7 +8982,9 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             !panel.contains("Enter steer") && !panel.contains("delete held"),
             "{panel}"
         );
-        terminal.write(b"x");
+        terminal.write(b"x\r\x1b");
+        terminal.until("/queue view");
+        terminal.write(b"next input\r/queue\r");
         terminal.until("No queued messages.");
         let shown = strip_ansi(&terminal.transcript);
         assert!(
@@ -8807,6 +8994,125 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
         home.kill(&terminal);
         terminal.wait();
         daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn tui_rapid_queue_controls_settle_each_held_input_once() {
+    for fullscreen in [false, true] {
+        for shortcut in ["enter", "ctrl-s", "panel", "delete", "recall", "not-held"] {
+            let steering = !matches!(shortcut, "delete" | "recall");
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&[]);
+                let attach = wire.read("session.attach");
+                let mut record = attach_record(&attach);
+                record["running"] = json!(true);
+                wire.reply(&attach, record);
+                let history = wire.read("session.history");
+                wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+                wire.no_context();
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+                let submit = wire.read("session.submit");
+                assert_eq!(submit["params"]["text"], "steer once");
+                wire.reply(&submit, json!({"event":{}}));
+                wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"queued","sequence":9,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"steer once"}]},"mode":"queue"}}}));
+                let rejected = wire.read("session.input.withdraw");
+                wire.send(json!({"jsonrpc":"2.0","id":rejected["id"],"error":{"code":-32000,"message":"queue control blocked","data":{"appError":"input_blocked"}}}));
+                let control = wire.read("session.input.withdraw");
+                assert_eq!(control["params"]["inputId"], "queued");
+                if steering {
+                    assert_eq!(control["params"]["steer"], json!({"content":[{"type":"text","text":"steer once"}]}));
+                    let reply = if shortcut == "not-held" {
+                        json!({"status":"notHeld"})
+                    } else {
+                        json!({"status":"deleted","sequence":12,"steer":{"inputId":"replacement","sequence":11}})
+                    };
+                    wire.reply(&control, reply);
+                } else {
+                    assert!(control["params"].get("steer").is_none());
+                    wire.reply(&control, json!({"status":"deleted","sequence":12}));
+                }
+                let mut attempts = 1;
+                let submit = loop {
+                    let request = wire.read_any();
+                    if request["method"] == "session.submit" {
+                        break request;
+                    }
+                    assert_eq!(request["method"], "session.input.withdraw");
+                    attempts += 1;
+                    wire.reply(&request, json!({"status":"notHeld"}));
+                };
+                assert_eq!(submit["params"]["text"], "steer once");
+                wire.reply(&submit, json!({"event":{}}));
+                for event in [
+                    json!({"id":"withdraw","sequence":10,"type":"input","name":"withdraw","data":{"input_id":"queued"}}),
+                    json!({"id":"replacement","sequence":11,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"steer once"}]},"mode":"steer"}}),
+                    json!({"id":"deleted","sequence":12,"type":"input","name":"deleted","data":{"input_id":"queued"}}),
+                    json!({"id":"applied","sequence":13,"type":"input","name":"applied","data":{"input_id":"replacement","mode":"steer"}}),
+                ] {
+                    if !steering && matches!(event["id"].as_str(), Some("replacement" | "applied")) {
+                        continue;
+                    }
+                    let mut event = event;
+                    event["create_at"] = json!(1);
+                    wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event}));
+                }
+                wire.event(14, "text", json!({"turn_id":"turn","request_id":"request","delta":"queue controls settled"}));
+                wire.hold();
+                assert_eq!(attempts, 1, "one held input must settle only once after retry");
+            });
+            let mut command = home.command();
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::resume_tui(command);
+            terminal.until("test / model");
+            terminal.write(b"steer once\r");
+            terminal.until("Queue (1)");
+            if matches!(shortcut, "panel" | "delete") {
+                terminal.write(b"/queue\r");
+                terminal.until("awaiting application");
+            }
+            let key: &[u8] = match shortcut {
+                "ctrl-s" => b"\x13",
+                "delete" => b"x",
+                "recall" => b"\x1b[1;2D",
+                _ => b"\r",
+            };
+            terminal.write(key);
+            terminal.until("queue control blocked");
+            terminal.write(&key.repeat(8));
+            if shortcut == "delete" {
+                terminal.write(b"\r\r\r\r");
+            }
+            if matches!(shortcut, "panel" | "delete") {
+                terminal.write(b"\x1b");
+                terminal.until("/queue manage");
+            }
+            terminal.until_anywhere("already left the queue");
+            if shortcut == "recall" {
+                terminal.until_row(if fullscreen { "│" } else { "›" }, "steer once");
+                terminal.write(b"\r");
+            } else {
+                terminal.write(b"steer once\r");
+            }
+            terminal.until("queue controls settled");
+            if !fullscreen {
+                assert_eq!(
+                    strip_ansi(&terminal.transcript)
+                        .matches("already left the queue")
+                        .count(),
+                    1,
+                    "{shortcut}: suppressed controls report only once"
+                );
+            }
+            home.kill(&terminal);
+            terminal.wait();
+            daemon.join().unwrap();
+        }
     }
 }
 
@@ -9788,6 +10094,72 @@ fn tui_reports_the_run_state_to_the_terminal_and_clears_it_on_exit() {
     daemon.join().unwrap();
 }
 
+/// A terminal that answers the startup probe's `OSC 7501` query keeps the
+/// record of the run itself, so the interface sends only the record: the
+/// title stops carrying a mark and the progress bar (OSC 9;4) is not drawn.
+#[test]
+fn tui_yields_the_title_and_the_bar_to_a_terminal_that_keeps_the_record() {
+    let report = |pairs: &str| format!("\x1b]7501;{pairs}\x1b\\");
+    let home = Home::new();
+    let (running, wait_running) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let submit = wire.read("session.submit");
+        assert_eq!(submit["params"]["text"], "inspect");
+        wire.reply(&submit, json!({"event":{}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"in-1","sequence":9,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"inspect"}]},"mode":"queue"}}}));
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"ap-1","sequence":10,"create_at":1,"type":"input","name":"applied","data":{"input_id":"in-1","mode":"queue"}}}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":true}));
+        wait_running.recv_timeout(PATIENCE).unwrap();
+        wire.end(json!({"turn_id":"turn","status":"completed","reason":"done"}));
+        wire.notice("session.state", json!({"sessionId":"session","branchId":"main","running":false}));
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command
+        .env("TERM_PROGRAM", "ghostty")
+        .env("TERM", "xterm-ghostty");
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("\x1b]11;?\x07\x1b]7501;?\x1b\\");
+    terminal
+        .raw(b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question\x1b\\");
+    terminal.raw(b"\x1b[?1;2c");
+    terminal.until(&report("state=idle:app=dim"));
+    terminal.until("test / model");
+    let records = terminal.transcript.len();
+    terminal.write(b"inspect\r");
+    terminal.until(&report("state=working:app=dim"));
+    terminal.until("\x1b]0;DIM | inspect\x07");
+    running.send(()).unwrap();
+    terminal.until(&report("state=done:app=dim"));
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    let after = &terminal.transcript[records..];
+    assert!(
+        !after.contains("\x1b]0;◐")
+            && !after.contains("\x1b]0;◓")
+            && !after.contains("\x1b]0;● DIM"),
+        "a terminal that keeps the record must get no mark in the title: {after}"
+    );
+    assert!(
+        !after.contains("\x1b]9;4;"),
+        "a terminal that keeps the record must get no bar: {after}"
+    );
+    assert!(after.contains("\x1b]7501;state=working"), "{after}");
+}
+
 /// The composer's status corner shows the main branch's context use against
 /// its window once attached, and reads it again when a run on main ends, in
 /// both interface modes.
@@ -10301,6 +10673,221 @@ fn tui_rebuilds_compaction_rows_from_history_on_resume() {
     assert!(!terminal.transcript.contains("End of recorded background."));
 }
 
+/// #1380: context a prompt hook appended to the operator's message is not
+/// their words. The row carries what they sent, and the hook's block becomes
+/// one muted row naming its size, `▸` closed; its body opens with the detail
+/// setting, `/tools`, exactly as a compaction body does.
+#[test]
+fn tui_draws_a_prompt_hooks_context_as_a_status_row() {
+    let home = Home::new();
+    let operator = "why does the parser stall?";
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"hooked","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":operator},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nSEARCH-MEMORY-FIRST\nis required here\n(third line)\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"hooked-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"hooked","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until(operator);
+    terminal.until("Hook context · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("<dim-hooks"),
+        "the marker is the model's, not the transcript's:\n{}",
+        terminal.transcript
+    );
+    assert!(
+        !terminal.transcript.contains("SEARCH-MEMORY-FIRST"),
+        "a closed hook context keeps its body out of the transcript:\n{}",
+        terminal.transcript
+    );
+    // The detail setting opens the body, as it does for a compaction's summary.
+    terminal.write(b"/tools\r");
+    terminal.until("Hook context · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("SEARCH-MEMORY-FIRST"),
+        "the summary form keeps the hook body closed:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/tools\r");
+    terminal.until("Hook context · 3 lines ▾");
+    terminal.until("SEARCH-MEMORY-FIRST");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1381: a `Stop` hook's follow-up is one input a turn already ended on, not
+/// a message. The transcript draws one muted row where the input was written,
+/// `▸` closed, and `/tools` opens and closes its body as it does a hook
+/// context's.
+#[test]
+fn tui_draws_a_stop_hooks_follow_up_as_one_row() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"t1","sequence":8,"create_at":1,"type":"turn","name":"start",
+                 "data":{"turn_id":"t1"}},
+                {"id":"r1","sequence":9,"create_at":1,"type":"step","name":"text",
+                 "data":{"request_id":"r1","delta":"done.","turn_id":"t1"}},
+                {"id":"t1-end","sequence":10,"create_at":1,"type":"turn","name":"end",
+                 "data":{"turn_id":"t1","status":"completed","reason":"done"}},
+                {"id":"follow-up","sequence":11,"create_at":1,"type":"input","name":"message",
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\nfix parser::tests\nkeep the diff small\n</dim-hooks>"}],"mode":"queue"}}],
+                "through":11,"nextAfter":11,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    // The row is a settled row, so it commits before the replayed answer's
+    // stream starts: wait for it first or the wait consumes past it.
+    terminal.until("Stop hook follow-up · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("<dim-hooks"),
+        "the marker is the model's, not the transcript's:\n{}",
+        terminal.transcript
+    );
+    for line in ["run the suite", "fix parser::tests", "keep the diff small"] {
+        assert!(
+            !terminal.transcript.contains(line),
+            "a closed follow-up keeps its body out of the transcript:\n{}",
+            terminal.transcript
+        );
+    }
+    // The row is not a message: it wears the muted status mark, not the
+    // operator's, and the message rail and the earlier-history count skip it.
+    assert!(
+        !terminal
+            .transcript
+            .contains("─────────────── resumed session · 1 messages"),
+        "the message count skips a follow-up:\n{}",
+        terminal.transcript
+    );
+    // The detail setting opens the body, as it does for a hook's context.
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▸");
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▾");
+    terminal.until("fix parser::tests");
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▸");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1380: one stored line reads in the singular, so the row never says
+/// `1 lines`.
+#[test]
+fn tui_names_a_one_line_hook_context_in_the_singular() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"one","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[
+                     {"type":"text","text":"translate this"},
+                     {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nONE-LINE-BODY\n</dim-hooks>"}
+                 ]},"mode":"queue"}},
+                {"id":"one-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"one","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("Hook context · 1 line ▸");
+    assert!(
+        !terminal.transcript.contains("1 lines"),
+        "a one-line body is named in the singular:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1380: the first block is always the operator's. A message that opens a
+/// hook marker themselves is drawn as they typed it, and gets no status row.
+#[test]
+fn tui_draws_an_operators_own_hook_marker_verbatim() {
+    let home = Home::new();
+    let typed = "<dim-hooks kind=\"prompt-submit\">typed by hand</dim-hooks>";
+    let daemon = home.daemon(move |wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"typed","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"user":{"content":[{"type":"text","text":typed}]},"mode":"queue"}},
+                {"id":"typed-applied","sequence":10,"create_at":1,"type":"input","name":"applied",
+                 "data":{"input_id":"typed","mode":"queue"}}],
+                "through":10,"nextAfter":10,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("typed by hand");
+    assert!(
+        !terminal.transcript.contains("Hook context"),
+        "a first block is the operator's, so no hook row names it:\n{}",
+        terminal.transcript
+    );
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
 /// `dimcode export` (Timeline export design §7, §13 item 6): the sibling
 /// App Server's read-only export, live and after stop, without a daemon.
 #[test]
@@ -10714,6 +11301,159 @@ fn tui_models_picker_cycles_reasoning_effort() {
         json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model",
             "modelPreferences":{"reasoningEffort":"none","serviceTier":"priority"}})
     );
+}
+
+/// `/models` Enter writes the default the next Session in the launch workspace
+/// reads: the folder's own row when it has one, else `global`, with each
+/// write's version read from `provider.selection` for the same scope. The
+/// notice names the scope. The attached Session reports a workspace of its
+/// own, which the write must ignore.
+#[test]
+fn tui_models_picker_writes_the_default_the_launch_workspace_reads() {
+    for workspace_default in [true, false] {
+        let home = Home::new();
+        // Short enough that the notice stays on one transcript row at the
+        // default width, so the assertion can name the whole line.
+        let project = std::path::PathBuf::from("/tmp").join(format!(
+            "d-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..6]
+        ));
+        fs::create_dir_all(&project).unwrap();
+        let launch = project.canonicalize().unwrap();
+        let (calls, observed) = std::sync::mpsc::channel::<Value>();
+        let folder = launch.to_str().unwrap().to_owned();
+        let served = folder.clone();
+        let daemon = home.daemon(move |wire| {
+            wire.2 = true;
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                if wire.2 && wire.empty_state(&request) { continue; }
+                calls.send(request.clone()).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,
+                        "daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods",
+                        "provider.list","provider.catalog","provider.selection","provider.select"]}),
+                    "session.create" => panic!("resuming must not create a Session"),
+                    "session.attach" => attach_record(&request),
+                    "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                    "session.idle" => json!({"sequence":8}),
+                    "provider.list" => json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
+                    "provider.catalog" => json!({"catalog":{"version":1,"disabledModelIds":[],"models":[
+                        {"id":"model","name":"Model","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
+                    // The folder answers only the launch workspace: the
+                    // attached Session's `/workspace` has no row either.
+                    "provider.selection" => match request["params"]["cwd"].as_str() {
+                        Some(cwd) if workspace_default && cwd == served => {
+                            json!({"selection":{"provider_id":"test","model_id":"other","version":7}})
+                        }
+                        Some(_) => json!({"selection":null}),
+                        None => json!({"selection":{"provider_id":"test","model_id":"other","version":3}}),
+                    },
+                    "session.model.update" => json!({"model":{"providerId":"test","modelId":"model"}}),
+                    "provider.select" => json!({}),
+                    "account.providers" => json!([]),
+                    _ => json!({}),
+                };
+                wire.reply(&request, result);
+            }
+        });
+        let mut command = home.command();
+        command.args(["--cwd", &folder]);
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        terminal.write(b"/models\r");
+        terminal.until("Test / model");
+        terminal.write(b"\r");
+        // The write itself, before the notice: a wrong scope fails here.
+        let written = loop {
+            let call = observed
+                .recv_timeout(PATIENCE)
+                .expect("the default was written");
+            if call["method"] == "provider.select" {
+                break call["params"].clone();
+            }
+        };
+        assert_eq!(
+            written,
+            if workspace_default {
+                json!({"cwd":folder,"providerId":"test","modelId":"model","expectedVersion":7})
+            } else {
+                json!({"providerId":"test","modelId":"model","expectedVersion":3})
+            },
+            "workspace default: {workspace_default}"
+        );
+        let expected = if workspace_default {
+            format!("Default for new sessions in {folder}: Test / model")
+        } else {
+            "Default for new sessions: Test / model".to_owned()
+        };
+        terminal.until(&expected);
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        let _ = fs::remove_dir_all(&project);
+        let calls: Vec<Value> = observed.try_iter().collect();
+        assert!(
+            calls.iter().all(|call| call["method"] != "provider.select"),
+            "one write only: {calls:?}"
+        );
+    }
+}
+
+/// In a non-English interface the picker draws the translated hint: `t` is
+/// applied where the hint is handed to the list, which does not translate it.
+#[test]
+fn tui_models_picker_draws_its_hint_in_the_interface_language() {
+    let home = Home::new();
+    fs::write(
+        home.0.join("config.json"),
+        json!({"locale":"zh-CN"}).to_string(),
+    )
+    .unwrap();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            line.clear();
+            if wire.2 && wire.empty_state(&request) { continue; }
+            let result = match request["method"].as_str().unwrap() {
+                "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,
+                    "daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods",
+                    "provider.list","provider.catalog","provider.selection","provider.select"]}),
+                "session.create" => panic!("resuming must not create a Session"),
+                "session.attach" => attach_record(&request),
+                "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                "session.idle" => json!({"sequence":8}),
+                "provider.list" => json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
+                "provider.catalog" => json!({"catalog":{"version":1,"disabledModelIds":[],"models":[
+                    {"id":"model","name":"Model","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
+                "account.providers" => json!([]),
+                _ => json!({}),
+            };
+            wire.reply(&request, result);
+        }
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"/models\r");
+    // `key_hints` colours a key apart from its action, so only the action is
+    // contiguous in the drawn transcript.
+    terminal.until("选择并设为默认");
+    let shown = strip_ansi(&terminal.transcript);
+    assert!(
+        !shown.contains("Enter select + default"),
+        "the English hint was drawn: {shown}"
+    );
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("再见！");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
 }
 
 /// `/models` sends `provider.refresh` for a usable provider whose catalog is

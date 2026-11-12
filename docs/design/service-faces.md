@@ -146,6 +146,7 @@ catalog 现在 118 个名字：25 data、91 internal、2 shared-no-dispatcher；
 | `modelProvider` | branch | ModelProvider | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextPreparation` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
+| `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；公开统计经 `session.context.usage` 读取 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |

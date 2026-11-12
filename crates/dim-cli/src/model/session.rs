@@ -159,7 +159,11 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
-    ErrorReport(crate::report::Request),
+    Report(crate::report::Request),
+    CompactionDetails {
+        projection_id: u64,
+        targets: std::collections::BTreeSet<crate::model::view::CompactionTarget>,
+    },
     Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft(Vec<DraftPart>, SubmitMode),
@@ -260,6 +264,11 @@ pub enum Command {
     },
     /// Start a fresh session in the same directory.
     NewSession,
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// Switch to a stored session.
     Resume(String),
     /// Find the launch workspace's repository worktrees, once per picker open.
@@ -392,11 +401,13 @@ pub enum Command {
     /// A configuration command line (`/effort high`, `/agent`, ...).
     Configure(String),
     /// Make `(provider, model)` the default and the active session's model.
-    /// `reasoning_effort` is set when the picker cycled that model's effort.
+    /// `reasoning_effort` is set when the picker cycled that model's effort;
+    /// `label` is the row's text the default's confirmation names back.
     SelectModel {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        label: String,
     },
     /// Read the subagent model policy and its revision.
     ReadModelPolicy,
@@ -1131,6 +1142,41 @@ pub enum RenameReply {
     Failed(String),
 }
 
+/// A `session.delete` reply as `/resume` reports it: what became of the row
+/// the picker pinned when the key was pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteReply {
+    pub session_id: String,
+    /// The row's name: its stored title, else its first words, else its id,
+    /// without the origin tag the picker draws beside it.
+    pub name: String,
+    pub outcome: DeleteOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// This call removed the rows: the row leaves the picker.
+    Deleted,
+    /// The store held no rows of the id, so nothing was removed: the row
+    /// stays and the list is read again.
+    NothingRemoved,
+    /// The daemon offers no `session.delete`.
+    Unsupported,
+    /// The close ran but the removal failed: the rows stay, and this daemon
+    /// neither lists nor loads the Session again.
+    ClosedNotRemoved(String),
+    /// The call failed before any close: the row and the attachment stand.
+    Failed(String),
+}
+
+impl DeleteOutcome {
+    /// Whether the call ended the Session in this daemon, so a picker showing
+    /// that Session leaves for Home.
+    pub fn ends_session(&self) -> bool {
+        matches!(self, Self::Deleted | Self::ClosedNotRemoved(_))
+    }
+}
+
 #[allow(dead_code)]
 pub enum Update {
     Reportable {
@@ -1188,6 +1234,11 @@ pub enum Update {
     Switched {
         session_id: String,
         kind: SwitchKind,
+        /// The workspace the Session works in, as the daemon reported it
+        /// when the Session was attached: a resumed Session may live outside
+        /// the directory this client was started in. `None` for Home, and for
+        /// a daemon older than the attach record.
+        cwd: Option<String>,
     },
     /// The Session's Skills as the palette lists them: enabled and not
     /// shadowed. An empty list when the daemon has no catalog.
@@ -1202,6 +1253,13 @@ pub enum Update {
     /// workspace and the same relative directory in every worktree of its git
     /// repository, found once per picker open. The set may hold one entry.
     RepositoryWorkspaces(Vec<String>),
+    /// The default a `/models` selection wrote: the folder whose workspace
+    /// scope it wrote, or `None` when it wrote the global one, and the row's
+    /// own label. The interface names the scope; it owns the display form.
+    ModelDefault {
+        folder: Option<String>,
+        model: String,
+    },
     /// A command failed without ending the session.
     Notice(String),
     /// A submission could not be sent because no Session could be started
@@ -1294,6 +1352,8 @@ pub enum Update {
     Compacted(CompactReply),
     /// What a `/rename` came to, localized by the interface.
     Renamed(RenameReply),
+    /// What a `/resume` delete came to, localized by the interface.
+    Deleted(DeleteReply),
     /// Progress of the sign-in tagged `attempt`.
     Oauth {
         attempt: u64,

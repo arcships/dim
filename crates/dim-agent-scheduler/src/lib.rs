@@ -35,33 +35,29 @@ pub use wakeups::Wakeups;
 
 /// Installs the scheduler as an optional feature: the process owner and the
 /// `schedule` tool. Neither is required, so a host without the App Server
-/// services it needs (settings, pluginFiles, managementMethods and
-/// sessionPermissions and sessions), or with an unreadable run store, still starts and
-/// opens Sessions; only `schedule.*` and the tool are unavailable.
+/// services it needs (settings, pluginFiles, managementMethods and sessions),
+/// or with an unreadable run store, still starts and opens Sessions; only
+/// `schedule.*` and the tool are unavailable.
 pub fn install(builder: &mut AgentBuilder) {
     install_with(builder, SchedulerTexts::default()).expect("the built-in texts are valid");
 }
 
 /// The policy texts a profile may replace (design §5.1): the `schedule`
-/// declaration's description and the report's guidance line.
+/// declaration's description.
 #[derive(Clone, Debug)]
 pub struct SchedulerTexts {
     pub description: String,
-    pub report_guidance: String,
 }
 
 impl Default for SchedulerTexts {
     fn default() -> Self {
         Self {
             description: session::DESCRIPTION.into(),
-            report_guidance: engine::REPORT_GUIDANCE.into(),
         }
     }
 }
 
-/// [`install`] with `texts` in force. A `report_guidance` with a line break
-/// is refused, since the guide entry tells the model the report's last line
-/// is guidance.
+/// [`install`] with `texts` in force.
 pub fn install_with(builder: &mut AgentBuilder, texts: SchedulerTexts) -> Result<(), String> {
     install_inner(builder, texts, SchedulerPlugin::new)
 }
@@ -89,18 +85,11 @@ fn install_inner(
     + Sync
     + 'static,
 ) -> Result<(), String> {
-    let texts = checked(texts)?;
+    let texts = std::sync::Arc::new(texts);
     dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
     dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
     builder.optional_plugin(move |names| {
         Ok(Box::new(make(names, texts.clone())?) as Box<dyn DynPlugin>)
     });
     Ok(())
-}
-
-fn checked(texts: SchedulerTexts) -> Result<std::sync::Arc<SchedulerTexts>, String> {
-    if texts.report_guidance.contains(['\n', '\r']) {
-        return Err("Scheduler report_guidance must be one line".into());
-    }
-    Ok(std::sync::Arc::new(texts))
 }

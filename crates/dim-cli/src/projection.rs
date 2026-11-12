@@ -12,16 +12,16 @@ use dim_agent_types::{
     CollaborationOutcome, CollaborationTarget, ContentBlock, ContextCompactionResult, ExecStatus,
     InputMode, InsufficientSpacePartName, JsonObject, Message, MessageContent, MessagePart,
     ModelFailure, ModelFailureKind, ModelOutputOutcome, ReplacementParts, ToolContent, ToolResult,
-    TurnOutcome, UserInput,
+    TurnOutcome, UserInput, markup,
 };
 use serde_json::Value;
 
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    ApprovalView, CompactionPart, CompactionPartSize, CompactionState, CompactionView,
-    FailureDetail, LineCut, LineState, LineView, MemberCard, MemberConversationState, MemberTarget,
-    QueuedInput, RetryView, RowKind, RowTone, TaskFinish, TaskKind, TaskTarget, TaskView, TurnEnd,
-    ViewRow, ViewSnapshot, WorkflowView,
+    ApprovalView, CompactionDetail, CompactionDetailState, CompactionPart, CompactionPartSize,
+    CompactionState, CompactionView, FailureDetail, LineCut, LineState, LineView, MemberCard,
+    MemberConversationState, MemberTarget, QueuedInput, RetryView, RowKind, RowTone, TaskFinish,
+    TaskKind, TaskOutcome, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -183,7 +183,18 @@ impl Projection {
         }
     }
 
+    /// Applies an event the live stream carried.
     pub fn apply(&mut self, branch_id: &str, event: &Event) {
+        self.fold(branch_id, event, false);
+    }
+
+    /// Applies an event a read replayed from recorded history: a task it ends
+    /// had already ended before this interface attached.
+    pub fn replay(&mut self, branch_id: &str, event: &Event) {
+        self.fold(branch_id, event, true);
+    }
+
+    fn fold(&mut self, branch_id: &str, event: &Event, replayed: bool) {
         match &event.content {
             EventContent::ToolCall(data) => {
                 self.questions
@@ -267,6 +278,11 @@ impl Projection {
                     ShellRun::parse(text).is_some().then(|| text.clone())
                 }) {
                     self.push(format!("user-{sequence}"), RowKind::Shell, text);
+                } else if let Some(body) = data.blocks.iter().find_map(|block| {
+                    let dim_agent_types::InputBlock::Raw { text, .. } = block;
+                    hook_follow_up(text)
+                }) {
+                    self.push(format!("follow-up-{sequence}"), RowKind::HookFollowUp, body);
                 } else if let Some(row) = data.blocks.iter().find_map(|block| {
                     let dim_agent_types::InputBlock::Raw { text, .. } = block;
                     branch_notice(text, data.mode)
@@ -351,8 +367,12 @@ impl Projection {
                             ExecStatus::Failed => "Failed",
                             ExecStatus::Cancelled => "Cancelled",
                         },
-                        failed: data.status == ExecStatus::Failed
-                            || data.result.is_error == Some(true),
+                        outcome: match data.status {
+                            ExecStatus::Completed => TaskOutcome::Completed,
+                            ExecStatus::Failed => TaskOutcome::Failed,
+                            ExecStatus::Cancelled => TaskOutcome::Stopped,
+                        },
+                        replayed,
                         text: result_text(&data.result),
                         exit_code: data
                             .result
@@ -385,22 +405,29 @@ impl Projection {
                 self.delegation_started(branch_id, data, &event.id, event.create_at)
             }
             EventContent::CollaborationDelivered(data) => {
-                self.delegation_delivered(branch_id, data, event.create_at)
+                self.delegation_delivered(branch_id, data, event.create_at, replayed)
             }
             EventContent::CollaborationResult(data) => {
-                let (status, failed, text) = match &data.outcome {
-                    CollaborationOutcome::Completed => ("Completed", false, data.text.clone()),
-                    CollaborationOutcome::Failed { reason } => {
-                        ("Failed", true, format!("{reason}\n{}", data.text))
+                let (status, outcome, text) = match &data.outcome {
+                    CollaborationOutcome::Completed => {
+                        ("Completed", TaskOutcome::Completed, data.text.clone())
                     }
-                    CollaborationOutcome::Cancelled { reason } => {
-                        ("Cancelled", false, format!("{reason}\n{}", data.text))
-                    }
+                    CollaborationOutcome::Failed { reason } => (
+                        "Failed",
+                        TaskOutcome::Failed,
+                        format!("{reason}\n{}", data.text),
+                    ),
+                    CollaborationOutcome::Cancelled { reason } => (
+                        "Cancelled",
+                        TaskOutcome::Stopped,
+                        format!("{reason}\n{}", data.text),
+                    ),
                 };
                 let finish = TaskFinish {
                     at: event.create_at,
                     status,
-                    failed,
+                    outcome,
+                    replayed,
                     text,
                     exit_code: None,
                 };
@@ -451,7 +478,10 @@ impl Projection {
                 let row = self.row(index);
                 row.text = text;
                 if first {
-                    row.row_id = format!("thinking-{}", event.id);
+                    row.provisional_id = Some(std::mem::replace(
+                        &mut row.row_id,
+                        format!("thinking-{}", event.id),
+                    ));
                 }
             }
             EventContent::Text(data) => {
@@ -512,25 +542,31 @@ impl Projection {
                     String::new(),
                 );
                 self.row(index).compaction = Some(CompactionView {
+                    detail: None,
                     state: CompactionState::Running,
-                    text: String::new(),
+                    text: String::new().into(),
                     insufficient: Vec::new(),
                 });
                 self.compaction_rows.insert(sequence, index);
             }
             EventContent::Compaction(data) => {
-                let index = match data
-                    .start
-                    .and_then(|start| self.compaction_rows.remove(&start))
-                {
-                    Some(index) => index,
-                    None => self.push(
-                        format!("compaction-{sequence}"),
-                        RowKind::Compaction,
-                        String::new(),
-                    ),
-                };
-                self.row(index).compaction = Some(compaction_view(&data.outcome));
+                self.finish_compaction(sequence, data.start, compaction_view(&data.outcome));
+            }
+            EventContent::CompactionSummary(data) => {
+                self.finish_compaction(
+                    sequence,
+                    data.start,
+                    CompactionView {
+                        state: CompactionState::Completed,
+                        detail: Some(CompactionDetail {
+                            event_id: event.id.clone(),
+                            sequence,
+                            state: CompactionDetailState::Unloaded,
+                        }),
+                        text: String::new().into(),
+                        insufficient: compaction_sizes(data.insufficient_space.as_ref()),
+                    },
+                );
             }
             EventContent::ModelEnd(data) => {
                 self.thinking_characters.remove(&data.request_id);
@@ -645,20 +681,31 @@ impl Projection {
     /// It cuts just before `submitted`, where its input was written, even
     /// when it enters the transcript later (timeline UI §4.1), and a message
     /// stays pending until the model consumes it (§4.8).
+    ///
+    /// The row carries the operator's words. Context a capability appended
+    /// after them is not theirs, so each `dim-hooks` block becomes its own row
+    /// right after this one (`crates/dim-agent-types/src/markup.rs`). Each
+    /// names this row as its parent, so whatever settles the message settles
+    /// them and they never commit it on their own.
     fn push_user(&mut self, input_id: &str, sequence: u64, submitted: u64, user: &UserInput) {
-        let text = text_of(&user.content);
+        let text = user_text(&user.content);
         let kind = if ShellRun::parse(&text).is_some() {
             RowKind::Shell
         } else {
             RowKind::UserMessage
         };
         let index = self.push(format!("user-{sequence}"), kind, text);
+        let row_id = self.rows[index].row_id.clone();
         let row = self.row(index);
         row.cut = Some(submitted.saturating_sub(1));
         row.display = user_display(&user.content);
         row.pending = kind == RowKind::UserMessage;
         if row.pending {
             self.input_rows.insert(input_id.to_owned(), index);
+        }
+        for (at, body) in hook_contexts(&user.content).into_iter().enumerate() {
+            let hook = self.push(format!("hook-{sequence}-{at}"), RowKind::HookContext, body);
+            self.row(hook).parent_row = Some(row_id.clone());
         }
     }
 
@@ -745,11 +792,10 @@ impl Projection {
                 let user = input.user.as_ref()?;
                 Some(QueuedInput {
                     id: input.input_id.clone(),
-                    text: text_of(&user.content),
+                    text: user_text(&user.content),
                     display: user_display(&user.content),
                     held: !input.applied,
-                    recallable: !input.applied
-                        && matches!(user.content.as_slice(), [ContentBlock::Text { .. }]),
+                    recallable: !input.applied && recallable(&user.content),
                 })
             })
             .collect();
@@ -868,6 +914,7 @@ impl Projection {
         branch_id: &str,
         data: &dim_agent_types::CollaborationDeliveredData,
         started_at: u64,
+        replayed: bool,
     ) {
         let starting = |task: &TaskView| {
             task.branch_id == branch_id
@@ -891,7 +938,8 @@ impl Projection {
                 task.finished = Some(TaskFinish {
                     at: started_at,
                     status: "Failed",
-                    failed: true,
+                    outcome: TaskOutcome::Failed,
+                    replayed,
                     text: serde_json::to_value(error)
                         .expect("typed delivery error serializes")
                         .as_str()
@@ -927,6 +975,13 @@ impl Projection {
     }
 
     pub fn pending_exec(&mut self, branch: &str, task: &dim_agent_types::PendingExec) {
+        if self
+            .tasks
+            .iter()
+            .any(|known| known.branch_id == branch && known.id == task.event_id)
+        {
+            return;
+        }
         let target = TaskTarget {
             branch_id: branch.into(),
             task_id: task.task_id.clone(),
@@ -1191,20 +1246,22 @@ impl Projection {
         })
     }
 
-    /// Adopts a stored run of this Session from `branch_id`.
+    /// Adopts a stored run of this Session from `branch_id`. Every caller
+    /// reads the run's own record, so a run that already ended is history.
     pub fn set_workflow(&mut self, branch_id: &str, run: WorkflowRun) {
         let finished = (!run.state.unfinished()).then(|| {
-            let (status, failed) = match run.state {
-                WorkflowState::Completed => ("Completed", false),
-                WorkflowState::Failed => ("Failed", true),
-                WorkflowState::Stopped => ("Stopped", false),
-                WorkflowState::Interrupted => ("Interrupted", true),
+            let (status, outcome) = match run.state {
+                WorkflowState::Completed => ("Completed", TaskOutcome::Completed),
+                WorkflowState::Failed => ("Failed", TaskOutcome::Failed),
+                WorkflowState::Stopped => ("Stopped", TaskOutcome::Stopped),
+                WorkflowState::Interrupted => ("Interrupted", TaskOutcome::Failed),
                 WorkflowState::Running | WorkflowState::Stopping => unreachable!("terminal"),
             };
             TaskFinish {
                 at: run.ended_at.unwrap_or(run.created_at),
                 status,
-                failed,
+                outcome,
+                replayed: true,
                 text: String::new(),
                 exit_code: None,
             }
@@ -1408,6 +1465,7 @@ impl Projection {
     fn push(&mut self, row_id: String, kind: RowKind, text: String) -> usize {
         self.rows.push(Arc::new(ViewRow {
             row_id,
+            provisional_id: None,
             kind,
             text,
             display: None,
@@ -1429,6 +1487,7 @@ impl Projection {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
             failure: None,
             reportable: false,
@@ -1543,6 +1602,44 @@ impl Projection {
         }
     }
 
+    fn finish_compaction(&mut self, sequence: u64, start: Option<u64>, view: CompactionView) {
+        let index = match start.and_then(|start| self.compaction_rows.remove(&start)) {
+            Some(index) => index,
+            None => self.push(
+                format!("compaction-{sequence}"),
+                RowKind::Compaction,
+                String::new(),
+            ),
+        };
+        self.row(index).compaction = Some(view);
+    }
+
+    pub fn compaction_detail(
+        &mut self,
+        event_id: &str,
+        sequence: u64,
+        state: CompactionDetailState,
+        data: Option<&dim_agent_types::ContextCompactionData>,
+    ) -> bool {
+        let Some(index) = self.rows.iter().position(|row| {
+            row.compaction
+                .as_ref()
+                .and_then(|view| view.detail.as_ref())
+                .is_some_and(|detail| detail.event_id == event_id && detail.sequence == sequence)
+        }) else {
+            return false;
+        };
+        let view = self.row(index).compaction.as_mut().expect("compaction row");
+        if let Some(data) = data {
+            let loaded = compaction_view(&data.outcome);
+            view.text = loaded.text;
+        } else {
+            view.text = "".into();
+        }
+        view.detail.as_mut().expect("detail identity").state = state;
+        true
+    }
+
     fn complete_tool(
         &mut self,
         request_id: &str,
@@ -1598,20 +1695,7 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
             ..
         } => {
             let text = replacement_text(replacement, *replacement_parts);
-            let insufficient = diagnostics
-                .insufficient_space
-                .as_ref()
-                .map(|space| {
-                    space
-                        .parts
-                        .iter()
-                        .map(|part| CompactionPartSize {
-                            part: compaction_part(part.part),
-                            tokens: part.tokens,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let insufficient = compaction_sizes(diagnostics.insufficient_space.as_ref());
             (CompactionState::Completed, text, insufficient)
         }
         ContextCompactionResult::Skipped { reason, .. } => {
@@ -1625,10 +1709,22 @@ fn compaction_view(outcome: &ContextCompactionResult) -> CompactionView {
         }
     };
     CompactionView {
+        detail: None,
         state,
-        text,
+        text: text.into(),
         insufficient,
     }
+}
+
+fn compaction_sizes(space: Option<&dim_agent_types::InsufficientSpace>) -> Vec<CompactionPartSize> {
+    space
+        .into_iter()
+        .flat_map(|space| &space.parts)
+        .map(|part| CompactionPartSize {
+            part: compaction_part(part.part),
+            tokens: part.tokens,
+        })
+        .collect()
 }
 
 /// A part of the insufficient-space mark, as this client names it.
@@ -1678,6 +1774,30 @@ pub(crate) fn result_text(result: &ToolResult) -> String {
         ToolContent::Text(text) => text.clone(),
         ToolContent::Blocks(blocks) => text_of(blocks),
     }
+}
+
+/// The body of a `Stop` follow-up: the input a hook wrote to continue the
+/// conversation. Any other element and any other hook kind writes no row.
+///
+/// The body is stored escaped, as every runtime block's is, and is unescaped
+/// here for the row that draws it.
+///
+/// The attribute search stops at the opening tag's `>` on purpose: a hook's
+/// body escapes `<` and `>` but not `"`, so its text can hold a literal
+/// `kind="follow-up"` and must not answer for the marker.
+///
+/// One follow-up input carries one block: Hooks writes it in `Branch::stop`
+/// (`hooks/runner.rs`), one Queue input per round from
+/// `vec![raw(follow_up, None)]`. Both callers take the first match, so a
+/// second writer has to keep that shape or change this reader.
+fn hook_follow_up(text: &str) -> Option<String> {
+    if markup::element(text)? != "dim-hooks" {
+        return None;
+    }
+    let open = text.strip_prefix("<dim-hooks")?;
+    let attributes = open.split_once('>')?.0;
+    (attr(attributes, "kind")? == "follow-up")
+        .then(|| unescape(&element_body(text, "</dim-hooks>")))
 }
 
 fn branch_notice(text: &str, mode: Option<InputMode>) -> Option<String> {
@@ -1731,11 +1851,33 @@ fn one_line(text: &str) -> String {
 /// The marker a loaded Skill block starts with (Skills §9).
 const SKILL_BLOCK: &str = "<dim-skill name=\"";
 
+/// The text of `blocks` verbatim, one block per line. For the model's own
+/// text — a tool result, a provider message — where a marker is part of what
+/// it said (`<dim-hooks …>` in a tool result stays as written).
 fn text_of(blocks: &[ContentBlock]) -> String {
     blocks
         .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Image { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The operator's own words of a message: its text blocks, without the runtime
+/// context a capability appended after them
+/// (`crates/dim-agent-types/src/markup.rs`). The first block is always theirs.
+/// A later block that opens any of the vocabulary's names is not theirs; only
+/// `dim-hooks` and `dim-skill` have a row of their own.
+pub(crate) fn user_text(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
         .enumerate()
-        .filter(|(index, block)| loaded_skill(*index, block).is_none())
+        .filter(|(index, block)| match block {
+            ContentBlock::Text { text } => !markup::runtime_context(*index, text),
+            ContentBlock::Image { .. } => true,
+        })
         .filter_map(|(_, block)| match block {
             ContentBlock::Text { text } => Some(text.as_str()),
             ContentBlock::Image { .. } => None,
@@ -1744,16 +1886,109 @@ fn text_of(blocks: &[ContentBlock]) -> String {
         .join("\n")
 }
 
-/// The Skill a loaded block names: a text block after the first that starts
-/// with the marker carries a Skill's instructions, which are shown as one
-/// line instead.
-fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
-    if index == 0 {
-        return None;
+/// The body of each hook context a message carries, in order, unescaped: the
+/// producers store it escaped, and the row draws the hook's own words.
+pub(crate) fn hook_contexts(blocks: &[ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| {
+            let ContentBlock::Text { text } = block else {
+                return None;
+            };
+            (markup::runtime_element(index, text) == Some("dim-hooks"))
+                .then(|| unescape(&element_body(text, "</dim-hooks>")))
+        })
+        .collect()
+}
+
+/// The one line the plain log prints for an input no operator wrote: a
+/// `Stop` follow-up's label. Every other raw block stays silent there, as it
+/// always has, because the log has no disclosure to open the body behind.
+pub(crate) fn raw_input_line(blocks: &[dim_agent_types::InputBlock]) -> Option<String> {
+    blocks.iter().find_map(|block| {
+        let dim_agent_types::InputBlock::Raw { text, .. } = block;
+        let body = hook_follow_up(text)?;
+        Some(hook_follow_up_label(body.trim().lines().count().max(1)))
+    })
+}
+
+/// The one line that names a loaded Skill, in the interface language: the
+/// message's presentation and the plain log both say it.
+pub(crate) fn skill_loaded_label(name: &str) -> String {
+    crate::ui::i18n::tf("Skill loaded: {name}", &[("name", name)])
+}
+
+/// The text of each message block the log prints after the operator's words, in
+/// the order the content has them: one line per loaded Skill, then a hook's
+/// context as the row names it. `None` for the words, which the `> ` record has.
+pub(crate) fn context_lines(blocks: &[ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, block)| match block {
+            ContentBlock::Text { text } => {
+                if let Some(name) = loaded_skill(index, block) {
+                    Some(skill_loaded_label(&name))
+                } else if markup::runtime_element(index, text) == Some("dim-hooks") {
+                    let body = element_body(text, "</dim-hooks>");
+                    Some(hook_context_label(body.trim().lines().count().max(1)))
+                } else {
+                    None
+                }
+            }
+            ContentBlock::Image { .. } => None,
+        })
+        .collect()
+}
+
+/// The one line that names a hook's context, in the interface language: the
+/// TUI row and the plain log both say it. `lines` is the stored line count of
+/// the body, which is one for a paragraph the terminal will wrap.
+pub(crate) fn hook_context_label(lines: usize) -> String {
+    match lines {
+        1 => crate::ui::i18n::tf("Hook context · {count} line", &[("count", "1")]),
+        count => crate::ui::i18n::tf(
+            "Hook context · {count} lines",
+            &[("count", &count.to_string())],
+        ),
     }
+}
+
+/// The one line that names a `Stop` hook's follow-up, in the interface
+/// language: the TUI row and the plain log both say it. `lines` counts the
+/// stored lines of the body the same way [`hook_context_label`] does.
+pub(crate) fn hook_follow_up_label(lines: usize) -> String {
+    match lines {
+        1 => crate::ui::i18n::tf("Stop hook follow-up · {count} line", &[("count", "1")]),
+        count => crate::ui::i18n::tf(
+            "Stop hook follow-up · {count} lines",
+            &[("count", &count.to_string())],
+        ),
+    }
+}
+
+/// Whether a queued message can go back into the draft by Shift+Left: its own
+/// words first, then only context the runtime appended for the model. An input
+/// with an image or with a second operator text block stays queued, as it did
+/// when the rule was "exactly one text block" — the notice about attachments
+/// depends on that, not on appended context.
+fn recallable(blocks: &[ContentBlock]) -> bool {
+    blocks.iter().enumerate().all(|(index, block)| match block {
+        ContentBlock::Text { text } => index == 0 || markup::runtime_context(index, text),
+        ContentBlock::Image { .. } => false,
+    })
+}
+
+/// The Skill a loaded block names: a text block after the first that opens the
+/// Skill element names it, and its instructions are shown as one line instead.
+fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
     let ContentBlock::Text { text } = block else {
         return None;
     };
+    if markup::runtime_element(index, text) != Some("dim-skill") {
+        return None;
+    }
     let rest = text.strip_prefix(SKILL_BLOCK)?;
     let name = rest.split('"').next()?;
     (!name.is_empty()).then(|| {
@@ -1764,8 +1999,8 @@ fn loaded_skill(index: usize, block: &ContentBlock) -> Option<String> {
     })
 }
 
-/// The presentation of an operator message: its text with an image marker per
-/// image and one line per loaded Skill; `None` when its text is the message.
+/// The presentation of an operator message: its words with an image marker per
+/// image and one line per loaded Skill; `None` when its words are the message.
 fn user_display(blocks: &[ContentBlock]) -> Option<String> {
     let mut images = 0;
     let mut skills = Vec::new();
@@ -1774,6 +2009,7 @@ fn user_display(blocks: &[ContentBlock]) -> Option<String> {
         match block {
             ContentBlock::Text { text } => match loaded_skill(index, block) {
                 Some(name) => skills.push(name),
+                None if markup::runtime_context(index, text) => {}
                 None => lines.push(text.clone()),
             },
             ContentBlock::Image { .. } => {
@@ -1787,7 +2023,7 @@ fn user_display(blocks: &[ContentBlock]) -> Option<String> {
     }
     let mut display = lines.join("\n");
     for skill in skills {
-        let line = crate::ui::i18n::tf("Skill loaded: {name}", &[("name", &skill)]);
+        let line = skill_loaded_label(&skill);
         if !display.is_empty() {
             display.push('\n');
         }
@@ -2561,6 +2797,220 @@ mod tests {
         crate::ui::i18n::set(previous);
     }
 
+    /// #1380: a prompt hook's context is not the operator's words. The row
+    /// carries what they sent, the hook's block becomes its own row, and the
+    /// queued form of the same input does not repeat the body.
+    #[test]
+    fn a_hooks_context_is_its_own_row_and_never_the_operators_words() {
+        let hook = "<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\nif a &lt; b &amp;&amp; c &gt; d, keep it short\n</dim-hooks>";
+        let input = serde_json::json!({
+            "id": "hooked", "sequence": 9, "create_at": 1,
+            "type": "input", "name": "message",
+            "data": {"user": {"content": [
+                {"type": "text", "text": "why does the parser stall?"},
+                {"type": "text", "text": hook},
+            ]}, "mode": "queue"},
+        });
+        let applied = serde_json::json!({
+            "id": "hooked-applied", "sequence": 10, "create_at": 1,
+            "type": "input", "name": "applied", "data": {"input_id": "hooked"},
+        });
+        let mut projection = Projection::default();
+        apply(&mut projection, &[input]);
+
+        // While it waits, the queue shows the operator's words only.
+        let queued = projection.snapshot().queued;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].text, "why does the parser stall?");
+        assert_eq!(
+            queued[0].display, None,
+            "the hook's body is not part of the message's presentation"
+        );
+        assert!(
+            queued[0].recallable,
+            "a message a hook added context to can still go back to the draft"
+        );
+
+        apply(&mut projection, &[applied]);
+        let rows = projection.snapshot().rows;
+        assert_eq!(rows[0].kind, RowKind::UserMessage);
+        assert_eq!(rows[0].text, "why does the parser stall?");
+        assert_eq!(rows[1].kind, RowKind::HookContext);
+        assert_eq!(
+            rows[1].text, "read src/parser.rs\nif a < b && c > d, keep it short",
+            "the row draws the hook's words, not their escaped form"
+        );
+        assert_eq!(
+            rows.len(),
+            2,
+            "one hook block is one row, and the message is the other"
+        );
+    }
+
+    /// #1381: three capabilities write a `user`-less input to the same channel
+    /// — a `Stop` follow-up, a `SessionStart` context and a `PostToolUse`
+    /// context — and a Goal continuation travels it too. Only the follow-up
+    /// draws a row, and it is not a message.
+    #[test]
+    fn only_a_follow_up_draws_a_hook_row() {
+        let raw = |sequence: u64, text: &str| {
+            serde_json::json!({
+                "id": format!("raw-{sequence}"), "sequence": sequence, "create_at": 1,
+                "type": "input", "name": "message",
+                "data": {"blocks": [{"type": "raw", "text": text}], "mode": "queue"},
+            })
+        };
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                raw(
+                    1,
+                    "<dim-hooks kind=\"follow-up\">\nrun the suite\nfix parser::tests\nif a &lt; b &gt; c &amp;&amp; d, keep the diff small\n</dim-hooks>",
+                ),
+                raw(
+                    2,
+                    "<dim-hooks kind=\"session-start\">\nthe project's conventions\n</dim-hooks>",
+                ),
+                raw(
+                    3,
+                    "<dim-hooks kind=\"post-tool\" call_id=\"c1\" tool=\"exec\">\nthe command failed\n</dim-hooks>",
+                ),
+                raw(
+                    4,
+                    "<dim-goal kind=\"continuation\" branch=\"main\">\nkeep going\n</dim-goal>",
+                ),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        assert_eq!(
+            rows.len(),
+            1,
+            "one row for four inputs: {:?}",
+            rows.iter().map(|row| &row.text).collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].kind, RowKind::HookFollowUp);
+        assert_eq!(
+            rows[0].text,
+            "run the suite\nfix parser::tests\nif a < b > c && d, keep the diff small",
+            "the row draws the hook's words, not their escaped form"
+        );
+        assert!(
+            !rows[0].kind.is_message(),
+            "a follow-up is not a message: no pick, count or rail reads it"
+        );
+        assert_eq!(rows[0].cut, None, "it carries no cut");
+    }
+
+    /// #1381: an operator message can still be pending when a `Stop` follow-up
+    /// is written after it — `turn/end` and the follow-up write are separated
+    /// by the hook run, and `Hooks.md` only drops the follow-up for an input
+    /// *consumed* before the write. The follow-up then follows timeline UI
+    /// §4.8 like a branch notice: it is a settled row after a pending message,
+    /// and it never joins that message's rows the way a hook context does.
+    #[test]
+    fn a_follow_up_after_a_pending_message_is_its_own_settled_row() {
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                serde_json::json!({
+                    "id": "spoken", "sequence": 1, "create_at": 1,
+                    "type": "input", "name": "message",
+                    "data": {"user": {"content": [
+                        {"type": "text", "text": "still there?"},
+                        {"type": "text", "text": "<dim-hooks kind=\"prompt-submit\">\nread the briefing\n</dim-hooks>"},
+                    ]}, "mode": "queue"},
+                }),
+                serde_json::json!({
+                    "id": "spoken-applied", "sequence": 2, "create_at": 1,
+                    "type": "input", "name": "applied",
+                    "data": {"input_id": "spoken", "mode": "queue"},
+                }),
+                serde_json::json!({
+                    "id": "follow-up", "sequence": 3, "create_at": 1,
+                    "type": "input", "name": "message",
+                    "data": {"blocks": [{"type": "raw", "text":
+                        "<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],
+                        "mode": "queue"},
+                }),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        let kinds: Vec<RowKind> = rows.iter().map(|row| row.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                RowKind::UserMessage,
+                RowKind::HookContext,
+                RowKind::HookFollowUp
+            ],
+            "the pending message, its hook context, then the later follow-up"
+        );
+        assert!(rows[0].pending, "the message is still unread");
+        assert_eq!(
+            rows[1].parent_row.as_deref(),
+            Some(rows[0].row_id.as_str()),
+            "a hook context belongs to its message's group"
+        );
+        assert_eq!(
+            rows[2].parent_row, None,
+            "a follow-up belongs to no message: it is a later input, so nothing \
+             that settles that message settles it"
+        );
+        assert!(
+            !rows[2].pending,
+            "a follow-up has no pending state: a raw input cannot be withdrawn \
+             from the queue UI, so its row never changes"
+        );
+    }
+
+    /// The first block is the operator's even when it opens a hook marker, and
+    /// an input carrying their own second text block stays out of the draft as
+    /// it did before, so the attachments notice keeps its meaning.
+    #[test]
+    fn an_operators_own_marker_is_their_words_and_two_blocks_stay_queued() {
+        let input = |id: &str, sequence: u64, content: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "sequence": sequence, "create_at": 1,
+                "type": "input", "name": "message",
+                "data": {"user": {"content": content}, "mode": "queue"},
+            })
+        };
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                input(
+                    "typed",
+                    1,
+                    serde_json::json!([{"type": "text", "text": "<dim-hooks kind=\"prompt-submit\">mine</dim-hooks>"}]),
+                ),
+                input(
+                    "two",
+                    2,
+                    serde_json::json!([
+                        {"type": "text", "text": "first paragraph"},
+                        {"type": "text", "text": "second paragraph"},
+                    ]),
+                ),
+            ],
+        );
+        let queued = projection.snapshot().queued;
+        let typed = queued.iter().find(|input| input.id == "typed").unwrap();
+        assert_eq!(
+            typed.text,
+            "<dim-hooks kind=\"prompt-submit\">mine</dim-hooks>"
+        );
+        assert!(typed.recallable);
+        let two = queued.iter().find(|input| input.id == "two").unwrap();
+        assert_eq!(two.text, "first paragraph\nsecond paragraph");
+        assert!(
+            !two.recallable,
+            "two operator blocks are not what Shift+Left scrolls back"
+        );
+    }
+
     #[test]
     fn a_queued_message_cuts_at_its_submission_and_a_withdrawn_one_is_not_counted() {
         let input = |sequence: u64, id: &str, text: &str, mode: &str| {
@@ -2768,9 +3218,32 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Running,
-                text: String::new(),
+                text: String::new().into(),
                 insufficient: Vec::new(),
+            })
+        );
+        let mut lazy = Projection::default();
+        apply(
+            &mut lazy,
+            &[
+                compaction_start(3),
+                serde_json::json!({"id":"event-4","sequence":4,"create_at":4,
+                "type":"display","name":"compaction","data":{"start":3,"strategy":"summary"}}),
+            ],
+        );
+        let rows = lazy.snapshot().rows;
+        assert_eq!(rows.len(), 1, "the summary settles the same running row");
+        let view = rows[0].compaction.as_ref().unwrap();
+        assert_eq!(view.state, CompactionState::Completed);
+        assert!(view.text.is_empty(), "the body has not been requested");
+        assert_eq!(
+            view.detail,
+            Some(CompactionDetail {
+                event_id: "event-4".into(),
+                state: CompactionDetailState::Unloaded,
+                sequence: 4
             })
         );
 
@@ -2793,6 +3266,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Completed,
                 text: "<dim-summary>\nThe parser is half done.\n</dim-summary>".into(),
                 insufficient: Vec::new(),
@@ -2846,7 +3320,7 @@ mod tests {
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
                 assert_eq!(compaction.state, CompactionState::Completed);
-                compaction.text.as_str()
+                compaction.text.as_ref()
             })
             .collect();
         assert_eq!(summaries, [summary, summary]);
@@ -2893,7 +3367,7 @@ mod tests {
             .iter()
             .map(|row| {
                 let compaction = row.compaction.as_ref().expect("a compaction row");
-                (compaction.state, compaction.text.as_str())
+                (compaction.state, compaction.text.as_ref())
             })
             .collect();
         assert_eq!(
@@ -2925,6 +3399,7 @@ mod tests {
         assert_eq!(
             rows[0].compaction,
             Some(CompactionView {
+                detail: None,
                 state: CompactionState::Failed,
                 text: "context is not configured".into(),
                 insufficient: Vec::new(),
@@ -3149,6 +3624,98 @@ mod tests {
         let rows = projection.snapshot().rows;
         let row = rows.iter().find(|row| row.kind == RowKind::Error).unwrap();
         assert_eq!(row.text, "turn failed: context preparation failed");
+    }
+
+    /// Every end the command owner writes arrives as `exec/ended` with a
+    /// status: a timeout, a kill and a non-zero exit are `failed`, and a stop
+    /// is `cancelled`. The status is authoritative, so a stop stays stopped
+    /// even though `ExecProcess::finish_background` marks its result as an
+    /// error, which is the payload the owner writes.
+    #[test]
+    fn a_timed_out_killed_or_non_zero_exit_task_finishes_failed() {
+        let started = |task: &str| {
+            serde_json::json!({
+                "id": format!("started-{task}"),
+                "sequence": 1,
+                "create_at": 1000,
+                "type": "exec",
+                "name": "started",
+                "data": {
+                    "turn_id": "turn", "request_id": "request",
+                    "call_id": task, "task_id": task,
+                    "description": "cargo build",
+                    "output_path": "/server/private/output",
+                },
+            })
+        };
+        for (task, status, result, outcome) in [
+            (
+                "timed-out",
+                "failed",
+                serde_json::json!({"content": "Command timed out.", "isError": true}),
+                TaskOutcome::Failed,
+            ),
+            (
+                "killed",
+                "failed",
+                serde_json::json!({
+                    "content": "Command terminated with SIGKILL.",
+                    "isError": true,
+                    "structuredContent": {"signal": "SIGKILL"},
+                }),
+                TaskOutcome::Failed,
+            ),
+            (
+                "exit-seven",
+                "failed",
+                serde_json::json!({
+                    "content": "Command failed with exit code 7.",
+                    "isError": true,
+                    "structuredContent": {"exitCode": 7},
+                }),
+                TaskOutcome::Failed,
+            ),
+            (
+                "done",
+                "completed",
+                serde_json::json!({"content": "Command finished."}),
+                TaskOutcome::Completed,
+            ),
+            (
+                "stopped",
+                "cancelled",
+                serde_json::json!({
+                    "content": "Command cancelled by user.",
+                    "isError": true,
+                    "structuredContent": {"signal": "SIGTERM"},
+                }),
+                TaskOutcome::Stopped,
+            ),
+        ] {
+            let mut projection = Projection::default();
+            apply(
+                &mut projection,
+                &[
+                    started(task),
+                    serde_json::json!({
+                        "id": format!("ended-{task}"),
+                        "sequence": 2,
+                        "create_at": 2000,
+                        "type": "exec",
+                        "name": "ended",
+                        "data": {"task_id": task, "status": status, "result": result},
+                    }),
+                ],
+            );
+            let snapshot = projection.snapshot();
+            let finish = snapshot.tasks[0]
+                .finished
+                .as_ref()
+                .expect("a finished task");
+            assert_eq!(finish.outcome, outcome, "{task}: {finish:?}");
+            assert_eq!(finish.at, 2000, "{task}: the end's own time");
+            assert!(!finish.replayed, "{task}: the live stream carried the end");
+        }
     }
 
     #[test]

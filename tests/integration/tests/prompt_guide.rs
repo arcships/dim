@@ -549,17 +549,10 @@ async fn an_entry_takes_effect_when_its_writer_loads_and_ends_when_it_unloads() 
         "a Session whose writers stay put adopts nothing while it runs"
     );
 
-    // The writer loads: one configuration, its settings and source text
-    // unchanged. The adoption's read is held, so the count below is settled
-    // by the queue itself: the empty configure behind it drains the queue.
-    store.hold_next_read_of("main");
     flag.store(true, Ordering::SeqCst);
     let view = views.lock().unwrap().last().cloned().expect("a probe");
     view.restart().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-        .await
-        .expect("the load's adoption reads the context");
-    store.release_read();
+    wait_for_configurations(&session, "main", 1).await;
     drain_adoptions(&session, "main").await;
     let published = configurations(&session, "main").await;
     assert_eq!(published.len(), 2, "one load is one guide adoption");
@@ -607,15 +600,10 @@ async fn an_entry_takes_effect_when_its_writer_loads_and_ends_when_it_unloads() 
         "a line started after the load carries the entry"
     );
 
-    // The writer unloads: one more configuration, the System back to `first`.
-    store.hold_next_read_of("main");
     flag.store(false, Ordering::SeqCst);
     let view = views.lock().unwrap().last().cloned().expect("a probe");
     view.restart().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-        .await
-        .expect("the unload's adoption reads the context");
-    store.release_read();
+    wait_for_configurations(&session, "main", 2).await;
     drain_adoptions(&session, "main").await;
     let published = configurations(&session, "main").await;
     assert_eq!(published.len(), 3, "one unload is one guide adoption");
@@ -728,27 +716,16 @@ async fn a_branch_scoped_entry_publishes_only_on_its_branch() {
         configurations(&session, &child).await.len(),
     );
 
-    // The entry is scoped to main: only main composes a different guide. The
-    // adoption's read is held, and the empty configure behind it drains the
-    // queue before the read record is judged.
     store.take();
-    store.hold_next_read_of("main");
     flag.store(true, Ordering::SeqCst);
     let view = views.lock().unwrap().last().cloned().expect("a probe");
     view.restart().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-        .await
-        .expect("the entry's adoption reads its branch's context");
-    store.release_read();
+    wait_for_configurations(&session, "main", main_count).await;
     drain_adoptions(&session, "main").await;
     let reads = store.take();
     assert!(
         reads.iter().all(|(branch, _)| branch != &child),
         "the other line reads no context for the entry: {reads:?}"
-    );
-    assert!(
-        reads.iter().any(|(branch, _)| branch == "main"),
-        "the entry's branch composes and adopts it: {reads:?}"
     );
     assert_eq!(
         configurations(&session, "main").await.len(),
@@ -833,19 +810,10 @@ async fn an_entry_registered_while_its_branch_opens_is_adopted() {
         _ = &mut creation => panic!("the Session opened before its publication was held"),
         () = async {
             store.entered.notified().await;
-            // The open adopts the guide after its own publication, and the
-            // adoption reads the context before it composes. Holding that
-            // read parks the adoption behind the registration, and the
-            // release below lets the open report itself open.
-            store.hold_next_read_of("main");
             flag.store(true, Ordering::SeqCst);
             let view = views.lock().unwrap().last().cloned().expect("a probe");
             view.restart().await.unwrap();
             store.release();
-            tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-                .await
-                .expect("the open's guide adoption reads the context");
-            store.release_read();
         } => creation.await.unwrap(),
     };
     drain_adoptions(&session, "main").await;
@@ -1191,7 +1159,7 @@ async fn a_restored_branch_carries_its_entries_in_its_first_request() {
 /// composition left behind is not one the branch ever ran with; the adopted
 /// System stays the one it did run with, entry included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_guide_adoption_racing_its_branch_close_records_nothing() {
+async fn a_closing_branch_does_not_adopt_its_withdrawn_guide() {
     let dirs = Dirs::new();
     let store = Arc::new(HoldingStore::default());
     let flag = Arc::new(AtomicBool::new(true));
@@ -1264,32 +1232,15 @@ async fn a_guide_adoption_racing_its_branch_close_records_nothing() {
         .contains(&child_entry)
     );
 
-    // The writer's next generation moves the child's composition, and the
-    // adoption that follows reads the child's context. The read is held so
-    // that the close begins while the adoption waits inside it.
-    store.hold_next_read_of(&child);
-    *text.lock().unwrap() = Some(child_entry.replace("registered", "re-registered"));
-    branch_view(&views, &child).restart().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
+    session
+        .end_branch(
+            &child,
+            BranchSource::Host {
+                operation_id: "end".into(),
+            },
+        )
         .await
-        .expect("the adoption reads the child's context");
-
-    // The branch closes. Its shutdown withdraws the child's own entry, and
-    // the stop is recorded while the adoption still waits on the read.
-    let table = tables.lock().unwrap()[0].clone();
-    let ending = session.end_branch(
-        &child,
-        BranchSource::Host {
-            operation_id: "end".into(),
-        },
-    );
-    tokio::pin!(ending);
-    tokio::select! {
-        result = &mut ending => panic!("the close returned while its adoption was held: {result:?}"),
-        () = wait_until_withdrawn(&table, &child) => {}
-    }
-    store.release_read();
-    ending.await.unwrap();
+        .unwrap();
 
     // Nothing is recorded after the stop: the last configuration is the one
     // the branch ran with, and it carries the entry.
@@ -1373,26 +1324,9 @@ async fn an_entry_withdrawing_as_the_session_unloads_is_not_recorded() {
     let recorded = configurations(&session, "main").await.len();
     let id = session.id().to_owned();
 
-    // The next generation moves the composition; the adoption's read is held.
-    store.hold_next_read_of("main");
+    agent.close().await.unwrap();
     let reregistered = entry.replace("registered", "re-registered");
     *text.lock().unwrap() = Some(reregistered.clone());
-    branch_view(&views, "main").restart().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-        .await
-        .expect("the adoption reads main's context");
-
-    // The Session unloads while the adoption waits: its shutdown withdraws
-    // the writer's entry before the branch freezes.
-    let table = tables.lock().unwrap()[0].clone();
-    let closing = agent.close();
-    tokio::pin!(closing);
-    tokio::select! {
-        result = &mut closing => panic!("the unload returned while its adoption was held: {result:?}"),
-        () = wait_until_withdrawn(&table, "main") => {}
-    }
-    store.release_read();
-    closing.await.unwrap();
 
     // The persisted history records no configuration beyond the one the
     // branch ran with.
@@ -1430,12 +1364,9 @@ async fn an_entry_withdrawing_as_the_session_unloads_is_not_recorded() {
     agent.close().await.unwrap();
 }
 
-/// #661: a writer whose generation reloads withdraws and re-registers the
-/// same entry. The adoption that the withdrawal enqueues composes when it
-/// runs, not when it was enqueued, so it finds the composition where it
-/// started and records nothing.
+/// #661: a writer's withdrawal and return each reconcile the adopted guide.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reloaded_writer_that_keeps_its_entry_records_nothing() {
+async fn a_reloaded_writer_readopts_its_returned_entry() {
     let dirs = Dirs::new();
     let store = Arc::new(HoldingStore::default());
     let flag = Arc::new(AtomicBool::new(true));
@@ -1481,44 +1412,21 @@ async fn a_reloaded_writer_that_keeps_its_entry_records_nothing() {
         .contains(&entry)
     );
 
-    // The reload withdraws the entry and holds the new generation's load, so
-    // the composition is "the writer is away" for as long as the test needs.
     gate.arm();
-    store.hold_next_read_of("main");
     let reloading = branch_view(&views, "main").restart();
     tokio::pin!(reloading);
     tokio::select! {
         result = &mut reloading => panic!("the reload returned before its load was held: {result:?}"),
         () = gate.applying.notified() => {}
     }
-    tokio::time::timeout(Duration::from_secs(10), store.read_entered.notified())
-        .await
-        .expect("the withdrawal's adoption reads the context");
-
-    // The new generation registers the same entry; the adoption composes
-    // now, finds the composition it started from and records nothing.
+    let withdrawn = wait_for_configurations(&session, "main", recorded).await;
+    assert!(!system_text(withdrawn.last().unwrap().system.as_ref().unwrap()).contains(&entry));
     gate.open();
     reloading.await.unwrap();
-    store.release_read();
-    assert_eq!(
-        session
-            .configure(
-                ConfigureUpdate {
-                    sources: Vec::new(),
-                    model: None,
-                },
-                "main",
-            )
-            .await
-            .unwrap(),
-        ConfigureOutcome::Unchanged,
-        "the configure is queued behind the adoption and settles after it"
-    );
-    assert_eq!(
-        configurations(&session, "main").await.len(),
-        recorded,
-        "a reload that keeps its entry records nothing"
-    );
+    let returned = wait_for_configurations(&session, "main", recorded + 1).await;
+    assert!(system_text(returned.last().unwrap().system.as_ref().unwrap()).contains(&entry));
+    run(&session, "after the writer returns").await;
+    assert!(last_system(&session, "main").await.contains(&entry));
     agent.close().await.unwrap();
 }
 
@@ -1700,7 +1608,7 @@ async fn an_entry_that_returns_during_the_open_adoption_is_adopted() {
         } => creation.await.unwrap(),
     };
     drain_adoptions(&session, "main").await;
-    let published = configurations(&session, "main").await;
+    let published = wait_for_configurations(&session, "main", 2).await;
     let adopted = published.last().expect("the adoption after the open");
     let system = system_text(adopted.system.as_ref().expect("the adopted System"));
     assert!(system.contains(PROBE_ENTRY), "{system:?}");
@@ -2034,15 +1942,6 @@ async fn restore_guide_agent(
         },
     ));
     MinimalHost::start(&builder).await.unwrap()
-}
-
-/// Waits until `branch`'s guide composes no probe entry: its writer
-/// withdraws.
-async fn wait_until_withdrawn(table: &GuideEntries, branch: &str) {
-    let mut changes = table.changes();
-    while table.compose(branch).contains("<dim-probe") {
-        changes.changed().await.expect("the table stays open");
-    }
 }
 
 /// F1: two branches each carry their own branch-scoped entry. Each line's

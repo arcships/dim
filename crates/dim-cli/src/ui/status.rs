@@ -97,6 +97,14 @@ impl Status {
     }
 }
 
+/// Whether this process writes program status reports, i.e.
+/// `DIM_TERMINAL_STATUS` is not `off`. The startup probe asks for the
+/// capability only when it does, since a run that reports nothing has no use
+/// for the answer.
+pub fn reports() -> bool {
+    !std::env::var(ENV_KEY).is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"))
+}
+
 /// A `msg` value: one line of UTF-8 within the limit, in standard base64. A
 /// control character, newline and tab included, would have the terminal
 /// discard the whole report.
@@ -183,8 +191,7 @@ pub struct Reporter {
 impl Reporter {
     /// Reports unless `DIM_TERMINAL_STATUS` is `off`.
     pub fn from_env() -> Self {
-        let off = std::env::var(ENV_KEY).is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"));
-        Self::new(!off)
+        Self::new(reports())
     }
 
     fn new(enabled: bool) -> Self {

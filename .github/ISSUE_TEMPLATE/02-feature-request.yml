@@ -1,0 +1,29 @@
+name: Feature Request · 功能建议
+description: Propose a new behavior or capability for Dim. 建议 Dim 增加新的行为或能力。
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/arcships/dim/issues?q=is%3Aissue) before filing. If one matches, add your use case there.
+
+        提交前请[搜索已有 issue](https://github.com/arcships/dim/issues?q=is%3Aissue)。如果已有相同建议，请在原 issue 补充你的使用场景。
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What are you trying to do? · 你想完成什么？
+      description: Describe your workflow and where it gets stuck or takes extra work. 描述你的工作流程，以及哪里卡住了或需要额外操作。
+    validations:
+      required: true
+  - type: textarea
+    id: desired-behavior
+    attributes:
+      label: What should Dim do? · 你希望 Dim 怎么做？
+      description: Describe what a successful outcome would look like in your workflow. 描述在你的工作流程中，怎样才算达到了预期。
+    validations:
+      required: true
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context · 补充信息
+      description: Share workarounds, design ideas, or related issues. 可以补充当前的绕行方法、设计思路或相关 issue。

@@ -18,7 +18,7 @@ jobs:
     # Self-hosted runners keep state between jobs, so they run only code from branches of this
     # repository; fork pull requests skip every job and fail ci-ok. See docs/release/README.md.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, windows, x64]
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.groups.outputs.rust }}
@@ -61,13 +61,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny --version '=0.20.2'
+        run: cargo install --jobs 2 --locked cargo-deny --version '=0.20.2'
       - name: Check dependency advisories and licenses
         run: cargo deny --locked check advisories licenses
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    runs-on: [self-hosted, windows, x64]
+    runs-on: windows-2022
     timeout-minutes: 15
     env:
       CARGO_INCREMENTAL: "0"
@@ -87,6 +87,7 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     env:
+      CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
@@ -122,7 +123,7 @@ jobs:
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
         run: |
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=5
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=3
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
@@ -153,7 +154,7 @@ jobs:
           (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored --test-threads=2
       - name: Verify public Node bindings
         if: needs.changes.outputs.node == 'true'
         shell: bash
@@ -172,12 +173,12 @@ jobs:
           export DIM_TEST_NODE="$(command -v node)"
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
           export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored --test-threads=2
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored --test-threads=2
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored --test-threads=2
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored --test-threads=2
           if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
-            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored
+            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored --test-threads=2
           fi
       - name: Verify Python plugins
         if: needs.changes.outputs.node == 'true' && vars.DIM_CI_PYTHON_PLUGINS == 'true'
@@ -198,7 +199,7 @@ jobs:
           export DIM_TEST_NODE="$(command -v node)"
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
           export DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow python_plugin_ --ignored
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow python_plugin_ --ignored --test-threads=2
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
@@ -259,7 +260,7 @@ jobs:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
     needs: [changes, dependencies, windows-cli, verify, acp-registry]
     if: always()
-    runs-on: [self-hosted, windows, x64]
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       # A skipped changes job means a fork pull request, which this workflow does not verify.

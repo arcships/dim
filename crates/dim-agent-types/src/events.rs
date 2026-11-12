@@ -81,6 +81,20 @@ pub enum FinishReason {
 pub struct UserInput {
     pub content: Vec<ContentBlock>,
 }
+impl UserInput {
+    /// Whether the content carries anything the operator supplied: a block
+    /// that is not an empty text. Only such content is worth appending a
+    /// context after, and only such content makes an input valid.
+    ///
+    /// The content is what the operator sent, so a marker the operator wrote
+    /// counts as their words. That matches `crate::markup::runtime_context`,
+    /// which never takes the first block for runtime content.
+    pub fn has_operator_content(&self) -> bool {
+        self.content
+            .iter()
+            .any(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()))
+    }
+}
 
 /// Runtime content a capability places in the model context. The renderer
 /// puts `text` verbatim as one user message where the input is consumed.
@@ -187,14 +201,14 @@ impl InputMessageData {
         })
     }
 
-    /// Checks input arriving from outside: user content, if present, is not
-    /// all empty text, and the input carries user content or blocks.
+    /// Checks input arriving from outside: user content, if present, carries
+    /// operator content, and the input carries user content or blocks.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.user.as_ref().is_some_and(|user| {
-            user.content
-                .iter()
-                .all(|block| matches!(block, ContentBlock::Text { text } if text.is_empty()))
-        }) {
+        if self
+            .user
+            .as_ref()
+            .is_some_and(|user| !user.has_operator_content())
+        {
             return Err("user input content must not be empty");
         }
         if self.user.is_none() && self.blocks.is_empty() {

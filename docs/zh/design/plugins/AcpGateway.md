@@ -74,7 +74,7 @@ Provider 管理已经归 daemon 的 ProviderPlugin 所有，CLI 使用其公开�
 
 创建普通交互 Session（session.create 省略 interactive），然后经 RPC attach。已有 Session 保留自己的配置。并发 load/resume 共用每 Session 的一个准备/runtime 槽位。
 
-load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
+load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message；能力在操作者的话之后追加的上下文也一样：`dim-hooks` 块会被存储、导出并被模型读到，但网关不为它回放任何 `user_message_chunk`，所以编辑器里的消息仍是操作者发出的内容。`Stop` 钩子的后续输入同样不回放任何东西：它是驱动 turn 的 Queue 输入，不是操作者写的消息，而网关的 `sessionUpdate` 也没有可以显示它的状态通道。已加载的 Skill 保留它那一行。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
 
 ### 4.2 Prompt 与取消
 

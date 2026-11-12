@@ -151,7 +151,7 @@ impl TimelinePanel {
                     self.actions = None;
                     Effect::None
                 }
-                Event::Pick(action) => Effect::Timeline {
+                Event::Pick { id: action, .. } => Effect::Timeline {
                     row_id: self.list.selected_id().unwrap(),
                     action: match action.as_str() {
                         "jump" => TimelineAction::Jump,
@@ -168,7 +168,7 @@ impl TimelinePanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(_) => {
+            Event::Pick { .. } => {
                 let mut actions = ListPanel::new(
                     "Timeline actions",
                     format!("↑↓/Enter · {}", t("Esc back")),
@@ -237,6 +237,7 @@ mod tests {
             failure: None,
             reportable: false,
             row_id: id.into(),
+            provisional_id: None,
             kind,
             text: text.into(),
             display: None,
@@ -258,6 +259,7 @@ mod tests {
             member: None,
             cut: Some(1),
             line: None,
+            parent_row: None,
             compaction: None,
         })
     }

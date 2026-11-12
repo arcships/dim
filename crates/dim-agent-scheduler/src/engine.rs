@@ -1,17 +1,15 @@
 //! Scheduled and manual deliveries (design §2.2, §3.1, A.4–A.6): windows, the
-//! pre-effect record, a session branch's input, a launch target's Session and
-//! its tracking, bounded lookup settling, and retention.
+//! pre-effect record, a branch's input, a launch target's Session and the
+//! stop timer that ends it, bounded lookup settling, and retention.
 use crate::{
-    document::{Job, Mode, Origin, Schedule, Target, canonical_instant},
+    document::{Job, Mode, Schedule, Target, canonical_instant},
     methods::{Shared, read_document, window_after},
     runs,
-    runs::{Delivery, DeliveryState, ReportTo, SchedulerError, SessionOrigin, stamp},
+    runs::{Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::settings::SettingsScope;
-use dim_agent_types::{
-    AgentEvent, EventKind, PermissionPolicy, PermissionPreset, TurnOutcome, markup::escaped,
-};
+use dim_agent_types::{InputMode, PermissionPolicy, PermissionPreset, markup::escaped};
 use dim_app_server::settings::SettingsError;
 use rutis_bridge::session::{HostDispatch, settle};
 use serde_json::{Value, json};
@@ -19,7 +17,9 @@ use std::{collections::HashSet, sync::Arc, time::Duration as StdDuration};
 use tokio_util::sync::CancellationToken;
 
 const POLL: StdDuration = StdDuration::from_secs(1);
-const MAX_CONCURRENT_RUNS: usize = 8;
+/// The interval a failed stop or an undeletable Session is retried at (§3.2,
+/// A.7).
+const RETRY: StdDuration = StdDuration::from_secs(60);
 
 const MANUAL: &str = "manual";
 /// Terminal deliveries kept per job, newest first (A.7).
@@ -38,10 +38,6 @@ pub(crate) const PREVIOUS_DELIVERY_UNSETTLED: &str = "previous_delivery_unsettle
 /// settles it by lookup.
 pub(crate) const UNLOADING: &str = "service_reloading";
 
-fn unloading() -> SchedulerError {
-    SchedulerError::new(UNLOADING, "Scheduler is unloading")
-}
-
 fn is_reloading(code: &str) -> bool {
     code.ends_with("reloading")
 }
@@ -50,6 +46,33 @@ fn is_reloading(code: &str) -> bool {
 /// `delivering` and the lookup settles it (A.5, A.6).
 pub(crate) fn uncertain(code: &str) -> bool {
     is_reloading(code) || matches!(code, "publication_unknown" | "ambiguous")
+}
+
+/// Applies the flow tests' seam to one write's reply (A.5, A.6): it spends the
+/// armed flag on the next reply, whatever that reply is, so the seam cannot
+/// leak into a later write; and it turns only an accepting reply into the
+/// transport failure of a write that reached the target whose answer was
+/// lost. Every other reply passes through as it came, so the seam never masks
+/// a refusal the target gave. Feature `testing` only.
+fn lose_input_reply(
+    shared: &Shared,
+    reply: Result<Result<Value, String>, String>,
+) -> Result<Result<Value, String>, String> {
+    #[cfg(feature = "testing")]
+    {
+        let armed = shared
+            .holds
+            .as_ref()
+            .is_some_and(|holds| holds.take_lost_input_reply());
+        if armed && matches!(&reply, Ok(Ok(_))) {
+            return Err("input reply lost".to_owned());
+        }
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        let _ = shared;
+    }
+    reply
 }
 
 /// The codes that say the target can never accept the input: its Session or
@@ -68,7 +91,6 @@ fn is_launched(run: &Delivery) -> bool {
 /// A window this far behind the clock is missed, not run (A.4). The wakeup
 /// policy uses the same grace (design §10).
 pub(crate) const GRACE_SECONDS: i64 = 60;
-pub(crate) const REPORT_GUIDANCE: &str = "Inspect schedule.history for this job.";
 
 /// The marker both targets write before the saved prompt (§5).
 fn marker(job: &Job, run_id: &str) -> String {
@@ -80,11 +102,11 @@ fn marker(job: &Job, run_id: &str) -> String {
     )
 }
 
-/// Records a window of the job, unless one exists for it, and starts what
-/// the target does. A missed window is recorded `missed`; a `session` window
-/// is recorded `delivering` before its write; a `launch` window follows the
-/// launch target's old admission, which skips an overlapping or over-capacity
-/// window.
+/// Records a window of the job and starts what the target does. A missed
+/// window is recorded `missed`; a `session` window is recorded `delivering`
+/// before its write; a `launch` window is recorded `delivering` with its stop
+/// time before the launch, and its Session is added to that record once the
+/// launch answers (§3.1, A.5).
 async fn record(
     shared: &Arc<Shared>,
     job: &Job,
@@ -96,6 +118,7 @@ async fn record(
     let target = job
         .effective_target()
         .ok_or_else(|| SchedulerError::invalid_data("job has no target"))?;
+    let spawn_target = target.clone();
     let run = runs::update(&shared.files, move |history| {
         if window != MANUAL
             && history
@@ -107,78 +130,38 @@ async fn record(
         let now = Utc::now();
         let (state, detail) = if missed {
             (DeliveryState::Missed, "missed")
+        } else if history
+            .iter()
+            .any(|run| run.job_id == job.id && run.state == DeliveryState::Delivering)
+        {
+            (DeliveryState::Missed, PREVIOUS_DELIVERY_UNSETTLED)
         } else {
-            match &target {
-                Target::Session { .. } => {
-                    if history
-                        .iter()
-                        .any(|run| run.job_id == job.id && run.state == DeliveryState::Delivering)
-                    {
-                        (DeliveryState::Missed, PREVIOUS_DELIVERY_UNSETTLED)
-                    } else {
-                        (DeliveryState::Delivering, "")
-                    }
-                }
-                Target::Launch { .. } => {
-                    let active = history
-                        .iter()
-                        .filter(|run| !run.state.is_terminal())
-                        .count();
-                    let overlapping = history
-                        .iter()
-                        .any(|run| !run.state.is_terminal() && run.job_id == job.id);
-                    if overlapping {
-                        (DeliveryState::Skipped, "overlap")
-                    } else if active >= MAX_CONCURRENT_RUNS {
-                        (DeliveryState::Skipped, "capacity")
-                    } else {
-                        (DeliveryState::Launching, "")
-                    }
-                }
-            }
+            (DeliveryState::Delivering, "")
         };
         let run_id = uuid::Uuid::new_v4().to_string();
-        let (deadline_at, session_id, branch_id, session_origin, policy, report_to) =
-            match (&state, &target) {
-                (
-                    DeliveryState::Delivering,
-                    Target::Session {
-                        session_id,
-                        branch_id,
-                        ..
-                    },
-                ) => (
-                    None,
-                    Some(session_id.clone()),
-                    Some(branch_id.clone()),
-                    None,
-                    None,
-                    None,
-                ),
-                (
-                    DeliveryState::Launching,
-                    Target::Launch {
-                        max_run_minutes, ..
-                    },
-                ) => (
-                    Some(stamp(now + Duration::minutes(i64::from(*max_run_minutes)))),
-                    None,
-                    None,
-                    None,
-                    None,
-                    match &job.created_by {
-                        Origin::Tool {
-                            session_id,
-                            branch_id,
-                        } => Some(ReportTo {
-                            session_id: session_id.clone(),
-                            branch_id: branch_id.clone(),
-                        }),
-                        Origin::User => None,
-                    },
-                ),
-                _ => (None, None, None, None, None, None),
-            };
+        // A `session` target names its branch here; a launch fixes its stop
+        // time here, so launch and admission time count towards the limit,
+        // and names its Session once `sessions.launch` answers (§3.2, A.5).
+        let (session_id, branch_id) = match (&state, &target) {
+            (
+                DeliveryState::Delivering,
+                Target::Session {
+                    session_id,
+                    branch_id,
+                    ..
+                },
+            ) => (Some(session_id.clone()), Some(branch_id.clone())),
+            _ => (None, None),
+        };
+        let deadline_at = match (&state, &target) {
+            (
+                DeliveryState::Delivering,
+                Target::Launch {
+                    max_run_minutes, ..
+                },
+            ) => Some(stamp(now + Duration::minutes(i64::from(*max_run_minutes)))),
+            _ => None,
+        };
         let run = Delivery {
             run_id: run_id.clone(),
             job_id: job.id.clone(),
@@ -187,11 +170,11 @@ async fn record(
             deadline_at,
             session_id,
             branch_id,
-            session_origin,
-            policy,
+            session_origin: None,
+            policy: None,
             input_event_id: None,
             submission_id: format!("scheduler:{run_id}"),
-            report_to,
+            report_to: None,
             created_at: stamp(now),
             ended_at: state.is_terminal().then(|| stamp(now)),
             detail: detail.into(),
@@ -207,15 +190,12 @@ async fn record(
     if let Some(run) = &run {
         shared.watch.run(run);
     }
-    if let Some(run) = &run {
-        match run.state {
-            DeliveryState::Delivering => {
-                shared.spawn(deliver(shared.clone(), accepted, run.clone()))
-            }
-            DeliveryState::Launching => {
-                shared.spawn(execute(shared.clone(), accepted, run.clone()))
-            }
-            _ => {}
+    if let Some(run) = &run
+        && run.state == DeliveryState::Delivering
+    {
+        match spawn_target {
+            Target::Session { .. } => shared.spawn(deliver(shared.clone(), accepted, run.clone())),
+            Target::Launch { .. } => shared.spawn(execute(shared.clone(), accepted, run.clone())),
         }
     }
     if run.is_some() {
@@ -398,10 +378,11 @@ async fn disable_gone(shared: &Arc<Shared>, run: &Delivery, code: &str, at: Stri
     }
 }
 
-/// The authority a launch target requests: its saved preset, capped by the
-/// saved cap. A management job without a preset requests read-only. The
-/// preset comes from the effective target: a job's top-level legacy
-/// `policy` never applies once the job has a target of its own.
+/// The authority a launch target requests: its stored preset, which
+/// `sessions.launch` caps against the live host bound. A job without a preset
+/// requests read-only. The preset comes from the effective target: a job's
+/// top-level legacy `policy` never applies once the job has a target of its
+/// own.
 pub(crate) fn requested_policy(policy: Option<PermissionPreset>) -> PermissionPolicy {
     match policy {
         Some(preset) => PermissionPolicy {
@@ -449,19 +430,19 @@ async fn record_session(
     shared: &Shared,
     run_id: &str,
     session_id: String,
-    origin: SessionOrigin,
     policy: PermissionPolicy,
 ) -> Result<(), SchedulerError> {
     update_run(shared, run_id, move |run| {
         run.session_id = Some(session_id);
-        run.session_origin = Some(origin);
+        run.branch_id = Some("main".into());
+        run.session_origin = Some(SessionOrigin::Launch);
         run.policy = Some(policy);
     })
     .await
 }
 
-/// Settles a delivery to a terminal state once, then reports it when it has a
-/// report target. A delivery that already settled keeps its outcome.
+/// Settles a delivery to a terminal state once. A delivery that already
+/// settled keeps its outcome.
 async fn finish(
     shared: &Arc<Shared>,
     run_id: &str,
@@ -469,8 +450,6 @@ async fn finish(
     detail: String,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
-    shared.reporting.lock().unwrap().insert(run_id.clone());
-    let marked = run_id.clone();
     let settled = runs::update(&shared.files, move |history| {
         let run = history
             .iter_mut()
@@ -485,72 +464,22 @@ async fn finish(
         run.validate().map_err(SchedulerError::invalid_data)?;
         Ok((true, Some(run.clone())))
     })
-    .await;
-    let settled = match settled {
-        Ok(settled) => settled,
-        Err(error) => {
-            shared.reporting.lock().unwrap().remove(&marked);
-            return Err(error);
-        }
-    };
-    let Some(run) = settled else {
-        shared.reporting.lock().unwrap().remove(&marked);
-        return Ok(());
-    };
-    shared.watch.run(&run);
-    let outcome = report(shared, run).await;
-    shared.reporting.lock().unwrap().remove(&marked);
-    shared.spawn(prune(shared.clone()));
-    outcome
+    .await?;
+    if let Some(run) = settled {
+        shared.watch.run(&run);
+        shared.spawn(prune(shared.clone()));
+    }
+    Ok(())
 }
 
-/// Steers a launch delivery's outcome into the branch that saved the job,
-/// once. `skipped` and `missed` deliveries only keep history (A.6). A failed
-/// send is recorded in the delivery's detail and is not retried. This is the
-/// launch target's behaviour until it is reduced; a `session` delivery has no
-/// report target.
-async fn report(shared: &Arc<Shared>, run: Delivery) -> Result<(), SchedulerError> {
-    if matches!(run.state, DeliveryState::Skipped | DeliveryState::Missed) {
-        return Ok(());
+/// Whether a launch record's stop time has passed, so its stop timer has
+/// finished and its record is eligible for cleanup (§3.2, A.7). A `session`
+/// delivery has no stop time and nothing to wait for.
+fn stop_time_passed(run: &Delivery) -> bool {
+    match run.deadline_at.as_deref().and_then(canonical_instant) {
+        Some(deadline) => Utc::now() >= deadline,
+        None => true,
     }
-    let Some(target) = run.report_to.clone() else {
-        return Ok(());
-    };
-    let mut body = format!(
-        "Scheduled job {}, run {}: {} ({}).",
-        run.job_id,
-        run.run_id,
-        run.state.name(),
-        run.detail
-    );
-    if let Some(session_id) = &run.session_id {
-        body += &format!(" Session {session_id}.");
-    }
-    body += &format!("\n{}", shared.texts.report_guidance);
-    let text = format!(
-        "<dim-scheduler kind=\"report\" job=\"{}\" run=\"{}\">{}</dim-scheduler>",
-        escaped(&run.job_id),
-        escaped(&run.run_id),
-        escaped(&body)
-    );
-    let args = json!({
-        "sessionId": target.session_id,
-        "branchId": target.branch_id,
-        "mode": "steer",
-        "submissionId": format!("scheduler-report:{}", run.run_id),
-        "rawBlocks": [{"text": text}],
-        "content": [],
-    });
-    let failure = match sessions(shared.sessions.as_ref(), "input", args).await {
-        Err(_) => "bridge_error".to_owned(),
-        Ok(Err(code)) => code,
-        Ok(Ok(_)) => return Ok(()),
-    };
-    let run_id = run.run_id.clone();
-    update_run(shared, &run_id, move |run| {
-        run.detail += &format!("; report_failed: {failure}");
-    })
-    .await
 }
 
 /// Retention (A.7): keeps the newest terminal deliveries of each job, every
@@ -602,10 +531,9 @@ async fn prune_once(shared: &Arc<Shared>) -> Result<bool, SchedulerError> {
         })
         .map(|run| run.run_id.clone())
         .collect();
-    let reporting = shared.reporting.lock().unwrap().clone();
     let mut keep: HashSet<String> = runs
         .iter()
-        .filter(|run| !run.state.is_terminal() || reporting.contains(&run.run_id))
+        .filter(|run| !run.state.is_terminal() || !stop_time_passed(run))
         .map(|run| run.run_id.clone())
         .collect();
     for job in &document.jobs {
@@ -709,75 +637,71 @@ async fn prune_once(shared: &Arc<Shared>) -> Result<bool, SchedulerError> {
     Ok(pending)
 }
 
-/// Starts a tracker for each launch delivery that was active when the
-/// previous process stopped (A.5). Nothing is launched or submitted again.
-pub fn recover(shared: &Arc<Shared>, active: Vec<Delivery>) {
-    for run in active {
+/// Starts the stop timer of every launch delivery this process inherits
+/// (§3.2). A record written before this change in `launching`, `submitted` or
+/// `running` is left as written: nothing settles it and its Session is not
+/// stopped, because a stop timer belongs to the record a window of this
+/// design wrote (A.7). A launch this design wrote keeps its stop timer in any
+/// state: a delivery that settled `lost` or `failed` after the launch still
+/// owns the Session its stop time ends. Nothing is launched or submitted
+/// again.
+pub fn recover(shared: &Arc<Shared>, launches: Vec<Delivery>) {
+    for run in launches {
+        let Some(deadline) = run.deadline_at.as_deref().and_then(canonical_instant) else {
+            continue;
+        };
+        let Some(session_id) = run.session_id.clone() else {
+            continue;
+        };
         let owner = shared.clone();
         shared.spawn(async move {
-            let shared = owner;
-            if let Err(error) = resume(&shared, &run).await
-                && error.code != UNLOADING
-            {
-                let _ = finish(&shared, &run.run_id, DeliveryState::Lost, error.message).await;
-            }
+            stop_at(owner, run.run_id, session_id, deadline).await;
         });
     }
 }
 
-/// A `launching` delivery with a Session id is looked up by its submission
-/// id: an accepted input resumes tracking, an unknown one is `lost`. A
-/// `launching` delivery without a Session id is `lost`, because its launch
-/// cannot be confirmed. A `submitted` or `running` delivery resumes tracking.
-async fn resume(shared: &Arc<Shared>, run: &Delivery) -> Result<(), SchedulerError> {
-    let deadline = run
-        .deadline_at
-        .as_deref()
-        .and_then(canonical_instant)
-        .ok_or_else(|| SchedulerError::invalid_data("active run has no deadline"))?;
-    let Some(session_id) = run.session_id.clone() else {
-        return finish(
-            shared,
-            &run.run_id,
-            DeliveryState::Lost,
-            "no_session_after_restart".into(),
+/// Stops a launched Session at its stop time, and keeps retrying once a
+/// minute while the call fails and the record still exists (§3.2, A.7). The
+/// delivery's state is not touched: a stop is a bound on the launched work,
+/// not a run outcome.
+async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadline: DateTime<Utc>) {
+    let wait = deadline.signed_duration_since(Utc::now()).to_std();
+    if let Ok(wait) = wait
+        && !shared.pause(wait).await
+    {
+        return;
+    }
+    loop {
+        if !record_exists(&shared, &run_id).await {
+            return;
+        }
+        match sessions(
+            shared.sessions.as_ref(),
+            "stop",
+            json!({"sessionId": session_id, "branchId": "main",
+                "reason": "scheduled run reached its stop time"}),
         )
-        .await;
-    };
-    let (input_id, start) = match &run.input_event_id {
-        Some(input_id) => (input_id.clone(), None),
-        None => match lookup_input(shared, &session_id, "main", &run.submission_id).await {
-            Ok(Some((input_id, sequence))) => {
-                let accepted = input_id.clone();
-                update_run(shared, &run.run_id, move |run| {
-                    run.state = DeliveryState::Submitted;
-                    run.input_event_id = Some(accepted);
-                })
-                .await?;
-                (input_id, Some(sequence))
+        .await
+        {
+            Ok(Ok(_)) => return,
+            Ok(Err(code)) if target_gone(&code) => return,
+            _ => {
+                if !shared.pause(RETRY).await {
+                    return;
+                }
             }
-            Ok(None) => {
-                return finish(
-                    shared,
-                    &run.run_id,
-                    DeliveryState::Lost,
-                    "input_unknown".into(),
-                )
-                .await;
-            }
-            Err(code) if code == UNLOADING => return Err(unloading()),
-            Err(code) => {
-                return finish(
-                    shared,
-                    &run.run_id,
-                    DeliveryState::Lost,
-                    format!("lookup_failed: {code}"),
-                )
-                .await;
-            }
-        },
-    };
-    track(shared, &run.run_id, &session_id, &input_id, start, deadline).await
+        }
+    }
+}
+
+/// Whether the delivery's record is still in the store, which bounds the stop
+/// timer: A.7 words it as running "for as long as the record exists". A store
+/// that cannot be read is no evidence of removal, so the timer keeps going.
+async fn record_exists(shared: &Shared, run_id: &str) -> bool {
+    runs::read(&shared.files)
+        .await
+        .map(|history| history.iter().any(|run| run.run_id == run_id))
+        .unwrap_or(true)
 }
 
 /// `Ok(None)` when the Session never accepted the submission. A service error
@@ -844,61 +768,22 @@ pub(crate) async fn sessions(
 }
 
 /// Writes one `session` delivery: one input on the target branch, with the
-/// marker and the saved prompt in the job's mode (§3.1, A.5). There is no
-/// launch, tracking, history read, deadline or report.
+/// marker and the saved prompt in the job's mode (§3.1, A.5).
 async fn deliver(shared: Arc<Shared>, job: Job, run: Delivery) {
-    if let Err(error) = write_session(&shared, &job, &run).await
+    let Some(Target::Session { session_id, .. }) = job.effective_target() else {
+        let _ = finish(
+            &shared,
+            &run.run_id,
+            DeliveryState::Lost,
+            "a session delivery names a non-session target".into(),
+        )
+        .await;
+        return;
+    };
+    if let Err(error) = write_input(&shared, &job, &run, &session_id).await
         && error.code != UNLOADING
     {
         let _ = finish(&shared, &run.run_id, DeliveryState::Lost, error.message).await;
-    }
-}
-
-async fn write_session(
-    shared: &Arc<Shared>,
-    job: &Job,
-    run: &Delivery,
-) -> Result<(), SchedulerError> {
-    let Some(Target::Session {
-        session_id,
-        branch_id,
-        input_mode,
-    }) = job.effective_target()
-    else {
-        return Err(SchedulerError::invalid_data(
-            "a session delivery names a non-session target",
-        ));
-    };
-    let input = json!({
-        "sessionId": session_id,
-        "branchId": branch_id,
-        "mode": input_mode,
-        "submissionId": run.submission_id,
-        "rawBlocks": [{"text": marker(job, &run.run_id)}],
-        "content": [{"type": "text", "text": job.prompt}],
-    });
-    match sessions(shared.sessions.as_ref(), "input", input).await {
-        Ok(Ok(receipt)) => {
-            let input_id = receipt["inputId"]
-                .as_str()
-                .ok_or_else(|| SchedulerError::invalid_data("input reply has no inputId"))?;
-            settle_delivered(shared, &run.run_id, input_id).await
-        }
-        Ok(Err(code)) if uncertain(&code) => {
-            // Only this delivery's reply was uncertain: look it up now, and
-            // leave other records to the timer's once-a-minute pass (A.6).
-            if let Err(error) = lookup_once(shared, run).await {
-                tracing::warn!(%error, "scheduler lookup failed");
-            }
-            Ok(())
-        }
-        Ok(Err(code)) => failed(shared, run, &code).await,
-        Err(_) => {
-            if let Err(error) = lookup_once(shared, run).await {
-                tracing::warn!(%error, "scheduler lookup failed");
-            }
-            Ok(())
-        }
     }
 }
 
@@ -941,9 +826,7 @@ pub async fn settle_delivering(shared: &Arc<Shared>) {
         .iter()
         .filter(|run| run.state == DeliveryState::Delivering)
     {
-        if let Err(error) = lookup_once(shared, run).await {
-            tracing::warn!(%error, "scheduler lookup failed");
-        }
+        lookup_now(shared, &run.run_id).await;
     }
 }
 
@@ -952,19 +835,23 @@ pub async fn settle_delivering(shared: &Arc<Shared>) {
 enum LookupStep {
     /// The stored count was already at the bound; the record settled `lost`.
     Exhausted(Box<Delivery>),
-    /// This pass persisted attempt `n` before its lookup.
-    Attempt(u32),
+    /// This pass persisted the next attempt on the record it returns, whose
+    /// identity is the one the lookup uses; `attempt` is the count it wrote.
+    Attempt { run: Box<Delivery>, attempt: u32 },
     /// The record settled or moved meanwhile; nothing to look up.
     Settled,
 }
 
 /// One lookup attempt for one `delivering` record (A.6): persist the
 /// incremented `attempts` before the lookup, settle `delivered` on
-/// `accepted`, and settle `lost` on the fifth answer without a fact.
-async fn lookup_once(shared: &Arc<Shared>, run: &Delivery) -> Result<(), SchedulerError> {
-    let run_id = run.run_id.clone();
+/// `accepted`, and settle `lost` on the fifth answer without a fact. The
+/// lookup's target is the identity the record holds under this update's lock,
+/// not the caller's snapshot: a launch persists its Session after the reply
+/// and before the input, so the caller's own copy may predate it.
+async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), SchedulerError> {
+    let found = run_id.to_owned();
     let step = runs::update(&shared.files, move |history| {
-        let Some(run) = history.iter_mut().find(|run| run.run_id == run_id) else {
+        let Some(run) = history.iter_mut().find(|run| run.run_id == found) else {
             return Ok((false, LookupStep::Settled));
         };
         if run.state != DeliveryState::Delivering {
@@ -979,9 +866,14 @@ async fn lookup_once(shared: &Arc<Shared>, run: &Delivery) -> Result<(), Schedul
             return Ok((true, LookupStep::Exhausted(Box::new(run.clone()))));
         }
         run.attempts = Some(attempts + 1);
-        let attempt = run.attempts.unwrap_or(attempts + 1);
         run.validate().map_err(SchedulerError::invalid_data)?;
-        Ok((true, LookupStep::Attempt(attempt)))
+        Ok((
+            true,
+            LookupStep::Attempt {
+                run: Box::new(run.clone()),
+                attempt: attempts + 1,
+            },
+        ))
     })
     .await?;
     match step {
@@ -991,13 +883,14 @@ async fn lookup_once(shared: &Arc<Shared>, run: &Delivery) -> Result<(), Schedul
             shared.spawn(prune(shared.clone()));
             Ok(())
         }
-        LookupStep::Attempt(attempt) => {
+        LookupStep::Attempt { run, attempt } => {
             let (Some(session_id), Some(branch_id)) =
                 (run.session_id.clone(), run.branch_id.clone())
             else {
-                return Err(SchedulerError::invalid_data(
-                    "a delivering record names no session branch",
-                ));
+                // A launch whose reply never arrived names no Session: no
+                // lookup can reach it, so it is `lost` at the first attempt
+                // (Appendix F).
+                return settle_lost(shared, &run.run_id, "launch_reply_unknown".into()).await;
             };
             let answer = match sessions(
                 shared.sessions.as_ref(),
@@ -1015,7 +908,7 @@ async fn lookup_once(shared: &Arc<Shared>, run: &Delivery) -> Result<(), Schedul
                 }
                 Ok(Ok(_)) => "unknown".to_owned(),
                 Ok(Err(code)) if target_gone(&code) => {
-                    return settle_target_gone(shared, run, &code).await;
+                    return settle_target_gone(shared, &run, &code).await;
                 }
                 Ok(Err(code)) => code,
                 Err(_) => "transport".to_owned(),
@@ -1094,342 +987,132 @@ async fn settle_lost(
     Ok(())
 }
 
+/// Runs one launch window: one launch, one input, and the stop timer that
+/// ends the Session at its deadline (§3.1, §3.2, A.5).
 async fn execute(shared: Arc<Shared>, job: Job, run: Delivery) {
-    if let Err(error) = drive(&shared, &job, &run).await
+    if let Err(error) = launch_target(&shared, &job, &run).await
         && error.code != UNLOADING
     {
         let _ = finish(&shared, &run.run_id, DeliveryState::Lost, error.message).await;
     }
 }
 
-/// The launch target's pre-effect recheck (A.5): the accepted job is still
-/// enabled at `revision`, and the delivery's deadline has not passed. A
-/// failed check settles the delivery and returns `false`.
-async fn still_eligible(
+/// Launches the job's Session with the job's preset, records the Session on
+/// the delivery, starts its stop timer and writes the input. The preset is
+/// the job's own: `sessions.launch` caps it against the live host bound, and
+/// the reply's policy is what the delivery records (§3.3).
+async fn launch_target(
     shared: &Arc<Shared>,
     job: &Job,
     run: &Delivery,
-    revision: u64,
-) -> Result<bool, SchedulerError> {
-    let cancel = CancellationToken::new();
-    let document = match read_document(shared, &cancel).await {
-        Ok(snapshot) => snapshot.document,
-        Err(_) => {
-            finish(
-                shared,
-                &run.run_id,
-                DeliveryState::Skipped,
-                "settings_read_failed".into(),
-            )
-            .await?;
-            return Ok(false);
-        }
-    };
-    let deadline = run
-        .deadline_at
-        .as_deref()
-        .and_then(canonical_instant)
-        .ok_or_else(|| SchedulerError::invalid_data("accepted run has no deadline"))?;
-    if Utc::now() >= deadline {
-        finish(
-            shared,
-            &run.run_id,
-            DeliveryState::TimedOut,
-            "deadline_before_input".into(),
-        )
-        .await?;
-        return Ok(false);
-    }
-    let current = document.jobs.iter().find(|current| current.id == job.id);
-    if let Some(current) = current
-        && current.enabled
-        && current.revision == revision
-    {
-        return Ok(true);
-    }
-    let reason = if current.is_some_and(|current| !current.enabled) {
-        "disabled"
-    } else {
-        "changed"
-    };
-    finish(shared, &run.run_id, DeliveryState::Skipped, reason.into()).await?;
-    Ok(false)
-}
-
-/// Launches the job's Session with the requested authority and records it on
-/// the delivery before any input. `None` means the delivery settled.
-async fn launch(
-    shared: &Arc<Shared>,
-    run: &Delivery,
-    requested: &PermissionPolicy,
-    target: &Target,
-) -> Result<Option<String>, SchedulerError> {
-    let Target::Launch { cwd, agent_id, .. } = target else {
+) -> Result<(), SchedulerError> {
+    let Some(Target::Launch {
+        cwd,
+        agent_id,
+        policy,
+        ..
+    }) = job.effective_target()
+    else {
         return Err(SchedulerError::invalid_data(
-            "launch of a non-launch target",
+            "a launch delivery names a non-launch target",
         ));
     };
-    let mut args = json!({"cwd": cwd, "policy": requested});
+    // The launch declares what the Session is for and the label a picker
+    // shows: the job's own name (#1421).
+    let mut args = json!({"cwd": cwd, "policy": requested_policy(policy), "origin": "automation", "title": job.name});
     if let Some(agent) = agent_id.as_ref() {
         args["agent"] = json!(agent);
     }
     let launched = match sessions(shared.sessions.as_ref(), "launch", args).await {
         Err(_) => {
-            finish(
+            return finish(
                 shared,
                 &run.run_id,
                 DeliveryState::Lost,
                 "launch_reply_unknown".into(),
             )
-            .await?;
-            return Ok(None);
+            .await;
         }
-        Ok(Err(code)) => {
-            finish(shared, &run.run_id, DeliveryState::Failed, code).await?;
-            return Ok(None);
-        }
+        Ok(Err(code)) => return finish(shared, &run.run_id, DeliveryState::Failed, code).await,
         Ok(Ok(value)) => value,
     };
     let session_id = launched["sessionId"]
         .as_str()
         .ok_or_else(|| SchedulerError::invalid_data("launch reply has no sessionId"))?
         .to_owned();
-    let effective: PermissionPolicy = serde_json::from_value(launched["policy"].clone())
+    let received: PermissionPolicy = serde_json::from_value(launched["policy"].clone())
         .map_err(|error| SchedulerError::invalid_data(error.to_string()))?;
-    record_session(
-        shared,
-        &run.run_id,
-        session_id.clone(),
-        SessionOrigin::Launch,
-        effective,
-    )
-    .await?;
-    Ok(Some(session_id))
-}
-
-async fn drive(shared: &Arc<Shared>, job: &Job, run: &Delivery) -> Result<(), SchedulerError> {
-    if !still_eligible(shared, job, run, job.revision).await? {
-        return Ok(());
-    }
-    let Some(target) = job.effective_target() else {
-        return Err(SchedulerError::invalid_data("job has no target"));
-    };
-    let Target::Launch { policy, .. } = &target else {
-        return Err(SchedulerError::invalid_data(
-            "a launch delivery names a non-launch target",
-        ));
-    };
-    let requested = requested_policy(*policy).cap(&job.policy_cap.clone().unwrap_or_default());
-    let Some(session_id) = launch(shared, run, &requested, &target).await? else {
-        return Ok(());
-    };
-    if !still_eligible(shared, job, run, job.revision).await? {
-        return Ok(());
-    }
-
-    let marker = marker(job, &run.run_id);
-    let input = json!({
-        "sessionId": session_id,
-        "branchId": "main",
-        "mode": "queue",
-        "submissionId": run.submission_id,
-        "rawBlocks": [{"text": marker}],
-        "content": [{"type": "text", "text": job.prompt}],
-    });
-    let (input_id, start) = match sessions(shared.sessions.as_ref(), "input", input).await {
-        Ok(Ok(receipt)) => match (receipt["inputId"].as_str(), receipt["sequence"].as_u64()) {
-            (Some(input_id), Some(sequence)) => (input_id.to_owned(), sequence),
-            _ => {
-                return Err(SchedulerError::invalid_data(
-                    "input reply has no inputId and sequence",
-                ));
-            }
-        },
-        Ok(Err(code)) if !uncertain(&code) => {
-            return finish(shared, &run.run_id, DeliveryState::Failed, code).await;
-        }
-        Ok(Err(_)) | Err(_) => {
-            match lookup_input(shared, &session_id, "main", &run.submission_id).await {
-                Ok(Some(accepted)) => accepted,
-                Ok(None) => {
-                    return finish(
-                        shared,
-                        &run.run_id,
-                        DeliveryState::Lost,
-                        "input_unknown".into(),
-                    )
-                    .await;
-                }
-                Err(code) if code == UNLOADING => return Err(unloading()),
-                Err(code) => {
-                    return finish(
-                        shared,
-                        &run.run_id,
-                        DeliveryState::Lost,
-                        format!("lookup_failed: {code}"),
-                    )
-                    .await;
-                }
-            }
-        }
-    };
-    {
-        let input_id = input_id.clone();
-        update_run(shared, &run.run_id, move |run| {
-            run.state = DeliveryState::Submitted;
-            run.input_event_id = Some(input_id);
-        })
-        .await?;
-    }
+    record_session(shared, &run.run_id, session_id.clone(), received).await?;
     let deadline = run
         .deadline_at
         .as_deref()
         .and_then(canonical_instant)
-        .ok_or_else(|| SchedulerError::invalid_data("accepted run has no deadline"))?;
-    track(
-        shared,
-        &run.run_id,
-        &session_id,
-        &input_id,
-        Some(start),
-        deadline,
-    )
-    .await
+        .ok_or_else(|| SchedulerError::invalid_data("a launch delivery has no stop time"))?;
+    let owner = shared.clone();
+    let stopped = session_id.clone();
+    let run_id = run.run_id.clone();
+    shared.spawn(async move {
+        stop_at(owner, run_id, stopped, deadline).await;
+    });
+    write_input(shared, job, run, &session_id).await
 }
 
-/// Follows the launched delivery's Session history (§3.2), from the input's
-/// own sequence when it is known. Each pass reads the whole published prefix
-/// through the first page's `through` before deciding. The delivery is
-/// `running` from its own consumption, and the first following `turn/end`
-/// supplies the outcome; its own `input/deleted` settles `cancelled:
-/// withdrawn`. At the deadline an input applied and interrupted before
-/// consumption settles `timed_out` without a stop; an unconsumed input is
-/// withdrawn (`deleted` settles `timed_out`, `notHeld` reads history again);
-/// consumed work is stopped and settles `timed_out` at its `turn/end`. A
-/// `withdraw` or `stop` that does not answer is retried on the next pass.
-async fn track(
+/// Writes one delivery's input on the job's target shape and settles it
+/// (§3.1, A.5): a `session` target's own branch and mode, or the `main` branch
+/// of the Session a `launch` created, which takes a Queue input. An uncertain
+/// reply is looked up by its submission id; a definite refusal settles
+/// `failed`, and a target-gone code also disables the job (A.3).
+async fn write_input(
     shared: &Arc<Shared>,
-    run_id: &str,
+    job: &Job,
+    run: &Delivery,
     session_id: &str,
-    input_id: &str,
-    start: Option<u64>,
-    deadline: DateTime<Utc>,
 ) -> Result<(), SchedulerError> {
-    let mut after = start.map(|sequence| sequence.saturating_sub(1));
-    let mut consumed = false;
-    let mut applied = false;
-    let mut interrupted = false;
-    let mut stopped = false;
-    loop {
-        let mut cutoff: Option<u64> = None;
-        loop {
-            let mut args = json!({"sessionId": session_id, "branchId": "main"});
-            if let Some(after) = after {
-                args["after"] = json!(after);
-            }
-            if let Some(through) = cutoff {
-                args["through"] = json!(through);
-            }
-            let page = match sessions(shared.sessions.as_ref(), "history", args).await {
-                Ok(Ok(value)) => value,
-                Ok(Err(code)) if !is_reloading(&code) => {
-                    return finish(shared, run_id, DeliveryState::Failed, code).await;
-                }
-                Ok(Err(_)) | Err(_) => {
-                    if !shared.pause(POLL).await {
-                        return Err(unloading());
-                    }
-                    continue;
-                }
-            };
-            let events: Vec<AgentEvent> = serde_json::from_value(page["events"].clone())
-                .map_err(|error| SchedulerError::invalid_data(error.to_string()))?;
-            let through = page["through"].as_u64();
-            cutoff = cutoff.or(through);
-            if let Some(last) = events.last() {
-                after = Some(last.sequence);
-            }
-            for event in events {
-                match event.kind {
-                    EventKind::InputDeleted(data) if data.input_id == input_id && !consumed => {
-                        let (state, detail) = if stopped {
-                            (DeliveryState::TimedOut, "withdrawn_at_deadline")
-                        } else {
-                            (DeliveryState::Cancelled, "withdrawn")
-                        };
-                        return finish(shared, run_id, state, detail.into()).await;
-                    }
-                    EventKind::InputApplied(data) if data.input_id == input_id => applied = true,
-                    EventKind::StopInterrupt(_) if applied && !consumed => interrupted = true,
-                    EventKind::InputConsumed(data) if data.input_id == input_id && !consumed => {
-                        consumed = true;
-                        update_run(shared, run_id, |run| {
-                            if run.state == DeliveryState::Submitted {
-                                run.state = DeliveryState::Running;
-                            }
-                        })
-                        .await?;
-                    }
-                    EventKind::TurnEnd(end) if consumed => {
-                        let (state, detail) = if stopped {
-                            (DeliveryState::TimedOut, "timed_out".to_owned())
-                        } else {
-                            match end.outcome {
-                                TurnOutcome::Completed { .. } => {
-                                    (DeliveryState::Completed, "completed".into())
-                                }
-                                TurnOutcome::Failed { error } => (DeliveryState::Failed, error),
-                                TurnOutcome::Cancelled { reason } => {
-                                    (DeliveryState::Cancelled, reason)
-                                }
-                            }
-                        };
-                        return finish(shared, run_id, state, detail).await;
-                    }
-                    _ => {}
-                }
-            }
-            if !(through.is_some_and(|through| after.is_some_and(|after| after < through))) {
-                break;
-            }
+    let (branch_id, mode) = match job.effective_target() {
+        Some(Target::Session {
+            branch_id,
+            input_mode,
+            ..
+        }) => (branch_id, input_mode),
+        Some(Target::Launch { .. }) => ("main".to_owned(), InputMode::Queue),
+        None => return Err(SchedulerError::invalid_data("job has no target")),
+    };
+    let input = json!({
+        "sessionId": session_id,
+        "branchId": branch_id,
+        "mode": mode,
+        "submissionId": run.submission_id,
+        "rawBlocks": [{"text": marker(job, &run.run_id)}],
+        "content": [{"type": "text", "text": job.prompt}],
+    });
+    let reply = lose_input_reply(
+        shared,
+        sessions(shared.sessions.as_ref(), "input", input).await,
+    );
+    match reply {
+        Ok(Ok(receipt)) => {
+            let input_id = receipt["inputId"]
+                .as_str()
+                .ok_or_else(|| SchedulerError::invalid_data("input reply has no inputId"))?;
+            settle_delivered(shared, &run.run_id, input_id).await
         }
-        if Utc::now() >= deadline && !stopped {
-            if !consumed && interrupted {
-                return finish(shared, run_id, DeliveryState::TimedOut, "timed_out".into()).await;
-            }
-            if !consumed {
-                let withdrawn = sessions(
-                    shared.sessions.as_ref(),
-                    "withdraw",
-                    json!({"sessionId": session_id, "branchId": "main", "inputId": input_id,
-                        "reason": "scheduled run timed out"}),
-                )
-                .await;
-                if let Ok(Ok(value)) = &withdrawn
-                    && value["status"] == json!("deleted")
-                {
-                    return finish(
-                        shared,
-                        run_id,
-                        DeliveryState::TimedOut,
-                        "withdrawn_at_deadline".into(),
-                    )
-                    .await;
-                }
-            } else if matches!(
-                sessions(
-                    shared.sessions.as_ref(),
-                    "stop",
-                    json!({"sessionId": session_id, "branchId": "main", "reason": "scheduled run timed out"}),
-                )
-                .await,
-                Ok(Ok(_))
-            ) {
-                stopped = true;
-            }
+        Ok(Err(code)) if uncertain(&code) => {
+            lookup_now(shared, &run.run_id).await;
+            Ok(())
         }
-        if !shared.pause(POLL).await {
-            return Err(unloading());
+        Ok(Err(code)) => failed(shared, run, &code).await,
+        Err(_) => {
+            lookup_now(shared, &run.run_id).await;
+            Ok(())
         }
+    }
+}
+
+/// One settling pass for a record whose write answered with no fact, so a
+/// healthy service settles it now. A failed pass leaves the record to the
+/// next generation's or the timer's pass (A.6).
+async fn lookup_now(shared: &Arc<Shared>, run_id: &str) {
+    if let Err(error) = lookup_once(shared, run_id).await {
+        tracing::warn!(%error, "scheduler lookup failed");
     }
 }

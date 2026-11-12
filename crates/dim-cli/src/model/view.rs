@@ -20,6 +20,14 @@ pub enum RowKind {
     ToolCall,
     /// A `context/compaction-start` and the `context/compaction` that ends it.
     Compaction,
+    /// Context a hook injected after the operator's words: drawn as one muted
+    /// status row under the message, its body behind the detail setting. Not a
+    /// message, so no pick, count or rail reads it.
+    HookContext,
+    /// A `Stop` hook's follow-up: the input that continued the conversation.
+    /// One muted status row where the input was written, with the same detail
+    /// setting as a hook's context, and never a message either.
+    HookFollowUp,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -48,6 +56,8 @@ pub enum RowTone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRow {
     pub row_id: String,
+    /// The progress-only thinking ID replaced by the first durable event.
+    pub provisional_id: Option<String>,
     pub kind: RowKind,
     /// Presentation of an image message; `text` remains editable text only.
     pub display: Option<String>,
@@ -86,6 +96,10 @@ pub struct ViewRow {
     /// A line-opened marker: the line it opened, which a pick enters
     /// (timeline UI §4.4).
     pub line: Option<String>,
+    /// The user message row this row belongs to: a hook's context is part of
+    /// its message's group, so whatever settles the message settles it
+    /// (timeline UI §4.8).
+    pub parent_row: Option<String>,
     /// A compaction row's state and detail.
     pub compaction: Option<CompactionView>,
     /// A model failure's details, shown when the row is expanded.
@@ -123,13 +137,37 @@ pub struct RetryView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionView {
     pub state: CompactionState,
+    pub detail: Option<CompactionDetail>,
     /// A completed compaction's summary text — the strategy's part of what
     /// replaced the cut history — or the reason or error of one that did not
     /// complete.
-    pub text: String,
+    pub text: std::sync::Arc<str>,
     /// The parts that keep a completed compaction above its bound, as the
     /// record names them; empty when the record carries no such mark.
     pub insufficient: Vec<CompactionPartSize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionDetail {
+    pub event_id: String,
+    pub sequence: u64,
+    pub state: CompactionDetailState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionDetailState {
+    Unloaded,
+    Loading,
+    Loaded,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompactionTarget {
+    pub session_id: String,
+    pub branch_id: String,
+    pub event_id: String,
+    pub sequence: u64,
 }
 
 /// One part the record names in a compaction's insufficient-space mark.
@@ -268,13 +306,44 @@ pub struct TaskView {
     pub finished: Option<TaskFinish>,
 }
 
+/// How a task ended, as the owner that ended it classified it: a stop is not
+/// a failure, so the three outcomes stay distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl TaskOutcome {
+    /// The mark the task row draws before a finished task's label, one cell
+    /// each.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Completed => "\u{2713} ",
+            Self::Failed => "\u{2717} ",
+            Self::Stopped => "\u{2298} ",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskFinish {
     pub at: u64,
+    /// The owner's own status name, which the panel and a card show.
     pub status: &'static str,
-    pub failed: bool,
+    pub outcome: TaskOutcome,
+    /// Whether a read of recorded events produced this finish rather than the
+    /// live event stream: a replayed end is history, not news.
+    pub replayed: bool,
     pub text: String,
     pub exit_code: Option<i64>,
+}
+
+impl TaskFinish {
+    pub fn failed(&self) -> bool {
+        self.outcome == TaskOutcome::Failed
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -290,7 +359,10 @@ pub enum TaskOutputState {
     Unavailable,
     Unsupported,
     ReadError(String),
-    Finished { status: &'static str, failed: bool },
+    Finished {
+        status: &'static str,
+        outcome: TaskOutcome,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use crate::ui::i18n::t;
 use crate::ui::render::panel::bordered;
-use crate::ui::rows::{Columns, Kind, Row, footer, panel_row, title};
-use crate::ui::text::truncate_cells;
+use crate::ui::rows::{Columns, Kind, Row, footer, panel_row, title, title_room};
+use crate::ui::text::{display_width, truncate_cells, truncate_cells_start};
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
 
@@ -580,11 +580,38 @@ impl Picker {
     }
 }
 
+/// The picker's title row: `Files`, or `Files · <dir>` when the screen
+/// shows no other directory the candidates come from. A path too long for
+/// the row keeps its tail behind a leading ellipsis, as the border's does;
+/// too narrow even for a tail, the title stays plain rather than show an
+/// ellipsis that names nothing.
+fn picker_title(root: Option<&str>, inner: usize) -> String {
+    /// Fewest path cells worth reading; the border uses the same idea for
+    /// the tail it keeps.
+    const TAIL: usize = 4;
+    let files = t("Files");
+    let Some(root) = root else {
+        return files.to_owned();
+    };
+    let separator = " · ";
+    let Some(path) = title_room(inner).checked_sub(display_width(files) + display_width(separator))
+    else {
+        return files.to_owned();
+    };
+    if path < TAIL {
+        return files.to_owned();
+    }
+    format!("{files}{separator}{}", truncate_cells_start(root, path))
+}
+
 /// The bordered picker panel, `width` columns wide including borders.
+/// `root` names the directory the candidates come from, for a screen whose
+/// border names another workspace; `None` titles the panel `Files`.
 pub fn render(
     picker: &Picker,
     candidates: &[Candidate],
     searching: bool,
+    root: Option<&str>,
     width: usize,
     p: &Palette,
 ) -> Vec<String> {
@@ -599,7 +626,7 @@ pub fn render(
             unavailable: false,
         })
         .collect();
-    let mut content = vec![title(t("Files"), inner, p)];
+    let mut content = vec![title(&picker_title(root, inner), inner, p)];
     if rows.is_empty() {
         let empty = if searching {
             t("Searching…")

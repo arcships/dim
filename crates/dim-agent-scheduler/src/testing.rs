@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 pub struct Holds {
     disable: Mutex<Option<Arc<DisableHold>>>,
     fail_release: AtomicBool,
+    lose_input_reply: AtomicBool,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable
@@ -54,6 +55,13 @@ impl Holds {
         self.fail_release.store(true, Ordering::SeqCst);
     }
 
+    /// Loses the next input reply after the write may have reached the
+    /// target, so a delivery takes its uncertain-reply path on a write whose
+    /// input was in fact accepted (A.5, A.6).
+    pub fn lose_next_input_reply(&self) {
+        self.lose_input_reply.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) async fn before_disable_write(&self) {
         let hold = self.disable.lock().unwrap().clone();
         if let Some(hold) = hold {
@@ -63,6 +71,11 @@ impl Holds {
 
     pub(crate) fn take_release_failure(&self) -> bool {
         self.fail_release.swap(false, Ordering::SeqCst)
+    }
+
+    /// Whether the next input reply is to be lost, once.
+    pub(crate) fn take_lost_input_reply(&self) -> bool {
+        self.lose_input_reply.swap(false, Ordering::SeqCst)
     }
 
     /// Whether an injected release failure is still waiting to be taken.

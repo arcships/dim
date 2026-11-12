@@ -100,6 +100,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "会话现在没有标题。",
         "This daemon does not support renaming Sessions" => "此守护进程不支持重命名会话",
         "Renaming failed" => "重命名失败",
+        "Delete \"{name}\"?" => "删除“{name}”？",
+        "Deleted {name}." => "已删除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "没有删除任何内容：没有已保存的会话 {name}。"
+        }
+        "Delete failed" => "删除失败",
+        "This daemon does not support deleting Sessions" => "此守护进程不支持删除会话",
         "Starting" => "启动中",
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -312,10 +319,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "配置工具审批",
         "choose ask or full access" => "选择询问或完全访问",
         "open settings" => "打开设置",
-        "report the most recent error" => "上报最近一次错误",
-        "Run /report to report this error." => "输入 /report 上报此错误。",
-        "No reportable error in this interface." => "当前界面没有可上报的错误。",
+        "report the current session" => "上报当前会话",
+        "Run /report to create a report." => "输入 /report 生成报告。",
+        "No session to report." => "没有可上报的会话。",
         "Usage: /report" => "用法：/report",
+        "Report this session" => "上报当前会话",
         "Report this error" => "上报此错误",
         "Report ready" => "报告已生成",
         "ZIP contents: report.md, diagnostics.json" => "ZIP 内容：report.md、diagnostics.json",
@@ -328,10 +336,10 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Generate report" => "生成报告",
         "Refresh report plan" => "刷新报告计划",
         "Prepare report again" => "重新准备报告",
-        "Evidence · Timeline failure captured" => "证据 · 已捕获时间线错误",
+        "Evidence · Recent session activity" => "证据 · 最近的会话活动",
+        "Evidence · No recent session activity" => "证据 · 近期没有可上报的会话活动",
         "Evidence · Observed error only" => "证据 · 只有观察到的错误",
         "Evidence · Timeline omitted" => "证据 · 已省略时间线",
-        "Evidence · Timeline failure unavailable" => "证据 · 找不到时间线错误",
         "Evidence · Timeline read failed" => "证据 · 无法读取时间线",
         "Evidence · Timeline unavailable" => "证据 · 时间线不可用",
         "Some options were unsupported." => "部分选项不受支持。",
@@ -354,14 +362,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切换 · Enter 选择 · Esc 关闭",
         "exit" => "退出应用",
 
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 选择 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 选择并设为默认 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
         }
+        "Default for new sessions in {folder}: {model}" => "新会话在 {folder} 的默认模型：{model}",
+        "Default for new sessions: {model}" => "新会话的默认模型：{model}",
         "Enter select · Esc clear/close" => "Enter 选择 · Esc 清除/关闭",
         "esc close" => "Esc 关闭",
         "Suggestions" => "建议",
         "Skills" => "技能",
         "Skill loaded: {name}" => "已加载技能：{name}",
+        "Hook context · {count} line" => "钩子上下文 · {count} 行",
+        "Hook context · {count} lines" => "钩子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 钩子后续输入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 钩子后续输入 · {count} 行",
         "Commands" => "命令",
         "Command Palette" => "命令面板",
         "No matches" => "无匹配项",
@@ -407,8 +421,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "当前工作区没有已保存的会话。Ctrl+S 查看更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 打开 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
         }
         "Loading sessions..." => "正在加载会话...",
         "No saved sessions yet." => "暂无已保存的会话。",
@@ -486,6 +500,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Subagent model policy: {error}" => "子代理模型策略：{error}",
         "drawing diagram… {count} lines" => "正在绘制图表…已收到 {count} 行",
         "Task complete" => "任务已完成",
+        "Background task finished: {label}" => "后台任务已完成：{label}",
+        "Background task failed: {label}" => "后台任务失败：{label}",
+        "Background task stopped: {label}" => "后台任务已停止：{label}",
         "Permission needed: {tool}" => "需要授权：{tool}",
         "Question waiting for your answer" => "有问题等你回答",
         "Notify when agent needs you" => "需要你时通知",
@@ -570,6 +587,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它，而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}），而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}）；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"

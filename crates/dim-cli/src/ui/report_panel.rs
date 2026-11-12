@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-use crate::report::{Action, Captured, Draft, EvidenceUnavailable, GeneratedReport, Plan, Reply};
+use crate::report::{Action, Draft, EvidenceUnavailable, GeneratedReport, Plan, Reply, Target};
 use crate::ui::i18n::t;
 use crate::ui::line_input::LineInput;
 use crate::ui::render::panel::{bordered, follow_window, wrap};
@@ -23,7 +23,7 @@ enum Busy {
 pub struct Panel {
     pub id: u64,
     pub draft: Option<Draft>,
-    capture: Option<Captured>,
+    target: Option<Target>,
     model: Option<dim_agent_types::ModelId>,
     generated: Option<GeneratedReport>,
     plan: Option<Plan>,
@@ -45,11 +45,11 @@ pub enum Input {
 }
 
 impl Panel {
-    pub fn new(id: u64, error: &Captured) -> Self {
+    pub fn new(id: u64, target: Target) -> Self {
         Self {
             id,
             draft: None,
-            capture: Some(error.clone()),
+            target: Some(target),
             model: None,
             generated: None,
             plan: None,
@@ -107,7 +107,7 @@ impl Panel {
     }
 
     pub fn disconnected(&mut self, message: &str) {
-        self.capture = None;
+        self.target = None;
         self.draft = None;
         self.busy = None;
         self.editing = false;
@@ -133,7 +133,7 @@ impl Panel {
                     instructions: self.instructions.clone(),
                 },
             ),
-            None => (Busy::Prepare, Action::Prepare(self.capture.clone()?)),
+            None => (Busy::Prepare, Action::Prepare(self.target.clone()?)),
         };
         self.busy = Some(busy);
         self.plan = None;
@@ -178,7 +178,7 @@ impl Panel {
             KeyCode::Up => self.focus = self.focus.saturating_sub(1),
             KeyCode::Down => self.focus = (self.focus + 1).min(count - 1),
             KeyCode::Enter if self.generated.is_some() => return self.generated_key(workspace),
-            KeyCode::Enter if self.focus == 4 || self.capture.is_none() => {
+            KeyCode::Enter if self.focus == 4 || self.target.is_none() => {
                 return Input::Close;
             }
             KeyCode::Enter if self.busy.is_none() => match self.focus {
@@ -267,7 +267,7 @@ impl Panel {
             } else {
                 vec![t("Save ZIP"), t("Close")]
             }
-        } else if self.capture.is_none() {
+        } else if self.target.is_none() {
             vec![t("Close")]
         } else {
             vec![
@@ -296,17 +296,21 @@ impl Panel {
 
     pub fn render(&self, width: usize, budget: usize, p: &Palette) -> Vec<String> {
         self.caret.set(None);
+        let title = if self.generated.is_some() {
+            t("Report ready")
+        } else {
+            match &self.target {
+                Some(Target::Session(_)) => t("Report this session"),
+                Some(Target::Error(_)) => t("Report this error"),
+                None => t("Report"),
+            }
+        };
         if budget < 3 || width < 8 {
-            return vec![truncate_cells(t("Report this error"), width)];
+            return vec![truncate_cells(title, width)];
         }
         let inner = width - 4;
         let height = budget - 2;
         let mut rows = Vec::new();
-        let title = if self.generated.is_some() {
-            t("Report ready")
-        } else {
-            t("Report this error")
-        };
         if self.editing {
             rows.push(truncate_cells(
                 t("Options · for example: omit timeline, keep error codes"),
@@ -361,37 +365,37 @@ impl Panel {
                 t("ZIP contents: report.md, diagnostics.json")
             )
         } else {
-            let mut body = self
-                .capture
-                .as_ref()
-                .map(|error| crate::sanitize::safe_line(&error.message))
-                .unwrap_or_default();
+            let mut body = String::new();
+            if let Some(Target::Error(error)) = &self.target {
+                body.push_str(&crate::sanitize::safe_line(&error.message));
+                body.push('\n');
+            }
             if let Some(model) = &self.model {
                 body.push_str(&format!(
-                    "\n{} {}/{}",
+                    "{} {}/{}\n",
                     t("Session model"),
                     model.provider_id,
                     model.model_id
                 ));
             }
-            body.push_str(&format!(
-                "\n{}",
-                t("Local generation makes zero model requests.")
-            ));
+            body.push_str(t("Local generation makes zero model requests."));
             if let Some(plan) = &self.plan {
                 body.push('\n');
-                body.push_str(if plan.evidence.timeline.is_some() {
-                    t("Evidence · Timeline failure captured")
+                let session = matches!(&self.target, Some(Target::Session(_)));
+                body.push_str(if let Some(timeline) = &plan.evidence.timeline {
+                    if timeline.recent.is_empty() {
+                        t("Evidence · No recent session activity")
+                    } else {
+                        t("Evidence · Recent session activity")
+                    }
                 } else {
                     match plan.evidence.unavailable.as_ref() {
                         Some(EvidenceUnavailable::Omitted) => t("Evidence · Timeline omitted"),
-                        Some(EvidenceUnavailable::FailureUnavailable) => {
-                            t("Evidence · Timeline failure unavailable")
-                        }
                         Some(EvidenceUnavailable::ReadFailed) => {
                             t("Evidence · Timeline read failed")
                         }
                         Some(EvidenceUnavailable::Unknown) => t("Evidence · Timeline unavailable"),
+                        _ if session => t("Evidence · Timeline unavailable"),
                         Some(EvidenceUnavailable::NoReference) | None => {
                             t("Evidence · Observed error only")
                         }

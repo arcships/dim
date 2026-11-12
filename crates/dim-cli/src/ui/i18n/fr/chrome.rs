@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Ce démon ne prend pas en charge le renommage des sessions"
         }
         "Renaming failed" => "Échec du renommage",
+        "Delete \"{name}\"?" => "Supprimer « {name} » ?",
+        "Deleted {name}." => "{name} supprimée.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Rien n'a été supprimé : aucune session enregistrée {name}."
+        }
+        "Delete failed" => "Échec de la suppression",
+        "This daemon does not support deleting Sessions" => {
+            "Ce démon ne prend pas en charge la suppression des sessions"
+        }
         "Starting" => "Démarrage",
         "Delegation result" => "Résultat de délégation",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -375,14 +384,22 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "quitter",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter choisir · ←/→ effort · Ctrl+X oublier · Esc effacer/fermer"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter choisir + défaut · ←/→ effort · Ctrl+X oublier · Esc effacer/fermer"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Modèle par défaut des nouvelles sessions dans {folder} : {model}"
+        }
+        "Default for new sessions: {model}" => "Modèle par défaut des nouvelles sessions : {model}",
         "Enter select · Esc clear/close" => "Enter choisir · Esc effacer/fermer",
         "esc close" => "esc fermer",
         "Suggestions" => "Suggestions",
         "Skills" => "Skills",
         "Skill loaded: {name}" => "Skill chargé: {name}",
+        "Hook context · {count} line" => "Contexte du hook · {count} ligne",
+        "Hook context · {count} lines" => "Contexte du hook · {count} lignes",
+        "Stop hook follow-up · {count} line" => "Suite du hook Stop · {count} ligne",
+        "Stop hook follow-up · {count} lines" => "Suite du hook Stop · {count} lignes",
         "Commands" => "Commandes",
         "Command Palette" => "Palette de commandes",
         "No matches" => "Aucun résultat",
@@ -439,8 +456,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Aucune session enregistrée dans cet espace de travail. Ctrl+S en affiche d'autres."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter ouvrir · Ctrl+S portée · Ctrl+R actualiser · Esc fermer"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter ouvrir · Ctrl+X supprimer · Ctrl+S portée · Ctrl+R actualiser · Esc fermer"
         }
         "Loading sessions..." => "Chargement…",
         "No saved sessions yet." => "Aucune session enregistrée.",
@@ -526,6 +543,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "dessin du diagramme… {count} lignes",
         // notify.rs
         "Task complete" => "Tâche terminée",
+        "Background task finished: {label}" => "Tâche d'arrière-plan terminée : {label}",
+        "Background task failed: {label}" => "Tâche d'arrière-plan échouée : {label}",
+        "Background task stopped: {label}" => "Tâche d'arrière-plan arrêtée : {label}",
         "Permission needed: {tool}" => "Autorisation requise: {tool}",
         "Question waiting for your answer" => "Question en attente de réponse",
         "Notify when agent needs you" => "Notifier si l'agent vous attend",
@@ -594,6 +614,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "L'App Server est toujours {server} car d'autres clients l'utilisent ; ce client {client} l'utilise aussi. Exécutez `dimcode daemon stop` lorsqu'ils ont terminé ; le prochain démarrage exécutera {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "L'App Server est toujours {server} car d'autres clients l'utilisent, et il parle le protocole v{protocol}, que ce client {client} ne peut pas utiliser. Aucune session n'a été démarrée. Exécutez `dimcode daemon stop` lorsqu'ils ont terminé ; le prochain démarrage exécutera {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "L'App Server est toujours {server} car d'autres clients l'utilisent (connexions : {connections}, sessions attachées : {attached}, tours en cours : {running}), et il parle le protocole v{protocol}, que ce client {client} ne peut pas utiliser. Aucune session n'a été démarrée. Exécutez `dimcode daemon stop` lorsqu'ils ont terminé ; le prochain démarrage exécutera {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "L'App Server est toujours {server} car d'autres clients l'utilisent (connexions : {connections}, sessions attachées : {attached}, tours en cours : {running}) ; ce client {client} l'utilise aussi. Exécutez `dimcode daemon stop` lorsqu'ils ont terminé ; le prochain démarrage exécutera {client}."

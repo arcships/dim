@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon não suporta renomear sessões"
         }
         "Renaming failed" => "Falha ao renomear",
+        "Delete \"{name}\"?" => "Eliminar \"{name}\"?",
+        "Deleted {name}." => "{name} eliminada.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Nada foi eliminado: nenhuma sessão guardada {name}."
+        }
+        "Delete failed" => "Falha ao eliminar",
+        "This daemon does not support deleting Sessions" => {
+            "Este daemon não suporta eliminar sessões"
+        }
         "Starting" => "A iniciar",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -385,14 +394,22 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "sair",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter selecionar · ←/→ esforço · Ctrl+X limpar guardado · Esc limpar/fechar"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter selecionar + predefinido · ←/→ esforço · Ctrl+X limpar guardado · Esc limpar/fechar"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Modelo predefinido para novas sessões em {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Modelo predefinido para novas sessões: {model}",
         "Enter select · Esc clear/close" => "Enter selecionar · Esc limpar/fechar",
         "esc close" => "esc fechar",
         "Suggestions" => "Sugestões",
         "Skills" => "Competências",
         "Skill loaded: {name}" => "Competência carregada: {name}",
+        "Hook context · {count} line" => "Contexto do hook · {count} linha",
+        "Hook context · {count} lines" => "Contexto do hook · {count} linhas",
+        "Stop hook follow-up · {count} line" => "Seguimento do hook Stop · {count} linha",
+        "Stop hook follow-up · {count} lines" => "Seguimento do hook Stop · {count} linhas",
         "Commands" => "Comandos",
         "Command Palette" => "Paleta de comandos",
         "No matches" => "Sem resultados",
@@ -449,8 +466,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Sem sessões guardadas neste espaço de trabalho. Ctrl+S mostra mais."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter abrir · Ctrl+S âmbito · Ctrl+R atualizar · Esc fechar"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter abrir · Ctrl+X eliminar · Ctrl+S âmbito · Ctrl+R atualizar · Esc fechar"
         }
         "Loading sessions..." => "A carregar sessões…",
         "No saved sessions yet." => "Sem sessões guardadas.",
@@ -534,6 +551,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "a desenhar diagrama… {count} linhas",
         // notify.rs
         "Task complete" => "Tarefa concluída",
+        "Background task finished: {label}" => "Tarefa em segundo plano concluída: {label}",
+        "Background task failed: {label}" => "Tarefa em segundo plano falhou: {label}",
+        "Background task stopped: {label}" => "Tarefa em segundo plano interrompida: {label}",
         "Permission needed: {tool}" => "Permissão necessária: {tool}",
         "Question waiting for your answer" => "Pergunta à espera de resposta",
         "Notify when agent needs you" => "Notificar quando o agente precisar de si",
@@ -602,6 +622,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server continua a ser {server} porque outros clientes o estão a utilizar; este cliente {client} também o utiliza. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server continua a ser {server} porque outros clientes o estão a utilizar, e fala o protocolo v{protocol}, que este cliente {client} não pode utilizar. Não foi iniciada nenhuma sessão. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server continua a ser {server} porque outros clientes o estão a utilizar (ligações: {connections}, sessões associadas: {attached}, turnos em execução: {running}), e fala o protocolo v{protocol}, que este cliente {client} não pode utilizar. Não foi iniciada nenhuma sessão. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server continua a ser {server} porque outros clientes o estão a utilizar (ligações: {connections}, sessões associadas: {attached}, turnos em execução: {running}); este cliente {client} também o utiliza. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."

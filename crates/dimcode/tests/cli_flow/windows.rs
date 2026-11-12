@@ -69,14 +69,22 @@ fn line_effort_uses_attach_and_new_configuration_even_outside_the_transcript() {
 
 #[test]
 fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window() {
-    for head in [5_000_u64, 50_000] {
+    for (head, display) in [
+        (5_000_u64, false),
+        (50_000, false),
+        (5_000, true),
+        (50_000, true),
+    ] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
-            wire.hello(&[]);
+            wire.hello(if display { &["session.history.display", "session.history.detail"] } else { &[] });
+            let method = if display { "session.history.display" } else { "session.history" };
+            let field = if display { "items" } else { "events" };
             let attach = wire.read("session.attach");
+            assert_eq!(attach["params"].get("display"), display.then_some(&json!(true)));
             wire.reply(&attach, attach_record(&attach));
             for page in 0..4 {
-                let request = wire.read("session.history");
+                let request = wire.read(method);
                 let before = head + 1 - page * 256;
                 let first = before - 256;
                 let mut expected = json!({"sessionId":"session","branchId":"main","limit":256});
@@ -87,23 +95,29 @@ fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window
                     expected["through"] = json!(head);
                 }
                 assert_eq!(request["params"], expected);
-                let events = match page {
+                let mut events = match page {
                     0 => vec![text(head, "latest", "newest-window-text")],
                     1 => Vec::new(),
                     2 => (first..before).map(|sequence| json!({"id":format!("hidden{sequence}"),
                         "sequence":sequence,"create_at":1,"type":"input","name":"message","data":{"blocks":[]}})).collect(),
                     _ => vec![text(first, "older", "oldest-window-text")],
                 };
+                if display && page == 0 {
+                    events.insert(0, json!({"id":"compact","sequence":head-1,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}));
+                }
                 if page == 1 {
                     wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
                         "event":text(head + 1,"live","held-live-text")}));
+                    if display {
+                        wire.notice("session.display", json!({"sessionId":"session","branchId":"main","item":{"id":"live-compact","sequence":head+2,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}}));
+                    }
                 }
-                wire.reply(&request, json!({"events":events,"through":head,
+                wire.reply(&request, json!({(field):events,"through":head,
                     "nextBefore":first,"nextAfter":before-1,"done":true}));
             }
-            wire.no_pending_questions(head + 1);
+            wire.no_pending_questions(head + 1 + u64::from(display));
             let idle = wire.read("session.idle");
-            wire.reply(&idle,json!({"sequence":head+1}));
+            wire.reply(&idle,json!({"sequence":head+1+u64::from(display)}));
             wire.detach();
         });
         let mut command = home.command();

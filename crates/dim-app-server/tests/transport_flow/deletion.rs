@@ -36,6 +36,9 @@ impl Store {
             ..Default::default()
         }
     }
+    pub fn database(&self) -> std::path::PathBuf {
+        self.0.join("dimcode.sqlite")
+    }
     pub fn connection(&self) -> Connection {
         let connection = Connection::open(self.0.join("dimcode.sqlite")).unwrap();
         connection.busy_timeout(Duration::from_secs(10)).unwrap();
@@ -587,9 +590,6 @@ async fn require_inactive_deletes_a_session_whose_line_failed() {
     server.join().await.unwrap();
 }
 
-/// Acceptance 2 and 9: Sessions that are not loaded, fail validation or
-/// have no readable owner are deleted by id, and a Session whose output
-/// is already gone loads and is deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unloaded_and_damaged_sessions_are_deleted_by_id() {
     let store = Store::new();
@@ -623,12 +623,28 @@ async fn unloaded_and_damaged_sessions_are_deleted_by_id() {
 
     let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
     let mut client = Client::new_version(&server, false, 3).await;
-    for id in [&damaged, &ownerless] {
-        assert!(
-            client.rpc("session.attach", json!({"sessionId":id})).await["error"].is_object(),
-            "{id} does not load"
-        );
-    }
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":damaged}))
+            .await,
+    );
+    assert!(
+        client
+            .rpc(
+                "session.history",
+                json!({"sessionId":damaged,"branchId":"main","after":0,"limit":256})
+            )
+            .await["error"]
+            .is_object(),
+        "reading the selected damaged event fails"
+    );
+    assert!(
+        client
+            .rpc("session.attach", json!({"sessionId":ownerless}))
+            .await["error"]
+            .is_object(),
+        "a Session without a readable owner does not load"
+    );
     assert_ok(
         &client
             .rpc("session.attach", json!({"sessionId":outputless}))

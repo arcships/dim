@@ -84,28 +84,17 @@ fn archive(result: &Value) -> Value {
     serde_json::from_str(result["files"]["diagnostics.json"].as_str().unwrap()).unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
+fn report_home() -> tempfile::TempDir {
     let home = tempfile::Builder::new()
         .prefix("dim-report-")
         .tempdir_in("/tmp")
         .unwrap();
     std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let assets = home.path().join("web");
-    std::fs::create_dir_all(assets.join("assets")).unwrap();
-    std::fs::write(
-        assets.join("index.html"),
-        "<!doctype html><title>Dim</title>",
-    )
-    .unwrap();
-    std::fs::write(assets.join("assets/app.js"), "export {}").unwrap();
-    std::fs::write(
-        assets.join("dimcode-web.json"),
-        r#"{"version":"0.0.1","protocolVersion":4,"sourceCommit":"test"}"#,
-    )
-    .unwrap();
+    home
+}
+
+fn report_builder() -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    let model = Arc::new(FailedModel::default());
     defaults::install_with_prompt(
         &mut builder,
         Arc::new(EmptyPromptHost),
@@ -120,8 +109,143 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
             }),
         }),
     );
-    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
     dim_report::install(&mut builder);
+    builder
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn report_rpc_captures_a_session_without_an_error_at_a_fixed_cutoff() {
+    let home = report_home();
+    let mut builder = report_builder();
+    defaults::mock_hosts(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            platform_home: Some(home.path().into()),
+            unix_path: Some(home.path().join("server.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut owner = connect(&server).await;
+    let created = owner
+        .rpc("session.create", json!({"cwd":home.path(), "tools":[]}))
+        .await
+        .unwrap();
+    let id = &created["sessionId"];
+
+    let prepare = json!({"sessionId":id});
+    let before_first_turn = owner
+        .rpc("session.report.prepare", prepare.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        before_first_turn["plan"]["evidence"]["timeline"]["recent"][0]["kind"],
+        "branch/start"
+    );
+    let rejected = owner.rpc("report.prepare", json!({})).await.unwrap_err();
+    assert_eq!(app_error(&rejected), Some("invalid_params"));
+    let rejected = owner
+        .rpc(
+            "session.report.prepare",
+            json!({"sessionId":id,"error":null}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(app_error(&rejected), Some("invalid_params"));
+
+    let turn = async |owner: &mut Client| {
+        owner
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":SECRET}),
+            )
+            .await
+            .unwrap();
+        owner
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await
+            .unwrap();
+    };
+    for _ in 0..4 {
+        turn(&mut owner).await;
+    }
+    let session = server
+        .agent()
+        .unwrap()
+        .get_session(id.as_str().unwrap())
+        .unwrap();
+    let cutoff = session.sequence("main").unwrap();
+    let prepared = owner.rpc("session.report.prepare", prepare).await.unwrap();
+    assert_eq!(
+        prepared["defaultModel"],
+        json!({"providerId":"test","modelId":"report-fixture"})
+    );
+    let evidence = &prepared["plan"]["evidence"];
+    assert!(evidence.get("capturedError").is_none());
+    assert_eq!(evidence["timeline"]["truncated"], true);
+    let recent = evidence["timeline"]["recent"].as_array().unwrap();
+    assert!(recent.len() <= 16);
+    assert!(recent.iter().any(
+        |record| record["kind"] == "step/model-output-end" && record["outcome"] == "completed"
+    ));
+    assert!(recent.iter().all(|record| {
+        let sequence = record["sequence"].as_u64().unwrap();
+        (cutoff - 31..=cutoff).contains(&sequence)
+    }));
+    assert!(!prepared.to_string().contains(SECRET));
+
+    turn(&mut owner).await;
+    let head = session.sequence("main").unwrap();
+    assert!(head > cutoff);
+    let plan = owner
+        .rpc(
+            "session.report.plan",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false}),
+        )
+        .await
+        .unwrap();
+    let generated = owner
+        .rpc(
+            "session.report.generate",
+            json!({
+                "sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated["title"], "Session report");
+    let diagnostics = archive(&generated);
+    assert_eq!(diagnostics["version"], 2);
+    assert!(diagnostics["evidence"].get("capturedError").is_none());
+    assert_eq!(diagnostics["evidence"]["timeline"], evidence["timeline"]);
+    assert_eq!(session.sequence("main").unwrap(), head);
+
+    drop(owner);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
+    let home = report_home();
+    let assets = home.path().join("web");
+    std::fs::create_dir_all(assets.join("assets")).unwrap();
+    std::fs::write(
+        assets.join("index.html"),
+        "<!doctype html><title>Dim</title>",
+    )
+    .unwrap();
+    std::fs::write(assets.join("assets/app.js"), "export {}").unwrap();
+    std::fs::write(
+        assets.join("dimcode-web.json"),
+        r#"{"version":"0.0.1","protocolVersion":4,"sourceCommit":"test"}"#,
+    )
+    .unwrap();
+    let mut builder = report_builder();
+    let model = Arc::new(FailedModel::default());
+    defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model.clone());
     let server = serve(
         builder,
         ServerConfig {

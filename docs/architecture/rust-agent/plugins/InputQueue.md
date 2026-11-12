@@ -13,8 +13,9 @@ branch's InputQueue. It also provides the Session table `submitChecks`
 Session parts register submit checks with it from their own `apply` and the
 registration is withdrawn when that part unloads. A `session.input.withdraw`
 with `steer` calls each check registered now, in name order, before its batch;
-any block fails the call with `input_blocked` and writes nothing, else the
-checks' contexts become text blocks after the steer's own content. This is
+any block fails the call with `input_blocked` and writes nothing, else each
+context that is one runtime marker element becomes a text block after the
+steer's own content, and one that is not is dropped with a diagnostic. This is
 Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
 with none registered the withdrawal writes unchecked.
 
@@ -74,33 +75,19 @@ observable input queue.
 
 ### Events and lifetime
 
-Consumes `input/message`, `input/consumed`, `turn/start`, `turn/end`,
-`stop/interrupt`; produces `input/applied`. It does not run a model itself.
-It registers with `Dispatcher::consume`; recovery reads ordered identity, input
-mode, handover identity and turn identity fields in pages at one committed boundary. User-content shape
-distinguishes the default queue mode from an internal append; content text is
-not read. Recovery retains queue entries and owed decisions, removes each owed
-decision when its written result is read, and writes the remaining application
-or withdrawal decisions before live delivery. It holds no historical event
-list. No background tasks or external resources. An idle append
-is pending until a driving input; an interrupt is not permission to start a new
-turn from previously unapplied input.
+Consumes input, withdrawal, turn and interrupt facts; produces only the original
+application/deletion decisions. It writes no queue recovery or node events.
 
-### Handover inputs
-
-A handover input is an `input/message` whose `handover` is `{turn_id,
-request_id}`: it is addressed to one handover's continuation and is
-model-readable only if that continuation consumes it. InputQueue never releases
-one (it writes no `input/applied`) and does not count it in the published queue
-size. It deletes one with `input/deleted` when its turn ends without consuming
-it, or on arrival when its turn is not open. These are the only InputQueue
-rules for it; the Loop consumes it only in the batch that starts its handover's
-continuation. Its instruction is a raw block with no `user`, like Goal's
-automatic inputs; clients that show the operator's words never show it as the
-operator's message.
-
-A handover input is never a [state input](../../../design/model-prompts.md#5-scopes),
-so an ordering rule for state inputs leaves it last.
+Recovery fixes a published cutoff, selects ordinary and handover current members,
+then reads last applied/withdraw controls for each page of at most 128 identities.
+Two last turn boundaries and an interrupt only when needed determine turn/starting.
+It never reads input bodies to recover entries; old missing input modes use an
+identity-driven user-presence query. Applied mode defaults agree with Loop.
+Current entries, queued count, turn, starting and release bits stay in memory.
+Only necessary applied/deleted output waits for its commit before publishing the
+observable queue; empty or unchanged transitions do not publish a new count.
+Public pending semantics still exclude handovers. Old derived recovery records
+are ignored; original facts and native member indexes remain authoritative.
 
 ### Tests
 

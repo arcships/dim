@@ -138,6 +138,7 @@ impl RpcError {
                 "Session initialization failed",
             ),
             "Reloading" => Self::reloading(),
+            "PublicationUnknown" => Self::app(-32000, "publication_unknown", message),
             "AmbiguousSubmission" => Self::app(
                 -32000,
                 "submission_ambiguous",
@@ -156,6 +157,7 @@ impl From<AgentError> for RpcError {
             AgentError::Closed(_) => "Closed",
             AgentError::Build(_) => "Build",
             AgentError::Reloading(_) => "Reloading",
+            AgentError::PublicationUnknown(_) => "PublicationUnknown",
             AgentError::AmbiguousSubmission(_) => "AmbiguousSubmission",
             AgentError::BranchEnded(_) => "BranchEnded",
             _ => "",

@@ -150,6 +150,11 @@ pub enum Effect {
         action: &'static str,
     },
     Export(crate::export::Format),
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// End this line, once the user confirmed it.
     EndLine {
         session_id: String,
@@ -258,6 +263,8 @@ pub enum Effect {
         model_id: String,
         /// Set when ←/→ cycled this model's reasoning effort.
         reasoning_effort: Option<String>,
+        /// The row's own text, which the default's confirmation names back.
+        label: String,
     },
     SetEffort {
         model: String,

@@ -472,11 +472,17 @@ async fn pursuit_1_a_completion_request_creates_one_evaluator_and_continues_noth
     let env = Env::start().await;
     let (evaluation, create) = completion_requested(&env).await;
     assert_eq!(env.creates("main").await.len(), 1);
-    assert_eq!(
-        create.at,
-        BranchCreateAt::Create {},
-        "the evaluator opens at the branch head, the turn end it evaluates: {evaluation}"
-    );
+    match create.at {
+        BranchCreateAt::Sequence { sequence } => assert_eq!(sequence, evaluation),
+        BranchCreateAt::Create {} => {
+            let event=env.all_events("main").await.into_iter().find(|event|matches!(&event.kind,dim_agent_types::EventKind::BranchCreate(data) if data.branch==create.branch)).unwrap();
+            assert_eq!(
+                event.sequence,
+                evaluation + 1,
+                "head anchoring adds only the structural creation fact"
+            );
+        }
+    }
     assert_eq!(
         create.prompt,
         texts::evaluator_prompt("main", evaluation, "ship it", "all tests pass")
@@ -995,46 +1001,35 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
 /// The deferred conclusion is re-derived from the fold, so a reload between
 /// the conclusion and the cancelled end keeps it (Pursuit §5).
 #[tokio::test]
-async fn pursuit_8_a_reload_keeps_a_deferred_continue_conclusion() {
-    let (env, evaluation) = deferred_conclusion(Env::start().await, false).await;
-    let writes = env.settled("main").await;
-    assert!(
-        writes
-            .iter()
-            .all(|block| !block.marker.contains(r#"kind="continuation""#)),
-        "the reload writes no continuation: {writes:#?}"
-    );
-
-    env.exec_ended("main", "task-1", "cancelled");
-    let evaluated = wait_evaluated(&env, "main", evaluation).await;
+async fn pursuit_8_a_reload_discards_a_deferred_continue_conclusion() {
+    let (env, _) = deferred_conclusion(Env::start().await, false).await;
+    let before = env.settled("main").await.len();
     assert_eq!(
-        evaluated.text,
-        texts::evaluated_continuation("main", 1, None, 0, evaluation, evaluation),
-        "the rebuild re-derives the deferred conclusion"
+        env.goal("get", json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "paused"
+    );
+    env.exec_ended("main", "task-1", "cancelled");
+    assert_eq!(
+        env.settled("main").await.len(),
+        before,
+        "old conclusions and tasks cannot resume the Goal"
     );
     env.close().await;
 }
 
-/// A cancelled end committed before the reload leaves the pending conclusion
-/// in the fold; the rebuild takes the settle path and writes exactly one
-/// continuation (Pursuit §5).
 #[tokio::test]
-async fn pursuit_8_a_reload_after_a_cancelled_end_takes_the_conclusion() {
-    let (env, evaluation) = deferred_conclusion(Env::start().await, true).await;
-    let evaluated = wait_evaluated(&env, "main", evaluation).await;
+async fn pursuit_8_a_reload_after_a_cancelled_end_does_not_take_the_old_conclusion() {
+    let (env, _) = deferred_conclusion(Env::start().await, true).await;
+    let before = env.settled("main").await.len();
     assert_eq!(
-        evaluated.text,
-        texts::evaluated_continuation("main", 1, None, 0, evaluation, evaluation),
-        "the rebuild settles the pending conclusion"
+        env.goal("get", json!({})).await.unwrap()["goal"]["status"]["kind"],
+        "paused"
     );
-    let writes = env.settled("main").await;
+    env.exec_ended("main", "task-1", "cancelled");
     assert_eq!(
-        writes
-            .iter()
-            .filter(|block| block.marker.contains(r#"kind="continuation""#))
-            .count(),
-        1,
-        "exactly one continuation follows the reload: {writes:#?}"
+        env.settled("main").await.len(),
+        before,
+        "old conclusions and tasks cannot resume the Goal"
     );
     env.close().await;
 }

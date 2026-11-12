@@ -13,6 +13,16 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{CompactionPartSize, CompactionState, RowKind, RowTone, ViewRow};
 use crate::ui::transcript::tool_group::{Detail, ToolGroup, project_group};
 
+/// Which runtime block a hook row names: the two say different things and no
+/// more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookRow {
+    /// Context the hook appended after the operator's words.
+    Context,
+    /// The input a `Stop` hook wrote to continue the conversation.
+    FollowUp,
+}
+
 /// How a status line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -36,12 +46,20 @@ pub enum Block {
     /// A shell-mode run: recorded (`!`) from the transcript, private (`!!`)
     /// from the terminal alone.
     Shell(ShellRun),
+    /// A runtime block a hook wrote: one muted row, and its body when the
+    /// detail setting is expanded.
+    Hook {
+        row: HookRow,
+        body: String,
+        expanded: bool,
+    },
     Assistant(String),
     /// A settled thought: one summary row, or the whole text when expanded.
     Thinking {
         text: String,
         elapsed_ms: Option<u64>,
         expanded: bool,
+        streamed: bool,
     },
     /// The calls of one model request.
     ToolGroup(ToolGroup),
@@ -49,7 +67,9 @@ pub enum Block {
     /// summary sits behind the disclosure.
     Compaction {
         state: CompactionState,
-        text: String,
+        text: std::sync::Arc<str>,
+        detail: Option<crate::model::view::CompactionDetail>,
+        target: Option<crate::model::view::CompactionTarget>,
         insufficient: Vec<CompactionPartSize>,
         expanded: bool,
     },
@@ -110,17 +130,29 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             },
             Block::Shell,
         ),
+        RowKind::HookContext | RowKind::HookFollowUp => Block::Hook {
+            row: if row.kind == RowKind::HookContext {
+                HookRow::Context
+            } else {
+                HookRow::FollowUp
+            },
+            body: row.text.clone(),
+            expanded: detail == Detail::Expanded,
+        },
         RowKind::AssistantMessage => Block::Assistant(row.text.clone()),
         RowKind::Thinking => Block::Thinking {
             text: row.text.clone(),
             elapsed_ms: row.elapsed_ms,
             expanded: detail == Detail::Expanded,
+            streamed: false,
         },
         RowKind::ToolCall => Block::ToolGroup(project_group(&group_rows(rows, index), detail)),
         RowKind::Compaction => match &row.compaction {
             Some(compaction) => Block::Compaction {
                 state: compaction.state,
                 text: compaction.text.clone(),
+                detail: compaction.detail.clone(),
+                target: None,
                 insufficient: compaction.insufficient.clone(),
                 expanded: detail == Detail::Expanded,
             },
@@ -189,6 +221,7 @@ mod tests {
             failure: None,
             reportable: false,
             row_id: "r".into(),
+            provisional_id: None,
             kind,
             text: text.into(),
             display: None,
@@ -210,6 +243,7 @@ mod tests {
             member: None,
             cut: None,
             line: None,
+            parent_row: None,
             compaction: None,
         }
     }
@@ -718,6 +752,7 @@ mod tests {
         ] {
             let mut completed = row(RowKind::Compaction, "");
             completed.compaction = Some(CompactionView {
+                detail: None,
                 state: CompactionState::Completed,
                 text: text.into(),
                 insufficient: Vec::new(),
@@ -760,8 +795,9 @@ mod tests {
                 };
                 let mut completed = row(RowKind::Compaction, "");
                 completed.compaction = Some(CompactionView {
+                    detail: None,
                     state: CompactionState::Completed,
-                    text: content,
+                    text: content.into(),
                     insufficient: Vec::new(),
                 });
                 let rendered = compaction_rows(&shared(&[completed]), Detail::Expanded);

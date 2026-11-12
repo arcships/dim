@@ -135,7 +135,9 @@ guessed complete selection.
 `/effort VALUE`, alias `/reasoning VALUE`, sends `reasoningEffort` without a target.
 The `/models` picker cycles a model's advertised efforts with ←/→. Enter saves a
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
-saved preferences.
+saved preferences. Enter also writes the default the next Session in the launch
+workspace reads — the workspace's own row when the folder has one, else `global`
+([provider management §4](appserver/provider-management.md#4-client-integration)).
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
 The CLI reads the adopted provider/model identity and `capability_snapshot` from
 the public `context/configured` view and takes choices from that declaration.
@@ -175,6 +177,72 @@ such a mapping the adoption sends no reasoning at all, even where
 keeps the model's own default. A missing `defaultEnabled` is not read as off.
 `none` needs that declaration or an advertised native `none`. Unsupported values
 fail without adoption; no value is guessed from a model name.
+
+Which `metadata.reasoning` declarations configure a request, and which only
+describe the model, follows one rule: a declaration configures a request when a
+field in the typed configuration carries it, the request builder sends that
+field for some protocol after validation, and the vendor adapter that receives
+it changes the bytes it writes. The applied set is the declared effort, the
+declared service tier and the declared reasoning summary.
+
+| Declaration | Effect | Why |
+| --- | --- | --- |
+| `effort`, `effortOptions` | configures | the effort mapping, validated against the advertised options |
+| `defaultEnabled`, `off`, `supported` | configures | they select or deny the effort control and send nothing themselves |
+| `serviceTier` | configures | the tier mapping, validated against the advertised options |
+| `summaries` | configures | the summary style, in the one body that carries it |
+| `mode`, `level`, `levelOptions`, `verbosity`, `verbosityOptions`, `budget` | not applied | no field exists on any request path; the first five would need their own control dispatch |
+| `visibility`, `continuation`, `notes` | describes | no reader; they are upstream prose |
+| `interleaved` | describes | not expressible on any dim protocol path |
+
+A summary reaches the wire only in the OpenAI Responses body, and only beside a
+reasoning effort other than `none`. It follows the effort the adopted
+configuration finally sends, so it is recomputed whenever a configuration is
+finalized rather than stored once: an update to `none` sends none, and clearing
+the effort back to the declared default brings it back with the effort. Without
+an effort the declaration adds nothing, because a summary alone would put the
+adapter into reasoning mode and change the system role, temperature and top-p
+along with it.
+
+Dim's request builder accepts `reasoning.summary` on xAI Responses as well, and
+writes `reasoningSummary` for it, but the xAI adapter treats that field as
+deprecated and sends no `reasoning` key; the vendor test
+`accepts_deprecated_reasoning_summary_without_sending_it` pins that. Applying the
+declaration there would change no bytes, so it is not applied: only the OpenAI
+Responses body carries the style.
+
+The rule reads a style from either field that reaches the wire,
+`provider_options.openai.summary` first and then `reasoning.summary`, because the
+generic field is a valid way to configure one. It writes only the provider option
+and clears the generic field, so the two never disagree. A style other than
+`detailed` in either field is the configuration's own and is left as set; a
+`detailed` cannot be told apart from the derived one, so it follows the effort
+and is dropped beside `none`, because that request contradicts itself. A model
+that does not declare `summaries`, and every protocol but OpenAI Responses, are
+left entirely alone.
+
+The generic field is reachable, which is why it is read: `session.model.update`
+starts from the Session's stored configuration, and a store written under a
+`--model-config` profile can carry a style in the model's own configuration there.
+Reading only the provider option would overwrite a configured `concise` with
+`detailed`.
+
+A configured `detailed` in either field is re-derived rather than kept. A stored
+value cannot say whether a user or an earlier derivation wrote it, so a stored
+`detailed` and the derived one are indistinguishable and both follow the effort
+the finalized configuration sends: beside `none`, and when the configuration
+carries no effort at all, it sends no summary. A model that declares a default
+effort supplies one, so `detailed` survives there; the case that loses it is a
+model whose declaration offers no effort, or a stored configuration left without
+one. This is a behaviour change for a stored model-configuration profile that
+asks for `detailed` explicitly, and it is the only style that changes: `auto` and
+`concise` stay as configured.
+
+`interleaved` is not applied. The wire field that would carry it,
+`interleavedThinking`, is rejected before a request leaves, on every protocol,
+and no vendor adapter reads it; the Anthropic control it stands for is
+`thinking.type: "between_tools"`, which dim's thinking type cannot spell.
+Wiring that control and retiring the dead request field are separate work.
 
 The adopted configuration's output allowance is not a preference: Provider derives
 `maxTokens` from the model's declared pair as `max(1, min(declared maxOutputTokens,

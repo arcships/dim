@@ -35,7 +35,7 @@ export type SessionSummary = SessionTitle & {
   running: boolean
   sequence: number
   preview?: string
-  origin?: "client" | "acp" | "internal" | "unknown"
+  origin?: "client" | "acp" | "internal" | "unknown" | "automation"
   parentSessionId?: string
   /** Unix milliseconds of the last main-branch event. */
   updatedAt: number
@@ -119,14 +119,14 @@ export type PermissionPolicy = {
 export type PermissionState = { version: number; policy: PermissionPolicy }
 
 /** A message the server holds in the queue of a running branch. */
-export type QueuedInput = { id: string; text: string; skills?: string[]; user: UserInput }
+export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; user: UserInput }
 
 /** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
 export type WithdrawResult = { status: "deleted" } | { status: "notHeld" }
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string; user?: UserInput; skills?: string[]; blocks: RawBlock[] }
+  | { kind: "input"; text?: string; user?: UserInput; skills?: string[]; hooks?: number; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-consumed"; inputId: string }
   | { kind: "input-applied"; inputId: string }
@@ -299,7 +299,7 @@ export type InterruptResult = { sequence: number }
 
 export type Notification =
   | { method: "ui.extensions.changed"; revision: number }
-  | { method: "session.event"; sessionId: string; branchId: string; event: SessionEvent }
+  | { method: "session.event" | "session.display"; sessionId: string; branchId: string; event: SessionEvent }
   | ({ method: "session.state" } & StateNotice)
   | { method: "session.model.progress"; progress: ModelProgress }
   | { method: "approval.request"; request: ApprovalRequest }

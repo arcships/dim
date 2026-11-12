@@ -320,6 +320,41 @@ async fn a_past_window_is_missed_and_a_gone_target_fails_and_disables() {
     server.join().await.unwrap();
 }
 
+/// The lost-reply seam spends its one-shot flag on the next reply but rewrites
+/// only an accepting one: a refusal the target gave reaches the match as it
+/// came, so the delivery settles `failed` on it instead of taking a lookup
+/// (A.5, A.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lost_reply_seam_passes_a_refusal_through() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let job = save_session_job(
+        &mut client,
+        "refused",
+        "no-such-session",
+        None,
+        json!({"at": "2030-01-01T00:00:00Z"}),
+    )
+    .await;
+    support::holds(home.path()).lose_next_input_reply();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job}))
+        .await
+        .unwrap();
+    let run = settled(&mut client, &job, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "failed", "{run}");
+    assert_eq!(run["detail"], "session_closed", "{run}");
+    assert!(
+        run["attempts"].is_null(),
+        "a refusal takes no lookup: {run}"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lookup_settles_a_delivering_delivery_at_any_attempt() {
     let home = home();
@@ -840,33 +875,13 @@ async fn legacy_jobs_map_to_their_targets_and_keep_their_bytes() {
         .typed("schedule.run_now", json!({"job_id": launch_id}))
         .await
         .unwrap();
-    let run = tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        loop {
-            let history: Value = client
-                .typed(
-                    "schedule.history",
-                    json!({"job_id": launch_id, "limit": 50}),
-                )
-                .await
-                .unwrap();
-            if let Some(run) = history["runs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|run| run["run_id"] == accepted["run_id"])
-                && !matches!(
-                    run["state"].as_str(),
-                    Some("launching" | "submitted" | "running")
-                )
-            {
-                return run.clone();
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the launch target settles");
-    assert_eq!(run["state"], "completed", "{run}");
+    let run = settled(
+        &mut client,
+        &launch_id,
+        accepted["run_id"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(run["state"], "delivered", "{run}");
     assert_eq!(run["session_origin"], "launch", "{run}");
 
     // A save preserves the legacy fields and leaves the stored target absent.
@@ -933,7 +948,21 @@ async fn legacy_jobs_map_to_their_targets_and_keep_their_bytes() {
         catalog.to_string().contains(&second),
         "a Session the job only reused survives: {catalog}"
     );
-    let launched = run["session_id"].as_str().unwrap();
+    let launched = run["session_id"].as_str().unwrap().to_owned();
+    // A launch record's stop time bounds when its Session may be deleted
+    // (A.7): move it into the past, as time would.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["session_id"] == json!(launched))
+            .unwrap();
+        run["deadline_at"] = json!("2020-01-01T00:00:00.000Z");
+    });
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
     client
         .typed::<Value>("schedule.delete", json!({"job_id": launch_id}))
         .await
@@ -947,7 +976,7 @@ async fn legacy_jobs_map_to_their_targets_and_keep_their_bytes() {
                 )
                 .await
                 .unwrap();
-            if !catalog.to_string().contains(launched) {
+            if !catalog.to_string().contains(&launched) {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1249,21 +1278,10 @@ async fn an_explicit_target_ignores_the_legacy_top_level_fields() {
             .typed("schedule.run_now", json!({"job_id": id}))
             .await
             .unwrap();
-        let run = run_where(
-            &mut client,
-            id,
-            accepted["run_id"].as_str().unwrap(),
-            |run| {
-                !matches!(
-                    run["state"].as_str(),
-                    Some("launching" | "submitted" | "running" | "delivering")
-                )
-            },
-        )
-        .await;
+        let run = settled(&mut client, id, accepted["run_id"].as_str().unwrap()).await;
         // The stale Agent would make the launch fail; the stale policy would
         // be the effect the Session received.
-        assert_eq!(run["state"], "completed", "{id}: {run}");
+        assert_eq!(run["state"], "delivered", "{id}: {run}");
         assert_eq!(run["policy"]["preset"], "read-only", "{id}: {run}");
     }
 
@@ -2103,11 +2121,11 @@ async fn a_pause_and_resume_between_the_disable_read_and_write_supersedes_it() {
     server.join().await.unwrap();
 }
 
-/// A management save writes `policy_cap` only on a `launch` target, where
-/// the retained launch route keeps its save-time cap; a `session` target
-/// stores no legacy field of its own (A.1, Appendix F).
+/// No save captures authority (§3.3): a job stores the preset its target
+/// names, and every launch applies the live host bound. The legacy
+/// `policy_cap` is read and preserved, never written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_session_target_save_stores_no_policy_cap() {
+async fn no_save_stores_a_policy_cap() {
     let home = home();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = support::connect(&server).await;
@@ -2126,27 +2144,27 @@ async fn a_session_target_save_stores_no_policy_cap() {
             json!({"job": {"name": "launch-target",
                 "schedule": {"at": "2030-01-01T00:00:00Z"},
                 "prompt": "Work.",
-                "target": {"kind": "launch", "cwd": home.path()}}}),
+                "target": {"kind": "launch", "cwd": home.path(),
+                    "policy": "read-only"}}}),
         )
         .await
         .unwrap();
     let document = stored_document(home.path());
-    let jobs = document["jobs"].as_array().unwrap();
-    let session_job = jobs
-        .iter()
-        .find(|job| job["name"] == "session-target")
-        .unwrap();
-    assert!(
-        session_job.get("policy_cap").is_none(),
-        "a session target stores no policy cap: {session_job}"
-    );
-    let launch_job = jobs
+    for job in document["jobs"].as_array().unwrap() {
+        assert!(
+            job.get("policy_cap").is_none(),
+            "no save captures authority: {job}"
+        );
+    }
+    let launch = document["jobs"]
+        .as_array()
+        .unwrap()
         .iter()
         .find(|job| job["name"] == "launch-target")
         .unwrap();
-    assert!(
-        launch_job.get("policy_cap").is_some(),
-        "the launch route keeps its save-time cap: {launch_job}"
+    assert_eq!(
+        launch["target"]["policy"], "read-only",
+        "the job stores only the preset its target names: {launch}"
     );
     drop(client);
     server.shutdown();
@@ -2316,61 +2334,6 @@ async fn a_later_save_of_a_retargeted_job_releases_nothing_again() {
     assert!(
         holds.release_failure_armed(),
         "the later save attempts no release"
-    );
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-/// A save that moves a job from a `launch` target to a `session` target
-/// drops the launch route's save-time cap (A.1, §2.3).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_retarget_to_a_session_drops_the_launch_policy_cap() {
-    let home = home();
-    let server = start(home.path(), Arc::new(Script::default())).await;
-    let mut client = support::connect(&server).await;
-    let session = create_session(&mut client, home.path(), true).await;
-    client
-        .typed::<Value>(
-            "schedule.save",
-            json!({"job": {"name": "launch-target",
-                "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Work.",
-                "target": {"kind": "launch", "cwd": home.path()}}}),
-        )
-        .await
-        .unwrap();
-    let stored = stored_document(home.path())["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|job| job["name"] == "launch-target")
-        .unwrap()
-        .clone();
-    assert!(
-        stored.get("policy_cap").is_some(),
-        "the launch target keeps its save-time cap: {stored}"
-    );
-    let id = stored["id"].as_str().unwrap().to_owned();
-    client
-        .typed::<Value>(
-            "schedule.save",
-            json!({"job": {"id": id.clone(),
-                "target": {"kind": "session", "session_id": session, "branch_id": "main"}}}),
-        )
-        .await
-        .unwrap();
-    let stored = stored_document(home.path())["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|job| job["id"] == id.as_str())
-        .unwrap()
-        .clone();
-    assert_eq!(stored["target"]["kind"], "session", "{stored}");
-    assert!(
-        stored.get("policy_cap").is_none(),
-        "a session target stores no policy cap: {stored}"
     );
     drop(client);
     server.shutdown();

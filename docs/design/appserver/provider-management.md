@@ -120,7 +120,7 @@ preference, workspace selection, account lease or secret file is created.
 | --- | --- | --- | --- | --- |
 | `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
 | `provider.list` | `{}` | Existing `{providers, errors}` summary; each provider adds `remoteModelList`, whether `provider.refresh` can list its models, which clients use to offer or withhold that command in a row naming an empty catalog | false | `Drain` |
-| `provider.selection` | `{cwd?}` | Existing `{selection}` and its separate scope/version | false | `Drain` |
+| `provider.selection` | `{cwd?}` | Existing `{selection}` and its separate scope/version. A `cwd` reads only that scope's row and answers `null` when the folder has none; the workspace-over-global precedence is a `configuration` rule, not this read's | false | `Drain` |
 | `provider.catalog` | `{providerId}` | Existing `{catalog}` with `ProviderModel`; **unchanged** | false | `Drain` |
 
 Without an ID, management returns all known entries, including signed-out accounts.
@@ -328,8 +328,12 @@ the exact `{providerId, modelId}` with preferences read for that pair to
 report it and do not retry without the target or fall back to another model.
 The server never applies saved preferences implicitly. Omitted preferences with
 an explicit target still start at catalog defaults, including a model's declared
-default reasoning effort and service tier; untargeted F3 updates still
-change only supplied fields on the current adopted model. `/fast` remains
+default reasoning effort, service tier and reasoning summary; untargeted F3
+updates still
+change only supplied fields on the current adopted model. Which catalog
+declarations are applied, and why the others only describe the model, is
+[the model-configuration rule](../model-configuration.md#model-parameters).
+`/fast` remains
 Session-only; saved `serviceTier` is a persisted fast/tier choice applied only by
 an explicit client request. Consumer-specific models do not inherit chat preferences.
 
@@ -891,7 +895,11 @@ command rereads the management version and performs the same partial update.
 Neither action changes an adopted Session model. Discovery and adoption errors
 keep historical preferences until this explicit user action.
 `←` and `→` cycle the selected model's advertised reasoning efforts. Enter
-adopts that model; a cycled effort is saved as its `reasoningEffort` and sent
+adopts that model and writes the default the next Session in the launch
+workspace reads: the workspace scope when that folder has one, otherwise the
+global scope, with `expectedVersion` from the same scope. A workspace write's
+notice names that folder, and a global write's notice names no folder. A
+cycled effort is saved as its `reasoningEffort` and sent
 with the model's other saved preferences. Editing a Provider's model list is the
 models management area ([CLI commands § The Models area](../cli-commands.md#the-models-area)):
 `Edit models` in `/models` and `dimcode models PROVIDER add|edit|set|remove|inspect`
@@ -931,7 +939,7 @@ names the declaring command below its rows.
 ```text
 Select a model
 > Provider / model          ZDR  ‹ high ›
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 ```text

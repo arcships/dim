@@ -18,6 +18,32 @@ pub struct Event {
     pub parent_call_id: Option<String>,
     pub content: EventContent,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventNotice {
+    pub session_id: String,
+    pub branch_id: String,
+    pub event: Event,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayNotice {
+    pub session_id: String,
+    pub branch_id: String,
+    pub item: Event,
+}
+
+impl From<DisplayNotice> for EventNotice {
+    fn from(notice: DisplayNotice) -> Self {
+        Self {
+            session_id: notice.session_id,
+            branch_id: notice.branch_id,
+            event: notice.item,
+        }
+    }
+}
 #[derive(Clone, Deserialize)]
 pub struct Configuration {
     pub provider_id: String,
@@ -73,6 +99,7 @@ pub enum EventContent {
     ToolStart(ToolStartData),
     CompactionStart(ContextCompactionStartData),
     Compaction(ContextCompactionData),
+    CompactionSummary(CompactionSummary),
     Other,
 }
 
@@ -99,6 +126,9 @@ impl<'de> Deserialize<'de> for Event {
             ));
         }
         let content = match (wire.r#type.as_str(), wire.name.as_str()) {
+            ("display", "compaction") => EventContent::CompactionSummary(
+                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
+            ),
             ("branch", "create") => EventContent::BranchCreate(
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
@@ -288,6 +318,39 @@ pub struct HistoryWindow {
     pub through: u64,
     pub next_before: Option<u64>,
     next_after: u64,
+}
+
+/// A display page contains complete product events or explicit display summaries.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayPage {
+    pub items: Vec<Value>,
+    pub through: u64,
+    pub next_before: Option<u64>,
+    next_after: u64,
+    done: bool,
+}
+
+impl From<DisplayPage> for HistoryWindow {
+    fn from(page: DisplayPage) -> Self {
+        Self {
+            events: page.items,
+            through: page.through,
+            next_before: page.next_before,
+            next_after: page.next_after,
+        }
+    }
+}
+
+impl From<DisplayPage> for History {
+    fn from(page: DisplayPage) -> Self {
+        Self {
+            events: page.items,
+            through: page.through,
+            next_after: page.next_after,
+            done: page.done,
+        }
+    }
 }
 
 impl HistoryWindow {

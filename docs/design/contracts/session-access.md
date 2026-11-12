@@ -171,7 +171,7 @@ Only plugins in the control node's process hold `sessions`, and it is never expo
 | §4 rule 2 (handover) | `input/applied` hands an input from InputQueue to Loop; after it the input cannot be withdrawn, only interrupted with `stop/interrupt`. |
 | §4 rule 3 (before callbacks only) | Entries check only param shape and authorization; no before callback is used. |
 | §4 rule 4 (no business meaning in core) | `reason`, markers, keys and `submissionId` are generic data; InputQueue and Agents never interpret a source. |
-| §4 rule 5 (batch) | InputQueue handles `input/message` and `input/withdraw` in sequence order; "withdraw and re-submit as Steer" writes the withdraw first in one batch. |
+| §4 rule 5 (batch) | InputQueue handles `input/message` and `input/withdraw` in sequence order; an accepted queued-input Steer commits its replacement and deletion together, with the deletion decision last (A.4). |
 | §4 rule 6 (model context) | A deleted input never enters context; consumed inputs are placed at their consumed position (§5). |
 | §4 rule 7 (public events and services) | Process callers reach Sessions only through `sessions`, and withdraw only through InputQueue's public withdrawal service. |
 | §4 rule 8 (requirements) | #4 and optional-part assembly are raised in §9; the fixed-prefix read is composed from the existing facade (§9.2). |
@@ -337,12 +337,72 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Command | `input/withdraw { input_id, reason? }`, a branch command event. `reason` is generic optional text with no business meaning, which clients show for the deleted input; events written without it are unchanged. Producers: the withdrawal service (clients, process callers). It is never a fact about the input by itself |
 | Result fact | `input/deleted { input_id }`, written only by InputQueue, only when it consumes an `input/withdraw` while it holds that input unapplied |
 | Held | InputQueue holds an input from its `input/message` until it writes `input/applied` or `input/deleted` for it. |
-| No effect | Unknown id, input already applied, or already deleted: InputQueue writes nothing and no failure event exists; the caller's reply is `notHeld` |
-| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), the reply also carries `steer: {inputId, sequence}` for the new Steer input |
+| No effect | Unknown id, input already applied, or already deleted: InputQueue writes no result fact or replacement input and no failure event exists; the caller's reply is `notHeld` |
+| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement |
 | Process and branch-part path | `sessions.withdraw` for process callers, InputQueue's branch withdrawal service for branch parts: by the `input_id` returned when the caller wrote the input |
 | Write path | The service appends `input/withdraw`, then replies with InputQueue's decision for that command. InputQueue's recheck uses only its own decision state (held set), never a lock on another owner's facts |
-| Withdraw and re-submit as Steer | One atomic batch: `input/withdraw` for the old input plus the new Steer `input/message`. The withdraw takes effect only if the old input is still held; the new input is written either way |
+| Withdraw and re-submit as Steer | InputQueue accepts the replacement only when it accepts withdrawal of the old held input. The replacement Steer `input/message` and the old input's `input/deleted` commit in one atomic result batch, with `input/deleted` last. A `notHeld` decision creates no replacement |
 | After apply | An applied input cannot be withdrawn; Loop consumes it as usual and needs no change |
+| Refused `steer` | The steer is validated as the operator sent it before any submit check and before the withdrawal is decided, so a steer without operator content fails the call with `session_invalid_input`; an invalid steer for an input the queue does not hold still answers that error rather than `notHeld`, and neither the withdrawal nor the replacement is written |
+
+#### Conditional Steer ordering
+
+The operation is scoped to the original input id in the addressed branch, not
+to its text, a client connection or a time window. For one original input,
+competing Steer, delete and recall commands share InputQueue's ordered withdrawal
+decision. At most one can delete that input, and only an accepted Steer can
+create a replacement. If deletion or recall wins, a later Steer cannot resurrect
+the message. If application wins, the original is consumed normally and no
+replacement is created. Other held inputs and explicit new submissions, including
+identical text, remain independent.
+
+InputMethods runs the existing validation and submission checks before admitting
+a Steer command. A blocked check writes neither a command nor a replacement and
+leaves a still-held input retryable. Passing the checks is not a reservation:
+InputQueue must still decide when it consumes the command. Two callers may both
+pass their checks, but cannot both replace the same original input.
+
+The command and its result are distinct. A committed command may remain when
+the decision is `notHeld`; no result or replacement is written for that decision.
+The service must not publish a candidate as `input/message` before acceptance,
+or delete the original and submit its replacement in separate result commits.
+Replies follow publication of the accepted result batch; `sequence` identifies
+the deletion and `steer.sequence` identifies the preceding replacement.
+
+InputQueue remains the branch Capability that owns the decision; InputMethods
+remains a Session method provider, not another Capability. The client-facing
+entry remains a data-only RPC through `sessionMethods`; request fields,
+authorization and Session method interruption/disconnect rules are unchanged.
+Timeline and Dispatcher provide their existing ordering, atomic commit and
+publication mechanisms, not a special Steer transaction or a new service face.
+A client snapshot, debounce timer, per-connection lock or in-memory deduplication
+set cannot substitute for the owner's ordered decision.
+
+#### Recovery and compatibility
+
+A committed command awaiting a result must retain enough durable information to
+settle the checked replacement after recovery; the candidate must not become
+model context merely because it is recorded. Recovery must distinguish this
+case from an already committed result batch, settle the former once and never
+recreate the latter. It must not rerun external submission checks to reconstruct
+the previously checked content. Reload or a lost reply cannot authorize another
+replacement of the deleted original; a retry returns `notHeld` without a Steer
+receipt, rather than resending the accepted replacement.
+
+This changes the meaning of the existing optional `steer` parameter: callers
+must no longer expect a new receipt when withdrawal returns `notHeld`. Plain
+withdrawal keeps its existing replies. Historical replacement inputs remain
+ordinary committed inputs; recovery must not rewrite or remove them to enforce
+the new rule retroactively. The guarantee is per branch, not a global claim
+across independently forked histories.
+
+The durable command representation is an InputQueue event-format decision, not
+a new Timeline primitive. Before enabling the behavior, its format and supported
+reader/writer versions must be explicitly specified and compatibility-tested;
+an incompatible committed representation must not silently reuse an existing
+format version. Frozen event fixtures remain the compatibility baseline. The
+format decision and implementation are tracked in
+[#1413](https://github.com/arcships/dim/issues/1413).
 
 ### A.5 Fixed-prefix read
 
@@ -386,7 +446,9 @@ while the first write is still unpublished.
 | `input/withdraw` after apply | `input/applied` < withdraw | No effect; `notHeld`; consumed normally | InputQueue, Loop |
 | Two withdraws for one input | withdraw₁ < withdraw₂ | First deletes (if held); second `notHeld` | InputQueue |
 | Withdraw of an unknown id | — | No effect; `notHeld` | InputQueue |
-| Withdraw and re-submit as Steer, old input already applied | applied < batch | Old input consumed normally; new Steer input applied as usual | InputQueue |
+| Withdraw and re-submit as Steer, old input already applied | applied < withdraw | Old input consumed normally; `notHeld`, no replacement or Steer receipt | InputQueue |
+| Two queued-input Steers for one held input | withdraw₁ < withdraw₂ | First deletes and replaces once; second `notHeld`, no replacement or Steer receipt | InputQueue |
+| Delete or recall before queued-input Steer | deletion decision < later withdrawal decision | `notHeld`; the deleted input is not resubmitted | InputQueue |
 | Compaction between write and consumption | input < compaction < consumed | Placed after the summary; a deleted input is never seen by compaction | ContextPreparation |
 | Child branch cut between write and consumption | input < cut < consumed | Child does not adopt it | InputQueue (child) |
 | Two writers, same key | Timeline order | Later supersedes; owner prefixes avoid collisions by convention | History projection |
@@ -404,6 +466,24 @@ while the first write is still unpublished.
 3. Queue, Steer and Append written during a tool batch are consumed in the documented order, with the marker before the user content.
 4. A keyed block survives compaction, a retired key does not, and a child branch inherits keys independently.
 5. `input/withdraw` while InputQueue holds the input yields `input/deleted` and the input is never applied; after `input/applied` it writes nothing and replies `notHeld`; for one input at most one of `input/applied` and `input/deleted` exists. A deleted input's raw and keyed blocks never reach the model.
+
+   Queued-input Steer acceptance also requires these public-flow cases, checking
+   persisted Timeline facts as well as RPC replies:
+   - Two independent clients concurrently steering one held input create exactly
+     one replacement and one deletion. The loser returns `notHeld` without a
+     `steer` receipt, including when the callers supply different replacement text.
+   - Delete/recall racing with Steer and application racing with Steer follow
+     InputQueue's decision order; no losing operation creates a replacement.
+     Unknown and already-deleted ids also create none.
+   - A blocked submission check leaves no command or replacement; retrying while
+     still held can succeed. Explicitly submitting identical text remains valid.
+   - A restart after command commit but before its result settles the accepted
+     operation once. Restart after result commit but before its reply, followed
+     by retry, creates no second replacement. The original deletion and its
+     accepted replacement cannot be partially committed or recovered.
+   - Two different held inputs can each be steered once; deduplication must not
+     merge distinct input identities or independent branch histories.
+
 6. `history` with `atLeast` after a dispatched `turn/end` returns `through` ≥ that sequence.
 
 ## Appendix D. Assumptions
@@ -413,7 +493,7 @@ while the first write is still unpublished.
 | A1 | Every source input starts with one marker block | Existing context-block format | Each plugin defines recognition |
 | A2 | Moved to the format decision in [A.3](#a3-sessionconfig-fields) | — | — |
 | A3 | Process callers may call `idle` and `stop` on Sessions they started | Collaboration precedent | Another stop path |
-| A4 | "Withdraw and re-submit as Steer" is written as one batch by InputQueue's `session.input.withdraw` through its optional `steer` parameter, the new input's user content (S1) | Judgment | A separate built-in |
+| A4 | "Withdraw and re-submit as Steer" uses InputQueue's `session.input.withdraw` with optional `steer` user content; only an accepted withdrawal commits the replacement/deletion result batch (A.4) | Judgment | A separate built-in |
 
 ## Appendix E. Rust binding
 

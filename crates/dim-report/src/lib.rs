@@ -1,4 +1,4 @@
-//! Connection-bound error reports for the App Server's product profiles.
+//! Connection-bound reports for the App Server's product profiles.
 
 mod draft;
 mod evidence;

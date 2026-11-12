@@ -83,7 +83,7 @@ impl Sessions {
             reply => panic!("sessions replies asynchronously: {:?}", reply.json()),
         }
     }
-    async fn ok(&self, method: &str, request: Value) -> Value {
+    pub(super) async fn ok(&self, method: &str, request: Value) -> Value {
         let reply = self.call(method, request).await;
         assert_eq!(reply["ok"], true, "{reply}");
         reply["value"].clone()
@@ -108,13 +108,13 @@ impl Sessions {
 fn host_policy() -> Value {
     json!({"preset":"workspace-write","allowedTools":["confirm"],"disallowedTools":["blocked"]})
 }
-struct Served {
-    server: RunningServer,
-    agent: Agent,
-    sessions: Sessions,
-    client: Client,
+pub(super) struct Served {
+    pub(super) server: RunningServer,
+    pub(super) agent: Agent,
+    pub(super) sessions: Sessions,
+    pub(super) client: Client,
     /// Executions of the `confirm` tool, which asks for approval.
-    calls: Arc<AtomicUsize>,
+    pub(super) calls: Arc<AtomicUsize>,
 }
 /// Permission's command rules from a Session part that reloads with the
 /// Agents index, as it injects Collaboration, which injects the index. While
@@ -185,7 +185,7 @@ struct Setup {
     /// The model instead of the echo model.
     model: Option<Arc<dyn dim_agent_capabilities::host::ModelDriver>>,
 }
-async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
+pub(super) async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
     serve_with(Setup {
         database,
         ..Default::default()
@@ -498,6 +498,10 @@ async fn launch_caps_the_policy_by_the_starters_current_policy_or_the_host_defau
             "rejected",
         ),
         (json!({"cwd":cwd,"source":"dim-scheduler"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"client"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"internal"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"acp"}), "rejected"),
+        (json!({"cwd":cwd,"title":7}), "rejected"),
         (
             json!({"cwd":cwd,"starter":{"sessionId":"missing","branchId":"main"}}),
             "session_closed",
@@ -1478,10 +1482,11 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         rusqlite::Connection::open(store.database())
             .unwrap()
             .execute_batch(&format!(
-                "CREATE TRIGGER \"fail-{kind}\" BEFORE INSERT ON timeline_events \
+                "CREATE TRIGGER \"fail-{kind}-{session_id}\" BEFORE INSERT ON timeline_events \
                  WHEN NEW.session_id = '{}' AND NEW.kind = '{kind}' \
                  BEGIN SELECT RAISE(ABORT, 'injected write failure'); END",
-                session.id()
+                session.id(),
+                session_id = session.id()
             ))
             .unwrap();
     };
@@ -1514,6 +1519,36 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
                 json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
             )
             .await,
+        "publication_unknown"
+    );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:wire-held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    assert_eq!(
+        client
+            .rpc(
+                "session.input.withdraw",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+            )
+            .await["error"]["data"]["appError"],
         "publication_unknown"
     );
     server.shutdown();
