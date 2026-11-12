@@ -97,7 +97,7 @@ pub enum Call {
     },
     Ping,
     Shutdown(Shutdown),
-    Create(Create),
+    Create(Box<Create>),
     ModelPreview(ModelPreview),
     Summaries(Summaries),
     Catalog(Catalog),
@@ -535,6 +535,19 @@ pub struct ModelSelection {
     #[serde(default, deserialize_with = "optional_non_null")]
     pub model_id: Option<String>,
 }
+/// `session.create`'s optional managed-worktree request: `cwd` is the source
+/// workspace the repository is resolved from, and the reply names the worktree
+/// and the Session's starting directory (#1451). Sent only when `hello.features`
+/// carries `session.create.worktree`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorktree {
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub base: Option<String>,
+    /// Create-only: an existing branch is refused, never attached.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub branch: Option<String>,
+}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelPreview {
@@ -585,6 +598,9 @@ pub struct Create {
     /// daemons reject unknown fields.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub language: Option<dim_agent_runtime::ReplyLanguage>,
+    /// The managed worktree to create with the Session; absent keeps `cwd`.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub worktree: Option<CreateWorktree>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -929,7 +945,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
                 Call::Ping
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
-            "session.create" => Call::Create(params(raw_params)?),
+            "session.create" => Call::Create(Box::new(params(raw_params)?)),
             "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
@@ -1190,6 +1206,9 @@ pub struct CreateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
     pub sequence: u64,
+    /// The managed worktree this creation made, when the request asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
 }
 /// The fork's id and its `main` head once it is published.
 #[derive(Debug, Serialize)]

@@ -750,10 +750,10 @@ impl Worker {
         }
         let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
             let mut params = session_create_from_options(&mut self.client, &self.options).await?;
-            params
-                .as_object_mut()
-                .expect("creation parameters")
-                .remove("permissionPolicy");
+            let object = params.as_object_mut().expect("creation parameters");
+            object.remove("permissionPolicy");
+            // Creation-only member: `session.model.preview` denies it.
+            object.remove("worktree");
             self.client.typed("session.model.preview", params).await
         })
         .await??;
@@ -774,7 +774,12 @@ impl Worker {
         let mut params = if initial {
             session_create_from_options(&mut self.client, &self.options).await?
         } else {
-            session_create_params(&self.options)
+            let mut params = session_create_params(&self.options);
+            // `session_create_params` contacts no daemon, so the member
+            // `--worktree` asks for is added here; the initial path adds it
+            // in `session_create_from_options`.
+            crate::add_creation_worktree(&self.client, &self.options, &mut params)?;
+            params
         };
         let mut preferences = params.get("modelPreferences").cloned();
         let mut target = if initial {
@@ -832,13 +837,24 @@ impl Worker {
         .await;
         match result {
             Ok(created) => {
+                let worktree = created.worktree.map(|worktree| {
+                    format!(
+                        "worktree: {}\t{}",
+                        crate::sanitize::safe(&worktree.task_id),
+                        crate::sanitize::safe(&worktree.root)
+                    )
+                });
                 self.enter(
                     created.session_id,
                     Some(created.model),
                     SwitchKind::New,
                     attached_session,
                 )
-                .await
+                .await?;
+                if let Some(worktree) = worktree {
+                    self.send(Update::Notice(worktree));
+                }
+                Ok(())
             }
             Err(error) => {
                 self.parked = attached_session;

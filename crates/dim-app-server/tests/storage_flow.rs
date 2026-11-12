@@ -400,6 +400,13 @@ const V33_ADDITIONS: &[&str] = &[
     "CREATE TABLE session_worktrees (session_id TEXT NOT NULL REFERENCES agent_sessions(session_id), repository TEXT NOT NULL, root TEXT NOT NULL, subtree TEXT NOT NULL, PRIMARY KEY (session_id, repository, root), FOREIGN KEY (repository, root) REFERENCES worktree_directories(repository, root))",
     "CREATE INDEX session_worktrees_by_directory ON session_worktrees(repository, root, session_id)",
 ];
+/// The same tables from v42, whose `worktree_directories` carries the
+/// last-used time; `schema_of` returns the schema a format actually has.
+const V33_ADDITIONS_V45: &[&str] = &[
+    "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, last_used_at_ms INTEGER, PRIMARY KEY (repository, root))",
+    "CREATE TABLE session_worktrees (session_id TEXT NOT NULL REFERENCES agent_sessions(session_id), repository TEXT NOT NULL, root TEXT NOT NULL, subtree TEXT NOT NULL, PRIMARY KEY (session_id, repository, root), FOREIGN KEY (repository, root) REFERENCES worktree_directories(repository, root))",
+    "CREATE INDEX session_worktrees_by_directory ON session_worktrees(repository, root, session_id)",
+];
 const V35_ADDITIONS: &[&str] = &[
     "CREATE INDEX timeline_input_submissions ON timeline_events(session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), sequence) WHERE kind = 'input/message'",
 ];
@@ -447,6 +454,11 @@ fn drop_v40(connection: &Connection) {
     connection.execute_batch(&format!(
         "DROP INDEX session_owners_by_agent; ALTER TABLE session_owners RENAME TO session_owners_before_v41; {SESSION_OWNERS_V37}; INSERT INTO session_owners SELECT * FROM session_owners_before_v41; DROP TABLE session_owners_before_v41; CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);"
     )).unwrap();
+    // A store from before v42 has no last-used column; the downgraded copies
+    // those tests compare against `schema_of` below 42 must not carry it.
+    connection
+        .execute_batch("ALTER TABLE worktree_directories DROP COLUMN last_used_at_ms")
+        .unwrap();
 }
 const SESSION_OWNERS_V37: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))";
 const SESSION_OWNERS_V38: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)))";
@@ -479,7 +491,8 @@ fn schema_of(version: u32) -> Vec<String> {
         .chain(V31_REPLACED.iter().filter(|_| version == 31))
         .chain(V31_ADDITIONS.iter().filter(|_| version >= 31))
         .chain(V32_ADDITIONS.iter().filter(|_| version >= 32))
-        .chain(V33_ADDITIONS.iter().filter(|_| version >= 33))
+        .chain(V33_ADDITIONS.iter().filter(|_| (33..45).contains(&version)))
+        .chain(V33_ADDITIONS_V45.iter().filter(|_| version >= 45))
         .chain(V35_ADDITIONS.iter().filter(|_| version >= 35))
         .chain(V36_ADDITIONS.iter().filter(|_| version >= 36))
         .chain(V37_ADDITIONS.iter().filter(|_| version >= 37))
@@ -616,6 +629,9 @@ fn rows(connection: &Connection, table: &str) -> Vec<String> {
         "agents" => "agent_id, profile, is_default",
         "agent_sessions" => "session_id, config, created_at_ms",
         "timeline_events" => "session_id, branch_id, sequence, last_sequence, kind, body, event_id",
+        // v45 adds the nullable last-used time; the identity rows are the
+        // facts these upgrade tests compare.
+        "worktree_directories" => "repository, root",
         _ => "*",
     };
     let mut query = connection
@@ -5092,6 +5108,7 @@ async fn owned_session_creation_and_plugin_shutdown_keep_one_resource_owner() {
                 2,
                 None,
                 SessionOrigin::Client,
+                None,
             )
             .await
             .is_err()
@@ -5111,6 +5128,7 @@ async fn owned_session_creation_and_plugin_shutdown_keep_one_resource_owner() {
             2,
             None,
             SessionOrigin::Client,
+            None,
         )
         .await
         .unwrap();
@@ -8727,6 +8745,8 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
         (40, false),
         (41, false),
         (42, false),
+        (43, false),
+        (44, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();
