@@ -17,7 +17,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 43;
+pub const FORMAT: u32 = 44;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -56,7 +56,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 43))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 44))",
     ),
     (
         "settings_documents",
@@ -264,7 +264,7 @@ ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 29] = [
+const UPGRADES: [(u32, &[&str]); 30] = [
     (
         13,
         &[
@@ -374,12 +374,14 @@ const UPGRADES: [(u32, &[&str]); 29] = [
     // #1421: `automation` joins the creation origins; the rebuild's own
     // statements are in `V42_AGENT_SESSIONS`.
     (41, &[]),
-    // v43: one optional field on one event kind (`prompt/changed` names its
+    // #1413: checked withdrawal candidates, unreadable by v42.
+    (42, &[]),
+    // v44: one optional field on one event kind (`prompt/changed` names its
     // delivery inputs); the marker only. A daemon from before this format does
     // not decode stored events at startup, so it would accept a store holding
     // the field and fail on the first `prompt/changed` it decodes; the marker
     // makes it refuse the store at open instead.
-    (42, &[]),
+    (43, &[]),
 ];
 
 fn format_table(version: u32) -> String {

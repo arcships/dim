@@ -1303,12 +1303,11 @@ fn the_resume_hint_is_drawn_translated() {
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"/resume\r");
-    terminal.until("Ctrl+X");
+    let hint = "Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭";
+    terminal.wait_for(hint, |tail| {
+        strip_ansi(tail).contains(hint).then_some(tail.len())
+    });
     let plain = strip_ansi(&terminal.transcript);
-    assert!(
-        plain.contains("Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"),
-        "the hint must be drawn translated: {plain}"
-    );
     assert!(!plain.contains("Enter open · Ctrl+S scope"));
     home.kill(&terminal);
     terminal.wait();

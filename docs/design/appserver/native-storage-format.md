@@ -1,5 +1,11 @@
 # Rust 会话存储格式
 
+## v44：提示变更携带其投递输入
+
+v44 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inputs`，列出与它同一批次写入、用于投递该变更的 `input/message` 事件 id。没有投递块的变更（System 内容、以及写在此字段出现之前的事实）不写该字段，读出为空列表。
+
+不改表、索引或行。之所以要 bump marker：`PromptChangedData` 拒绝未知字段，而自 #1409 起启动不再解码历史事件，所以旧 daemon 会先接受带该字段的存储、直到会话中第一次解码 `prompt/changed`（恢复的后缀重放或实时订阅）才失败。marker 让它在这一步之前就拒读。降级是单向的：v43 及更早的程序拒读 v44。
+
 ## v42：`agent_sessions` 接受 automation 来源
 
 [Session 分类](session-classification.md)（#1421）新增第五个创建来源 `automation`。
@@ -8,12 +14,6 @@
 其他表以 `REFERENCES agent_sessions(session_id)` 指向它，改名会把这些表的存储 SQL 改写成临时名，因此步骤内打开 `legacy_alter_table`，启动事务在关闭外键约束的状态下运行，提交前用 `PRAGMA foreign_key_check` 补做这次事务未强制的检查。
 
 步骤不回填：升级前由启动创建的 `internal` 行与 Workflow 阶段、丢失回复的空 Session 无法区分，改标 `automation` 会凭空造出库中没有的来源，这些行保持 `internal`、默认不列出。
-## v43：提示变更携带其投递输入
-
-v43 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inputs`，列出与它同一批次写入、用于投递该变更的 `input/message` 事件 id。没有投递块的变更（System 内容、以及写在此字段出现之前的事实）不写该字段，读出为空列表。
-
-不改表、索引或行。之所以要 bump marker：`PromptChangedData` 拒绝未知字段，而自 #1409 起启动不再解码历史事件，所以旧 daemon 会先接受带该字段的存储、直到会话中第一次解码 `prompt/changed`（恢复的后缀重放或实时订阅）才失败。marker 让它在这一步之前就拒读。降级是单向的：v42 及更早的程序拒读 v43。
-
 ## v41：合并 child tool-call 与 Timeline 索引格式
 
 main 已使用 v37 表示 child tool-call 事件信封、v38 表示 session_owners 允许协议4；本分支先前的 v37–v40 使用独立的成员/全文/数组/身份索引格式，不能只按编号判定两者兼容。
@@ -65,7 +65,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v42**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+The current native format is **v44**, with conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -74,11 +74,11 @@ omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
-requires the exact v42 SQL schema and a single
-format marker of 42 before writable PRAGMAs, or the exact v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+requires the exact v44 SQL schema and a single
+format marker of 44 before writable PRAGMAs, or the exact v43, v42, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v42 one step after
-another ([v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
+which the same startup transaction upgrades in place to v44 one step after
+another ([v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
@@ -91,7 +91,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v42, and v16 request rows stay readable as written.
+valid in v44, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -101,7 +101,7 @@ valid in v42, and v16 request rows stay readable as written.
 读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
 `CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
 `timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v42）；其余任何多余对象仍按原规则拒绝。代价是早于
+精确结构比较忽略这些名字，格式标记不变（当前 v44）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
 索引的库（行不变，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
@@ -156,12 +156,12 @@ Cannot open native store <path>.
 
 | 情形 | 判据 | 说明的结论 |
 | --- | --- | --- |
-| 更新格式 | 结构不是本构建认识的形状，`agent_store_format` 可读且恰有一行 `version > FORMAT`（当前 36） | 本构建读不了这个更新格式的库 |
+| 更新格式 | 结构不是本构建认识的形状，`agent_store_format` 可读且恰有一行 `version > FORMAT` | 本构建读不了这个更新格式的库 |
 | 标记与结构不符 | 结构是本构建认识的形状（当前格式或某个升级起点），但标记行不是该版本的唯一值 | 标记和结构不一致；不诊断为“降级” |
 | 无法识别 | 结构不是本构建认识的形状，且可读的单一标记在本构建接受的范围内（`MIN_FORMAT ≤ version ≤ FORMAT`，已移除的 v14 除外），或没有可读的单一标记 | 结构无法识别；读出标记时一并给出 |
 | 过旧或不再准入 | 结构不是本构建认识的形状，且可读的单一标记低于 `MIN_FORMAT`，或为已移除的 v14 | 该格式不再被这个构建读取 |
 
-正文模板（`<path>`、`<marker>`、`<schema>` 由存储填写；`<format>` 取 `FORMAT` 常量（当前 36），不写字面量）。
+正文模板（`<path>`、`<marker>`、`<schema>` 由存储填写；`<format>` 取 `FORMAT` 常量，不写字面量）。
 更新格式：
 
 ```text
@@ -219,7 +219,7 @@ Cannot open native store <path>.
 - **写入与清理**：拒绝前用同目录临时文件写入并原子替换；写入失败不改变返回值，原错误照常返回。正常打开、升级成功和其他启动失败不写失败说明；格式升级期间写进度说明，成功打开（含升级成功）时存储 owner 删除遗留说明，删除失败不影响启动，下一次成功打开再清理。说明的读取、打印和其余清理属于 CLI 启动，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)；说明不进入日志历史。
 - **位置**：说明是库的同级文件，不是新数据库格式，也不是 `daemon.log` 的一部分。CLI 启动的守护进程使用 `<native home>/dimcode.sqlite`，所以 CLI 读取 `<native home>/dimcode.sqlite.startup`。直接以 `--database` 启动的守护进程把说明写在它的库旁，CLI 的启动路径不读取。
 - **不自动恢复**：不删除、重建、降级、重置标记或复制库；`--home PATH` 只建立另一个环境。终端说明只给兼容构建和 `--home` 两条路；开发说明继续使用 `./dev` 的隔离 home。
-- **验证**：`storage_flow` 用一次性库覆盖全部分支：v40 标记的未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v32 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v42 (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
+- **验证**：`storage_flow` 用一次性库覆盖全部分支：高于当前格式的标记配未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v32 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v<schema> (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
 
 ## SQLite 运行参数与空间回收
 
@@ -239,13 +239,13 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 
 删除 Session 只释放库内页，数据库文件本身不缩小。维护入口是 `dimcode daemon vacuum [--database PATH]`：守护进程未运行时它取同一把维护锁，校验当前格式的精确结构后执行 `VACUUM`，打印操作前后数据库与 WAL 的字节数之和。`VACUUM` 重写整个库，需要约等于库大小的临时空间；守护进程持锁时该命令拒绝执行，也不升级或创建库。
 
-## Current v42 tables
+## Current v44 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
 | 表.列 | SQLite 类型 | 可空 | 默认 | 约束与含义 |
 | --- | --- | --- | --- | --- |
-| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 42)`; exactly one row |
+| `agent_store_format.version` | `INTEGER` | No | — | Primary key, `CHECK(version = 43)`; exactly one row |
 | `settings_documents.source` | `TEXT` | No | — | Primary key; `user/mcp`, `user/skills`, `user/mcp-projects` or `user/mcp-plugins`; workspace files are not mirrored |
 | `settings_documents.version` | `INTEGER` | No | — | Positive per-source CAS revision; token `native:<source>:<version>` |
 | `settings_documents.document` | `TEXT` | No | — | Plain business payload JSON, without a `{kind, document}` envelope; unknown business fields are preserved |
@@ -477,6 +477,39 @@ ProjectionCheckpoint = {
 `agent_store_format.version` 同时标识 SQL 结构、持久化 JSON 和内容寻址规则。已发布格式发生不兼容变化时，必须定义新版本及读取或转换路径。保持版本的条件是旧读取器能正确解释新值、旧写入器不会重写丢失新值，且存储不变量不变。纯运行时重构不改变格式版本。
 
 首版定稿前的开发库兼容范围由上层持久化设计明确，不预设下一版本或迁移字段；S5a 的 Session 文件、S5b 的标题元数据、#193 的请求列表、#2 的扩展事件、#364 的挂载列表、#427 的分支结束事件、#527 的工具效果和清单条目、#580 的工具 schema、#556 的目录投影、#555 的 System 来源与 #596 的冗余索引移除各自的格式决定见下文。
+
+### v43: conditional queued-input Steer
+
+[#1413](https://github.com/arcships/dim/issues/1413) advances the native format
+from **v42** to **v43** for InputQueue's
+[conditional queued-input Steer contract (Session access A.4)](../contracts/session-access.md#a4-withdrawal).
+
+- **Durable candidate:** `input/withdraw` gains an optional `steer` member holding
+  the full checked `InputMessageData`, with mode `steer`, including context added
+  by submission checks. Plain withdrawals and old commands omit the member;
+  v43 reads both forms. The candidate is command data, not an adopted input or
+  model context. Only an accepted withdrawal creates the replacement
+  `input/message` and original `input/deleted` in one atomic result batch, with
+  deletion last; `notHeld` creates neither and returns no replacement receipt.
+- **Compatibility baseline:** the frozen v1 event fixtures remain unchanged.
+  The optional member is omitted when absent, preserving old/plain command
+  serialization. No other event shape or content-addressing rule changes.
+- **Marker-only upgrade:** v42 upgrades in place in the startup transaction by
+  changing only `agent_store_format` and its constraint to `CHECK(version = 43)`.
+  Business tables, indexes, event bytes and historical results are unchanged.
+  v39's array encoding, v40's indexes, v41's protocol contract and v42's
+  automation origin remain intact.
+  Earlier formats accepted by v42 follow their existing upgrade steps, then this
+  step. Historical unconditional replacement inputs remain ordinary committed
+  inputs, including replacements whose old withdrawal did not take effect;
+  upgrade and recovery do not remove or reinterpret them retroactively.
+- **One-way format gate:** v42 and earlier readers and writers reject a v43
+  store at startup, before opening it for business reads or writes. Their strict
+  withdrawal-command decoder does not support the new member; the format gate
+  prevents both delayed decode failure and an old writer from silently losing
+  or misinterpreting a candidate. There is no downgrade or per-command fallback.
+- **Paired client and daemon:** the existing paired client-daemon policy remains
+  unchanged; this storage step adds no mixed-version compatibility promise.
 
 ### #1002 格式决定
 
@@ -920,9 +953,9 @@ ProjectionCheckpoint = {
 
 `session_owners.session_id` 与 `agents.agent_id` 两个 ID 列的 SQL 可空缺口见表结构。永久关闭字段与旧记录回填尚未设计。
 
-## 完整记录示例（v42）
+## 完整记录示例（v43）
 
-v42 的记录与 v41 相同：`agent_sessions.origin` 的取值集多一个 `automation`，示例行仍是 `client`；可选 `parent_call_id` 在示例中省略；顶层模型批次不写该字段。
+v43 沿用 v42 的示例：`agent_sessions.origin` 的取值集多一个 `automation`，示例行仍是 `client`；可选 `parent_call_id` 在示例中省略；顶层模型批次不写该字段。
 
 下例是一条 Session `s1`、主分支 `main` 和子分支 `child` 的全部原生表记录，用于核对存储关系，不代表完整的对话执行序列。为便于阅读，`profile`、`config`、`info` 和事件 `body` 这几个实际为 `TEXT` 的列在展示时解析为 JSON；写入时各自是完整 JSON 字符串，类型规定省略的可选字段照常省略。ID/时间是示例值。`timeline_content.body` 保留实际写入的字符串形式，因此下面各 hash 可以按上文算法复核。`main` 第 4 条 `model/call` 是升级前 v16 写入的行，`child` 第 3 条是升级后 v17 写入的行，示例同时展示两种行混存。
 

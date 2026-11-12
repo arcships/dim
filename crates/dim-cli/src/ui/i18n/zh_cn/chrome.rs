@@ -17,8 +17,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "带附件的消息会留在队列中；使用 /queue 对其执行 steer 或删除"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 管理 · Shift+← 编辑最后一条 · 草稿为空时按 {key} steer"
         }
         "steer or delete queued messages" => "对队列消息执行 steer 或删除",
         "export this conversation" => "导出此对话",
@@ -188,6 +188,21 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Result: {result}" => "结果：{result}",
         "Controlled by the leader" => "由主智能体控制",
         "› Open member conversation" => "› 打开成员会话",
+        "Waiting for result…" => "等待结果…",
+        "Running…" => "执行中…",
+        "Before/after comparison is unavailable for this record." => {
+            "此记录没有可用的修改前后对照。"
+        }
+        "No content changes." => "内容没有变化。",
+        "Old" => "旧",
+        "New" => "新",
+        "Changes" => "修改内容",
+        "Input" => "参数",
+        "Result" => "结果",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab 也可选择工具标题 · Enter/空格展开或收起当前工具"
+        }
+        "… {count} unchanged lines" => "… {count} 行未修改",
         "Not started" => "未启动",
         "Reason: {reason}" => "原因：{reason}",
         "Copied to clipboard" => "已复制到剪贴板",
@@ -391,6 +406,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "主题",
         "Language" => "语言",
         "Startup UI form" => "启动界面形态",
+        "Default send mode" => "默认发送模式",
         "fullscreen" => "全屏",
         "scrollback" => "回滚",
         "Tool details" => "工具详情",
@@ -535,11 +551,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "show the key bindings" => "显示快捷键",
         "Application keys" => "应用快捷键",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 提交或排队 · 草稿为空时 steer 第一条排队消息 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "空闲时 Enter 提交 · Shift+Enter / Alt+Enter / Ctrl+J 换行 · ↑↓ 历史"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Ctrl+S steer 草稿或第一条排队消息 · Shift+← 编辑最后一条排队消息"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "运行中有草稿：Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "草稿为空时按 {keys} steer 第一条排队消息",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Shift+← 编辑最后一条排队消息"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"

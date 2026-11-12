@@ -689,6 +689,7 @@
         "format",
         "json",
         "matches",
+        "std::pin::pin",
         "tokio::select",
         "tracing::info",
         "tracing::warn",
@@ -864,6 +865,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "format",
         "vec"
       ]
     },
@@ -6443,6 +6445,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "assert_ne",
         "format",
         "json",
         "matches",
@@ -13111,6 +13114,7 @@
       "from": "dim_agent_capabilities::input_queue",
       "to": "dim_agent_types::input",
       "references": [
+        "path SubmitWarning",
         "path input"
       ]
     },
@@ -13196,7 +13200,10 @@
         "path EntryKind::Handover",
         "path EntryKind::Input",
         "path InputQueue",
-        "path QueueState::default"
+        "path QueueState::default",
+        "path Withdrawal::Deleted",
+        "path Withdrawal::NotHeld",
+        "path WithdrawalAnswer"
       ]
     },
     {
@@ -13241,6 +13248,7 @@
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
         "path QueryPage",
+        "path QueryPick::First",
         "path QueryPick::Last",
         "path QuerySelect::Exists",
         "path QuerySelect::Fields",
@@ -13267,11 +13275,20 @@
       "references": [
         "path EventKind::InputApplied",
         "path EventKind::InputDeleted",
+        "path EventKind::InputMessage",
         "path InputAppliedData",
         "path InputDeletedData",
+        "path InputMessageData",
         "path InputMode::Append",
         "path InputMode::Queue",
         "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
       ]
     },
     {
@@ -18796,10 +18813,18 @@
       "from": "dim_agent_capabilities::workspace_tools::files::write",
       "to": "dim_agent_capabilities::workspace_tools::files::codec",
       "references": [
+        "path codec::decode_text",
         "path codec::detect_eol",
         "path codec::encode_text",
         "path codec::normalize_eol",
         "use super::codec"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::files::write",
+      "to": "dim_agent_capabilities::workspace_tools::files::edit",
+      "references": [
+        "use super::edit::unified_diff"
       ]
     },
     {
@@ -19271,6 +19296,7 @@
       "references": [
         "path Branch",
         "path BranchStatus",
+        "path InputCommit",
         "path Publication",
         "path branch"
       ]
@@ -20437,7 +20463,10 @@
       "references": [
         "path Branch",
         "path BranchStatus",
-        "path BranchStatus::default"
+        "path BranchStatus::default",
+        "path InputCommit",
+        "path InputCommit::Existing",
+        "path InputCommit::Written"
       ]
     },
     {
@@ -25492,18 +25521,18 @@
       "from": "dim_app_server::connection::tree",
       "to": "dim_agent_capabilities::input_queue",
       "references": [
-        "path SubmitCheckReply",
-        "path SubmitCheckReply::Block",
-        "path SubmitCheckReply::Proceed",
         "path SubmitCheckRequest",
         "path SubmitChecks",
+        "path SubmitDecision",
+        "path SubmitDecision::Block",
+        "path SubmitDecision::Proceed",
         "path SubmitEntry::Branch",
         "path SubmitEntry::Submit",
         "path append_blocks",
         "use dim_agent_capabilities::input_queue::CheckInterrupted",
-        "use dim_agent_capabilities::input_queue::SubmitCheckReply",
         "use dim_agent_capabilities::input_queue::SubmitCheckRequest",
         "use dim_agent_capabilities::input_queue::SubmitChecks",
+        "use dim_agent_capabilities::input_queue::SubmitDecision",
         "use dim_agent_capabilities::input_queue::SubmitEntry",
         "use dim_agent_capabilities::input_queue::append_blocks"
       ]
@@ -25534,6 +25563,15 @@
       "to": "dim_agent_runtime::agent",
       "references": [
         "path Session"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_runtime::branch",
+      "references": [
+        "path InputCommit::Existing",
+        "path InputCommit::Written",
+        "use dim_agent_runtime::InputCommit"
       ]
     },
     {
@@ -28721,6 +28759,13 @@
         "use dim_agent_types::ApprovalDecision",
         "use dim_agent_types::InputMode",
         "use dim_agent_types::UserInput"
+      ]
+    },
+    {
+      "from": "dim_app_server::protocol",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -32598,6 +32643,13 @@
         "use dim_agent_types::BranchSource",
         "use dim_agent_types::EventKind",
         "use dim_agent_types::ModelFailureKind"
+      ]
+    },
+    {
+      "from": "dim_app_server::tree_protocol",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -37781,6 +37833,7 @@
       "to": "dim_cli::wire",
       "references": [
         "path Created",
+        "path crate::wire::warnings",
         "use crate::wire::Created"
       ]
     },
@@ -37923,6 +37976,13 @@
       "to": "dim_agent_types::goal",
       "references": [
         "path dim_agent_types::GoalRead"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
@@ -38516,6 +38576,7 @@
         "path CatalogModel",
         "path Created",
         "path ProviderCatalogSnapshot",
+        "path crate::wire::warnings",
         "use crate::wire::CatalogModel",
         "use crate::wire::Created",
         "use crate::wire::ProviderCatalogSnapshot"
@@ -39034,6 +39095,7 @@
         "path Command::FocusLine",
         "path RuntimeAction::Configure",
         "path RuntimeAction::Install",
+        "path Update::Report",
         "path Update::Snapshot"
       ]
     },
@@ -40993,6 +41055,16 @@
     },
     {
       "from": "dim_cli::ui::keys",
+      "to": "dim_cli::model::session",
+      "references": [
+        "path SubmitMode",
+        "path SubmitMode::Queue",
+        "path SubmitMode::Steer",
+        "use crate::model::session::SubmitMode"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys",
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
@@ -41006,6 +41078,13 @@
       "to": "dim_cli::ui::keys::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys::tests",
+      "to": "dim_cli::model::session",
+      "references": [
+        "path SubmitMode::Queue"
       ]
     },
     {
@@ -43113,6 +43192,7 @@
       "references": [
         "path MouseEvent",
         "path MouseKind::Drag",
+        "path MouseKind::Move",
         "path MouseKind::Press",
         "path MouseKind::Release",
         "path MouseKind::WheelDown",
@@ -43202,6 +43282,7 @@
       "references": [
         "path MouseEvent",
         "path MouseKind::Drag",
+        "path MouseKind::Move",
         "path MouseKind::Press",
         "path MouseKind::Release",
         "path MouseKind::WheelDown",
@@ -43979,8 +44060,10 @@
         "path PromptField::Skills",
         "path PromptField::Summary",
         "path PromptSetting",
+        "path SubmitMode",
         "use crate::model::session::PromptField",
-        "use crate::model::session::PromptSetting"
+        "use crate::model::session::PromptSetting",
+        "use crate::model::session::SubmitMode"
       ]
     },
     {
@@ -46510,6 +46593,7 @@
         "path Setting",
         "path Setting::AcpSessions",
         "path Setting::BasePrompt",
+        "path Setting::DefaultSendMode",
         "path Setting::Isolation",
         "path Setting::Language",
         "path Setting::Mouse",
@@ -46808,15 +46892,25 @@
         "path Detail::Collapsed",
         "path Detail::Expanded",
         "path Detail::Summary",
+        "path ToolGroup",
         "path action_at",
         "path card_actions",
         "path card_rows",
+        "path disclosure_at",
+        "path disclosure_rows",
+        "path group_id",
+        "path project_fullscreen_group",
         "path project_group",
         "path render_group",
         "use crate::ui::transcript::tool_group::Detail",
+        "use crate::ui::transcript::tool_group::ToolGroup",
         "use crate::ui::transcript::tool_group::action_at",
         "use crate::ui::transcript::tool_group::card_actions",
         "use crate::ui::transcript::tool_group::card_rows",
+        "use crate::ui::transcript::tool_group::disclosure_at",
+        "use crate::ui::transcript::tool_group::disclosure_rows",
+        "use crate::ui::transcript::tool_group::group_id",
+        "use crate::ui::transcript::tool_group::project_fullscreen_group",
         "use crate::ui::transcript::tool_group::project_group",
         "use crate::ui::transcript::tool_group::render_group"
       ]
@@ -47083,7 +47177,8 @@
       "references": [
         "path i18n::active",
         "path i18n::set",
-        "path t"
+        "path t",
+        "path tf"
       ]
     },
     {
@@ -47183,6 +47278,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::settings_panel",
       "references": [
+        "path Setting::DefaultSendMode",
         "path Setting::Permission",
         "path Setting::ThinkingDetails",
         "path Setting::ToolDetails"
@@ -47215,6 +47311,7 @@
         "path KeyCode::Tab",
         "path KeyCode::Up",
         "path KeyEvent::new",
+        "path Modifiers::ALT",
         "path Modifiers::CTRL",
         "path Modifiers::NONE",
         "path Modifiers::SHIFT",
@@ -47264,7 +47361,8 @@
       "to": "dim_cli::ui::transcript::tool_group",
       "references": [
         "path Detail::Collapsed",
-        "path Detail::Expanded"
+        "path Detail::Expanded",
+        "path Detail::Summary"
       ]
     },
     {
@@ -47278,6 +47376,7 @@
         "path ImageRead",
         "path LOAD_MORE",
         "path ManagementDraft",
+        "path OVERLAY_MAX_ROWS",
         "path PendingPrompt",
         "path Prompt",
         "path Prompt::Ask",
@@ -47471,6 +47570,13 @@
       "to": "dim_cli::web_install",
       "references": [
         "path install"
+      ]
+    },
+    {
+      "from": "dim_cli::wire",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path dim_agent_types::SubmitWarning"
       ]
     },
     {
