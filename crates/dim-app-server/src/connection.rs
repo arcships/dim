@@ -335,6 +335,16 @@ impl Connection {
             }
             let guard = self.admit(&request)?;
             self.admit_entry(rpc, &request.call)?;
+            let activity = if matches!(request.call, Call::Shutdown(_)) {
+                None
+            } else {
+                Some(
+                    rpc.control
+                        .activity
+                        .take_hold()
+                        .ok_or_else(RpcError::reloading)?,
+                )
+            };
             let this = self.clone();
             let Request { id, call } = request;
             if let Call::Contributed { method, params } = call {
@@ -352,6 +362,7 @@ impl Connection {
                         closed: this.closed.clone(),
                     };
                     rpc.commands.clone().spawn(async move {
+                        let _activity = activity;
                         match this
                             .session_method(&rpc, method, params, site, progress)
                             .await
@@ -394,13 +405,17 @@ impl Connection {
                     rpc.unloading.clone(),
                     progress,
                 )?;
-                rpc.commands.spawn(this.answer(id, guard, accepted, sink));
+                rpc.commands.spawn(async move {
+                    let _activity = activity;
+                    this.answer(id, guard, accepted, sink).await;
+                });
                 return Ok(());
             }
             let rpc = rpc.clone();
             let shutdown =
                 matches!(call, Call::Shutdown(_)).then(|| self.hub.shutdown_requests.token());
             rpc.commands.clone().spawn(async move {
+                let _activity = activity;
                 let _guard = guard;
                 let _shutdown = shutdown;
                 let result = this.handle(&rpc, id.clone(), call).await;
@@ -962,7 +977,20 @@ impl Connection {
                         if connections > 0 || attached_sessions > 0 || running > 0 {
                             Some((connections, attached_sessions, running))
                         } else {
+                            let Some(pause) = rpc.control.activity.pause() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "The daemon has accepted process work; retry after it settles",
+                                )));
+                            };
+                            let Some(sessions) = rpc.index.pause_sessions() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "A Session is not quiescent; retry after its work settles",
+                                )));
+                            };
                             admission.closing_for_idle = true;
+                            rpc.control.keep_paused(pause, sessions);
                             None
                         }
                     };

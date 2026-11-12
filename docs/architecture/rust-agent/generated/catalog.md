@@ -45,6 +45,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `pluginFileTransactions` | process | PluginFiles | internal(host-resource) | — |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `pluginMounter` | process | rutis-loader | shared-no-dispatcher | — |
+| `processActivity` | process | ServerControl | data | `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
 | `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | internal(secret) | — |

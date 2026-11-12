@@ -881,6 +881,7 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
                     },
                 },
             ],
+            inputs: Vec::new(),
         }),
         EventKind::InputMessage(input("queued")),
         EventKind::InputMessage(input("first")),
@@ -936,6 +937,7 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
                     order: 0,
                 },
             }],
+            inputs: Vec::new(),
         }),
         EventKind::ModelOutputEnd(ModelOutputEndData {
             turn_id: "turn".into(),
@@ -971,6 +973,7 @@ fn checkpoint_replay_preserves_prompt_configuration_pending_input_and_internal_t
                 source: "host".into(),
                 scope,
             }],
+            inputs: Vec::new(),
         }),
     ]);
     let whole = project_context_history(&context).unwrap();

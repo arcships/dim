@@ -21,6 +21,7 @@ use tokio_util::sync::CancellationToken;
 /// subscription file.
 pub(crate) struct Shared {
     pub(crate) ctx: Ctx,
+    pub(crate) activity: Arc<dim_app_server::ProcessActivity>,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) state: Arc<InstanceState>,
     pub(crate) store: Arc<Store>,
@@ -90,6 +91,9 @@ impl Shared {
         origin: crate::model::Origin,
         request: SubscribeRequest,
     ) -> Result<Value, EventHubError> {
+        let _activity = self.activity.take_hold().ok_or_else(|| {
+            EventHubError::new("service_reloading", "Process admission is paused")
+        })?;
         crate::subscribe::subscribe(self, origin, request).await
     }
 
@@ -97,6 +101,9 @@ impl Shared {
         &self,
         request: UnsubscribeRequest,
     ) -> Result<Value, EventHubError> {
+        let _activity = self.activity.take_hold().ok_or_else(|| {
+            EventHubError::new("service_reloading", "Process admission is paused")
+        })?;
         crate::subscribe::unsubscribe(self, &request.subscription_id).await
     }
 }
