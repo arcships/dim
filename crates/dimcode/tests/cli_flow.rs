@@ -8329,6 +8329,13 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
             let stop = request_line.starts_with("GET /stop ");
             let (content_type, body) = if stop {
                 ("text/plain", "done".to_owned())
+            } else if request_line.starts_with("GET /v1/models ") && key == "x-api-key first-key" {
+                send.send((key, json!({"method":"GET /v1/models"})))
+                    .unwrap();
+                (
+                    "application/json",
+                    json!({"data":[{"id":"k3.1-pro"}],"has_more":false}).to_string(),
+                )
             } else if request_line.starts_with("GET /v1/models ") {
                 assert!(matches!(
                     key.as_str(),
@@ -8634,7 +8641,14 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.until("Connect kimi-for-coding");
     terminal.write(b"\x1b[A\x15");
     terminal.write(format!("http://{address}/v1\rfirst-key\r\r").as_bytes());
-    terminal.until("Connected Kimi For Coding; saved without testing");
+    terminal.until("Connected Kimi For Coding");
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(8)).unwrap(),
+        (
+            "x-api-key first-key".into(),
+            json!({"method":"GET /v1/models"})
+        )
+    );
     let builtin = rpc(
         &mut wire,
         "provider.management",
@@ -8648,18 +8662,21 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
         builtin["connection"]["baseUrl"],
         format!("http://{address}/v1")
     );
-    let builtin_model = builtin["models"][0]["model"]["modelId"].as_str().unwrap();
+    let builtin_model = "k3.1-pro";
+    assert!(builtin["models"].as_array().unwrap().iter().any(|model| {
+        model["model"]["modelId"] == builtin_model && model["unavailableReason"].is_null()
+    }));
     home.kill(&terminal);
     terminal.wait();
     let mut builtin_command = command();
     builtin_command.args(["--provider", "kimi-for-coding", "--model", builtin_model]);
     let mut terminal = Terminal::launch_tui(builtin_command);
     terminal.until("Ask anything...");
-    terminal.write(b"builtin-without-listing-message\r");
+    terminal.write(b"kimi-provider-message\r");
     terminal.until("builtin-provider-reply");
     loop {
         let (key, body) = events.recv_timeout(Duration::from_secs(8)).unwrap();
-        if body.to_string().contains("builtin-without-listing-message") {
+        if body.to_string().contains("kimi-provider-message") {
             assert_eq!(key, "x-api-key first-key");
             assert_eq!(body["model"], builtin_model);
             break;
