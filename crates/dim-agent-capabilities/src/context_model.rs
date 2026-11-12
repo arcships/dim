@@ -14,6 +14,11 @@ const RESERVE_MIN_TOKENS: f64 = 16_000.;
 const RESERVE_MAX_RATIO: f64 = 0.20;
 /// No reply needs more than this, however much the model declares.
 const OUTPUT_CEILING: u64 = 131_072;
+/// The share of the output allowance a reply keeps for its answer beside
+/// thinking, with `ANSWER_MIN_TOKENS` as the floor and half the allowance as
+/// the cap. Provisional, like the trigger reserve above (#1466).
+const ANSWER_SHARE: f64 = 0.25;
+const ANSWER_MIN_TOKENS: f64 = 4_096.;
 /// Serialized UTF-8 bytes per estimated token.
 const BYTES_PER_TOKEN: f64 = 4.;
 /// Estimated tokens of one image part.
@@ -29,6 +34,24 @@ pub fn output_allowance(context_window: u64, declared_max_output: u64) -> u64 {
         .min(OUTPUT_CEILING)
         .min(context_window / 2)
         .max(1)
+}
+
+/// The part of the output allowance a reply keeps for its answer when it may
+/// think (#1466): a quarter of the allowance, at least 4096 tokens, never more
+/// than half of it, and at least 1. Thinking can therefore never take the whole
+/// allowance, and `allowance - answer_tokens` is the thinking room.
+pub fn answer_tokens(allowance: u64) -> u64 {
+    let allowance_f = allowance as f64;
+    (1_u64)
+        .max((ANSWER_SHARE * allowance_f).round() as u64)
+        .max(ANSWER_MIN_TOKENS.min(allowance_f / 2.) as u64)
+        .min(allowance)
+}
+
+/// The part of the output allowance a reply may spend on thinking, which is
+/// every token `answer_tokens` does not reserve.
+pub fn thinking_tokens(allowance: u64) -> u64 {
+    allowance.saturating_sub(answer_tokens(allowance))
 }
 
 /// The configuration a stored adoption yields at a request boundary: the
