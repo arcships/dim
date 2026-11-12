@@ -612,6 +612,11 @@ pub struct Catalog {
     /// Whether Sessions whose origin is `acp` are listed (#557).
     #[serde(default)]
     pub with_acp_sessions: bool,
+    /// Whether Sessions whose origin is `automation` are listed: work a saved
+    /// configuration launched with no person present (#1421). Independent of
+    /// both other class filters.
+    #[serde(default)]
+    pub with_automation_sessions: bool,
     /// Whether the catalog also lists Sessions this daemon closed, which
     /// keep their stored rows. The flag is part of the cursor's filter set.
     #[serde(default)]
@@ -1178,6 +1183,7 @@ pub struct ForkResult {
 pub struct DeleteResult {
     pub deleted: bool,
 }
+/// Who created a Session and why it exists (`session-classification.md` §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionOrigin {
@@ -1185,6 +1191,9 @@ pub enum SessionOrigin {
     Acp,
     Internal,
     Unknown,
+    /// A Session `sessions.launch` created because its caller declared that a
+    /// saved configuration runs the work, with no person present (#1421).
+    Automation,
 }
 impl SessionOrigin {
     /// The value the stored Session record holds for this origin.
@@ -1194,6 +1203,7 @@ impl SessionOrigin {
             Self::Acp => "acp",
             Self::Internal => "internal",
             Self::Unknown => "unknown",
+            Self::Automation => "automation",
         }
     }
     /// The origin a stored value names; `None` for a value this build does not
@@ -1204,6 +1214,7 @@ impl SessionOrigin {
             "acp" => Some(Self::Acp),
             "internal" => Some(Self::Internal),
             "unknown" => Some(Self::Unknown),
+            "automation" => Some(Self::Automation),
             _ => None,
         }
     }

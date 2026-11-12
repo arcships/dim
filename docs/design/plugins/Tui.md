@@ -67,10 +67,13 @@ root.plugin(DaemonLink{options})
     try connect daemon.sock
       ├─ ok ──────────────────────────────────────► hello {profile}
       │                                            ◄ Hello {features, daemonProfile}
-      │  same build: reuse
-      │  another build, idle (daemon.shutdown.ifIdle, else
-      │  empty session.summaries): stop it, spawn the successor
-      │  another build, in use: keep it and print one notice
+      │                                            (refused `protocol_version`: retry
+      │                                             one version lower, floor v3)
+      │  same build at this protocol: reuse
+      │  another build, or a lower protocol, idle (daemon.shutdown.ifIdle,
+      │  else empty session.summaries): stop it, spawn the successor
+      │  another build, in use, at this protocol: keep it and print one notice
+      │  in use, at a lower protocol: exit with one notice, no Session
       └─ missing / refused:
            spawn `<home>/rust/dimcode-server app-server
                   --unix <sock> --no-ws --home <native home>
@@ -160,8 +163,8 @@ dimcode exec / export / login / models / mcp …        dimcode daemon stop
 ──────────────────────────────────────────────        ───────────────────
 root.plugin(DaemonLink)  → Connection                  DaemonLink{start: false}:
 take the Client, call the action's RPCs on it                         no socket → "Daemon is not running." exit 0
-print; root.dispose(); exit                              socket → hello; daemon.shutdown;
-                                                         wait for EOF (≤ 30 s); exit 0
+print; root.dispose(); exit                              socket → hello (stepping down to v3 if refused);
+                                                         daemon.shutdown; wait for EOF (≤ 30 s); exit 0
 ```
 
 `exec` without a terminal, `--prompt`, `--no-tui` and piped stdin take this path; the `Tui` plugin is never loaded.
@@ -463,9 +466,11 @@ old reply             -> discard
 
 | Case | Decision |
 | --- | --- |
-| Two clients start at once, with no daemon or with a daemon of another build | One holds `<native home>/daemon.start.lock` and decides; the other waits and then runs the same decision, finding the survivor at its own version. The waiter's bound is inactivity: one verified shutdown plus one startup plus a margin, moved forward while the holder's daemon reports startup progress in its startup note; the holder waits the same way before it spawns when that note names another live process. Exactly one spawn or replacement happens, and a waiter that outlasts the bound fails naming `daemon.log`; it never spawns without the lock. |
-| A daemon of another build is idle | `daemon.shutdown {ifIdle:true}` stops it with verified shutdown and the client spawns its own successor. A daemon older than that parameter is judged by `session.summaries`: no Session with an attached client and none running. That reading leaves a window in which an attach between the read and the shutdown is closed with the daemon. |
-| A daemon of another build is in use | It is kept and used; one notice carries the counts a `daemon_busy` refusal reported (connections, attached Sessions, running turns) and names `dimcode daemon stop` as the way to upgrade later. The next start by a client of another build that finds it idle replaces it. |
+| Two clients start at once, with no daemon or with a daemon of another build or protocol | One holds `<native home>/daemon.start.lock` and decides; the other waits and then runs the same decision, finding the survivor at its own version. The waiter's bound is inactivity: one verified shutdown plus one startup plus a margin, moved forward while the holder's daemon reports startup progress in its startup note; the holder waits the same way before it spawns when that note names another live process. Exactly one spawn or replacement happens, and a waiter that outlasts the bound fails naming `daemon.log`; it never spawns without the lock. |
+| A daemon of another build, or of a lower protocol, is idle | `daemon.shutdown {ifIdle:true}` stops it with verified shutdown and the client spawns its own successor. A daemon older than that parameter is judged by `session.summaries`: no Session with an attached client and none running. That reading leaves a window in which an attach between the read and the shutdown is closed with the daemon. A daemon of a lower protocol reaches the same decision: the client asked for its own version, the daemon refused it with a typed `protocol_version` error, and the client retried one version lower, down to v3. A daemon of this client's version can still be one of those: the version string says which build it came from, not which protocol it speaks. |
+| A daemon of another build or of a lower protocol, in use at this client's protocol | It is kept and used; one notice carries the counts a `daemon_busy` refusal reported (connections, attached Sessions, running turns) and names `dimcode daemon stop` as the way to upgrade later. The next start by a client of another build that finds it idle replaces it. |
+| A daemon in use at a lower protocol | The client starts no Session on it: it exits 1 with one notice naming the daemon's protocol and carrying the counts a `daemon_busy` refusal reported, and makes no further call. A Session created there would be stored at the daemon's protocol and hidden from this build. |
+| Which actions step down to a lower protocol | The action alone decides: `daemon stop` always steps down, and any other action does only when it starts the daemon and that daemon is this executable's (`start && server.embedded`). So it reaches `daemon stop` whatever `--server` names, the interactive start, `web`, and the one-shot commands that run through `DaemonLink` on a start (`exec`, `export`, `login`, `models`, `mcp …`, the management and runtime commands); those then use the daemon at the negotiated protocol as any start does, replacing it when idle or refusing it with the notice when in use. It does not reach a start with `--server`, `relaunch` or `web --off`: they greet the daemon once and report its refusal as it is. Actions that build no daemon connection (`help`, `version`, `timeline`, `daemon vacuum`, `web --install`, `--fullscreen default`) never reach this rule, and the ACP gateway asks for the floor itself, so it has nothing to step down to. |
 | Daemon still assembling when the client polls | The socket does not exist yet; the client polls to its bound. A store format upgrade is the long phase that reports progress and moves the bound: the bound is inactivity, 10 s for the wait before spawning and for the spawn wait and one verified shutdown plus one startup plus a margin for the start-lock wait, moved forward whenever the daemon's startup note reports a new store-upgrade progress counter (the spawn wait takes its child's pid, the wait before spawning and the start-lock wait any pid). Before it spawns, a client waits while the note names a live pid other than its own, and connects once that daemon serves; a note whose pid is gone, or that names the client, is stale and it starts its own. Every other startup phase is bounded by that fixed value. The first such note a client reads also prints one line on stderr, and a fresh store or one at the current format reports nothing. A daemon that reports nothing for the bound surfaces as "App Server startup timed out; see daemon.log"; one that exits first reports its startup note's cause at once. |
 | Connection drops while the TUI runs | **Not a provider replacement.** The TUI keeps its draft and reports the failure. There is no automatic reconnect in the session thread. |
 | `apply` of `Tui` fails after raw mode was entered | The terminal effect was registered before raw mode, so rutis runs it on the failed load; the error is printed on a restored terminal. |
@@ -479,7 +484,7 @@ old reply             -> discard
 | Leaf process killed | Its session ends; the daemon disposes the `UiLeaf` and removes the registration. |
 | Leaf `Tui` never attaches | Closed after `START` (20 s from `ui.open`'s reply), as for `ui.close`; a replacement it was making leaves the old interface running. |
 | Daemon shutdown with leaves | Graceful: disposing `UiHostPlugin` waits for every `UiLeaf` disposal, each closing its session. Forced: the sessions end with the process; each leaf disposes its tree when its session ends. |
-| Replacing the executable while a daemon runs | The old executable stays the daemon. A client of the new build keeps it while other clients use it and replaces it on a later start that finds it idle; `daemon stop` with the matching CLI remains the immediate upgrade ([release packaging](../../release/README.md#upgrade-compatibility)). |
+| Replacing the executable while a daemon runs | The old executable stays the daemon. A client of the new build keeps it while other clients use it and replaces it on a later start that finds it idle; a `daemon stop` from any newer build reaches it, at v3 or above, and remains the immediate upgrade ([release packaging](../../release/README.md#upgrade-compatibility)). |
 
 ### Connection loss and terminal content
 

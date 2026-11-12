@@ -225,7 +225,7 @@ sequenceDiagram
   participant ST as Process storage
   participant AG as Agents
   T->>ST: persist delivering with deadline_at
-  T->>AG: sessions.launch(cwd, agent?, policy?)
+  T->>AG: sessions.launch(cwd, agent?, policy?, origin: "automation", title: job.name)
   AG-->>T: {sessionId, policy}
   T->>ST: persist sessionId, branch, policy
   T->>AG: sessions.input(sessionId, main, queue, marker, prompt)
@@ -235,6 +235,8 @@ sequenceDiagram
 ```
 
 Those are the whole target: one launch, one input and the stop timer. Scheduler reads no history of the launched Session and subscribes to no broadcast, so a delivery is settled by its own write and nothing follows the launched work (A.6).
+
+The launch declares what the Session is for and how a picker labels it: `origin: "automation"` gives it the class of work a saved configuration runs with no person present, so a client lists it under `session.catalog`'s `withAutomationSessions` without also listing every Collaboration member and Workflow stage, and `title: job.name` is the label a picker shows before the first input. SessionTitle writes that title, under its own text rules ([SessionTitle](SessionTitle.md)); the job name is Scheduler's, and the App Server holds no dependency on Scheduler. A `session` target sends neither: it is the user's own Session, and its origin stays what it was ([session classification](../appserver/session-classification.md#32-which-creation-entry-writes-which-value)).
 
 Window evaluation follows `settings/schedule`, wall-clock minute changes, the earliest remaining window within the current minute, and accepted-delivery settlement. The owned timer checks those deadlines each second without reading Settings or the store on idle ticks.
 

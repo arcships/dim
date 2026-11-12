@@ -230,7 +230,7 @@ impl ProvidersPanel {
             Event::None => Effect::None,
             Event::Refresh => Effect::Refresh,
             Event::Close => Effect::Close,
-            Event::Pick(id) => self.open(&id),
+            Event::Pick { id, .. } => self.open(&id),
         }
     }
 

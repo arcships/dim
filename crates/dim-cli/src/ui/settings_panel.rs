@@ -320,7 +320,7 @@ impl SettingsPanel {
         self.set_hint();
         match event {
             Event::Close => Effect::Close,
-            Event::Pick(id) => match Setting::of(&id) {
+            Event::Pick { id, .. } => match Setting::of(&id) {
                 Some(setting) => match setting.prompt_field() {
                     Some(field) => Effect::EditPrompt(field),
                     None => Effect::Setting(setting),

@@ -111,6 +111,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "이 데몬은 세션 이름 바꾸기를 지원하지 않습니다"
         }
         "Renaming failed" => "이름 바꾸기에 실패했습니다",
+        "Delete \"{name}\"?" => "“{name}”을(를) 삭제할까요?",
+        "Deleted {name}." => "{name} 삭제했습니다.",
+        "Nothing was removed: no stored Session {name}." => {
+            "삭제된 항목이 없습니다: 저장된 세션 {name}이(가) 없습니다."
+        }
+        "Delete failed" => "삭제에 실패했습니다",
+        "This daemon does not support deleting Sessions" => {
+            "이 데몬은 세션 삭제를 지원하지 않습니다"
+        }
         "Starting" => "시작 중",
         "Delegation result" => "위임 결과",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -331,9 +340,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "종료",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 선택 · ←/→ 추론 강도 · Ctrl+X 저장값 지우기 · Esc 지우기/닫기"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 선택 및 기본 설정 · ←/→ 추론 강도 · Ctrl+X 저장값 지우기 · Esc 지우기/닫기"
         }
+        "Default for new sessions in {folder}: {model}" => "새 세션의 {folder} 기본 모델: {model}",
+        "Default for new sessions: {model}" => "새 세션 기본 모델: {model}",
         "Enter select · Esc clear/close" => "Enter 선택 · Esc 지우기/닫기",
         "esc close" => "esc 닫기",
         "Suggestions" => "추천",
@@ -341,6 +352,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "스킬 로드됨: {name}",
         "Hook context · {count} line" => "훅 컨텍스트 · {count}줄",
         "Hook context · {count} lines" => "훅 컨텍스트 · {count}줄",
+        "Stop hook follow-up · {count} line" => "Stop 훅 후속 입력 · {count}줄",
+        "Stop hook follow-up · {count} lines" => "Stop 훅 후속 입력 · {count}줄",
         "Commands" => "명령",
         "Command Palette" => "명령 팔레트",
         "No matches" => "결과 없음",
@@ -393,8 +406,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "이 워크스페이스에 저장된 세션 없음. Ctrl+S로 더 보기."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 열기 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 열기 · Ctrl+X 삭제 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
         }
         "Loading sessions..." => "세션 불러오는 중…",
         "No saved sessions yet." => "저장된 세션 없음",
@@ -549,6 +562,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이라 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이고, 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이며(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}), 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중입니다(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}). 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."

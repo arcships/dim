@@ -43,7 +43,14 @@ for that group only. A member's summary row still opens its conversation.
 only expanded shows a compaction's summary body. Thinking details controls both streaming and completed thoughts,
 including the line side panel. Changing either setting updates its retained
 history and live content without changing the other setting. Scrollback already
-written to the terminal remains append-only; fullscreen redraws retained history. A hook context's body follows the same rule: collapsed and summary keep it closed, only expanded opens it, and a click on the row toggles that row alone.
+written to the terminal remains append-only; fullscreen redraws retained history. A runtime block a hook wrote follows the same rule: collapsed and summary keep a hook context's or a `Stop` follow-up's body closed, only expanded opens it, and a click on the row toggles that row alone.
+
+In scrollback, expanded thinking streams its complete body into native terminal
+history, without a preview line limit or an omitted-prefix marker. Only the
+unfinished wrapping tail remains live. A streamed thought has a fixed `Thought`
+heading and appends its duration below the body on completion; it never prints
+the body again to replace the heading. Collapsed thinking remains a single-row
+summary. Fullscreen and the line side panel retain their existing previews.
 
 ## Command menu
 
@@ -1106,11 +1113,14 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` removes without the panel's confirmation, and `dimcode
 models PROVIDER inspect MODEL` prints the lines the detail shows.
+
+Enter also writes the default a new Session in this folder reads ([provider management
+§4](appserver/provider-management.md#4-client-integration)).
 
 Bare `/effort` and `/reasoning` open the current model's inline effort picker in both TUI
 modes; explicit-value forms and the line client keep their command behavior. The selection
@@ -1429,7 +1439,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
-| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace. |
+| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace, and `Ctrl+X` deletes one row after a confirmation. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/export` in either terminal UI | Choose Markdown or JSON in a dialog for an opened Session; save a uniquely named file in the CLI current directory. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
@@ -1658,7 +1668,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1668,7 +1678,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1678,7 +1688,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - A scope change works like a new query: it cancels the pending read, drops the
@@ -1711,6 +1721,27 @@ the selection down.
   workspace, membership in the git set, or no filter.
 - `dimcode --resume ID` resumes a Session of any workspace, and cleanup selects
   across every workspace.
+- `Ctrl+X` removes the selected row after `Delete "{name}"? Enter confirm ·
+  Esc cancel`, where `{name}` is the row's label without its origin tag,
+  captured when the key was pressed — a page, a scope answer or a refresh
+  never retargets the question, and Enter never looks the row up again. The
+  question takes every key: Enter sends `session.delete {sessionId}` (no
+  `requireInactive`, so a Session a turn is running in is deleted too, its
+  close settling the run), every other key cancels it, and Esc does not close
+  the picker. While the daemon answers, the rows stay drawn and no key acts
+  but Esc, which closes the picker: the delete may wait on a slow close, and
+  the outcome is reported in the transcript wherever the operator is.
+  The row leaves on `{deleted:true}` with `Deleted {name}.`, a
+  `{deleted:false}` reply re-reads the first page and says `Nothing was
+  removed: no stored Session {name}.`, an error keeps the row and shows
+  `Delete failed · <daemon's sentence>`, and a daemon without `session.delete`
+  keeps the row and says it cannot delete Sessions. A Session another caller
+  removed before this reply is that `{deleted:false}`: there was nothing left
+  to remove. Deleting the shown Session returns to Home as `/new` does and
+  reports no disconnect, whether the delete succeeded or the close ran and
+  the removal failed (`-32603`): its queued `session.state` and
+  `session.closed` match no Session and are ignored. One row at a time;
+  `dimcode session cleanup` keeps the bulk selector.
 
 ### Session titles
 
@@ -1758,7 +1789,9 @@ and on `false` the command prints `Nothing was removed: no stored Session ID.` o
 and exits 1. An id the daemon holds no rows of is a successful delete that removed
 nothing; that is not a usage error, a malformed command line is. A reply without the
 field, from an App Server before it, reads as a delete: the rows are gone either way,
-which is the state asked for.
+which is the state asked for. The TUI's `/resume` calls the same method on one row
+with the same reply meanings ([the `/resume` picker](#the-resume-picker)) and never
+deletes in bulk.
 
 `dimcode session cleanup` composes deletion from the same two methods, as
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) requires. It
@@ -1785,9 +1818,12 @@ time and can become eligible for deletion:
 Cleanup selects across every workspace, not only the one `/resume` opens on: the
 classes it selects are the ones `/resume` lists by default
 ([classification](appserver/session-classification.md#35-catalog-visibility)): origin
-`client` or `unknown`. An `internal` Session is never selected: a member goes with
-its leader's delete and a launched Session belongs to its plugin. An `acp` Session is
-never selected either; `dimcode session delete ID` deletes one. A Session it does not
+`client` or `unknown`. The list is positive, so an origin it does not name is never
+selected. An `internal` Session is never selected: a member goes with its leader's
+delete and a launched Session belongs to its plugin. An `acp` Session is
+never selected either; `dimcode session delete ID` deletes one. An `automation` one is
+the same: a saved configuration launched it, and the plugin that launched it removes it
+with its own retention. A Session it does not
 select neither counts toward `--keep N` nor appears in the preview.
 
 A Session with a running turn or an attached client is kept: the preview lists the
