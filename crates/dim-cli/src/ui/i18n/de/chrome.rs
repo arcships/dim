@@ -326,7 +326,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Fehler: {message}",
         "working…  {elapsed}" => "arbeitet…  {elapsed}",
         "thinking…  {elapsed}" => "denkt…  {elapsed}",
-        "Ask anything..." => "Frage stellen…",
+        "Ask anything... · Ctrl+J newline" => "Frage stellen… · Ctrl+J neue Zeile",
         "Earlier history · {id} · {count} messages" => {
             "Früherer Verlauf · {id} · {count} Nachrichten"
         }

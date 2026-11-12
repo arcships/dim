@@ -273,6 +273,9 @@ impl Terminal {
             return Ok(());
         }
         let mut bytes = Vec::new();
+        if self.keyboard == KeyboardProtocol::Kitty {
+            bytes.extend_from_slice(Mode::KittyKeyboard.restore_sequence());
+        }
         if on {
             bytes.extend_from_slice(Mode::AltScreen.enable_sequence());
             bytes.extend_from_slice(Mode::Mouse.enable_sequence());
@@ -283,6 +286,9 @@ impl Terminal {
             bytes.extend_from_slice(Mode::AltScreen.restore_sequence());
             modes::clear(Mode::Mouse);
             modes::clear(Mode::AltScreen);
+        }
+        if self.keyboard == KeyboardProtocol::Kitty {
+            bytes.extend_from_slice(Mode::KittyKeyboard.enable_sequence());
         }
         self.writer.send(bytes)
     }

@@ -282,7 +282,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "오류: {message}",
         "working…  {elapsed}" => "작업 중…  {elapsed}",
         "thinking…  {elapsed}" => "생각 중…  {elapsed}",
-        "Ask anything..." => "무엇이든 물어보세요…",
+        "Ask anything... · Ctrl+J newline" => "무엇이든 물어보세요… · Ctrl+J 줄바꿈",
         "Earlier history · {id} · {count} messages" => "이전 기록 · {id} · 메시지 {count}개",
         "No active session" => "활성 세션 없음",
         "answer required" => "답변 필요",
