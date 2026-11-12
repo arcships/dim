@@ -1056,16 +1056,16 @@ the path list, in first-call order. Repeated edits of one path count as one file
 successful edits contribute to the line totals. Mixed tool groups carry the same edit summary.
 Paths retain the tool input's spelling, including directory components to distinguish namesakes.
 On narrow terminals, the path list gives way to a localized remaining-file count; an individual
-path may shorten on grapheme boundaries to keep the totals and disclosure visible. If even
+path may shorten on grapheme boundaries to keep the totals and, in fullscreen, disclosure visible. If even
 those fixed fields exceed the width, the header uses the ordinary one-row truncation.
-Opening the group still shows each tool's full path and diff.
+Expanded details still show each tool's full path and diff. Scrollback examples:
 
 ```text
-✓ Edited src/main.rs (+12 -3) ▸
-✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs ▸
-✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more ▸
-✓ Ran 1 command, edited src/main.rs (+12 -3) · python ▸
-✓ Ran 2 commands, ran 1 search · python ×2, rg ▸
+✓ Edited src/main.rs (+12 -3)
+✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs
+✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more
+✓ Ran 1 command, edited src/main.rs (+12 -3) · python
+✓ Ran 2 commands, ran 1 search · python ×2, rg
 ```
 
 Collapsed headers also show shell program names, as defined by the
@@ -1078,7 +1078,7 @@ nonblank line followed by `…`; output, diff bodies and script bodies stay hidd
 until expanded. Member summary rows still open their conversations.
 
 ```text
-✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3) ▾
+✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3)
   ✓ Exec · cargo check -p dim-cli
   ✓ Read · docs/INDEX.md
   ✓ Edited src/main.rs (+12 -3)
@@ -1127,23 +1127,23 @@ An explicit provider error presentation keeps its message and suggested action.
  ■ turn failed: <reason>
 ```
 
-The expanded row shows only the summary body:
+The expanded row shows only the summary body (scrollback):
 
 ```text
  › try the RwLock for the cache lock
  … reply …
  · Compacting context…
- ✓ Context compacted ▾
+ ✓ Context compacted
  ▎ The cache lock moved into a RwLock; the parser race is next.
  ▎ …
  › carry on
  ✗ Context compaction failed · the summarizer returned nothing
  ◦ Context compaction skipped · nothing to cut
  ◦ Context compaction cancelled · the capability was reloading
- ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K ▸
+ ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K
 ```
 
-`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: a click on the row toggles it (`▸` closed, `▾` open). `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
+`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: in fullscreen, a click on the row toggles it (`▸` closed, `▾` open). Scrollback draws no disclosure arrow. `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
 
 
 A user message's row carries the operator's words. Context a hook appended for the model is not theirs, so each `dim-hooks` block draws as its own muted status row directly under the message: `Hook context · N lines` (`Hook context · 1 line` for one stored line), `▸` closed and `▾` open. `/tools` opens and closes it exactly as it opens a compaction's body, and a click on the row does the same; the body is the hook's own words, drawn as text, not Markdown. The stored Session and the model's request keep the block verbatim. A message that itself opens a marker keeps it as the operator's text, because the first block is always theirs.

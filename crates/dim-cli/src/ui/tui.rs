@@ -5229,7 +5229,13 @@ impl App {
             });
             if hidden > 0 {
                 let block = Block::LoadMore(hidden);
-                let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+                let text = chunk(&render_block(
+                    &block,
+                    width,
+                    &self.palette,
+                    &self.markdown,
+                    self.fullscreen,
+                ));
                 self.record(block);
                 frame.commits.push(text);
             }
@@ -5328,13 +5334,25 @@ impl App {
             frame.commits.push(text);
         }
         for block in std::mem::take(&mut self.reports) {
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
         for run in std::mem::take(&mut self.shell_runs) {
             let block = Block::Shell(run);
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
@@ -5365,6 +5383,7 @@ impl App {
                 width,
                 &self.palette,
                 &self.markdown,
+                self.fullscreen,
             )));
             self.record(block);
         }
@@ -5944,12 +5963,12 @@ impl App {
             let rows = if expanded {
                 streamed_thinking(&text, elapsed_ms, width, &self.palette)
             } else {
-                render_block(&source, width, &self.palette, &self.markdown)
+                render_block(&source, width, &self.palette, &self.markdown, false)
             };
             let stable = if row.streaming && source_text.is_empty() {
                 0
             } else {
-                render_block(&source, width, &self.palette, &self.markdown).len()
+                render_block(&source, width, &self.palette, &self.markdown, false).len()
             };
             let continues = stream.written > 0;
             let new = &rows[stream.written.min(stable)..stable];
@@ -6185,7 +6204,7 @@ impl App {
                     {
                         *pending = false;
                     }
-                    let lines = render_block(&block, width, p, markdown);
+                    let lines = render_block(&block, width, p, markdown, self.fullscreen);
                     if lines.is_empty() {
                         return (String::new(), None);
                     }
@@ -6324,6 +6343,7 @@ impl App {
                     width,
                     p,
                     markdown,
+                    self.fullscreen,
                 ),
             };
             if rows.is_empty() {
@@ -6719,6 +6739,21 @@ impl App {
             self.redraw_window();
         } else {
             self.refresh_tool_choices();
+            for block in &mut self.history {
+                if let Block::Compaction {
+                    expanded,
+                    text,
+                    detail,
+                    ..
+                } = block
+                {
+                    *expanded = self.tool_detail == Detail::Expanded;
+                    if !*expanded && detail.is_some() {
+                        *text = "".into();
+                    }
+                }
+            }
+            self.sync_compaction_details();
             self.settle_committed_messages();
         }
         self.request_reflow();
@@ -6919,7 +6954,13 @@ impl App {
                 &self.palette,
                 PULSE_FRAMES[self.last_pulse as usize % PULSE_FRAMES.len()],
             )),
-            block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
+            block => chunk(&render_block(
+                block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            )),
         }
     }
 
@@ -7481,7 +7522,7 @@ fn side_reply(
             RowKind::Thinking => project_row(&side.rows, index, thinking_detail),
             _ => project_row(&side.rows, index, detail),
         };
-        let rendered = render_block(&block, inner, p, markdown);
+        let rendered = render_block(&block, inner, p, markdown, false);
         rows += rendered.len() + 1;
         blocks.push(rendered);
     }
@@ -13209,7 +13250,22 @@ mod tests {
                 tool.tool_input = Some(serde_json::json!({"command": "cargo check"}));
                 tool.result_text = (!streaming).then(|| "Build succeeded".into());
                 tool.pending = streaming;
-                let rows = vec![message(false), thought.into(), tool.into()];
+                let mut compacted = (*message(false)).clone();
+                compacted.row_id = "compacted".into();
+                compacted.kind = RowKind::Compaction;
+                compacted.text.clear();
+                compacted.compaction = Some(crate::model::view::CompactionView {
+                    state: CompactionState::Completed,
+                    text: "The build configuration was checked.".into(),
+                    detail: None,
+                    insufficient: Vec::new(),
+                });
+                let rows = vec![
+                    message(false),
+                    compacted.into(),
+                    thought.into(),
+                    tool.into(),
+                ];
                 let snapshot = ViewSnapshot {
                     session_id: "s1".into(),
                     rows: rows.clone(),
@@ -13315,6 +13371,64 @@ mod tests {
                     + &strip_escapes(&reopened.frame(drawn.size).live.join("\n"));
                 assert!(!folded.contains("cargo check"), "{folded}");
                 assert!(!folded.contains("Inspect the lock lifetime."), "{folded}");
+                assert!(
+                    full.contains("The build configuration was checked."),
+                    "{full}"
+                );
+                for text in [&expanded, &collapsed, &folded] {
+                    assert!(
+                        !text.contains("The build configuration was checked."),
+                        "{text}"
+                    );
+                    assert!(text.contains("Context compacted"), "{text}");
+                    assert_eq!(text.contains("Context compacted ▸"), fullscreen, "{text}");
+                }
+                assert_eq!(full.contains("Context compacted ▾"), fullscreen, "{full}");
+                for text in [&expanded, &collapsed, &full, &folded] {
+                    assert_eq!(text.contains(['▸', '▾']), fullscreen, "{text}");
+                }
+                reopened.set_fullscreen(!fullscreen);
+                let frame = reopened.frame((44, 40));
+                let switched = strip_escapes(&reopened.reflow_history(44).join("\n"))
+                    + &strip_escapes(&frame.live.join("\n"));
+                assert!(
+                    !switched.contains("The build configuration was checked."),
+                    "switching modes restores the collapsed compaction preset: {switched}"
+                );
+                assert_eq!(
+                    switched.contains("Context compacted ▸"),
+                    !fullscreen,
+                    "{switched}"
+                );
+                if fullscreen {
+                    for detail in [Detail::Collapsed, Detail::Summary, Detail::Expanded] {
+                        reopened.set_fullscreen(true);
+                        let _ = reopened.frame((44, 40));
+                        let block = reopened.dropped
+                            + reopened
+                                .history
+                                .iter()
+                                .position(|block| matches!(block, Block::Compaction { .. }))
+                                .unwrap();
+                        assert!(reopened.click(Some(block), 1, 44));
+                        let toggled = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            toggled.contains("The build configuration was checked."),
+                            detail != Detail::Expanded,
+                            "{toggled}"
+                        );
+                        reopened.set_fullscreen(false);
+                        let _ = reopened.frame((44, 40));
+                        let restored = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            restored.contains("The build configuration was checked."),
+                            detail == Detail::Expanded,
+                            "{restored}"
+                        );
+                        assert!(!restored.contains(['▸', '▾']), "{restored}");
+                        reopened.run_command("tools", "");
+                    }
+                }
             }
         }
     }
@@ -14090,6 +14204,7 @@ mod tests {
             60,
             p,
             &markdown,
+            false,
         );
         assert_eq!(settled.len(), live.len());
     }
@@ -16072,7 +16187,11 @@ mod tests {
             assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
             assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
             drop(body);
-            assert!(drawn.app.click(Some(block), 1, 100));
+            if fullscreen {
+                drawn.app.set_fullscreen(false);
+            } else {
+                assert!(drawn.app.click(Some(block), 1, 100));
+            }
             assert!(
                 matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
             );
