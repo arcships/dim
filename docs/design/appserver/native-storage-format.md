@@ -1117,22 +1117,23 @@ rollback, reopen and an older-format rejection check. Query diagnostics must sho
 an indexed lookup for both a hit and a miss as the input count grows. This change
 does not introduce Recall FTS tables or change text-search semantics.
 
-### #1421 v39 格式决定
+### #1421 v42 格式决定
 
-[Session 分类](session-classification.md)（#1421）新增第五个创建来源 `automation`，格式为 **v39**，从 v38 原地升级。若在实现之前另有格式变更先合入，实现取当时的下一个编号，本节其余内容不随编号改变。
+[Session 分类](session-classification.md)（#1421）新增第五个创建来源 `automation`，格式为 **v42**，从 v41 原地升级。若在实现之前另有格式变更先合入，实现取当时的下一个编号，本节其余内容不随编号改变。
 
 - **改的不是数据，是约束**：`agent_sessions.origin` 的内联 `CHECK` 需要接受 `automation`。`CHECK` 写在建表语句里，SQLite 不能原地放宽；而启动门禁逐字比较 `sqlite_master.sql` 与 `SCHEMA`，所以只能重建该表。
-- **重建步骤**（`V39_AGENT_SESSIONS`）：按 `SCHEMA` 的原文建出 `agent_sessions`，方式是把旧表改名出去而不是把新表改名进来。
+- **重建步骤**（`V42_AGENT_SESSIONS`）：按 `SCHEMA` 的原文建出 `agent_sessions`，方式是把旧表改名出去而不是把新表改名进来。
   1. `DROP INDEX agent_sessions_by_leader`。
-  2. `PRAGMA legacy_alter_table=ON`：这一步只在本步骤内打开，步骤结束置回 `OFF`。`agents`、`session_owners`、`timeline_branches`、`timeline_content`、`session_file_owners`、`session_grants`、`session_output_owners`、`session_worktrees`、`session_metadata`、`session_catalog` 都以 `REFERENCES agent_sessions(session_id)` 指向它；该 pragma 为 `OFF` 时，`RENAME` 会把这些表的存储 SQL 改写成 `REFERENCES "agent_sessions_v38"`，门禁随即拒绝整个库。v38 重建 `session_owners` 时没有别的表指向它，所以那一步不需要它。
-  3. `ALTER TABLE agent_sessions RENAME TO agent_sessions_v38`。
+  2. `PRAGMA legacy_alter_table=ON`：这一步只在本步骤内打开，步骤结束置回 `OFF`。`agents`、`session_owners`、`timeline_branches`、`timeline_content`、`session_file_owners`、`session_grants`、`session_output_owners`、`session_worktrees`、`session_metadata`、`session_catalog` 都以 `REFERENCES agent_sessions(session_id)` 指向它；该 pragma 为 `OFF` 时，`RENAME` 会把这些表的存储 SQL 改写成 `REFERENCES "agent_sessions_v41"`，门禁随即拒绝整个库。v38 重建 `session_owners` 时没有别的表指向它，所以那一步不需要它。
+  3. `ALTER TABLE agent_sessions RENAME TO agent_sessions_v41`。
   4. `CREATE TABLE agent_sessions (…)`，文本与 `SCHEMA` 完全一致，`CHECK` 含 `'automation'`。表必须在最终名下创建：SQLite 会把改名得到的表存成 `CREATE TABLE "agent_sessions"`，多出的双引号同样会让门禁失败。
-  5. `INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions_v38`，显式列名。
-  6. `DROP TABLE agent_sessions_v38`；`CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id)`；`PRAGMA legacy_alter_table=OFF`。
+  5. `INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions_v41`，显式列名。
+  6. `DROP TABLE agent_sessions_v41`；`CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id)`；`PRAGMA legacy_alter_table=OFF`。
 - **重建哪些对象**：`SCHEMA` 里 `tbl_name = 'agent_sessions'` 的对象都要重建，即表本身与索引 `agent_sessions_by_leader` 一个；`agent_sessions` 上没有任何触发器（唯一一个触发器在 `timeline_text` 上，属另一张表）。`agents` 上的 `agents_default_unique`、`agents_by_owner` 和 `session_owners` 上的 `session_owners_by_agent` 属于各自表，`RENAME` 不改动它们。
 - **不回填**：升级前的 Scheduler 启动会留下的 `internal` 且 `leader_session_id IS NULL` 的行，与 Workflow 阶段、丢失回复的空 Session 完全无法区分。把它们改成 `automation` 会凭空造出库中没有的来源（[Session 分类 D3、D6](session-classification.md#9-decisions)），因此这些行保持 `internal`，默认仍不列出；升级后下一次窗口启动的 Session 才是 `automation`。
-- **单向**：v38 守护进程拒绝 v39 库；不降级。准入仍要求精确 SQL 结构及对应标记。
-- **验证**：`storage_flow.rs` 的 `a_v38_store_upgrades_in_place_once_keeping_internal_launches` 用一次性 v38 库核对：业务行逐行不变、两类 `internal` 行仍为 `internal`、以 `REFERENCES agent_sessions(` 建表的各表 SQL 逐字不变、`agent_sessions` 上仍恰有 `agent_sessions_by_leader` 一个索引、`automation` 可插入而未知值仍被拒绝、再次打开不再升级。
+- **外键检查**：升级事务在关闭外键约束的状态下运行，因此提交前两次读 `PRAGMA foreign_key_check`——第一次在首个步骤之前，第二次在派生索引之后——并按 `(表, 父表)` 比较违规行数。只有计数变大的那一对拒绝该库；不变或变小的一对放行，因为 `drop_session` 与 `copy_fork_rows` 的分块提交会留下文档允许的中断状态，重试即可收敛。升级不创建子行，所以它只能掩盖、不能修复违规。
+- **单向**：v41 守护进程拒绝 v42 库；不降级。准入仍要求精确 SQL 结构及对应标记。
+- **验证**：`storage_flow.rs` 的 `a_v41_store_upgrades_in_place_once_keeping_internal_launches` 用一次性 v41 库核对：业务行逐行不变、两类 `internal` 行仍为 `internal`、以 `REFERENCES agent_sessions(` 建表的各表 SQL 逐字不变、`agent_sessions` 上仍恰有 `agent_sessions_by_leader` 一个索引、`automation` 可插入而未知值仍被拒绝、再次打开不再升级。
 
 ## v38: session protocol
 

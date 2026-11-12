@@ -229,12 +229,12 @@ Parent: Update cache      shown where a client lists internal rows
 
 | Subject | Effect |
 | --- | --- |
-| Protocol version | No bump. Both filters and both fields are optional additions; a client that sends neither gets the top-level view, which is the change this issue asks for |
+| Protocol version | No bump. The three class filters — `withInternal`, `withAcpSessions` and `withAutomationSessions` — and both fields are optional additions; a client that sends none gets the top-level view, which is the change this issue asks for |
 | Protocol v1 and v2 | No Session listing is served: `session.summaries` and the catalog are v3 methods |
 | Older daemons | A client sends `origin` and the three filters only when the matching marker is advertised, so its request stays valid against a daemon that rejects unknown parameters |
 | Older clients | A v3 client that predates the filters lists conversations from a new daemon, and labels nothing; it sees fewer rows than before and no wrong ones |
 | `session.summaries` | Lists every Session as before, now with the two fields on each item; ACP's `session/list` is unchanged |
-| Existing stores | v30 is one-way; a v29 daemon refuses the store at startup as it refuses any later format. The upgrade hides exactly the rows whose leader link it records, and leaves every other row visible as `unknown`. v39 is one-way too, and it reclassifies nothing: a Session a launch created before it stays `internal`, so it stays hidden by default |
+| Existing stores | v30 is one-way; a v29 daemon refuses the store at startup as it refuses any later format. The upgrade hides exactly the rows whose leader link it records, and leaves every other row visible as `unknown`. v42 is one-way too, and it reclassifies nothing: a Session a launch created before it stays `internal`, so it stays hidden by default |
 | Existing Sessions | No Session is reclassified later by a read, a title change, a model change or an attachment |
 
 ## 4. Events and state
@@ -243,7 +243,7 @@ This part writes no event, owns no Session or branch state and adds nothing to t
 
 | State | Owner | Written | Rebuilt |
 | --- | --- | --- | --- |
-| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown`; the v39 step widens the column's value set and reclassifies nothing |
+| `agent_sessions.origin` | SessionStore's stored Session record | The creation transaction, once | Not from the Timeline: it is creation input, so the projection property of [the catalog](session-catalog.md#4-events-and-state) does not extend to it. The v30 step backfills what the store already records (the leader link) and leaves the rest `unknown`; the v42 step widens the column's value set and reclassifies nothing |
 | `agent_sessions.leader_session_id` | same | Collaboration member creation ([#593](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)), Migration parent mapping, or deletion of a historical Session's parent | As stored |
 
 The class is display data for pickers. [Design rules §4 rule 9](../architecture/rust-agent/principles.md) keeps it out of
