@@ -2121,18 +2121,22 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
     let mut command = home.command();
     command.arg("--fullscreen");
     let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/tools\r");
     terminal.until("Agent: Code Reviewer");
+    terminal.write(b"/tools\r");
+    terminal.write(b"\x1b[5~");
     terminal.until("member-provider / member-model-2");
     assert!(
         terminal
             .transcript
             .contains("Provider member: external-agent:node:agent")
     );
-    terminal.write(b"\t\r");
+    terminal.write(b"\t\t\t\r");
     terminal.until("Member Session: member-b");
     terminal.until("Member model: No model observed");
     terminal.write(b"\x1b[27u");
-    terminal.write(b"\x1b[A\r");
+    terminal.write(b"\x1b[A\x1b[A\x1b[A\r");
     terminal.until("Member Session: member-a");
     terminal.until("Member model: member-provider / member-model-2");
     terminal.write(b"\x1b[27u");
@@ -2175,6 +2179,10 @@ fn tui_member_cards_attach_only_unfinished_members_and_keep_a_failed_read_unavai
     let mut command = home.command();
     command.arg("--fullscreen");
     let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/tools\r");
+    terminal.until("Agent: running");
+    terminal.write(b"/tools\r");
     terminal.until("No model observed");
     terminal.until("(observation unavailable)");
     assert!(terminal.transcript.contains("restored result text"));
@@ -2276,7 +2284,17 @@ fn tui_member_cards_name_a_native_agent_the_hello_does_not_announce() {
     let mut command = home.command();
     command.arg("--fullscreen");
     let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    assert!(!terminal.transcript.contains("Agent: Code Reviewer"));
+    terminal.write(b"\t\r");
     terminal.until("Agent: Code Reviewer");
+    assert!(
+        !terminal
+            .transcript
+            .contains("Task: Check crate dependencies")
+    );
+    terminal.write(b"\x1b[Z\r");
+    terminal.until("Task: Check crate dependencies");
     named.send(()).unwrap();
     daemon.join().unwrap();
     home.kill(&terminal);
@@ -2342,7 +2360,10 @@ fn tui_member_cards_keep_the_id_when_the_shared_agent_list_read_fails() {
     let mut command = home.command();
     command.arg("--fullscreen");
     let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/tools\r");
     terminal.until("Agent: reviewer");
+    terminal.write(b"/tools\r");
     terminal.until("Second review");
     terminal.until("agent result: second review is complete");
     drawn.send(()).unwrap();

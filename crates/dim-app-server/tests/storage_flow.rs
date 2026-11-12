@@ -488,7 +488,7 @@ fn schema_of(version: u32) -> Vec<String> {
         .chain(V37_ADDITIONS.iter().filter(|_| version >= 37))
         .chain(V39_ADDITIONS.iter().filter(|_| version >= 39))
         .chain(V40_ADDITIONS.iter().filter(|_| version >= 40))
-        .chain(["CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'"].iter().filter(|_| version >= 43))
+        .chain(["CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'"].iter().filter(|_| version >= 44))
         .filter(|sql| version <= 24 || !sql.starts_with("CREATE INDEX timeline_events_by_end "))
         .map(|sql| sql.replace("(version = 13)", &format!("(version = {version})")))
         .map(|sql| {
@@ -1864,6 +1864,212 @@ async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
     agent.close().await.unwrap();
     store.close().await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_inputs() {
+    use dim_agent_capabilities::input_queue::{InputQueue, Withdrawal};
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        key("session", "main"),
+        Vec::new(),
+        store.clone(),
+    );
+    let write = |kind: EventKind| timeline.append(kind.into()).unwrap();
+    let input = |text: &str, mode| InputMessageData::text(text, Some(mode));
+    let withdraw = |id: &str, steer| InputWithdrawData {
+        input_id: id.into(),
+        reason: None,
+        steer,
+    };
+    let driving = write(EventKind::InputMessage(input("driving", InputMode::Queue)));
+    write(EventKind::InputApplied(InputAppliedData {
+        input_id: driving.id.clone(),
+        mode: Some(InputMode::Queue),
+    }));
+    let checked = |text: &str| {
+        let mut data = input(text, InputMode::Steer);
+        data.user
+            .as_mut()
+            .unwrap()
+            .content
+            .push(ContentBlock::Text {
+                text: "<dim-hooks kind=\"prompt-submit\">durable checked context</dim-hooks>"
+                    .into(),
+            });
+        data
+    };
+    let mut originals = Vec::new();
+    for (text, committed) in [("recovered", false), ("committed", true)] {
+        let old = write(EventKind::InputMessage(input(
+            "old queued content",
+            InputMode::Queue,
+        )));
+        let candidate = checked(text);
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(candidate.clone()),
+        )));
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+        if committed {
+            timeline
+                .append_batch_registered(
+                    vec![
+                        EventKind::InputMessage(candidate).into(),
+                        EventKind::InputDeleted(InputDeletedData {
+                            input_id: old.id.clone(),
+                        })
+                        .into(),
+                    ],
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        originals.push(old.id.clone());
+    }
+    let first = write(EventKind::InputMessage(input("first", InputMode::Queue)));
+    let second = write(EventKind::InputMessage(input("second", InputMode::Queue)));
+    for (old, text) in [
+        (&second, "second replacement"),
+        (&first, "first replacement"),
+    ] {
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(checked(text)),
+        )));
+    }
+    let plain = write(EventKind::InputMessage(input("plain", InputMode::Queue)));
+    write(EventKind::InputWithdraw(withdraw(&plain.id, None)));
+    write(EventKind::InputWithdraw(withdraw(
+        &plain.id,
+        Some(input("loser", InputMode::Steer)),
+    )));
+    let legacy = write(EventKind::InputMessage(input(
+        "legacy original",
+        InputMode::Queue,
+    )));
+    timeline
+        .append_batch_registered(
+            vec![
+                EventKind::InputWithdraw(withdraw(&legacy.id, None)).into(),
+                EventKind::InputMessage(input("legacy replacement", InputMode::Steer)).into(),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    write(EventKind::InputDeleted(InputDeletedData {
+        input_id: legacy.id.clone(),
+    }));
+    for id in [&driving.id, &legacy.id, "unknown"] {
+        write(EventKind::InputWithdraw(withdraw(
+            id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+    }
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+
+    for _ in 0..2 {
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+        dim_agent_capabilities::defaults::install(&mut builder);
+        builder.timeline_store(store.clone());
+        let agent = MinimalHost::start(&builder).await.unwrap();
+        let session = agent.restore_session("session".into()).await.unwrap();
+        tokio::time::timeout(PUBLISHED, session.idle("main"))
+            .await
+            .unwrap()
+            .unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let replacements: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer) => {
+                    Some((event, data))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replacements.len(), 5);
+        let ordered: Vec<_> = replacements
+            .iter()
+            .filter_map(|(_, data)| {
+                ["second replacement", "first replacement"]
+                    .into_iter()
+                    .find(|text| **data == checked(text))
+            })
+            .collect();
+        assert_eq!(ordered, ["second replacement", "first replacement"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.kind,
+            EventKind::InputDeleted(data) if data.input_id == plain.id))
+                .count(),
+            1
+        );
+        for (id, text) in originals.iter().zip(["recovered", "committed"]) {
+            let deleted: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind,
+                EventKind::InputDeleted(data) if &data.input_id == id)
+                })
+                .collect();
+            assert_eq!(deleted.len(), 1);
+            let (replacement, data) = replacements
+                .iter()
+                .find(|(_, data)| **data == checked(text))
+                .unwrap();
+            assert_eq!(**data, checked(text));
+            assert_eq!(replacement.sequence + 1, deleted[0].sequence);
+            let stored = store
+                .read(
+                    &key("session", "main"),
+                    replacement.sequence..=deleted[0].sequence,
+                )
+                .await
+                .unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(
+                stored
+                    .iter()
+                    .all(|event| event.batch_end == deleted[0].sequence)
+            );
+            assert!(!events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if &data.input_id == id)));
+            let retry = session
+                .service::<InputQueue>("main")
+                .unwrap()
+                .withdraw(withdraw(id, Some(checked(text))))
+                .await
+                .unwrap();
+            assert_eq!(retry, (Withdrawal::NotHeld, None));
+        }
+        assert!(
+            replacements
+                .iter()
+                .any(|(_, data)| **data == input("legacy replacement", InputMode::Steer))
+        );
+        agent.close().await.unwrap();
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -7609,20 +7815,24 @@ async fn a_v31_store_upgrades_in_place_once() {
 }
 
 #[tokio::test]
-async fn both_committed_v42_formats_upgrade_once_preserving_rows_and_accepting_automation() {
-    for timeline in [false, true] {
+async fn both_v42_and_v43_formats_upgrade_once_preserving_rows_and_accepting_automation() {
+    for (version, timeline) in [(42, false), (42, true), (43, false), (43, true)] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();
         let mut statements = if timeline {
-            schema_of(43)
+            schema_of(44)
                 .into_iter()
                 .map(|sql| {
-                    sql.replace("(version = 43)", "(version = 42)")
-                        .replace(AGENT_SESSIONS_V42, AGENT_SESSIONS_V30)
+                    let sql = sql.replace("(version = 44)", &format!("(version = {version})"));
+                    if version == 42 {
+                        sql.replace(AGENT_SESSIONS_V42, AGENT_SESSIONS_V30)
+                    } else {
+                        sql
+                    }
                 })
                 .collect()
         } else {
-            schema_of(42)
+            schema_of(version)
         };
         statements.sort_by_key(|sql| {
             !sql.starts_with("CREATE TABLE ") && !sql.starts_with("CREATE VIRTUAL TABLE ")
@@ -7631,9 +7841,9 @@ async fn both_committed_v42_formats_upgrade_once_preserving_rows_and_accepting_a
             connection.execute_batch(&sql).unwrap();
         }
         connection
-            .execute("INSERT INTO agent_store_format VALUES (42)", [])
+            .execute("INSERT INTO agent_store_format VALUES (?1)", [version])
             .unwrap();
-        upgrades_in_place_once(&database, connection, 42).await;
+        upgrades_in_place_once(&database, connection, version).await;
         let connection = Connection::open(&database.0).unwrap();
         connection.execute("INSERT INTO agent_sessions (session_id, config, created_at_ms, origin) SELECT 'automation', config, created_at_ms, 'automation' FROM agent_sessions WHERE session_id='s1'", []).unwrap();
         assert!(
@@ -8570,6 +8780,9 @@ async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() 
         (38, false),
         (39, false),
         (40, false),
+        (41, false),
+        (42, false),
+        (43, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();
@@ -8617,6 +8830,10 @@ async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() 
         }
         let facts = rows(&connection, "timeline_events");
         let owners = rows(&connection, "session_owners");
+        let business: Vec<_> = BUSINESS_TABLES
+            .iter()
+            .map(|table| (*table, rows(&connection, table)))
+            .collect();
         drop(connection);
         let mut before = Vec::new();
         dim_app_server::storage::export_timeline(database.0.clone(), "s1", &mut before)
@@ -8646,6 +8863,19 @@ async fn main_and_branch_formats_upgrade_without_reinterpreting_their_markers() 
             "facts changed: v{version}, main={main_layout}"
         );
         assert_eq!(rows(&connection, "session_owners"), owners);
+        if version == 42 {
+            for (table, expected) in &business {
+                assert_eq!(rows(&connection, table), *expected, "v42 rows in {table}");
+            }
+        }
+        assert_eq!(schema(&connection), schema_of(STORE_FORMAT));
+        if !main_layout {
+            assert_ne!(
+                schema(&connection),
+                schema_of(version),
+                "v{version}'s exact-schema gate rejects the upgraded store"
+            );
+        }
         assert_eq!(
             connection
                 .query_row("SELECT version FROM agent_store_format", [], |row| row

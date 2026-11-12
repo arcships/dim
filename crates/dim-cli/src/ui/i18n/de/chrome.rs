@@ -26,8 +26,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Nachrichten mit Anhängen bleiben in der Warteschlange; mit /queue steuern oder löschen"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue verwalten · shift+← letzte bearbeiten · ctrl+s jetzt steuern"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue verwalten · Shift+← letzte bearbeiten · bei leerem Entwurf mit {key} steuern"
         }
         "+{count} more · {hint}" => "+{count} weitere · {hint}",
         "steer or delete queued messages" => {
@@ -429,6 +429,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Theme",
         "Language" => "Sprache",
         "Startup UI form" => "Start-Oberfläche",
+        "Default send mode" => "Standard-Sendemodus",
         "fullscreen" => "Vollbild",
         "scrollback" => "Scrollback",
         "Tool details" => "Tool-Details",
@@ -568,11 +569,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "Tastenbelegung anzeigen",
         "Application keys" => "Anwendungstasten",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter senden oder einreihen · leerer Entwurf: erste eingereihte steuern · Shift+Enter/Ctrl+J neue Zeile · ↑↓ Verlauf"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter sendet im Leerlauf · Shift+Enter / Alt+Enter / Ctrl+J neue Zeile · ↑↓ Verlauf"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen, eingereihte Nachrichten kommen zurück · Ctrl+S Entwurf oder erste eingereihte steuern · Shift+← letzte eingereihte bearbeiten"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Lauf aktiv, mit Entwurf: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Leerer Entwurf: {keys} steuert mit der ersten Nachricht in der Warteschlange"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen, eingereihte Nachrichten kommen zurück · Shift+← letzte eingereihte bearbeiten"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C leeren, zweimal beenden · Ctrl+D beendet bei leerem Entwurf"

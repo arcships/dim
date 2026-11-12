@@ -285,7 +285,7 @@ AcpGateway、RemoteGateway、Attachments 与 Hooks 的设计在 `session.input_l
 
 `{sessionId, branchId, inputId, reason?}` → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。
 
-Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQueue，调用 `withdraw(InputWithdrawData { input_id, reason }, None)`，并返回它的决定。S1 在写入 `input/deleted` 后就回复，此时该事件已提交但不一定已发布，因此对 `deleted`，Agents 与 `input` 一样等它发布后才回复（D8）；分支先关闭或失败时回复 `publication_unknown`。S2 不增加语义：不检查归属，因为调用方凭写入时拿到的 `input_id` 撤回（合同 §9.3）；不重试，也不写自己的事件。指令、决定、结果事实与格式决定都归 S1（[A.4](../contracts/session-access.md#a4-撤回)）；§14.1 记录了 S1 交付的内容。
+Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQueue，调用 `withdraw(InputWithdrawData { input_id, reason, steer: None })`，并返回它的决定。S1 在写入 `input/deleted` 后就回复，此时该事件已提交但不一定已发布，因此对 `deleted`，Agents 与 `input` 一样等它发布后才回复（D8）；分支先关闭或失败时回复 `publication_unknown`。S2 不增加语义：不检查归属，因为调用方凭写入时拿到的 `input_id` 撤回（合同 §9.3）；不重试，也不写自己的事件。指令、决定、结果事实与格式决定都归 S1（[A.4](../contracts/session-access.md#a4-撤回)）；§14.1 记录了 S1 交付的内容。
 
 错误：`rejected`（S1 的校验：`inputId` 为空、`reason` 超过 2048 字节）、`session_closed`、`branch_missing`、`reloading`、`publication_unknown`。指令写入后才收到的 `reloading`，结果交给 InputQueue 的后继实例决定。指令写入后才开始的关闭同样回复 `reloading`，而不是 `session_closed`：InputQueue 在作出决定前随关闭结束，S1 将其报告为 `Reloading`。这是准确的错误码，因为 `session_closed` 表示什么都没写入，而这条指令已提交，Session 下次装载时按历史决定。之后重试会以 `session_closed` 失败。分发越过该指令之后（之后任何 `idle` 截止点都已越过），历史中对调用方写入的输入恰好有 `input/applied` 与 `input/deleted` 之一。
 

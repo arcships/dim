@@ -16,8 +16,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "附有附件的訊息會留在佇列中；使用 /queue 對其執行 steer 或刪除"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 管理 · Shift+← 編輯最後一則 · 草稿為空時按 {key} steer"
         }
         "+{count} more · {hint}" => "還有 {count} 則 · {hint}",
         "steer or delete queued messages" => "對佇列訊息執行 steer 或刪除",
@@ -359,6 +359,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "主題",
         "Language" => "語言",
         "Startup UI form" => "啟動介面形式",
+        "Default send mode" => "預設傳送模式",
         "fullscreen" => "全螢幕",
         "scrollback" => "回捲",
         "Tool details" => "工具詳情",
@@ -488,11 +489,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "顯示快速鍵",
         "Application keys" => "應用程式快速鍵",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 送出或排隊 · 草稿為空時 steer 第一則佇列訊息 · Shift+Enter 或 Ctrl+J 換行 · ↑↓ 歷程"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "閒置時 Enter 送出 · Shift+Enter / Alt+Enter / Ctrl+J 換行 · ↑↓ 歷程"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷，佇列訊息回到輸入框 · Ctrl+S steer 草稿或第一則佇列訊息 · Shift+← 編輯最後一則佇列訊息"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "執行中有草稿：Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "草稿為空時按 {keys} steer 第一則佇列訊息",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷，佇列訊息回到輸入框 · Shift+← 編輯最後一則佇列訊息"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清除，按兩次離開 · 草稿為空時 Ctrl+D 離開"

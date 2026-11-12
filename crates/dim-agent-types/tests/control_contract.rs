@@ -95,6 +95,8 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
         json!({"type":"stop","name":"resume","data":{"reason":"resume"}}),
         json!({"type":"stop","name":"resume","data":Value::Null}),
         json!({"type":"stop","name":"resume"}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","steer":null}}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","steer":{"user":{"content":[{"type":"text","text":"replacement"}]},"mode":"steer","extra":true}}}),
         json!({"type":"approval","name":"respond","data":{"approval_id":"a","decision":"always"}}),
         json!({"type":"approval","name":"request","data":{"approval_id":"a"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"t","status":"running","result":{"content":"output"}}}),
@@ -107,6 +109,17 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
             serde_json::from_value::<EventDraft>(value.clone()).is_err(),
             "accepted {value}"
         );
+    }
+}
+
+#[test]
+fn withdrawal_commands_preserve_optional_checked_candidates() {
+    for payload in [
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i"}}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","reason":"changed my mind","steer":{"user":{"content":[{"type":"text","text":"replacement"}]},"mode":"steer"}}}),
+    ] {
+        let draft: EventDraft = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&draft).unwrap(), payload);
     }
 }
 

@@ -1818,6 +1818,7 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
                 EventKind::InputWithdraw(InputWithdrawData {
                     input_id: input.id.clone(),
                     reason: None,
+                    steer: None,
                 })
                 .into(),
             )

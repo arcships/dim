@@ -90,6 +90,16 @@ pub trait Document {
     fn card_rows(&self, index: usize, cols: usize, card: &str) -> Option<(usize, usize)>;
     /// The member card that row `row` of block `index` at `cols` opens.
     fn card_at(&self, index: usize, cols: usize, row: usize) -> Option<String>;
+    /// A stable node key only when this exact click-coordinate row is a
+    /// foldable header. `block` is a stable committed id, or `None` for live.
+    fn disclosure(&self, _block: Option<usize>, _cols: usize, _row: usize) -> Option<String> {
+        None
+    }
+    /// Foldable header rows of committed block `index`, in display order,
+    /// using the same row coordinates as `disclosure` and `MouseOutcome::Click`.
+    fn tool_rows(&self, _index: usize, _cols: usize) -> Vec<usize> {
+        Vec::new()
+    }
     /// How many times blocks were rewritten in place (a streamed code block
     /// grows line by line, a delegation card changes), and the stable ids
     /// rewritten after rewrite `since`; `None` when those are no longer
@@ -124,6 +134,27 @@ pub enum MouseOutcome {
 struct Anchor {
     block: usize,
     offset: usize,
+}
+
+#[derive(PartialEq, Eq)]
+struct Disclosure {
+    block: Option<usize>,
+    key: String,
+}
+
+struct Press {
+    spot: MouseOutcome,
+    text: String,
+    target: Option<Disclosure>,
+    link: Option<String>,
+    cell: (usize, usize),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum FocusStop {
+    Message,
+    Card(String),
+    Tool(usize),
 }
 
 /// Turns wheel reports into rows. A mouse wheel reports once per notch, three
@@ -253,7 +284,10 @@ pub struct FullScreen {
     /// Where the last press landed and the row it showed: a click counts
     /// only while that row still shows the same text at the release, so
     /// output that moves the transcript in between cannot redirect it.
-    press: Option<(MouseOutcome, String)>,
+    press: Option<Press>,
+    pointer: Option<(usize, usize)>,
+    hovered: Option<Disclosure>,
+    clicked: Option<Disclosure>,
     /// The last press: when, where, the row it showed and how many presses
     /// in a row landed there (a double click selects a word, a triple
     /// click the row).
@@ -275,6 +309,7 @@ pub struct FullScreen {
     focus: Option<usize>,
     /// The picked member card in that block, by delegation id.
     focus_card: Option<String>,
+    focus_tool: Option<(usize, String)>,
     /// Rows as last painted; `None` entries are unknown (repaint).
     painted: Vec<Option<String>>,
     cursor_visible: bool,
@@ -296,6 +331,9 @@ impl FullScreen {
             cache: HashMap::new(),
             tail: Vec::new(),
             press: None,
+            pointer: None,
+            hovered: None,
+            clicked: None,
             clicks: None,
             pinned: None,
             floor: 0,
@@ -305,6 +343,7 @@ impl FullScreen {
             selection: None,
             focus: None,
             focus_card: None,
+            focus_tool: None,
             painted: Vec::new(),
             cursor_visible: true,
             cursor_at: None,
@@ -340,6 +379,9 @@ impl FullScreen {
         self.starts = vec![0];
         self.cache.clear();
         self.selection = None;
+        self.press = None;
+        self.hovered = None;
+        self.clicks = None;
         self.invalidate();
     }
 
@@ -414,7 +456,7 @@ impl FullScreen {
         }
     }
 
-    /// True while a user message or member card is picked.
+    /// True while a user message, member card or tool header is picked.
     pub fn focused(&self) -> bool {
         self.focus.is_some()
     }
@@ -426,14 +468,14 @@ impl FullScreen {
             Some(id) => {
                 let index = id.saturating_sub(doc.dropped()).min(doc.len());
                 let stops = if index < doc.len() {
-                    stops(doc, index)
+                    stops(doc, index, self.layout_cols)
                 } else {
                     Vec::new()
                 };
-                if let Some(at) = stops.iter().position(|stop| *stop == self.focus_card)
+                if let Some(at) = stops.iter().position(|stop| *stop == self.focus_stop())
                     && at > 0
                 {
-                    self.focus_card = stops[at - 1].clone();
+                    self.set_focus_stop(stops[at - 1].clone(), doc);
                     self.reveal_focus(doc);
                     return;
                 }
@@ -442,9 +484,9 @@ impl FullScreen {
             None => doc.len(),
         };
         for index in (0..from.min(doc.len())).rev() {
-            if let Some(stop) = stops(doc, index).pop() {
+            if let Some(stop) = stops(doc, index, self.layout_cols).pop() {
                 self.focus = Some(doc.dropped() + index);
-                self.focus_card = stop;
+                self.set_focus_stop(stop, doc);
                 self.reveal_focus(doc);
                 return;
             }
@@ -457,19 +499,19 @@ impl FullScreen {
         let Some(id) = self.focus else { return };
         let index = id.saturating_sub(doc.dropped());
         if index < doc.len() {
-            let stops = stops(doc, index);
-            if let Some(at) = stops.iter().position(|stop| *stop == self.focus_card)
+            let stops = stops(doc, index, self.layout_cols);
+            if let Some(at) = stops.iter().position(|stop| *stop == self.focus_stop())
                 && at + 1 < stops.len()
             {
-                self.focus_card = stops[at + 1].clone();
+                self.set_focus_stop(stops[at + 1].clone(), doc);
                 self.reveal_focus(doc);
                 return;
             }
         }
         for index in index + 1..doc.len() {
-            if let Some(stop) = stops(doc, index).into_iter().next() {
+            if let Some(stop) = stops(doc, index, self.layout_cols).into_iter().next() {
                 self.focus = Some(doc.dropped() + index);
-                self.focus_card = stop;
+                self.set_focus_stop(stop, doc);
                 self.reveal_focus(doc);
                 return;
             }
@@ -491,6 +533,35 @@ impl FullScreen {
     pub fn clear_focus(&mut self) {
         self.focus = None;
         self.focus_card = None;
+        self.focus_tool = None;
+    }
+
+    fn focus_stop(&self) -> FocusStop {
+        match (&self.focus_card, &self.focus_tool) {
+            (Some(card), _) => FocusStop::Card(card.clone()),
+            (_, Some((row, _))) => FocusStop::Tool(*row),
+            _ => FocusStop::Message,
+        }
+    }
+
+    fn set_focus_stop(&mut self, stop: FocusStop, doc: &dyn Document) {
+        self.focus_card = None;
+        self.focus_tool = None;
+        match stop {
+            FocusStop::Message => {}
+            FocusStop::Card(card) => self.focus_card = Some(card),
+            FocusStop::Tool(row) => {
+                self.focus_tool = doc
+                    .disclosure(self.focus, self.layout_cols, row)
+                    .map(|key| (row, key));
+            }
+        }
+    }
+
+    /// The picked committed tool header in `MouseOutcome::Click` coordinates.
+    /// Keyboard traversal currently visits committed blocks only.
+    pub fn focused_tool(&self) -> Option<(Option<usize>, usize)> {
+        self.focus_tool.as_ref().map(|(row, _)| (self.focus, *row))
     }
 
     /// Picks the user message drawn as block `id`, as Tab would.
@@ -503,6 +574,7 @@ impl FullScreen {
         }
         self.focus = Some(id);
         self.focus_card = None;
+        self.focus_tool = None;
         self.reveal_focus(doc);
     }
 
@@ -519,7 +591,7 @@ impl FullScreen {
 
     /// The picked message's text.
     pub fn focused_text(&self, doc: &dyn Document) -> Option<String> {
-        if self.focus_card.is_some() {
+        if self.focus_card.is_some() || self.focus_tool.is_some() {
             return None;
         }
         let index = self.focus?.checked_sub(doc.dropped())?;
@@ -531,7 +603,7 @@ impl FullScreen {
 
     /// Where a line or fork opened from the picked message cuts.
     pub fn focused_cut(&self, doc: &dyn Document) -> Option<u64> {
-        if self.focus_card.is_some() {
+        if self.focus_card.is_some() || self.focus_tool.is_some() {
             return None;
         }
         let index = self.focus?.checked_sub(doc.dropped())?;
@@ -561,13 +633,19 @@ impl FullScreen {
         let Some(index) = self.focus.and_then(|id| id.checked_sub(self.base)) else {
             return;
         };
-        let rows = match self.focus_card {
-            Some(_) => self.card_focus_rows(doc),
-            None => self
+        let rows = match self.focus_tool.as_ref() {
+            Some((row, _)) => self
                 .starts
                 .get(index)
-                .zip(self.starts.get(index + 1))
-                .map(|(s, e)| (*s, *e)),
+                .map(|start| (start + row, start + row + 1)),
+            None => match self.focus_card {
+                Some(_) => self.card_focus_rows(doc),
+                None => self
+                    .starts
+                    .get(index)
+                    .zip(self.starts.get(index + 1))
+                    .map(|(s, e)| (*s, *e)),
+            },
         };
         let Some((start, end)) = rows else {
             return;
@@ -578,11 +656,45 @@ impl FullScreen {
         }
     }
 
+    fn disclosure_at(&self, index: usize, doc: &dyn Document) -> Option<Disclosure> {
+        let MouseOutcome::Click { block, row } = self.spot(index) else {
+            return None;
+        };
+        doc.disclosure(block, self.layout_cols, row)
+            .map(|key| Disclosure { block, key })
+    }
+
+    fn pointer_index(&self) -> Option<usize> {
+        let (column, row) = self.pointer?;
+        (row < self.view_rows && column < content_width(self.size.0 as usize))
+            .then(|| self.at(row))
+            .flatten()
+    }
+
+    fn hover(&mut self, doc: &dyn Document) -> bool {
+        let next = if self.overlay_open || self.selecting() {
+            None
+        } else {
+            self.pointer_index().and_then(|index| {
+                let (column, _) = self.pointer?;
+                if link_at(self.row(index)?, column).is_some() {
+                    return None;
+                }
+                self.disclosure_at(index, doc)
+            })
+        };
+        let changed = self.hovered != next;
+        self.hovered = next;
+        changed
+    }
+
     /// Wheel scrolling and drag selection inside the transcript viewport.
     pub fn mouse(&mut self, event: MouseEvent, doc: &dyn Document) -> MouseOutcome {
         self.sync(doc);
         let row = event.row as usize;
         let column = event.column as usize;
+        self.pointer = Some((column, row));
+        let hovered = self.hover(doc);
         if self.overlay_open {
             return match event.kind {
                 MouseKind::WheelUp => MouseOutcome::Overlay(-1),
@@ -591,22 +703,32 @@ impl FullScreen {
             };
         }
         match event.kind {
+            MouseKind::Move => {
+                if hovered {
+                    MouseOutcome::Redraw
+                } else {
+                    MouseOutcome::Ignored
+                }
+            }
             MouseKind::WheelUp => {
+                self.press = None;
                 let rows = self.wheel.rows(Instant::now());
                 self.scroll(-rows);
                 MouseOutcome::Redraw
             }
             MouseKind::WheelDown => {
+                self.press = None;
                 let rows = self.wheel.rows(Instant::now());
                 self.scroll(rows);
                 MouseOutcome::Redraw
             }
             MouseKind::Press => {
-                let shown = self.selection.take().is_some_and(|s| s.dragged);
+                let shown = self.selection.take().is_some_and(|s| s.dragged)
+                    || hovered
+                    || self.press.as_ref().is_some_and(|p| p.target.is_some());
                 self.press = None;
-                let Some((index, text)) = (row < self.view_rows)
-                    .then(|| self.at(row))
-                    .flatten()
+                let Some((index, text)) = self
+                    .pointer_index()
                     .and_then(|index| Some((index, self.row(index)?.to_owned())))
                 else {
                     self.clicks = None;
@@ -628,7 +750,19 @@ impl FullScreen {
                     }
                     _ => 1,
                 };
-                self.press = Some((self.spot(index), text.clone()));
+                let link = link_at(&text, column);
+                let target = link
+                    .is_none()
+                    .then(|| self.disclosure_at(index, doc))
+                    .flatten();
+                let pressing = target.is_some();
+                self.press = Some(Press {
+                    spot: self.spot(index),
+                    text: text.clone(),
+                    target,
+                    link,
+                    cell: (column, row),
+                });
                 let width = content_width(self.layout_cols);
                 let plain = strip_escapes(&text);
                 let inset = text_inset(&plain);
@@ -650,7 +784,7 @@ impl FullScreen {
                         dragged: false,
                     },
                 });
-                if shown || span.is_some() {
+                if shown || span.is_some() || pressing {
                     MouseOutcome::Redraw
                 } else {
                     MouseOutcome::Ignored
@@ -666,6 +800,9 @@ impl FullScreen {
                 {
                     return MouseOutcome::Ignored;
                 }
+                self.press = None;
+                self.hovered = None;
+                self.clicks = None;
                 if row == 0 {
                     self.scroll(-1);
                 } else if row + 1 >= self.view_rows {
@@ -682,8 +819,14 @@ impl FullScreen {
                 MouseOutcome::Redraw
             }
             MouseKind::Release => {
+                let press = self.press.take();
+                let changed = hovered || press.as_ref().is_some_and(|p| p.target.is_some());
                 let Some(selection) = self.selection else {
-                    return MouseOutcome::Ignored;
+                    return if changed {
+                        MouseOutcome::Redraw
+                    } else {
+                        MouseOutcome::Ignored
+                    };
                 };
                 if selection.dragged {
                     let text = self.selected_text(&selection, doc);
@@ -694,15 +837,27 @@ impl FullScreen {
                     return MouseOutcome::Redraw;
                 }
                 self.selection = None;
-                let (row, column) = selection.anchor;
-                match (self.press.take(), self.row(row)) {
-                    (Some((spot, pressed)), Some(text)) if pressed == text => {
-                        match link_at(text, column) {
-                            Some(url) => MouseOutcome::Open(url),
-                            None => spot,
-                        }
+                if let Some(press) = press
+                    && let Some(index) = self.pointer_index()
+                    && let Some(text) = self.row(index)
+                    && press.spot == self.spot(index)
+                    && (press.target.is_some() || press.text == text)
+                    && press.cell.1 == row
+                    && press.link == link_at(text, column)
+                    && press.target == self.hovered
+                    && (press.target.is_some() || press.link.is_some() || press.cell.0 == column)
+                {
+                    if let Some(url) = press.link {
+                        return MouseOutcome::Open(url);
                     }
-                    _ => MouseOutcome::Ignored,
+                    self.clicked = press.target;
+                    return press.spot;
+                }
+                self.clicks = None;
+                if changed {
+                    MouseOutcome::Redraw
+                } else {
+                    MouseOutcome::Ignored
                 }
             }
         }
@@ -719,6 +874,9 @@ impl FullScreen {
     ) -> Vec<u8> {
         if size != self.size {
             self.size = size;
+            self.press = None;
+            self.selection = None;
+            self.clicks = None;
             self.invalidate();
         }
         let (cols, rows) = (size.0 as usize, size.1.max(1) as usize);
@@ -744,6 +902,47 @@ impl FullScreen {
 
         let dim = frame.overlay.is_some();
         self.overlay_open = dim;
+        if dim {
+            self.press = None;
+            self.clicks = None;
+            self.clicked = None;
+        }
+        self.hover(doc);
+        if self.press.as_ref().is_some_and(|press| {
+            let (_, row) = press.cell;
+            row >= self.view_rows
+                || self.at(row).is_none_or(|index| {
+                    self.spot(index) != press.spot
+                        || (press.target.is_none() && self.row(index) != Some(press.text.as_str()))
+                        || (press.link.is_none() && self.disclosure_at(index, doc) != press.target)
+                })
+        }) {
+            self.press = None;
+        }
+        if self.clicked.as_ref().is_some_and(|clicked| {
+            !(0..self.view_rows)
+                .filter_map(|y| self.at(y))
+                .any(|index| self.disclosure_at(index, doc).as_ref() == Some(clicked))
+        }) {
+            self.clicked = None;
+        }
+        if let Some((_, key)) = &self.focus_tool {
+            let next = self
+                .focus
+                .and_then(|id| id.checked_sub(self.base))
+                .filter(|index| *index < doc.len())
+                .and_then(|index| {
+                    doc.tool_rows(index, self.layout_cols)
+                        .into_iter()
+                        .find(|row| {
+                            doc.disclosure(self.focus, self.layout_cols, *row).as_ref() == Some(key)
+                        })
+                });
+            match next {
+                Some(row) => self.focus_tool.as_mut().unwrap().0 = row,
+                None => self.clear_focus(),
+            }
+        }
         let bar = scrollbar(
             self.view_rows,
             self.content_rows(),
@@ -771,7 +970,54 @@ impl FullScreen {
                             .and_then(|s| s.columns(index, text_inset(&strip_escapes(row))))
                         {
                             Some(range) => highlight(row, range, width),
-                            None => clip(row, width).0,
+                            None => {
+                                let row = clip(row, width).0;
+                                let target = self.disclosure_at(index, doc);
+                                let focused = self.focused_tool().is_some_and(|(block, row)| {
+                                    self.spot(index) == MouseOutcome::Click { block, row }
+                                });
+                                let pressed = target.is_some()
+                                    && self.press.as_ref().is_some_and(|p| {
+                                        p.target == target && self.hovered == target
+                                    });
+                                if pressed || focused {
+                                    header_feedback(
+                                        &row,
+                                        Paint {
+                                            fg: Some(&palette.on_accent),
+                                            bg: Some(&palette.accent),
+                                            bold: true,
+                                            ..Paint::default()
+                                        },
+                                    )
+                                } else if target.is_some() && self.hovered == target {
+                                    header_feedback(
+                                        &row,
+                                        Paint {
+                                            fg: Some(&palette.highlight),
+                                            bg: palette
+                                                .surface
+                                                .as_deref()
+                                                .or(palette.tool_hover.as_deref()),
+                                            ..Paint::default()
+                                        },
+                                    )
+                                } else if target.is_some() && self.clicked == target {
+                                    header_feedback(
+                                        &row,
+                                        Paint {
+                                            fg: Some(&palette.text_soft),
+                                            bg: palette
+                                                .surface
+                                                .as_deref()
+                                                .or(palette.tool_hover.as_deref()),
+                                            ..Paint::default()
+                                        },
+                                    )
+                                } else {
+                                    row
+                                }
+                            }
                         },
                     }
                 }
@@ -1052,7 +1298,7 @@ impl FullScreen {
     /// block's leading blank row, its rows, and the next block's leading
     /// blank row.
     fn focus_rows(&self) -> Option<(usize, usize)> {
-        if self.focus_card.is_some() {
+        if self.focus_card.is_some() || self.focus_tool.is_some() {
             return None;
         }
         let index = self.focus?.checked_sub(self.base)?;
@@ -1354,13 +1600,46 @@ fn card_focus_row(row: &str, width: usize, p: &Palette) -> String {
     )
 }
 
-/// What a pick can stop on in block `index`: a user message, or each of
-/// its member cards.
-fn stops(doc: &dyn Document, index: usize) -> Vec<Option<String>> {
+fn header_feedback(row: &str, style: Paint<'_>) -> String {
+    let mut text = String::with_capacity(row.len());
+    let mut rest = row;
+    while !rest.is_empty() {
+        let len = escape_len(rest);
+        if len > 0 {
+            let escape = &rest[..len];
+            if !(escape.starts_with("\x1b[") && escape.ends_with('m')) {
+                text.push_str(escape);
+            }
+            rest = &rest[len..];
+        } else {
+            let end = rest.find('\x1b').unwrap_or(rest.len()).max(1);
+            text.push_str(&rest[..end]);
+            rest = &rest[end..];
+        }
+    }
+    paint(&text, style)
+}
+
+/// What a pick can stop on in block `index`: a user message, member cards
+/// and foldable tool headers.
+fn stops(doc: &dyn Document, index: usize, cols: usize) -> Vec<FocusStop> {
     if doc.message(index).is_some() {
-        vec![None]
+        vec![FocusStop::Message]
     } else {
-        doc.cards(index).into_iter().map(Some).collect()
+        let mut stops: Vec<_> = doc.cards(index).into_iter().map(FocusStop::Card).collect();
+        let tools = doc.tool_rows(index, cols);
+        if tools.is_empty() {
+            return stops;
+        }
+        stops.extend(tools.into_iter().map(FocusStop::Tool));
+        stops.sort_by_key(|stop| match stop {
+            FocusStop::Card(card) => doc
+                .card_rows(index, cols, card)
+                .map_or(0, |(start, _)| start),
+            FocusStop::Tool(row) => *row,
+            FocusStop::Message => 0,
+        });
+        stops
     }
 }
 
@@ -1510,6 +1789,8 @@ mod tests {
     struct Doc {
         blocks: Vec<(bool, Vec<String>)>,
         dropped: usize,
+        headers: HashMap<(Option<usize>, usize), String>,
+        cards: Vec<(usize, String, usize, usize)>,
         /// Blocks laid out so far.
         laid: std::cell::Cell<usize>,
     }
@@ -1519,6 +1800,8 @@ mod tests {
             Self {
                 blocks: Vec::new(),
                 dropped: 0,
+                headers: HashMap::new(),
+                cards: Vec::new(),
                 laid: std::cell::Cell::new(0),
             }
         }
@@ -1553,14 +1836,33 @@ mod tests {
         fn rewritten(&self, _since: u64) -> (u64, Option<Vec<usize>>) {
             (0, Some(Vec::new()))
         }
-        fn cards(&self, _index: usize) -> Vec<String> {
-            Vec::new()
+        fn cards(&self, index: usize) -> Vec<String> {
+            self.cards
+                .iter()
+                .filter(|(block, _, _, _)| *block == index)
+                .map(|(_, card, _, _)| card.clone())
+                .collect()
         }
-        fn card_rows(&self, _index: usize, _cols: usize, _card: &str) -> Option<(usize, usize)> {
-            None
+        fn card_rows(&self, index: usize, _cols: usize, card: &str) -> Option<(usize, usize)> {
+            self.cards
+                .iter()
+                .find(|(block, id, _, _)| *block == index && id == card)
+                .map(|(_, _, start, end)| (*start, *end))
         }
         fn card_at(&self, _index: usize, _cols: usize, _row: usize) -> Option<String> {
             None
+        }
+        fn disclosure(&self, block: Option<usize>, _cols: usize, row: usize) -> Option<String> {
+            self.headers.get(&(block, row)).cloned()
+        }
+        fn tool_rows(&self, index: usize, _cols: usize) -> Vec<usize> {
+            let mut rows: Vec<_> = self
+                .headers
+                .keys()
+                .filter_map(|(block, row)| (*block == Some(self.dropped + index)).then_some(*row))
+                .collect();
+            rows.sort_unstable();
+            rows
         }
         fn message(&self, index: usize) -> Option<&str> {
             let (user, rows) = &self.blocks[index];
@@ -1597,6 +1899,241 @@ mod tests {
     }
 
     const DOCK: [&str; 2] = ["> x", "status"];
+
+    #[test]
+    fn disclosure_feedback_only_repaints_the_exact_header_and_deduplicates_motion() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.say(&["parent", " child", "body"]);
+        doc.headers.insert((Some(0), 1), "parent".into());
+        doc.headers.insert((Some(0), 2), "child".into());
+        let f = frame(&[], &DOCK);
+        draw(&mut screen, &mut emu, &f, &doc);
+        let before = emu.rows_text();
+        let at = |kind, row| MouseEvent {
+            kind,
+            column: 2,
+            row,
+        };
+        let palette = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Move, 4), &doc),
+            MouseOutcome::Redraw
+        );
+        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+        assert!(
+            bytes.contains(&paint(
+                " child",
+                Paint {
+                    fg: Some(&palette.highlight),
+                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
+                    ..Paint::default()
+                }
+            )),
+            "{bytes:?}"
+        );
+        assert!(
+            !bytes.contains("parent") && !bytes.contains("body"),
+            "{bytes:?}"
+        );
+        assert_eq!(
+            screen.mouse(at(MouseKind::Move, 4), &doc),
+            MouseOutcome::Ignored
+        );
+        assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+        assert_eq!(
+            screen.mouse(at(MouseKind::Press, 4), &doc),
+            MouseOutcome::Redraw
+        );
+        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+        assert!(
+            bytes.contains(&paint(
+                " child",
+                Paint {
+                    fg: Some(&palette.on_accent),
+                    bg: Some(&palette.accent),
+                    bold: true,
+                    ..Paint::default()
+                }
+            )),
+            "{bytes:?}"
+        );
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 4), &doc),
+            MouseOutcome::Click {
+                block: Some(0),
+                row: 2
+            }
+        );
+        screen.mouse(at(MouseKind::Move, 5), &doc);
+        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+        assert!(
+            bytes.contains(&paint(
+                " child",
+                Paint {
+                    fg: Some(&palette.text_soft),
+                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
+                    ..Paint::default()
+                }
+            )),
+            "{bytes:?}"
+        );
+        assert!(
+            !bytes.contains("parent") && !bytes.contains("body"),
+            "{bytes:?}"
+        );
+        assert_eq!(emu.rows_text(), before);
+        doc.headers.remove(&(Some(0), 2));
+        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+        assert!(bytes.contains("\x1b[2K child"), "{bytes:?}");
+        screen.mouse(at(MouseKind::Move, 4), &doc);
+        assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+    }
+
+    #[test]
+    fn disclosure_release_elsewhere_and_dragging_never_click() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.say(&["parent", " child", "body"]);
+        doc.headers.insert((Some(0), 1), "parent".into());
+        doc.headers.insert((Some(0), 2), "child".into());
+        let f = frame(&[], &DOCK);
+        draw(&mut screen, &mut emu, &f, &doc);
+        let at = |kind, row| MouseEvent {
+            kind,
+            column: 2,
+            row,
+        };
+        screen.mouse(at(MouseKind::Press, 4), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 3), &doc),
+            MouseOutcome::Redraw
+        );
+        screen.mouse(at(MouseKind::Press, 4), &doc);
+        screen.mouse(at(MouseKind::Drag, 5), &doc);
+        screen.mouse(at(MouseKind::Drag, 4), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 4), &doc),
+            MouseOutcome::Copy("h".into())
+        );
+        screen.clear_selection();
+        screen.mouse(at(MouseKind::Press, 4), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 6), &doc),
+            MouseOutcome::Redraw
+        );
+        screen.mouse(at(MouseKind::Press, 4), &doc);
+        assert_eq!(
+            screen.mouse(
+                MouseEvent {
+                    kind: MouseKind::Release,
+                    column: SIZE.0 - 1,
+                    row: 4
+                },
+                &doc
+            ),
+            MouseOutcome::Redraw
+        );
+    }
+
+    #[test]
+    fn reflow_overlay_and_resize_cancel_old_disclosure_presses() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.headers.insert((None, 0), "live".into());
+        let mut f = frame(&["live header"], &DOCK);
+        draw(&mut screen, &mut emu, &f, &doc);
+        let at = |kind| MouseEvent {
+            kind,
+            column: 2,
+            row: 5,
+        };
+        screen.mouse(at(MouseKind::Press), &doc);
+        f.live[0] = "updated spinner header".into();
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Click {
+                block: None,
+                row: 0
+            }
+        );
+        screen.mouse(at(MouseKind::Press), &doc);
+        screen.relayout(SIZE.0);
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(!matches!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Click { .. }
+        ));
+        screen.mouse(at(MouseKind::Press), &doc);
+        doc.headers.insert((None, 0), "replacement".into());
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(!matches!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Click { .. }
+        ));
+        screen.mouse(at(MouseKind::Press), &doc);
+        f.overlay = Some(Overlay {
+            rows: vec!["picker".into()],
+            cursor: None,
+        });
+        draw(&mut screen, &mut emu, &f, &doc);
+        f.overlay = None;
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(!matches!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Click { .. }
+        ));
+        screen.mouse(at(MouseKind::Press), &doc);
+        screen.render(
+            &f,
+            (SIZE.0 + 1, SIZE.1),
+            &terminal_palette(ColorMode::TrueColor, Appearance::Dark),
+            &doc,
+        );
+        assert!(!matches!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Click { .. }
+        ));
+    }
+
+    #[test]
+    fn tool_keyboard_stops_follow_visible_headers_and_keep_message_actions_separate() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.user("message");
+        doc.say(&["parent", " child", "body"]);
+        doc.headers.insert((Some(1), 1), "parent".into());
+        doc.headers.insert((Some(1), 2), "child".into());
+        doc.cards.push((1, "member".into(), 3, 4));
+        let f = frame(&[], &DOCK);
+        draw(&mut screen, &mut emu, &f, &doc);
+        screen.focus_older(&doc);
+        assert_eq!(screen.focused_card(), Some("member"));
+        assert_eq!(screen.focused_tool(), None);
+        assert_eq!(screen.focused_text(&doc), None);
+        screen.focus_older(&doc);
+        assert_eq!(screen.focused_tool(), Some((Some(1), 2)));
+        assert_eq!(screen.focused_text(&doc), None);
+        assert_eq!(screen.focused_cut(&doc), None);
+        assert_eq!(screen.focused_card(), None);
+        draw(&mut screen, &mut emu, &f, &doc);
+        screen.focus_older(&doc);
+        assert_eq!(screen.focused_tool(), Some((Some(1), 1)));
+        screen.focus_older(&doc);
+        assert_eq!(screen.focused_text(&doc).as_deref(), Some("message"));
+        assert_eq!(screen.focused_tool(), None);
+        screen.focus_newer(&doc);
+        assert_eq!(screen.focused_tool(), Some((Some(1), 1)));
+        doc.headers.remove(&(Some(1), 1));
+        doc.headers.insert((Some(1), 3), "parent".into());
+        screen.relayout(SIZE.0);
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert_eq!(screen.focused_tool(), Some((Some(1), 3)));
+        doc.headers.remove(&(Some(1), 3));
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(!screen.focused());
+    }
 
     #[test]
     fn a_short_transcript_sits_on_the_dock_and_a_shrinking_tail_moves_nothing() {
@@ -2057,7 +2594,49 @@ mod tests {
         let mut doc = Doc::new();
         let link = crate::ui::render::osc8::hyperlink("https://a.example/x", "docs");
         doc.say(&[&format!("see {link} or"), "(https://b.example/y)."]);
+        doc.headers.insert((Some(0), 1), "header-with-link".into());
         draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert_eq!(
+            screen.mouse(
+                MouseEvent {
+                    kind: MouseKind::Move,
+                    column: 5,
+                    row: 4
+                },
+                &doc
+            ),
+            MouseOutcome::Ignored
+        );
+        assert!(draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc).is_empty());
+        screen.mouse(
+            MouseEvent {
+                kind: MouseKind::Move,
+                column: 1,
+                row: 4,
+            },
+            &doc,
+        );
+        let bytes = draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert!(String::from_utf8_lossy(&bytes).contains(&link));
+        screen.mouse(
+            MouseEvent {
+                kind: MouseKind::Press,
+                column: 5,
+                row: 4,
+            },
+            &doc,
+        );
+        assert_eq!(
+            screen.mouse(
+                MouseEvent {
+                    kind: MouseKind::Release,
+                    column: 1,
+                    row: 4
+                },
+                &doc
+            ),
+            MouseOutcome::Redraw
+        );
         let mut click = |column, row| {
             let at = |kind| MouseEvent { kind, column, row };
             screen.mouse(at(MouseKind::Press), &doc);
@@ -2150,12 +2729,13 @@ mod tests {
                         let kinds = [
                             MouseKind::Press,
                             MouseKind::Drag,
+                            MouseKind::Move,
                             MouseKind::Release,
                             MouseKind::WheelUp,
                             MouseKind::WheelDown,
                         ];
                         let event = MouseEvent {
-                            kind: kinds[rng.below(5) as usize],
+                            kind: kinds[rng.below(kinds.len() as u64) as usize],
                             column: rng.below(u64::from(size.0) + 3) as u16,
                             row: rng.below(u64::from(size.1) + 3) as u16,
                         };

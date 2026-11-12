@@ -145,6 +145,13 @@ impl SubmitMode {
             Self::Steer => "steer",
         }
     }
+
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Queue => Self::Steer,
+            Self::Steer => Self::Queue,
+        }
+    }
 }
 
 /// What `/resume` lists: the local scope — exactly the launch workspace, or

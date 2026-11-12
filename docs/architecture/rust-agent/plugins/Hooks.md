@@ -33,9 +33,13 @@ operator-input entries call before writing: the check reads the sources, runs
 the matching `UserPromptSubmit` handlers concurrently, and answers with the
 first block in catalog order or the contexts as text blocks after the
 operator's own content. Handlers after the first block are terminated. A
-failure, a timeout and a cancellation are the handler's `onFailure`; an unload
-settles a pending check by `onFailure` before the part is withdrawn, and an
-interruption of the entry's own call cancels the check, so nothing is written.
+failure, a timeout and a cancellation are the handler's `onFailure`; with
+`continue` the input is written without the failed run, and the check answers one
+warning per unfinished handler (`Hook <source> did not finish: <reason>`), which
+the reply carries as `{check, message}` for the caller and the model never reads.
+An unload settles a pending check by `onFailure` before the part is withdrawn,
+and an interruption of the entry's own call cancels the check, so nothing is
+written.
 
 The runtime reads sources when a hook point is evaluated, never at Session
 start: a change to the user's `hooks.json` or to a project document applies to
@@ -210,6 +214,8 @@ reported by `hooks.catalog` rather than at the hook point.
 `a_source_input_runs_no_prompt_hook`,
 `an_unload_settles_a_pending_prompt_check_by_on_failure`,
 `an_unload_with_the_default_on_failure_writes_the_input`,
+`an_unload_reports_only_the_handlers_still_running`,
+`an_unload_keeps_a_finished_handlers_real_reason`,
 `the_handlers_after_the_first_block_are_terminated`,
 `two_proceeding_handlers_keep_their_contexts_in_catalog_order`,
 `a_failure_finishing_after_a_later_result_blocks_by_its_own_handler`,

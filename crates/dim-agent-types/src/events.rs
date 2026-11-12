@@ -231,6 +231,13 @@ pub struct InputWithdrawData {
         deserialize_with = "crate::optional_non_null"
     )]
     pub reason: Option<String>,
+    /// Checked replacement content, adopted only if withdrawal is accepted.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub steer: Option<InputMessageData>,
 }
 impl InputWithdrawData {
     pub const MAX_REASON_BYTES: usize = 2048;
@@ -245,6 +252,12 @@ impl InputWithdrawData {
             .is_some_and(|reason| reason.len() > Self::MAX_REASON_BYTES)
         {
             return Err("reason exceeds 2 KiB");
+        }
+        if let Some(candidate) = &self.steer {
+            if candidate.mode != Some(InputMode::Steer) {
+                return Err("a replacement input must be Steer");
+            }
+            candidate.validate()?;
         }
         Ok(())
     }

@@ -18,8 +18,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "첨부 파일이 있는 메시지는 대기열에 남습니다. /queue에서 steer하거나 삭제하세요"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 관리 · shift+← 마지막 편집 · ctrl+s 지금 steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 관리 · Shift+← 마지막 편집 · 초안이 비어 있으면 {key}로 steer"
         }
         "+{count} more · {hint}" => "+{count}개 더 · {hint}",
         "steer or delete queued messages" => "대기열 메시지 steer 또는 삭제",
@@ -373,6 +373,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "테마",
         "Language" => "언어",
         "Startup UI form" => "시작 UI 형태",
+        "Default send mode" => "기본 전송 모드",
         "fullscreen" => "전체 화면",
         "scrollback" => "스크롤백",
         "Tool details" => "도구 상세",
@@ -508,11 +509,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "단축키 보기",
         "Application keys" => "앱 단축키",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 제출 또는 대기열 추가 · 빈 입력: 첫 대기 메시지 steer · Shift+Enter/Ctrl+J 줄바꿈 · ↑↓ 기록"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "대기 중 Enter로 제출 · Shift+Enter / Alt+Enter / Ctrl+J 줄바꿈 · ↑↓ 기록"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P 명령 · Esc 중단, 대기 메시지는 입력란으로 복귀 · Ctrl+S 입력 또는 첫 대기 메시지 steer · Shift+← 마지막 대기 메시지 편집"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "실행 중 초안 전송: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "초안이 비어 있으면 {keys}로 대기열 첫 메시지 steer"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P 명령 · Esc 중단, 대기 메시지는 입력란으로 복귀 · Shift+← 마지막 대기 메시지 편집"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 지우기, 두 번 누르면 종료 · 빈 초안에서 Ctrl+D 종료"

@@ -66,14 +66,14 @@ resume -> 显示窗口 -> 先显示并接受输入
       -> owner inventories -> 安装控制状态
       -> 异步 usage -> 更新读数
 
-▸ Context compacted
+Fullscreen: ✓ Context compacted ▸
   展开 -> ▾ Loading -> 正文
                      -> 失败：保留摘要，可收起后重试
                      -> 超出显示预算：提示导出
   收起 -> 释放正文，旧回复不再写回
 ~~~
 
-TUI 两种模式共用原披露操作和 expanded 偏好；不增加菜单命令。展开偏好先显示摘要，再异步读取。行模式、ACP、Web 保留原先对 compaction 的显示效果，不新增原本不存在的详情视图。JSON exec 和导出继续完整模式。
+TUI 两种模式沿用 [CLI 详情设置](../cli-commands.md#transcript-detail-settings)；fullscreen 支持逐行展开，scrollback 不显示披露箭头，通过 `/tools` 和设置控制详情。不增加菜单命令。展开偏好先显示摘要，再异步读取。行模式、ACP、Web 保留原先对 compaction 的显示效果，不新增原本不存在的详情视图。JSON exec 和导出继续完整模式。
 
 沿用现有 worker 和 RPC 完成通知。只保存目标身份、projection generation、RPC ID，以及 unloaded/loading/loaded/error 状态；一次至多一个详情 RPC，不建立字节分块队列或拼接缓冲。目标包含 Session、分支、事件 ID 和 sequence。主线、侧线和选中成员使用相同的可见/展开判断；不能渲染为 Expanded 却因全局 Collapsed 不发请求。
 

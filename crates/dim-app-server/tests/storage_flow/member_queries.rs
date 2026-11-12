@@ -663,7 +663,16 @@ fn unposted_filter() -> QueryFilter {
 #[tokio::test]
 async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_identity_after_upgrade()
  {
-    for (source, broken) in [(41, false), (41, true), (42, false), (42, true)] {
+    for (source, broken, resume) in [
+        (41, false, false),
+        (41, true, false),
+        (42, false, false),
+        (42, true, false),
+        (43, false, false),
+        (43, true, false),
+        (42, false, true),
+        (43, false, true),
+    ] {
         let database = Database::new();
         let db = SqliteStorage::open(database.0.clone()).unwrap();
         let store = SqliteTimelineStore::new(db.clone());
@@ -719,6 +728,34 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
             .enumerate()
             .map(|(i, kind)| record(i as u64 + 1, kind))
             .collect();
+        if source == 43 && !resume {
+            store
+                .create_session("steer", &SessionConfig::default())
+                .await
+                .unwrap();
+            append(
+                &store,
+                key("steer", "main"),
+                vec![record(
+                    1,
+                    EventKind::InputWithdraw(InputWithdrawData {
+                        input_id: "event-12".into(),
+                        reason: None,
+                        steer: Some(InputMessageData {
+                            mode: Some(InputMode::Steer),
+                            user: Some(UserInput {
+                                content: vec![ContentBlock::Text {
+                                    text: "checked replacement survives upgrade".into(),
+                                }],
+                            }),
+                            ..InputMessageData::default()
+                        }),
+                    }),
+                )],
+            )
+            .await
+            .unwrap();
+        }
         for (at, end) in [(8, 2), (11, 8)] {
             Arc::make_mut(&mut records[at].event).tags =
                 Some(vec![format!("exec-wake-result:event-{end}")]);
@@ -739,18 +776,31 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         drop(db);
         {
             let connection = Connection::open(&database.0).unwrap();
-            if source == 41 {
+            if source == 41 || source == 42 && resume {
                 without_automation_origin(&connection);
             }
-            connection.execute_batch(&format!("DROP INDEX timeline_events_branch_interrupts; DELETE FROM timeline_member_roots WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DELETE FROM timeline_member_origins WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1') OR index_id='exec/v1'; DELETE FROM timeline_member_terminals WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {source})); INSERT INTO agent_store_format VALUES({source});")).unwrap();
+            if !resume {
+                connection.execute_batch("DROP INDEX timeline_events_branch_interrupts; DELETE FROM timeline_member_roots WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1'); DELETE FROM timeline_member_origins WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1') OR index_id='exec/v1'; DELETE FROM timeline_member_terminals WHERE index_id IN ('approval/v1','collaboration-delivery/v1','exec-wake/v1');").unwrap();
+            }
+            connection.execute_batch(&format!("DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {source})); INSERT INTO agent_store_format VALUES({source});")).unwrap();
             if broken {
                 connection.execute("UPDATE timeline_events SET body=json_set(body,'$.record.event.data.task_id',json('[{}]')) WHERE session_id='external' AND sequence=13", []).unwrap();
             }
         }
+        let connection = Connection::open(&database.0).unwrap();
+        let facts = rows(&connection, "timeline_events");
+        let indexed = [
+            "timeline_member_roots",
+            "timeline_member_origins",
+            "timeline_member_terminals",
+        ]
+        .map(|table| rows(&connection, table));
+        drop(connection);
         if broken {
             assert!(SqliteStorage::open(database.0.clone()).is_err());
             let connection = Connection::open(&database.0).unwrap();
             assert_eq!(marker(&connection), [source]);
+            assert_eq!(rows(&connection, "timeline_events"), facts);
             assert_eq!(schema(&connection), schema_of(source as u32));
             let count: i64 = connection
                 .query_row(
@@ -768,6 +818,39 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         let db = SqliteStorage::open(database.0.clone()).unwrap();
         assert_eq!(db.upgraded_from(), Some(source as u32));
         let store = SqliteTimelineStore::new(db.clone());
+        let connection = Connection::open(&database.0).unwrap();
+        assert_eq!(rows(&connection, "timeline_events"), facts);
+        if resume {
+            assert_eq!(
+                [
+                    "timeline_member_roots",
+                    "timeline_member_origins",
+                    "timeline_member_terminals"
+                ]
+                .map(|table| rows(&connection, table)),
+                indexed,
+                "resume-format upgrades preserve existing member relationships"
+            );
+        }
+        drop(connection);
+        if source == 43 && !resume {
+            let restored = store.read(&key("steer", "main"), 1..=1).await.unwrap();
+            let EventKind::InputWithdraw(withdrawal) = &restored[0].event.kind else {
+                panic!("withdrawal survives the format upgrade");
+            };
+            assert_eq!(
+                withdrawal.steer.as_ref().unwrap().mode,
+                Some(InputMode::Steer)
+            );
+            assert_eq!(
+                withdrawal.steer.as_ref().unwrap().user,
+                Some(UserInput {
+                    content: vec![ContentBlock::Text {
+                        text: "checked replacement survives upgrade".into()
+                    }]
+                })
+            );
+        }
         let query = QuerySpec {
             filter: Some(unposted_filter()),
             select: QuerySelect::Fields {
