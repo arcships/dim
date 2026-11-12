@@ -54,7 +54,10 @@ impl DynPlugin for CatalogHost {
 
 /// Answers like the mock model and keeps each request for inspection.
 #[derive(Default)]
-struct Recording(Mutex<Vec<Arc<ModelRequest>>>);
+struct Recording(
+    Mutex<Vec<Arc<ModelRequest>>>,
+    Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+);
 impl ModelDriver for Recording {
     fn invoke(
         &self,
@@ -63,7 +66,18 @@ impl ModelDriver for Recording {
         cancel: CancellationToken,
     ) -> HostFuture<'_, ModelStream> {
         self.0.lock().unwrap().push(request.clone());
-        EchoModel.invoke(request, ModelConnection::Local, cancel)
+        let hold = self.1.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                tokio::select! {
+                    _ = hold => {}
+                    _ = cancel.cancelled() => {}
+                }
+            }
+            EchoModel
+                .invoke(request, ModelConnection::Local, cancel)
+                .await
+        })
     }
 }
 impl Recording {
@@ -349,6 +363,8 @@ async fn a_steer_reference_gets_the_block() {
     let home = home("steer");
     let project = project_skill(&home, "checkin", "Answers check-in questions", "STEER-BODY");
     let model = Arc::new(Recording::default());
+    let (release, hold) = tokio::sync::oneshot::channel();
+    *model.1.lock().unwrap() = Some(hold);
     let (server, _) = launch(&home, model.clone()).await;
     let (mut client, id, session) = session(&server, &project, json!([])).await;
     let submitted = client
@@ -358,19 +374,24 @@ async fn a_steer_reference_gets_the_block() {
         )
         .await;
     assert_ok(&submitted);
-    let idle = client
-        .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
+    let queued = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "queued"}),
+        )
         .await;
-    assert_ok(&idle);
+    assert_ok(&queued);
 
     let withdrawn = client
         .rpc(
             "session.input.withdraw",
-            json!({"sessionId": id, "branchId": "main", "inputId": "unknown",
+            json!({"sessionId": id, "branchId": "main", "inputId": queued["result"]["event"]["id"],
                 "steer": {"content": [{"type": "text", "text": "$skill: checkin more"}]}}),
         )
         .await;
     assert_ok(&withdrawn);
+    assert_eq!(withdrawn["result"]["status"], "deleted", "{withdrawn}");
+    let _ = release.send(());
     let idle = client
         .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
         .await;

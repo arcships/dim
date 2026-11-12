@@ -638,13 +638,11 @@ impl AgentIndex {
             let (withdrawal, _) = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
-                .withdraw(
-                    InputWithdrawData {
-                        input_id: request.input_id,
-                        reason: request.reason,
-                    },
-                    None,
-                )
+                .withdraw(InputWithdrawData {
+                    input_id: request.input_id,
+                    reason: request.reason,
+                    steer: None,
+                })
                 .await?;
             if let Withdrawal::Deleted { sequence } = withdrawal {
                 published(&publication, sequence).await?;

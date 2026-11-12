@@ -1863,6 +1863,212 @@ async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
 }
 
 #[tokio::test]
+async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_inputs() {
+    use dim_agent_capabilities::input_queue::{InputQueue, Withdrawal};
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("session", &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        key("session", "main"),
+        Vec::new(),
+        store.clone(),
+    );
+    let write = |kind: EventKind| timeline.append(kind.into()).unwrap();
+    let input = |text: &str, mode| InputMessageData::text(text, Some(mode));
+    let withdraw = |id: &str, steer| InputWithdrawData {
+        input_id: id.into(),
+        reason: None,
+        steer,
+    };
+    let driving = write(EventKind::InputMessage(input("driving", InputMode::Queue)));
+    write(EventKind::InputApplied(InputAppliedData {
+        input_id: driving.id.clone(),
+        mode: Some(InputMode::Queue),
+    }));
+    let checked = |text: &str| {
+        let mut data = input(text, InputMode::Steer);
+        data.user
+            .as_mut()
+            .unwrap()
+            .content
+            .push(ContentBlock::Text {
+                text: "<dim-hooks kind=\"prompt-submit\">durable checked context</dim-hooks>"
+                    .into(),
+            });
+        data
+    };
+    let mut originals = Vec::new();
+    for (text, committed) in [("recovered", false), ("committed", true)] {
+        let old = write(EventKind::InputMessage(input(
+            "old queued content",
+            InputMode::Queue,
+        )));
+        let candidate = checked(text);
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(candidate.clone()),
+        )));
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+        if committed {
+            timeline
+                .append_batch_registered(
+                    vec![
+                        EventKind::InputMessage(candidate).into(),
+                        EventKind::InputDeleted(InputDeletedData {
+                            input_id: old.id.clone(),
+                        })
+                        .into(),
+                    ],
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        originals.push(old.id.clone());
+    }
+    let first = write(EventKind::InputMessage(input("first", InputMode::Queue)));
+    let second = write(EventKind::InputMessage(input("second", InputMode::Queue)));
+    for (old, text) in [
+        (&second, "second replacement"),
+        (&first, "first replacement"),
+    ] {
+        write(EventKind::InputWithdraw(withdraw(
+            &old.id,
+            Some(checked(text)),
+        )));
+    }
+    let plain = write(EventKind::InputMessage(input("plain", InputMode::Queue)));
+    write(EventKind::InputWithdraw(withdraw(&plain.id, None)));
+    write(EventKind::InputWithdraw(withdraw(
+        &plain.id,
+        Some(input("loser", InputMode::Steer)),
+    )));
+    let legacy = write(EventKind::InputMessage(input(
+        "legacy original",
+        InputMode::Queue,
+    )));
+    timeline
+        .append_batch_registered(
+            vec![
+                EventKind::InputWithdraw(withdraw(&legacy.id, None)).into(),
+                EventKind::InputMessage(input("legacy replacement", InputMode::Steer)).into(),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    write(EventKind::InputDeleted(InputDeletedData {
+        input_id: legacy.id.clone(),
+    }));
+    for id in [&driving.id, &legacy.id, "unknown"] {
+        write(EventKind::InputWithdraw(withdraw(
+            id,
+            Some(input("loser", InputMode::Steer)),
+        )));
+    }
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+
+    for _ in 0..2 {
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+        dim_agent_capabilities::defaults::install(&mut builder);
+        builder.timeline_store(store.clone());
+        let agent = MinimalHost::start(&builder).await.unwrap();
+        let session = agent.restore_session("session".into()).await.unwrap();
+        tokio::time::timeout(PUBLISHED, session.idle("main"))
+            .await
+            .unwrap()
+            .unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let replacements: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer) => {
+                    Some((event, data))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replacements.len(), 5);
+        let ordered: Vec<_> = replacements
+            .iter()
+            .filter_map(|(_, data)| {
+                ["second replacement", "first replacement"]
+                    .into_iter()
+                    .find(|text| **data == checked(text))
+            })
+            .collect();
+        assert_eq!(ordered, ["second replacement", "first replacement"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.kind,
+            EventKind::InputDeleted(data) if data.input_id == plain.id))
+                .count(),
+            1
+        );
+        for (id, text) in originals.iter().zip(["recovered", "committed"]) {
+            let deleted: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind,
+                EventKind::InputDeleted(data) if &data.input_id == id)
+                })
+                .collect();
+            assert_eq!(deleted.len(), 1);
+            let (replacement, data) = replacements
+                .iter()
+                .find(|(_, data)| **data == checked(text))
+                .unwrap();
+            assert_eq!(**data, checked(text));
+            assert_eq!(replacement.sequence + 1, deleted[0].sequence);
+            let stored = store
+                .read(
+                    &key("session", "main"),
+                    replacement.sequence..=deleted[0].sequence,
+                )
+                .await
+                .unwrap();
+            assert_eq!(stored.len(), 2);
+            assert!(
+                stored
+                    .iter()
+                    .all(|event| event.batch_end == deleted[0].sequence)
+            );
+            assert!(!events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if &data.input_id == id)));
+            let retry = session
+                .service::<InputQueue>("main")
+                .unwrap()
+                .withdraw(withdraw(id, Some(checked(text))))
+                .await
+                .unwrap();
+            assert_eq!(retry, (Withdrawal::NotHeld, None));
+        }
+        assert!(
+            replacements
+                .iter()
+                .any(|(_, data)| **data == input("legacy replacement", InputMode::Steer))
+        );
+        agent.close().await.unwrap();
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn branch_end_events_restore_unchanged_and_the_line_stays_ended() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -8510,7 +8716,7 @@ async fn interleaved_histories(store: Arc<dyn TimelineStore>) -> Timeline {
 mod position_queries;
 
 #[tokio::test]
-async fn main_and_branch_formats_upgrade_to_v41_without_reinterpreting_their_markers() {
+async fn main_and_branch_formats_upgrade_to_v43_without_reinterpreting_their_markers() {
     for (version, main_layout) in [
         (37, true),
         (38, true),
@@ -8518,6 +8724,8 @@ async fn main_and_branch_formats_upgrade_to_v41_without_reinterpreting_their_mar
         (38, false),
         (39, false),
         (40, false),
+        (41, false),
+        (42, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();
@@ -8565,6 +8773,10 @@ async fn main_and_branch_formats_upgrade_to_v41_without_reinterpreting_their_mar
         }
         let facts = rows(&connection, "timeline_events");
         let owners = rows(&connection, "session_owners");
+        let business: Vec<_> = BUSINESS_TABLES
+            .iter()
+            .map(|table| (*table, rows(&connection, table)))
+            .collect();
         drop(connection);
         let mut before = Vec::new();
         dim_app_server::storage::export_timeline(database.0.clone(), "s1", &mut before)
@@ -8594,6 +8806,19 @@ async fn main_and_branch_formats_upgrade_to_v41_without_reinterpreting_their_mar
             "facts changed: v{version}, main={main_layout}"
         );
         assert_eq!(rows(&connection, "session_owners"), owners);
+        if version == 42 {
+            for (table, expected) in &business {
+                assert_eq!(rows(&connection, table), *expected, "v42 rows in {table}");
+            }
+        }
+        assert_eq!(schema(&connection), schema_of(43));
+        if !main_layout {
+            assert_ne!(
+                schema(&connection),
+                schema_of(version),
+                "v{version}'s exact-schema gate rejects the upgraded store"
+            );
+        }
         assert_eq!(
             connection
                 .query_row("SELECT version FROM agent_store_format", [], |row| row

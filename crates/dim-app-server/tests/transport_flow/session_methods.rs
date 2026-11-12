@@ -1,5 +1,6 @@
 use super::*;
 use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, SessionMethods};
+use dim_agent_types::InputMode;
 use rutis::host::CtxHost;
 
 /// Registers one Session namespace with the Session's method table and
@@ -783,6 +784,164 @@ async fn input_withdraw_answers_through_the_session_and_writes_only_commands() {
         !names.iter().any(|name| name == "input/deleted"),
         "{names:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn independent_clients_replace_a_held_input_only_once() {
+    let (server, mut requests, release) = session_typescript::start(ServerConfig::default()).await;
+    let mut first = Client::new_version(&server, false, 3).await;
+    let mut second = Client::new_version(&server, false, 3).await;
+    let mut params = create(json!(["native_slow"]));
+    params["permissionPolicy"]["allowedTools"] = json!(["native_slow"]);
+    let created = first.rpc("session.create", params).await;
+    assert_ok(&created);
+    let sid = created["result"]["sessionId"].as_str().unwrap();
+    let driving = first
+        .rpc(
+            "session.submit",
+            json!({
+                "sessionId": sid, "branchId": "main", "text": "tool:native_slow {}"
+            }),
+        )
+        .await;
+    assert_ok(&driving);
+    requests.recv().await.unwrap();
+    let queued = first
+        .rpc(
+            "session.submit",
+            json!({
+                "sessionId": sid, "branchId": "main", "text": "original queued input"
+            }),
+        )
+        .await;
+    assert_ok(&queued);
+    let input_id = queued["result"]["event"]["id"].as_str().unwrap();
+    let steer = |id: &str, text: &str| {
+        json!({
+            "sessionId": sid, "branchId": "main", "inputId": id,
+            "steer": {"content": [{"type": "text", "text": text}]}
+        })
+    };
+    let (a, b) = tokio::join!(
+        first.rpc("session.input.withdraw", steer(input_id, "candidate A")),
+        second.rpc("session.input.withdraw", steer(input_id, "candidate B")),
+    );
+    assert_ok(&a);
+    assert_ok(&b);
+    let (winner, loser) = if a["result"]["status"] == "deleted" {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    assert_eq!(loser["result"], json!({"status": "notHeld"}));
+    let receipt = &winner["result"]["steer"];
+    assert!(receipt["inputId"].is_string(), "{winner}");
+    assert_eq!(
+        receipt["sequence"].as_u64().unwrap() + 1,
+        winner["result"]["sequence"]
+    );
+    for id in [
+        input_id,
+        "unknown",
+        driving["result"]["event"]["id"].as_str().unwrap(),
+    ] {
+        let reply = second
+            .rpc("session.input.withdraw", steer(id, "must not appear"))
+            .await;
+        assert_eq!(reply["result"], json!({"status": "notHeld"}), "{reply}");
+    }
+    let session = server.agent().unwrap().get_session(sid).unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+        EventKind::InputDeleted(data) if data.input_id == input_id))
+            .count(),
+        1
+    );
+    let replacements: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.kind,
+        EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer))
+        })
+        .collect();
+    assert_eq!(replacements.len(), 1);
+    assert_eq!(replacements[0].id, receipt["inputId"]);
+    assert_eq!(replacements[0].sequence, receipt["sequence"]);
+    let mut distinct = Vec::new();
+    for _ in 0..2 {
+        let reply = first.rpc("session.submit", json!({
+            "sessionId": sid, "branchId": "main", "text": "identical queued text", "mode": "queue"
+        })).await;
+        assert_ok(&reply);
+        distinct.push(reply["result"]["event"]["id"].as_str().unwrap().to_owned());
+    }
+    let (a, b) = tokio::join!(
+        first.rpc(
+            "session.input.withdraw",
+            steer(&distinct[0], "identical replacement")
+        ),
+        second.rpc(
+            "session.input.withdraw",
+            steer(&distinct[1], "identical replacement")
+        ),
+    );
+    for reply in [&a, &b] {
+        assert_eq!(reply["result"]["status"], "deleted", "{reply}");
+        assert!(reply["result"]["steer"]["inputId"].is_string());
+    }
+    assert_ne!(
+        a["result"]["steer"]["inputId"],
+        b["result"]["steer"]["inputId"]
+    );
+    for _ in 0..2 {
+        assert_ok(&first.rpc("session.submit", json!({
+            "sessionId": sid, "branchId": "main", "text": "identical replacement", "mode": "steer"
+        })).await);
+    }
+    let plain = first.rpc("session.submit", json!({
+        "sessionId": sid, "branchId": "main", "text": "plain withdrawal wins", "mode": "queue"
+    })).await;
+    assert_ok(&plain);
+    let plain_id = plain["result"]["event"]["id"].as_str().unwrap();
+    let removed = first
+        .rpc(
+            "session.input.withdraw",
+            json!({
+                "sessionId": sid, "branchId": "main", "inputId": plain_id
+            }),
+        )
+        .await;
+    assert_eq!(removed["result"]["status"], "deleted", "{removed}");
+    let losing = second
+        .rpc("session.input.withdraw", steer(plain_id, "must not appear"))
+        .await;
+    assert_eq!(losing["result"], json!({"status": "notHeld"}));
+    release.notify_one();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(!events.iter().any(|event| matches!(&event.kind,
+        EventKind::InputConsumed(data) if data.input_id == input_id)));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+        EventKind::InputConsumed(data) if data.input_id == replacements[0].id))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+        EventKind::InputMessage(data) if data.mode == Some(InputMode::Steer)))
+            .count(),
+        5
+    );
+    server.shutdown();
+    server.join().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

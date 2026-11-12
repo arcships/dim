@@ -36,9 +36,9 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 ### Sending, queuing and steering
 
 - Send: press Enter while idle to submit input and start the Agent; combine text, file references and images in one message.
-- Queue: press Enter during an Agent run to queue the draft without interrupting the current task.
+- Queue: hold the draft for the next run. Set the [default send mode](design/cli-commands.md#run-keys-and-queue) to choose the sending keys during a run.
 - Automatic sending: after the current run ends, send queued messages in submission order to start subsequent runs.
-- Steer: press Ctrl+S during an Agent run to add the draft to the current run's context at a subsequent Agent turn boundary, without stopping the task first. With an empty draft, Ctrl+S or Enter steers the oldest queued message; an empty queue has no effect.
+- Steer: send a draft or the oldest held message into the current run at a subsequent Agent turn boundary.
 - `/queue`: view messages awaiting submission and messages being incorporated into the current run; select an entry to steer or delete it.
 - Retrieve for editing: with an empty draft, press Shift+Left to move the newest queued message back into the input area. Messages with attachments or file references cannot be retrieved this way; use `/queue` to manage them.
 - Queue deletion: remove messages that have not been sent; a steering instruction already handed to the current run cannot be deleted as a queued message.
@@ -73,7 +73,7 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 - Clipboard compatibility: copy text through the system clipboard and OSC 52 for local and SSH use. Over SSH, terminals with the kitty clipboard protocol (OSC 5522, e.g. kitty, Ghostty 1.4+) also serve `Ctrl+V` image (PNG, JPEG, WebP, GIF) and text reads from the local clipboard; other terminals keep the native readers. Image/file reads and remote copying depend on platform components and terminal support.
 - History browsing and navigation: use `/timeline` to locate messages. Fullscreen TUI loads earlier records from a row at the top of the transcript; in scrollback a `/timeline` jump to an earlier message draws history from it, and the terminal's own scrollback does the rest.
 - Open links: click web and local-file links in fullscreen TUI output to open them with the system's default browser or application.
-- Tool groups: each group of tool calls is collapsed by default (`▸`); click its header in fullscreen TUI to cycle that group through collapsed, one-row-per-call summary, and expanded forms. `/tools` cycles every group through the same forms; compaction bodies show only in expanded. See [transcript detail settings](design/cli-commands.md#transcript-detail-settings).
+- Tool groups: tool calls are collapsed by default. Fullscreen TUI has independently expandable headers (`▸`/`▾`); scrollback has no per-row disclosure arrows. `/tools` cycles the detail preference through collapsed, summary and expanded. See [transcript detail settings](design/cli-commands.md#transcript-detail-settings) for both modes and compaction details.
 
 ### Run feedback and confirmation
 
