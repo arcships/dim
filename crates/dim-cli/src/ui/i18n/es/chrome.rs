@@ -129,6 +129,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon no admite renombrar sesiones"
         }
         "Renaming failed" => "Error al renombrar",
+        "Delete \"{name}\"?" => "¿Eliminar «{name}»?",
+        "Deleted {name}." => "{name} eliminada.",
+        "Nothing was removed: no stored Session {name}." => {
+            "No se eliminó nada: no hay ninguna sesión guardada {name}."
+        }
+        "Delete failed" => "Error al eliminar",
+        "This daemon does not support deleting Sessions" => {
+            "Este daemon no admite eliminar sesiones"
+        }
         "Starting" => "Iniciando",
         "Delegation result" => "Resultado de delegación",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -397,6 +406,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill cargado: {name}",
         "Hook context · {count} line" => "Contexto del hook · {count} línea",
         "Hook context · {count} lines" => "Contexto del hook · {count} líneas",
+        "Stop hook follow-up · {count} line" => "Seguimiento del hook Stop · {count} línea",
+        "Stop hook follow-up · {count} lines" => "Seguimiento del hook Stop · {count} líneas",
         "Commands" => "Comandos",
         "Command Palette" => "Paleta de comandos",
         "No matches" => "Sin coincidencias",
@@ -453,8 +464,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "No hay sesiones guardadas en este espacio de trabajo. Ctrl+S muestra más."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter abrir · Ctrl+S ámbito · Ctrl+R actualizar · Esc cerrar"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter abrir · Ctrl+X eliminar · Ctrl+S ámbito · Ctrl+R actualizar · Esc cerrar"
         }
         "Loading sessions..." => "Cargando sesiones…",
         "No saved sessions yet." => "Sin sesiones guardadas aún.",

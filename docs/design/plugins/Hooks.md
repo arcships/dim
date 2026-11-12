@@ -204,7 +204,7 @@ sequenceDiagram
   end
 ```
 
-`PostToolUse` runs per matching call of a `step/tool-result` batch whose result is not an error, `PostToolUseFailure` per matching call whose result has `is_error`; one batch writes one Append input. `Stop` runs on `turn/end` with status `completed`; a block writes a Queue follow-up carrying the reason, at most 3 consecutive (A8). `SessionStart` runs on `main` when it has no `turn/start` and no current unconsumed, undeleted ordinary input carries a `hooks:session-start/*` keyed block; its Append input waits, as any idle Append does, for the first driving input. `SessionStart` output is also dropped once a turn has started on the branch, because its block must come before the first turn. `Notification` runs on `approval/request` and writes nothing. Handlers with `async: true` run on any of these points and nothing waits for or reads their output. `HooksBranch` resolves the migration alias of each tool event from the declaration in force on the branch (G.2).
+`PostToolUse` runs per matching call of a `step/tool-result` batch whose result is not an error, `PostToolUseFailure` per matching call whose result has `is_error`; one batch writes one Append input. `Stop` runs on `turn/end` with status `completed`; a block writes a Queue follow-up carrying the reason, at most 3 consecutive (A8). The native CLI draws that input as one muted status row where it was written (`Stop hook follow-up · N lines`), its body behind the tool-detail setting's `expanded` and a click, exactly as it draws a hook context; its plain log prints the same line and no body. `dimcode session export --format markdown` keeps the raw block under `### Runtime input`, and the AcpGateway replays no chunk for it (§5). The model reads it at the start of the turn it drives. `SessionStart` runs on `main` when it has no `turn/start` and no current unconsumed, undeleted ordinary input carries a `hooks:session-start/*` keyed block; its Append input waits, as any idle Append does, for the first driving input. `SessionStart` output is also dropped once a turn has started on the branch, because its block must come before the first turn. `Notification` runs on `approval/request` and writes nothing. Handlers with `async: true` run on any of these points and nothing waits for or reads their output. `HooksBranch` resolves the migration alias of each tool event from the declaration in force on the branch (G.2).
 
 ### 3.5 Loading and reads at hook points
 
@@ -258,7 +258,7 @@ Full table: Appendix B.
 | `PreToolUse` deny | Error text `Hook <source>: <reason>` in ToolExecutor's `step/tool-result` | Paired with the call | Summary only | If before the cut |
 | `PreToolUse` allow, `PermissionRequest` | Nothing beyond the call's ordinary outcome | — | — | — |
 | `PostToolUse(Failure)` context or block reason | Append input, marker `kind="post-tool"` with `call_id` and `tool` | Next model request of the turn | Summary only | As inputs |
-| `Stop` block reason | Queue input, marker `kind="follow-up"` | Start of the turn it drives | Summary only | As inputs |
+| `Stop` block reason | Queue input, marker `kind="follow-up"` | Start of the turn it drives; a client draws the row there, after the turn it ended | Summary only | As inputs |
 | `Notification`, `async` handlers | Nothing | — | — | — |
 
 The model never sees hook configuration, commands, exit codes, diagnostics or a `UserPromptSubmit` block reason.

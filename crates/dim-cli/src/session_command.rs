@@ -16,7 +16,7 @@ use std::{
 };
 
 const RENAME_UNSUPPORTED: &str = "This daemon does not support renaming Sessions";
-const DELETE_UNSUPPORTED: &str = "This daemon does not support deleting Sessions";
+pub(crate) const DELETE_UNSUPPORTED: &str = "This daemon does not support deleting Sessions";
 const CLEANUP_UNSUPPORTED: &str = "This daemon does not support cleaning up Sessions";
 /// `includeClosed` and `requireInactive` land together, so a server that
 /// refuses one refuses both, and cleanup cannot delete safely there.
@@ -31,9 +31,9 @@ struct Renamed {
 /// The `session.delete` reply. An App Server before the field answers `{}`,
 /// which reads as `None` and as a delete that removed the rows.
 #[derive(Deserialize)]
-struct Deleted {
+pub(crate) struct Deleted {
     #[serde(default)]
-    deleted: Option<bool>,
+    pub(crate) deleted: Option<bool>,
 }
 
 /// One stored Session as `session.summaries` reports it.
@@ -351,7 +351,7 @@ async fn summaries(client: &mut Client) -> Result<Vec<Summary>> {
 }
 
 /// The App Server's own sentence for a refused call, as one printable line.
-fn reason(error: &crate::Error) -> String {
+pub(crate) fn reason(error: &crate::Error) -> String {
     match error.downcast_ref::<RpcError>() {
         Some(error) if !error.message.is_empty() => one_line(&error.message),
         _ => one_line(&error.to_string()),

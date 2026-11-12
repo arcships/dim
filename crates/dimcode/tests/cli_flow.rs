@@ -2525,10 +2525,12 @@ read src/parser.rs `first`
     assert_eq!(markdown, expected);
 }
 
-/// #1380: the line client's history says what the TUI says. A message it
-/// replays prints the operator's words, one `Skill loaded` line per loaded
+/// #1380, #1381: the line client's history says what the TUI says. A message
+/// it replays prints the operator's words, one `Skill loaded` line per loaded
 /// Skill, and one `Hook context · N lines` line per hook context — and never a
 /// marker. The order is the content's: the Skill was loaded before the hook ran.
+/// A `Stop` hook's follow-up, which is its own input after the turn ended,
+/// prints its one label with no body.
 #[test]
 fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
     let home = Home::new();
@@ -2547,8 +2549,10 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
                      {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nSEARCH-MEMORY-FIRST\nis required here\n</dim-hooks>"}
                  ]},"mode":"queue"}},
                 {"id":"hooked-consumed","sequence":8,"create_at":1,"type":"input","name":"consumed",
-                 "data":{"input_id":"hooked"}}],
-                "through":8,"nextAfter":8,"done":true}),
+                 "data":{"input_id":"hooked"}},
+                {"id":"follow-up","sequence":9,"create_at":1,"type":"input","name":"message",
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}}],
+                "through":9,"nextAfter":9,"done":true}),
         );
         // The client settles the queue and reads the context gauge in either
         // order, so answer by method until it leaves.
@@ -2559,10 +2563,10 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
                 Ok(_) => {
                     let request: Value = serde_json::from_str(&line).unwrap();
                     match request["method"].as_str().unwrap_or_default() {
-                        "session.idle" => wire.reply(&request, json!({"sequence":8})),
+                        "session.idle" => wire.reply(&request, json!({"sequence":9})),
                         "session.question.pending" => wire.reply(
                             &request,
-                            json!({"branchId":"main","through":8,"batches":[],"next":null}),
+                            json!({"branchId":"main","through":9,"batches":[],"next":null}),
                         ),
                         "session.context.usage" => wire.send(json!({
                             "jsonrpc":"2.0","id":request["id"],
@@ -2600,14 +2604,23 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
         "the log prints the same line the TUI row shows:\n{plain}"
     );
     assert!(
+        plain.contains("Stop hook follow-up · 1 line"),
+        "the follow-up's one label reaches the log:\n{plain}"
+    );
+    assert!(
+        !plain.contains("run the suite"),
+        "the log has no disclosure, so the body stays out of it:\n{plain}"
+    );
+    assert!(
         !plain.contains("<dim-"),
         "no marker reaches the log:\n{plain}"
     );
     let words = plain.find("> why does the parser stall?").unwrap();
     let skill = plain.find("Skill loaded: checkin").unwrap();
     let hook = plain.find("Hook context · 2 lines").unwrap();
+    let follow_up = plain.find("Stop hook follow-up · 1 line").unwrap();
     assert!(
-        words < skill && skill < hook,
+        words < skill && skill < hook && hook < follow_up,
         "the lines keep the order the content has:\n{plain}"
     );
 }
@@ -5067,7 +5080,7 @@ fn tui_resizing_during_thinking_preserves_multiline_history() {
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("Ask anything...");
     terminal.raw(b"first user line\nsecond user line\nlast user line\r");
-    terminal.until("Thinking…");
+    terminal.until("Thought");
     for (cols, rows) in [(100, 24), (60, 24), (120, 40), (45, 18), (100, 36)] {
         terminal.consumed = terminal.transcript.len();
         let size = libc::winsize {
@@ -10714,6 +10727,77 @@ fn tui_draws_a_prompt_hooks_context_as_a_status_row() {
     terminal.write(b"/tools\r");
     terminal.until("Hook context · 3 lines ▾");
     terminal.until("SEARCH-MEMORY-FIRST");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// #1381: a `Stop` hook's follow-up is one input a turn already ended on, not
+/// a message. The transcript draws one muted row where the input was written,
+/// `▸` closed, and `/tools` opens and closes its body as it does a hook
+/// context's.
+#[test]
+fn tui_draws_a_stop_hooks_follow_up_as_one_row() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let hello = wire.read("hello");
+        wire.reply(&hello, json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods"]}));
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[
+                {"id":"t1","sequence":8,"create_at":1,"type":"turn","name":"start",
+                 "data":{"turn_id":"t1"}},
+                {"id":"r1","sequence":9,"create_at":1,"type":"step","name":"text",
+                 "data":{"request_id":"r1","delta":"done.","turn_id":"t1"}},
+                {"id":"t1-end","sequence":10,"create_at":1,"type":"turn","name":"end",
+                 "data":{"turn_id":"t1","status":"completed","reason":"done"}},
+                {"id":"follow-up","sequence":11,"create_at":1,"type":"input","name":"message",
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\nfix parser::tests\nkeep the diff small\n</dim-hooks>"}],"mode":"queue"}}],
+                "through":11,"nextAfter":11,"done":true}),
+        );
+        wire.no_context();
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session"]);
+    let mut terminal = Terminal::launch_tui(command);
+    // The row is a settled row, so it commits before the replayed answer's
+    // stream starts: wait for it first or the wait consumes past it.
+    terminal.until("Stop hook follow-up · 3 lines ▸");
+    assert!(
+        !terminal.transcript.contains("<dim-hooks"),
+        "the marker is the model's, not the transcript's:\n{}",
+        terminal.transcript
+    );
+    for line in ["run the suite", "fix parser::tests", "keep the diff small"] {
+        assert!(
+            !terminal.transcript.contains(line),
+            "a closed follow-up keeps its body out of the transcript:\n{}",
+            terminal.transcript
+        );
+    }
+    // The row is not a message: it wears the muted status mark, not the
+    // operator's, and the message rail and the earlier-history count skip it.
+    assert!(
+        !terminal
+            .transcript
+            .contains("─────────────── resumed session · 1 messages"),
+        "the message count skips a follow-up:\n{}",
+        terminal.transcript
+    );
+    // The detail setting opens the body, as it does for a hook's context.
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▸");
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▾");
+    terminal.until("fix parser::tests");
+    terminal.write(b"/tools\r");
+    terminal.until("Stop hook follow-up · 3 lines ▸");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");
     assert!(terminal.wait().success());

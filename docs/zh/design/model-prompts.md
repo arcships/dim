@@ -35,13 +35,15 @@
 | 通道 | 承载者 | 作者 | 生命周期 | 信任 |
 | --- | --- | --- | --- | --- |
 | system 前缀 | Prompt：注册的 System 来源，在根分支启动时采用 | base：PromptSources；Session 的 system prompt：宿主或 profile；skills 指令：Skills | Session 内静态 | 指令 |
-| 规则与状态块（`<dim-rule>`、`<dim-state>`） | Prompt：Append 输入、带 key、压缩后重放 | 该来源所属的能力；用户与项目指令的正文是用户或项目自己的 | 按 key：被替换、撤回或过期 | 规则：在作用域内约束。状态：情况 |
+| Prompt 来源的规则与状态块（`<dim-rule>`、`<dim-state>`） | Prompt：Append 输入、带 key、压缩后重放 | 该来源所属的能力；用户与项目指令的正文是用户或项目自己的 | 按 key：被替换、撤回或过期 | 规则：在作用域内约束。状态：情况 |
 | 工具声明 | ToolBinding 与 ToolRegistry：配置的 tools 部分 | 每个工具的所有者，内建或贡献 | 已采用的配置 | 该工具的指令 |
 | 运行时写入的输入（标记） | 输入路径：InputQueue，然后 Loop | 写它的能力——TimelineTree、Collaboration、BackgroundExec、ShellInput，以及每个贡献插件 | 历史条目；压缩可能替换它们 | 信息，从不是权限 |
 | 操作者输入 | 输入路径 | 操作者 | 历史 | 操作者的话 |
 | 工具结果 | Loop | 来自外部的材料；运行时写进结果里的拒绝与句柄归该工具的所有者 | 历史 | 材料，从不约束；skill 工具的结果是唯一例外 |
 | 压缩替换 | ContextPolicy | 摘要：策略；清单与钉住输入及其句柄：ContextCompaction | 替换一段历史 | 背景；现场对话优先 |
 | 输入指南 | Prompt：它组合、由 Session 采用的 System 的一部分；宿主准备的请求带同一份组合 | 框架：Prompt；每个标记的条目：写该标记的能力（§6） | 在其写入者的两次装载之间固定；条目在写入者装载处生效、在卸载处结束 | 关于其余通道的指令 |
+
+不带 key 的 `<dim-state>` 快照属于运行时写入的输入通道。`source` 标识它描述的事实，正文是最近观察到的值；`source` 不是输入 key。这种快照是普通历史，不保证压缩后重放。按 key 保留取决于输入的 key，而非标记名称。两种形式都描述状态，不是请求或授权，共用 `PromptGuide` 拥有的唯一 `dim-state` 条目（[Prompt §4](plugins/Prompt.md#4-内建条目及其写入者)）。
 
 **核对。** 现有文字都落在表内，不需要新通道：base、Session 的 system prompt 与 skills 指令在 system 前缀；环境与日期状态、用户与项目指令、skills 列表是规则与状态块；每个内建工具声明，以及 MCP server 与贡献插件的声明，在配置的 tools 部分；分支、goal、exec、协作、shell 输入、Scheduler 与 Workflow 的标记是运行时写入的输入；操作者的消息；工具结果，连同运行时写进其中的拒绝、错误码与句柄；摘要、清单与钉住输入在压缩替换里；以及指南本身。哪条文字都落不进去，才需要新通道，那是基础设施变更（原则 §4 第 8 条）；没有这样的文字。
 

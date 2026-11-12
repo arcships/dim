@@ -1392,6 +1392,11 @@
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "scope": null,
             "status": "Ready"
+          },
+          {
+            "service": "dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main",
+            "scope": null,
+            "status": "Ready"
           }
         ],
         "resolved": [
@@ -1411,6 +1416,12 @@
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "scope": null,
             "provider": 35,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main",
+            "scope": null,
+            "provider": 45,
             "generation": 1
           }
         ],
@@ -1432,6 +1443,12 @@
             "provider": 35,
             "declared": true,
             "external": false
+          },
+          {
+            "service": "dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main",
+            "provider": 45,
+            "declared": true,
+            "external": true
           }
         ]
       }

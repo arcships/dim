@@ -79,6 +79,7 @@ pub struct ListPanel {
     no_match_text: &'static str,
     /// The detail follows the label on one string (`name  detail`).
     inline_detail: bool,
+    section_headings: bool,
     /// Headings stay while filtering.
     all_rows: bool,
     /// Typed characters filter the list.
@@ -118,6 +119,7 @@ impl ListPanel {
             empty_text,
             no_match_text,
             inline_detail: false,
+            section_headings: false,
             all_rows: false,
             filterable: true,
             remote_filter: false,
@@ -139,6 +141,12 @@ impl ListPanel {
     pub fn with_inline_rows(mut self) -> Self {
         self.inline_detail = true;
         self.all_rows = true;
+        self
+    }
+
+    /// Emphasizes group headings and outdents them from selectable entries.
+    pub fn with_section_headings(mut self) -> Self {
+        self.section_headings = true;
         self
     }
 
@@ -180,6 +188,11 @@ impl ListPanel {
     pub fn with_notes(mut self, notes: Vec<String>) -> Self {
         self.notes = notes;
         self
+    }
+
+    /// Replaces the explanation when the focused entry changes.
+    pub fn set_notes(&mut self, notes: Vec<String>) {
+        self.notes = notes;
     }
 
     pub fn filter_is_empty(&self) -> bool {
@@ -258,6 +271,18 @@ impl ListPanel {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
             item.detail = detail.into();
         }
+    }
+
+    /// Drops the row `id`, keeping the selection on a row that is still
+    /// shown: the row at the same place takes over, and the last one keeps
+    /// the selection on the row before it.
+    pub fn remove(&mut self, id: &str) {
+        let Some(at) = self.items.iter().position(|item| item.id == id) else {
+            return;
+        };
+        self.items.remove(at);
+        let count = self.shown().iter().filter(|item| !item.heading).count();
+        self.selected = self.selected.min(count.saturating_sub(1));
     }
 
     /// Rows for the current filter: headings only while nothing is typed.
@@ -478,7 +503,9 @@ impl ListPanel {
             let start = follow_window(self.window.get(), current_at, fitted.list, list.len());
             self.window.set(start);
             for (offset, row) in list.iter().skip(start).take(fitted.list).enumerate() {
-                if matches!(row.kind, Kind::Heading) {
+                if matches!(row.kind, Kind::Heading) && self.section_headings {
+                    content.push(title_plain(&row.label, inner, p));
+                } else if matches!(row.kind, Kind::Heading) {
                     content.push(fg(
                         &truncate_cells(&format!("  {}", row.label), inner),
                         &p.muted,

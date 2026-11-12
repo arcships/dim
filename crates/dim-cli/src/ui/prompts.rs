@@ -150,6 +150,11 @@ pub enum Effect {
         action: &'static str,
     },
     Export(crate::export::Format),
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// End this line, once the user confirmed it.
     EndLine {
         session_id: String,
