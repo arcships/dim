@@ -1201,8 +1201,8 @@ pub enum Update {
         format: crate::export::Format,
         path: std::path::PathBuf,
     },
-    /// The session's adopted configuration: `provider / model`, and the
-    /// reasoning effort it sends when it carries one, label the status line.
+    /// The startup preview or Session's adopted configuration: `provider / model`
+    /// and its effective reasoning effort label the status line.
     Ready(Configuration),
     /// What the session's model offers, once its catalog entry is known:
     /// image input, and the priority/default service tiers of `/fast`.
@@ -1394,8 +1394,12 @@ pub enum Update {
     Failed(String),
     /// Startup failed; show the error and exit nonzero, except that an
     /// invocation's first message stays in the draft and the interface
-    /// continues.
-    StartupFailed(String),
+    /// continues. `resumable` is false when running the command again cannot
+    /// open the Session, so the interface offers no retry.
+    StartupFailed {
+        message: String,
+        resumable: bool,
+    },
     /// The App Server asked this interface to leave (`ui.shutdown`); the
     /// Session goes on without it.
     Shutdown {

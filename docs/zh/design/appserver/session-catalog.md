@@ -92,7 +92,7 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 | SessionStore 目录投影 | 每个 Session 一行，带最后活动时间、预览与工作区：创建事务以创建时间和空预览写下它，之后每个携带活动的 `main` 批次的事务维护它（§3.2），不存在的 Session 没有行。这一行从创建起就与 `agent_sessions` 一一对应，因此新 Session 的列出与今天的 `session.summaries` 相同 |
 | [标题元数据](session-title-metadata.md) | 存储的标题，用于显示与 `query`，从不从 Session 读取 |
 | `hello.features`（App Server） | 客户端发现目录所用的方法清单：目录在列出 `session.summaries` 的条件下列出，再加上 `session.fork` 同样要求的原生存储条件 |
-| Agents 的目录 | 目录应用的协议版本与 Agent 过滤，与 `session.summaries` 相同 |
+| Agents 的目录 | Agent 过滤，以及协议版本上界：Session 的记录版本不超过连接的版本时才会列出，与 `session.summaries` 相同 |
 | Agents 的索引与连接 hub | 列出 Session 的实时 `running` 与 `attachedClients`，从进程状态读取、不取租约，与 `session.summaries` 相同 |
 
 不调用 Session 门面、不取租约、不使用其他插件服务。
@@ -171,4 +171,4 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 - 没有原生存储的守护进程不列出 `session.catalog`，其 `session.summaries` 与今天一样从已装载的 Session 回答。
 - `main` 末尾是完整 `context/compaction` 的 Session 用存储的预览列出，不解码那个事件。
 - Session 空闲已卸载时列出的存储字段与已装载时相同，读作未运行，且不启动模型、工具或 MCP 服务器。
-- `session.summaries` 对协议 v3 保持回复形态与内容。
+- `session.summaries` 对协议 v3 保持回复形态；内容扩展到记录版本不高于连接版本的每个 Session。

@@ -409,7 +409,10 @@ async fn run(
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
-        let _ = updates.send(Update::StartupFailed(error.to_string()));
+        let _ = updates.send(Update::StartupFailed {
+            message: error.to_string(),
+            resumable: client::resume_can_succeed(&error),
+        });
         return;
     }
     loop {
@@ -443,7 +446,10 @@ async fn run(
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
-                        worker.send(Update::StartupFailed(error.to_string()));
+                        worker.send(Update::StartupFailed {
+                            message: error.to_string(),
+                            resumable: client::resume_can_succeed(&error),
+                        });
                         break;
                     }
                     let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
@@ -718,11 +724,45 @@ impl Worker {
                 }
                 permission::select(&mut self.client, &id, preset)
                     .await
-                    .map_err(|error| format!("Cannot set the permission preset: {error}"))?;
+                    .map_err(|error| {
+                        client::resume_failure("Cannot set the permission preset", error)
+                    })?;
             }
             adopt_startup(&mut self.client, &self.options, &id).await?;
             return self.attach(id, SwitchKind::Resumed).await;
         }
+        if self.client.offers("session.model.preview")
+            && let Err(error) = self.preview_model().await
+        {
+            self.send(Update::Notice(format!(
+                "Cannot preview startup model: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn preview_model(&mut self) -> crate::Result<()> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Preview {
+            model: ModelId,
+            model_preferences: Option<dim_agent_types::ModelPreferences>,
+        }
+        let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut params = session_create_from_options(&mut self.client, &self.options).await?;
+            params
+                .as_object_mut()
+                .expect("creation parameters")
+                .remove("permissionPolicy");
+            self.client.typed("session.model.preview", params).await
+        })
+        .await??;
+        self.send(Update::Ready(Configuration {
+            provider_id: preview.model.provider_id,
+            model_id: preview.model.model_id,
+            capability_snapshot: None,
+            model_preferences: preview.model_preferences,
+        }));
         Ok(())
     }
 
@@ -4579,10 +4619,7 @@ fn effort_choices(
     if !reasoning.supported || !capabilities.reasoning {
         return (Vec::new(), None);
     }
-    let mut efforts = reasoning.effort_options.clone().unwrap_or_default();
-    if reasoning.off.is_some() && !efforts.iter().any(|effort| effort == "none") {
-        efforts.push("none".into());
-    }
+    let efforts = reasoning.offered_efforts();
     let default = reasoning
         .effort
         .clone()
@@ -4617,7 +4654,10 @@ pub(crate) async fn adopt_startup(
         .rpc("session.model.update", params)
         .await
         .map_err(|error| {
-            format!("Cannot adopt startup configuration for resumed Session: {error}")
+            client::resume_failure(
+                "Cannot adopt startup configuration for resumed Session",
+                error,
+            )
         })?;
     Ok(())
 }

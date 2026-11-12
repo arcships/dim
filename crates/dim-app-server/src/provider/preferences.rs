@@ -53,11 +53,8 @@ fn declared_effort(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
         return reasoning.off.as_ref().map(|_| "none".to_owned());
     }
     let effort = reasoning.effort.as_ref()?;
-    let mut options = reasoning.effort_options.clone().unwrap_or_default();
-    if reasoning.off.is_some() && !options.iter().any(|option| option == "none") {
-        options.push("none".into());
-    }
-    options
+    reasoning
+        .offered_efforts()
         .iter()
         .any(|option| option == effort)
         .then(|| effort.clone())

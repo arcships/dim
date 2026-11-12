@@ -767,6 +767,9 @@ async fn run_connection(
                                                 "session.history.detail",
                                             ]);
                                         }
+                                        if local {
+                                            features.push("session.model.preview");
+                                        }
                                         if local && hub.config().product_home.is_some() {
                                             features.push("session.create.modelFromSession");
                                         }

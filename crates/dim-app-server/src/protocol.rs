@@ -98,6 +98,7 @@ pub enum Call {
     Ping,
     Shutdown(Shutdown),
     Create(Create),
+    ModelPreview(ModelPreview),
     Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
@@ -535,6 +536,19 @@ pub struct ModelSelection {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreview {
+    pub cwd: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model: Option<ModelSelection>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_preferences: Option<crate::provider::ModelPreferences>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub agent_id: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
     pub cwd: String,
     #[serde(default, deserialize_with = "optional_non_null")]
@@ -821,7 +835,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 39] = [
+const BUILTIN_METHODS: [&str; 40] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -836,6 +850,7 @@ const BUILTIN_METHODS: [&str; 39] = [
     "ui.shutdown",
     "ui.replace",
     "session.create",
+    "session.model.preview",
     "session.summaries",
     "session.catalog",
     "session.catalog.cancel",
@@ -914,6 +929,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
             "session.create" => Call::Create(params(raw_params)?),
+            "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
@@ -1157,6 +1173,13 @@ pub struct PingResult {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelPreviewResult {
+    pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
@@ -1243,7 +1266,7 @@ pub struct SessionInfo {
 }
 /// The `session.attach` reply: the attached Session's directory record, as
 /// `session.summaries` gives it, plus the preferences its adopted
-/// configuration sends. Only this reply and `session.create` name them.
+/// configuration sends. Summaries do not include these preferences.
 #[derive(Debug, Serialize)]
 pub struct AttachResult {
     #[serde(flatten)]
@@ -1301,6 +1324,7 @@ pub enum Reply {
     Contributed(Value),
     Ping(PingResult),
     Create(CreateResult),
+    ModelPreview(ModelPreviewResult),
     Fork(ForkResult),
     /// The `session.delete` reply: whether this call removed the Session.
     Deleted(DeleteResult),

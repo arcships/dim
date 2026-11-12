@@ -1,7 +1,13 @@
+//! A client and the App Server disagreeing about a protocol version.
+//!
 //! #1390: a client of a newer protocol reaches, replaces or stops its own
 //! daemon of an older one. The daemon refuses a `hello` it cannot serve with a
 //! typed `protocol_version` error and closes; only that refusal steps the
 //! client one version down, no lower than v3.
+//!
+//! #1459: a Session the daemon refuses for its protocol version is shown with
+//! the daemon's own text and no command to rerun, while a Session recorded at
+//! an older version opens.
 use super::daemon_replace::serve_successor;
 use super::*;
 
@@ -374,4 +380,144 @@ fn a_server_daemon_at_a_lower_protocol_is_not_negotiated() {
         "Error: Unsupported protocol version (RPC -32000, protocol_version)"
     );
     assert_eq!(output.status.code(), Some(1));
+}
+
+/// The refusal `authorize_version` sends for a Session the daemon will not
+/// open for its protocol version.
+fn refuse_session_version(wire: &mut Wire, request: &Value, message: &str) {
+    wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+        "code":-32000,"message":message,"data":{"appError":"session_protocol_version"}}}));
+}
+
+#[test]
+fn a_resumed_session_of_a_newer_protocol_names_both_versions_and_offers_no_retry() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.permission.get", "session.permission.update"]);
+        let get = wire.read("session.permission.get");
+        refuse_session_version(
+            wire,
+            &get,
+            "Session was created by protocol version 5; this connection speaks 4",
+        );
+        assert_eq!(
+            wire.trailing_request(),
+            None,
+            "a refused Session must not be adopted, attached or submitted"
+        );
+    });
+    let mut command = home.command();
+    command.args(["--permission", "read-only"]);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("Session was created by protocol version 5; this connection speaks 4");
+    terminal.until("Cannot open this Session; draft kept.");
+    let status = terminal.wait();
+    daemon.join().unwrap();
+    let shown = strip_ansi(&terminal.transcript);
+    assert_eq!(status.code(), Some(1), "{shown}");
+    assert!(
+        shown.contains("Session was created by protocol version 5; this connection speaks 4"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("so this client cannot open it"),
+        "the refusal must not lead with a claim of its own: {shown}"
+    );
+    assert!(
+        !shown.contains("Cannot set the permission preset"),
+        "{shown}"
+    );
+    assert!(!shown.contains("--resume"), "{shown}");
+}
+
+/// A Session recorded at v3, the version the previous build wrote, opens from
+/// this build's CLI: `--resume` attaches it and shows the Session, where
+/// equality refused it.
+#[test]
+#[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
+fn a_resumed_session_of_an_older_protocol_opens() {
+    let binary = std::env::var("DIM_TEST_APP_SERVER").expect("DIM_TEST_APP_SERVER");
+    let home = Home::new();
+    let _daemon = OwnedDaemon(endpoint(&home));
+    // The daemon runs the built App Server with its mock model, so a seed turn
+    // needs no provider. The CLI finds it already serving and reuses it.
+    let mut daemon = Command::new(&binary);
+    daemon
+        .args(["--mock-model", "--unix"])
+        .arg(endpoint(&home))
+        .args(["--no-ws", "--home"])
+        .arg(home.0.join("rust"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut daemon = daemon.spawn().unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    while !endpoint(&home).exists() {
+        assert!(Instant::now() < deadline, "the mock daemon started serving");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let command = || {
+        let mut command = home.command();
+        command.args(["--server", &binary, "--cwd", home.0.to_str().unwrap()]);
+        command
+    };
+    // A Session created by this build at v4, over the mock daemon's socket, so
+    // the seed needs no provider and no second daemon.
+    let stream = UnixStream::connect(endpoint(&home)).unwrap();
+    stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    let mut wire = BufReader::new(stream);
+    let mut rpc = |id: u64, method: &str, params: Value| {
+        writeln!(
+            wire.get_mut(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+        )
+        .unwrap();
+        wire.get_mut().flush().unwrap();
+        loop {
+            let mut line = String::new();
+            assert!(wire.read_line(&mut line).unwrap() > 0, "{method}: closed");
+            let value: Value = serde_json::from_str(&line).unwrap();
+            if value["id"] == id {
+                return value;
+            }
+        }
+    };
+    let hello = rpc(1, "hello", json!({"protocolVersion":4,"clientKind":"cli"}));
+    assert!(hello.get("result").is_some(), "{hello}");
+    let created = rpc(
+        2,
+        "session.create",
+        json!({"cwd":home.0,"tools":[],"permissionPolicy":{"allowedTools":[]}}),
+    );
+    let session = created["result"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_owned();
+    drop(wire);
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    let database = home.0.join("rust/dimcode.sqlite");
+    let database = rusqlite::Connection::open(&database).unwrap();
+    // The owner row a v3 build wrote: from here the Session is one this
+    // build's protocol is newer than.
+    database
+        .execute(
+            "UPDATE session_owners SET protocol_version=3 WHERE session_id=?1",
+            [&session],
+        )
+        .unwrap();
+    drop(database);
+    let mut resume = command();
+    resume.args(["--resume", &session]);
+    let mut terminal = Terminal::launch_tui(resume);
+    terminal.until("Ask anything...");
+    let shown = strip_ansi(&terminal.transcript);
+    assert!(
+        !shown.contains("Session was created by protocol version"),
+        "the resumed Session opens, so the daemon's refusal is not shown: {shown}"
+    );
+    assert!(!shown.contains("Cannot open this Session"), "{shown}");
+    home.kill(&terminal);
+    terminal.wait();
 }

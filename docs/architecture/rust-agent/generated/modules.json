@@ -7389,6 +7389,10 @@
       "to": "dim_acp::rpc",
       "references": [
         "path Native",
+        "path Native::Closed",
+        "path Native::Lost",
+        "path Native::Notice",
+        "path Native::Restored",
         "path Rpc",
         "path rpc",
         "path rpc::unavailable",
@@ -25026,6 +25030,13 @@
     },
     {
       "from": "dim_app_server::connection",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path dim_agent_runtime::SessionConfig"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
       "to": "dim_agent_runtime::contracts",
       "references": [
         "path dim_agent_runtime::ConfigureOutcome",
@@ -25096,6 +25107,7 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_types::profile",
       "references": [
+        "path crate::agents::AgentProfile",
         "path dim_agent_types::ModelId"
       ]
     },
@@ -25259,6 +25271,7 @@
         "path Call::McpAppCall",
         "path Call::McpAppWidget",
         "path Call::McpRefresh",
+        "path Call::ModelPreview",
         "path Call::ModelUpdate",
         "path Call::PermissionGet",
         "path Call::PermissionUpdate",
@@ -25288,6 +25301,9 @@
         "path CreateResult",
         "path DeleteResult",
         "path ForkResult",
+        "path ModelPreview",
+        "path ModelPreviewResult",
+        "path ModelSelection",
         "path ModelUpdateResult",
         "path Outbound::message",
         "path Outbound::notice",
@@ -25309,6 +25325,7 @@
         "path Reply::McpAppCall",
         "path Reply::McpState",
         "path Reply::McpWidget",
+        "path Reply::ModelPreview",
         "path Reply::ModelUpdate",
         "path Reply::Permission",
         "path Reply::Ping",
@@ -25346,6 +25363,14 @@
       "references": [
         "path crate::provider::ProviderService",
         "path crate::provider::adopted_selection_preferences"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
+      "to": "dim_app_server::provider::startup",
+      "references": [
+        "path crate::provider::StartupInput",
+        "path crate::provider::StartupSelection"
       ]
     },
     {
@@ -37787,6 +37812,13 @@
     },
     {
       "from": "dim_cli::session",
+      "to": "dim_cli::client",
+      "references": [
+        "path crate::client::resume_failure"
+      ]
+    },
+    {
+      "from": "dim_cli::session",
       "to": "dim_cli::composer",
       "references": [
         "path Draft",
@@ -38115,6 +38147,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path dim_agent_types::CatalogCapabilities",
+        "path dim_agent_types::ModelPreferences",
         "path dim_agent_types::ModelReasoning"
       ]
     },
@@ -38169,6 +38202,8 @@
       "to": "dim_cli::client",
       "references": [
         "path client",
+        "path client::resume_can_succeed",
+        "path client::resume_failure",
         "path client::web_hint",
         "use crate::client"
       ]
@@ -47195,6 +47230,7 @@
         "path Update::Runtimes",
         "path Update::Skills",
         "path Update::Snapshot",
+        "path Update::StartupFailed",
         "path Update::SuggestionMethods",
         "path Update::SuggestionOffer",
         "path Update::SuggestionSetting",
@@ -50282,6 +50318,13 @@
         "path RpcError::app",
         "use dim_agent_capabilities::methods::Progress",
         "use dim_agent_capabilities::methods::RpcError"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_runtime::assembly",
+      "references": [
+        "path dim_agent_runtime::opening_advanced"
       ]
     },
     {

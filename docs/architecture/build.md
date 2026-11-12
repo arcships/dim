@@ -37,6 +37,31 @@ Public Node provider and MCP interoperability fixtures use development dependenc
 
 Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
 
-The full-screen permission acceptance flow runs manually while [#1454](https://github.com/arcships/dim/issues/1454) tracks its intermittent stall. Run `cargo test --locked -p dimcode --test cli_flow tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules -- --ignored --exact`.
-
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
+
+## Bundled provider catalog
+
+The App Server embeds the checked-in `crates/dim-app-server/resources/default-catalog.json`.
+It also serves as the starting catalog for maintenance. Use the Node version in `.node-version`.
+
+```sh
+node scripts/update-provider-catalog.ts                       # Validate the checked-in catalog offline
+node scripts/update-provider-catalog.ts --sync kimi-for-coding # Sync one provider from PublicProviderConf
+node scripts/update-provider-catalog.ts --sync                # Sync all configured remote sources
+```
+
+The bundled catalog owns provider settings such as authentication, adapter, and
+`remoteModelList`. Upstream supplies model descriptors and the API base URL. Sync derives
+the default model from the refreshed model list. The script's `remoteProviders` table can
+keep a provider's base URL, default model, and curated models local. When onboarding an
+upstream-backed provider, add its definition to the catalog and its policy to that table.
+The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus subscribers.
+The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+
+Sync applies the existing reasoning overrides and replaces the complete catalog after
+validation. A sync must supply at least one usable upstream model for a provider whose
+bundled catalog includes models outside its local policy. A sync that produces the same
+content preserves the file and its timestamp.
+A fetch or validation failure leaves the catalog as it was. Review and commit the complete
+catalog after a sync. Model entries occupy individual lines for review. Upstream responses
+and intermediate model lists stay in memory.
