@@ -2,6 +2,99 @@
 //! output: the exit never waits on a terminal that is not reading.
 use super::*;
 
+#[test]
+fn keyboard_protocol_follows_the_screen_and_restores_both_stacks_on_exit() {
+    let check = |transcript: &str, fullscreen: bool, enabled: bool| {
+        let mut screen = 0;
+        let mut stacks = [vec![2], vec![0]];
+        for sequence in transcript.split("\x1b[").skip(1) {
+            if sequence.starts_with("?1049h") {
+                screen = 1;
+            } else if sequence.starts_with("?1049l") {
+                screen = 0;
+            } else if sequence.starts_with(">5u") {
+                stacks[screen].push(5);
+            } else if sequence.starts_with("<u") {
+                assert!(
+                    stacks[screen].len() > 1,
+                    "popped the caller's keyboard flags"
+                );
+                stacks[screen].pop();
+            }
+        }
+        assert_eq!(screen, usize::from(fullscreen));
+        let mut expected = [vec![2], vec![0]];
+        if enabled {
+            expected[screen].push(5);
+        }
+        assert_eq!(
+            stacks, expected,
+            "keyboard flags must belong to the active screen"
+        );
+    };
+    for kitty in [true, false] {
+        for fullscreen in [true, false] {
+            for interrupted in [false, true] {
+                let home = Home::new();
+                let daemon = home.daemon(|wire| {
+                    wire.hello(&[]);
+                    let providers = wire.read("account.providers");
+                    wire.reply(&providers, json!([]));
+                    assert_eq!(wire.trailing_request(), None);
+                });
+                let mut command = home.command();
+                command.arg(if fullscreen {
+                    "--fullscreen"
+                } else {
+                    "--scrollback"
+                });
+                command
+                    .env_remove("TMUX")
+                    .env_remove("STY")
+                    .env("TERM", "xterm-256color");
+                let mut terminal = Terminal::launch_tui(command);
+                terminal.until("\x1b[c");
+                terminal.raw(if kitty {
+                    b"\x1b[?2u\x1b[?1;2c"
+                } else {
+                    b"\x1b[?1;2c"
+                });
+                terminal.until("Welcome to DIM");
+                check(&terminal.transcript, fullscreen, kitty);
+                if !kitty {
+                    assert!(terminal.transcript.contains("\x1b[>4;2m"));
+                }
+                let mut active = fullscreen;
+                for _ in 0..3 {
+                    terminal.write(b"/tui\r");
+                    active = !active;
+                    terminal.until(if active { "\x1b[?1049h" } else { "\x1b[?1049l" });
+                    terminal.until("\x1b[?2026l");
+                    check(&terminal.transcript, active, kitty);
+                }
+                if interrupted {
+                    terminal.signal(libc::SIGTERM);
+                } else {
+                    terminal.write(b"/exit\r");
+                    terminal.until("Bye!");
+                    if kitty {
+                        terminal.until("\x1b[c");
+                        terminal.raw(b"\x1b[?1;2c");
+                    }
+                }
+                let status = terminal.wait();
+                assert_eq!(status.success(), !interrupted);
+                daemon.join().unwrap();
+                check(&terminal.transcript, false, false);
+                assert_eq!(
+                    terminal.local_mode() & (libc::ICANON | libc::ECHO | libc::ISIG),
+                    libc::ICANON | libc::ECHO | libc::ISIG,
+                );
+            }
+        }
+    }
+}
+
 /// The reported screen: the Goodbye panel reaches the terminal, and the
 /// terminal stops consuming output from then on. Two Ctrl+C presses still
 /// end the process with the interrupt status.

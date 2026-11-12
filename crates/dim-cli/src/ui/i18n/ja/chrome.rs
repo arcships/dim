@@ -297,7 +297,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "エラー：{message}",
         "working…  {elapsed}" => "処理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "何でも質問…",
+        "Ask anything... · Ctrl+J newline" => "何でも質問… · Ctrl+J 改行",
         "Earlier history · {id} · {count} messages" => "過去の履歴 · {id} · {count} 件",
         "No active session" => "アクティブセッションなし",
         "answer required" => "要回答",

@@ -281,7 +281,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "错误：{message}",
         "working…  {elapsed}" => "处理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "输入任何内容...",
+        "Ask anything... · Ctrl+J newline" => "输入你的问题… · Ctrl+J 换行",
         "Earlier history · {id} · {count} messages" => "更早历史 · {id} · {count} 条消息",
         "No active session" => "没有活动会话",
         "answer required" => "需要回答",

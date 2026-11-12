@@ -80,7 +80,7 @@ use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
 use crate::wire::Configuration;
 
-const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+const COMPOSER_PLACEHOLDER: &str = "Ask anything... · Ctrl+J newline";
 const SHELL_PLACEHOLDER: &str = "Run a shell command · Esc to exit";
 /// `config.json` key of the three tool display forms.
 const TOOL_DETAILS_KEY: &str = "tuiToolDetails";
@@ -5646,7 +5646,6 @@ impl App {
             let placeholder = match offer {
                 Some(text) => text,
                 None if shell.is_some() => t(SHELL_PLACEHOLDER).to_owned(),
-                None if self.fullscreen => String::new(),
                 None => t(COMPOSER_PLACEHOLDER).to_owned(),
             };
             rows.push(format!(
@@ -8742,6 +8741,51 @@ mod tests {
             drawn.app.fullscreen = fullscreen;
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             drawn.app.host = Box::new(Recorder(sent.clone()));
+            for (locale, hint) in [
+                (i18n::Locale::En, "Ask anything... · Ctrl+J newline"),
+                (i18n::Locale::ZhCn, "输入你的问题… · Ctrl+J 换行"),
+            ] {
+                i18n::set(locale);
+                let frame = drawn.app.frame(drawn.size);
+                let bytes = if fullscreen {
+                    FullScreen::new(drawn.size, true).render(
+                        &frame,
+                        drawn.size,
+                        &drawn.app.palette,
+                        &drawn.app,
+                    )
+                } else {
+                    Screen::new(drawn.size, true).render(&frame, drawn.size)
+                };
+                let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                emu.feed(&bytes);
+                assert!(
+                    emu.row(emu.cy).replace('\0', "").contains(hint),
+                    "fullscreen={fullscreen}: {:?}",
+                    emu.rows_text()
+                );
+            }
+            i18n::set(i18n::Locale::En);
+            typed(&mut drawn.app, "first line");
+            drawn.app.handle(InputEvent::Key(KeyEvent::new(
+                KeyCode::Char('j'),
+                Modifiers::CTRL,
+            )));
+            typed(&mut drawn.app, "second line");
+            assert_eq!(drawn.app.composer.text(), "first line\nsecond line");
+            assert!(
+                sent.borrow().is_empty(),
+                "newline must not submit the draft"
+            );
+            assert!(
+                !drawn
+                    .app
+                    .frame(drawn.size)
+                    .live
+                    .join("\n")
+                    .contains("Ctrl+J"),
+                "typing replaces the placeholder"
+            );
             let draft = (0..12)
                 .map(|n| format!("line {n:02}"))
                 .collect::<Vec<_>>()

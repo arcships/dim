@@ -195,7 +195,7 @@ work running apart from the turn is named without opening `/tasks`:
 ```text
  ◐ 2 · cargo build 1m12s · cargo test 34s
  ╭─ · working…  3s ──────────────── provider / model ─╮
- │ › Ask anything...                                   │
+ │ › Ask anything... · Ctrl+J newline                  │
  ╰─────────────────────────────────────────────────────╯
 ```
 

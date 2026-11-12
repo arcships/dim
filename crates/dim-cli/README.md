@@ -1005,13 +1005,19 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
  ◆ Thinking… · text
  ◐ 1 · cargo build 1m12s  the tasks running apart from the turn
  ╭─ · thinking… ─────────────────────────────╮
- │ › Ask anything...                        │   composer stays anchored
+ │ › Ask anything... · Ctrl+J newline        │   composer stays anchored
  ╰──────────────────────────────────────────╯
 ```
 
 The task row sits above the composer here as it does above the dock in fullscreen,
 so the released space of a closing menu still returns below it and the composer
 keeps its place.
+
+Both modes show `Ask anything... · Ctrl+J newline` in an empty composer,
+translated into the interface language. Typing replaces the placeholder;
+prompt suggestions and shell mode keep their own text. `Ctrl+J` inserts a
+newline without submitting and does not require the terminal to distinguish
+`Shift+Enter` from `Enter`.
 
 While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
 
@@ -1023,7 +1029,7 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
  ╭─────────────────────────────── provider / model · effort ─╮      dock: queue, composer
- │                                                            │      and panels stay pinned
+ │ Ask anything... · Ctrl+J newline                           │      and panels stay pinned
  │                                                            │      to the bottom; the box
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
@@ -1092,7 +1098,7 @@ answer text (including its retained streaming tail)
 · stopped
 ```
 
-The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
+The composer box: no prompt mark, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
 
 The Git branch label follows branch switches in both modes, including switches made by tools or another terminal. At startup the client resolves the workspace's own Git `HEAD` path (including linked worktrees); the existing UI timer reads that file at most once every 10 seconds, without spawning more Git processes, and requests a repaint only when the name changes. Detached HEAD displays `HEAD`; a transient read failure keeps the last known name until the next check.
 
@@ -1268,6 +1274,8 @@ When only the transcript scrolls, blank cached rows are inserted at the old tail
 The transcript is a virtual list. The CLI keeps each committed block once, as its source (Markdown text, tool records), up to 5,000 blocks; fullscreen keeps only every block's height for the current width and renders the rows of the blocks within about a screen of the viewport, dropping them as it moves away. Heights start as estimates (Markdown by its wrapped source lines) and become exact when the viewport first reaches a block, so a settled resize or theme change lays out only the blocks around the view. A scrolled view is held by its top block, so it stays put while heights above it settle and across a resize. The scrollback interface lays out the newest 10,000 rows of the same history when it rewrites the terminal's scrollback.
 
 `/tui` switches modes inside a running session, including during a run. Entering fullscreen erases the scrollback composer and lays the history out on the alternate screen; leaving rewrites the history into the terminal's scrollback. Exiting fullscreen returns to the shell's screen and prints the resume panel there.
+
+When Kitty keyboard negotiation succeeds, Dim keeps its flags on the active screen: it pops them before switching screens and pushes them on the destination. The main and alternate screens have independent keyboard stacks; this preserves modified keys such as Shift+Enter in fullscreen and restores the caller's flags on exit or while an external editor runs.
 
 ```bash
 dimcode --fullscreen            # this run only
