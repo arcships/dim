@@ -1071,8 +1071,7 @@ fn tui_workflow_short_screen_keeps_the_composer_and_hints() {
             shown.send(()).unwrap();
             terminal.write(b"/workflow\r");
             terminal.until("review");
-            // The bottom border's closing key, painted after the list.
-            terminal.until("Esc");
+            terminal.until_anywhere("Esc close");
             terminal.raw(b"\x1b");
             thread::sleep(Duration::from_millis(200));
             terminal.write(b"/exit\r");
