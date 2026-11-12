@@ -23,7 +23,7 @@ pub enum Mode {
     Progress,
     /// The alternate screen of the fullscreen interface (`?1049`).
     AltScreen,
-    /// Button, drag and wheel reports in SGR encoding (`?1002` + `?1006`).
+    /// Button, drag, motion and wheel reports in SGR encoding.
     Mouse,
     /// The window title is ours; the shell's was pushed (`CSI 22;0t`) where
     /// the terminal keeps a title stack.
@@ -57,7 +57,7 @@ impl Mode {
             Self::CursorHidden => b"\x1b[?25l",
             Self::Progress => b"",
             Self::AltScreen => b"\x1b[?1049h",
-            Self::Mouse => b"\x1b[?1002h\x1b[?1006h",
+            Self::Mouse => b"\x1b[?1002h\x1b[?1003h\x1b[?1006h",
             Self::Title => b"",
             Self::Status => b"",
         }
@@ -72,7 +72,7 @@ impl Mode {
             Self::CursorHidden => b"\x1b[?25h",
             Self::Progress => b"\x1b]9;4;0\x07",
             Self::AltScreen => b"\x1b[?1049l",
-            Self::Mouse => b"\x1b[?1006l\x1b[?1002l",
+            Self::Mouse => b"\x1b[?1006l\x1b[?1003l\x1b[?1002l",
             Self::Title => b"\x1b]2;\x07\x1b[23;0t",
             Self::Status => b"\x1b]7501;state=clear\x1b\\",
         }
@@ -207,5 +207,17 @@ mod tests {
             Mode::Status,
         ];
         assert!(restore(&all).len() <= MAX_RESTORE_LEN);
+    }
+
+    #[test]
+    fn mouse_motion_is_disabled_before_leaving_the_alternate_screen() {
+        assert_eq!(
+            Mode::Mouse.enable_sequence(),
+            b"\x1b[?1002h\x1b[?1003h\x1b[?1006h"
+        );
+        assert_eq!(
+            restore(&[Mode::Mouse, Mode::AltScreen]),
+            b"\x1b[?2026l\x1b[0m\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1049l\x1b[?2004l\x1b[?25h\r\n"
+        );
     }
 }

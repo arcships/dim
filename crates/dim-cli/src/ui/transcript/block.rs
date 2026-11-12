@@ -379,6 +379,8 @@ mod tests {
                 Some("ok"),
             ),
         ]);
+        rows.last_mut().unwrap().diff =
+            Some("--- /dev/null\n+++ src/new.rs\n@@ -0,0 +1 @@\n+new body\n".into());
         let header = "✓ Ran 2 commands, ran 2 searches, read 1 file, changed src/new.rs (+1)";
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 160),
@@ -605,6 +607,79 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_file_results_use_only_recorded_comparisons() {
+        let mut overwrite = call(
+            "write",
+            json!({"path": "config.txt", "content": "proposed body\n"}),
+            Some("ok"),
+        );
+        overwrite.diff = Some(
+            "--- config.txt\n+++ config.txt\n@@ -7,2 +7,3 @@\n keep\n-old\n+actual\n+extra\n"
+                .into(),
+        );
+        let lines = drawn(&[overwrite.clone()], Detail::Expanded, 100);
+        assert_eq!(lines[0], "✓ Changed config.txt (+2 -1) ▾");
+        assert_eq!(lines[1], "  ✓ Write config.txt +2 -1 ▾");
+        assert!(lines.iter().any(|line| line.contains("8 -  old")));
+        assert!(lines.iter().any(|line| line.contains("8 +  actual")));
+        assert!(!lines.iter().any(|line| line.contains("proposed body")));
+
+        overwrite.diff =
+            Some("--- config.txt\n+++ config.txt\n@@ -7 +7,2 @@\n keep\n+extra\n".into());
+        assert_eq!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)[1],
+            "  ✓ Write config.txt +1 ▾",
+        );
+        overwrite.diff = Some("--- /dev/null\n+++ config.txt\n@@ -0,0 +1 @@\n+created\n".into());
+        assert_eq!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)[1],
+            "  ✓ Create config.txt +1 ▾",
+        );
+        overwrite.diff = Some("--- config.txt\n+++ config.txt\n".into());
+        assert!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)
+                .iter()
+                .any(|line| line.contains("No content changes."))
+        );
+
+        overwrite.diff =
+            Some("--- config.txt\n+++ config.txt\n@@ -1 +1 @@\n-old\n+actual\n".into());
+        for name in ["write", "edit"] {
+            let mut missing = call(
+                name,
+                json!({"path": "large.txt", "content": "omitted input\n".repeat(10000),
+                    "oldText": "old input", "newText": "new input"}),
+                Some("ok"),
+            );
+            for detail in [Detail::Collapsed, Detail::Summary, Detail::Expanded] {
+                let lines = drawn(&[overwrite.clone(), missing.clone()], detail, 100);
+                assert!(!lines[0].contains('('), "{lines:?}");
+                assert!(
+                    !lines.iter().any(|line| line.contains("input")),
+                    "{lines:?}"
+                );
+                if detail == Detail::Expanded {
+                    assert!(
+                        lines
+                            .iter()
+                            .any(|line| line.contains("comparison is unavailable"))
+                    );
+                }
+            }
+            missing.diff = Some("@@ -1 +1 @@\n-old\n+not applied\n".into());
+            missing.pending = true;
+            let lines = drawn(&[missing.clone()], Detail::Expanded, 100);
+            assert!(!lines[0].contains('('), "{lines:?}");
+            assert!(!lines.iter().any(|line| line.contains("not applied")));
+            missing.pending = false;
+            missing.result_is_error = true;
+            let lines = drawn(&[missing], Detail::Expanded, 100);
+            assert!(!lines[0].contains('('), "{lines:?}");
+            assert!(!lines.iter().any(|line| line.contains("not applied")));
+        }
+    }
+
+    #[test]
     fn collapsed_edits_name_unique_paths_and_keep_totals_in_mixed_groups() {
         let mut edit = call("edit", json!({ "path": "src/main.rs" }), Some("ok"));
         edit.diff = Some("@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
@@ -612,15 +687,13 @@ mod tests {
             drawn(&[edit.clone()], Detail::Collapsed, 100),
             ["✓ Edited src/main.rs (+2 -1) ▸"]
         );
-        let rows = [
-            edit.clone(),
-            edit,
-            call(
-                "write",
-                json!({ "path": "tests/main.rs", "content": "test\n" }),
-                Some("ok"),
-            ),
-        ];
+        let mut write = call(
+            "write",
+            json!({ "path": "tests/main.rs", "content": "test\n" }),
+            Some("ok"),
+        );
+        write.diff = Some("--- /dev/null\n+++ tests/main.rs\n@@ -0,0 +1 @@\n+test\n".into());
+        let rows = [edit.clone(), edit, write];
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 100),
             ["✓ Changed 2 files (+5 -2) · src/main.rs, tests/main.rs ▸"]
@@ -655,11 +728,14 @@ mod tests {
 
         let mut edit = call("edit", json!({ "path": "src/main.rs" }), Some("ok"));
         edit.diff = Some("@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
-        let rows = [
+        let mut rows = [
             edit,
             call("edit", json!({ "path": "src/config.rs" }), Some("ok")),
             call("edit", json!({ "path": "tests/config.rs" }), Some("ok")),
         ];
+        for row in &mut rows[1..] {
+            row.diff = Some(String::new());
+        }
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 50),
             ["✓ Edited 3 files (+2 -1) · src/main.rs, … 2 more ▸"]
