@@ -60,7 +60,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v42**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+The current native format is **v43**, with directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -86,7 +86,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v42, and v16 request rows stay readable as written.
+valid in v43, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -96,7 +96,7 @@ valid in v42, and v16 request rows stay readable as written.
 读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
 `CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
 `timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v42）；其余任何多余对象仍按原规则拒绝。代价是早于
+精确结构比较忽略这些名字，格式标记不变（当前 v43）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
 索引的库（行不变，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
@@ -214,7 +214,7 @@ Cannot open native store <path>.
 - **写入与清理**：拒绝前用同目录临时文件写入并原子替换；写入失败不改变返回值，原错误照常返回。正常打开、升级成功和其他启动失败不写失败说明；格式升级期间写进度说明，成功打开（含升级成功）时存储 owner 删除遗留说明，删除失败不影响启动，下一次成功打开再清理。说明的读取、打印和其余清理属于 CLI 启动，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)；说明不进入日志历史。
 - **位置**：说明是库的同级文件，不是新数据库格式，也不是 `daemon.log` 的一部分。CLI 启动的守护进程使用 `<native home>/dimcode.sqlite`，所以 CLI 读取 `<native home>/dimcode.sqlite.startup`。直接以 `--database` 启动的守护进程把说明写在它的库旁，CLI 的启动路径不读取。
 - **不自动恢复**：不删除、重建、降级、重置标记或复制库；`--home PATH` 只建立另一个环境。终端说明只给兼容构建和 `--home` 两条路；开发说明继续使用 `./dev` 的隔离 home。
-- **验证**：`storage_flow` 用一次性库覆盖全部分支：v40 标记的未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v32 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v42 (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
+- **验证**：`storage_flow` 用一次性库覆盖全部分支：比当前格式新的标记配未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v32 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v43 (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
 
 ## SQLite 运行参数与空间回收
 
