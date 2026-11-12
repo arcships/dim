@@ -40,3 +40,25 @@ Normal tail reads select bounded published positions, not whole turns or atomic 
 Branch terminal lookup uses the existing text candidate for a generated UUID, followed by the exact kind and branch identity condition. The range is the UUID's indexed matches, which can include other facts mentioning that UUID; it is not proven constant by `LIMIT 1`. Arbitrary identities written by a trusted `before` handler that cannot form a safe trigram candidate retain the existing kind-range fallback. No new branch-state snapshot or native format is introduced in this change.
 
 An unavailable Usage number does not block restoration. Its first actual request can perform the existing Loop projection plus Policy's first contribution projection; subsequent initialized requests reuse the number. Count these two first-request projections separately from zero cold-history projections. Prompt's public state publication still copies its public snapshot; only repeated temporary copies were removed. Existing three-format tool rendering remains necessary for terminal blocks whose source row has left the bounded window.
+
+## 6. Release measurement on the long-session fixture
+
+Source `cd6bbce4fcaf8079e2faf52bd1a7b40192841a5a`, native v43, release binary SHA-256 `dcac7e5a1b14ff8624eec16b85264560c52ac38239d00d199f890f9ff8b46e1e`. The fixture has about 25,049 physical event rows and 1,000 mock turns. Each cell below contains two independent cold CLI PTY samples; the 256 MiB limit includes the probe, CLI, daemon and new file cache, with swap disabled. Files were verified nonresident before every sample. Baseline source is `6164eab570f9c896b673294798258d29db8b517d`.
+
+| Fixture | Baseline editable ms | Changed editable ms | Changed daemon CPU ms | Changed group peak MiB | Changed daemon read-call MB |
+| --- | --- | --- | --- | --- | --- |
+| Saved statistics | 215.6 / 219.7 | 248.0 / 234.6 | 310 / 270 | 154.0 / 152.9 | 4.3 / 4.1 |
+| Completed external work | 195.9 / 202.4 | 198.2 / 204.0 | 220 / 220 | 153.8 / 153.8 | 3.9 / 3.8 |
+| 2.43 MB compaction, no statistics | 228.6 / 221.8 | 211.8 / 213.8 | 230 / 240 | 165.0 / 164.9 | 8.5 / 8.5 |
+
+The 200 ms end-to-end target is not met. The ordinary fixture regressed. Initial display selection changed from the latest turn to a fixed tail, so these are user-flow comparisons, not isolated query speedups. At 192 MiB, editable times were 247.5–258.5, 196.7–205.0 and 212.7–218.9 ms respectively, without limit or OOM events.
+
+The compaction's 594 overflow pages fell from seven reads (17,031,168 bytes) to two reads (4,866,048 bytes) in one summary SELECT. A separate VFS diagnostic verified this; its timings are excluded. Forcing a materialized raw JSON or JSONB intermediate increased that query's measured CPU median from 2.24 ms to 5.32/6.03 ms and copied the whole body, so it was rejected. A supplementary mixed-kind position query also increased body reads and was removed. Position-only projections still reuse selected coordinates.
+
+Read-call bytes are not physical disk bytes: the changed compaction sample still physically read about 25 MB in the daemon and 35.5 MB in the CLI. The full group held about 33–35 MiB anonymous memory and 114–122 MiB file pages; daemon anonymous memory was about 15–17 MiB. The earlier compaction group peak was about 175 MiB. Do not describe the entire peak reduction as retained heap savings.
+
+A separate direct-protocol diagnostic, without a CLI or UI registration, measured listener readiness at 49–50 ms, hello at 17–24 ms, attach at 79–87 ms and display at 37–44 ms. These stages include current-owner assembly, necessary selected reads and opening writes. Display processes at most eight batches of eight positions; small-batch query round trips also cost time. The CLI additionally registers its UI, waits for catalog/permission/skills responses and renders. The diagnostic does not isolate a single cause for the ordinary user-flow regression and cannot be added to stages from PTY runs.
+
+One ordinary opening produced 13 existing facts (5,095 JSON bytes): one resume, four date facts, six client-presence input/application facts and two execution-setting facts. There were no new recovery snapshots or Usage numeric backfills. These writes still maintain indexes and WAL.
+
+First upgrade is separate: one cold product sample from v41, Timeline-v42 and main-v42 took 320.3, 312.6 and 322.9 ms under 256 MiB, peaking near 206 MiB. Under 192 MiB they took 309.3, 317.9 and 312.1 ms, reached the limit and triggered reclaim (64–90 max events), with no OOM or swap. Upgrade includes missing relationship construction and main's before/after foreign-key checks; ordinary v43 opening performs neither historical pass. Two samples per normal fixture and one per upgrade source are evidence about this machine and workload, not a universal latency guarantee.
