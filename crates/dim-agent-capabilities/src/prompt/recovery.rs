@@ -400,6 +400,49 @@ pub(super) async fn delivered(
     Ok(change.inputs.iter().all(|input| consumed.contains(input)))
 }
 
+/// The boundary a stored checkpoint row names, resolved from its own schema.
+///
+/// `SCHEMA` writes `changed_through`; `prompt-state/v1` wrote only
+/// `source_through`, so its boundary is the last change at or before that
+/// position. The candidate loop needs the boundary before it knows which row it
+/// will take, so the schema is resolved here and the result is reused for the
+/// row that is selected.
+async fn boundary_of(owner: &Prompt, row: &[QueryValue]) -> Result<Boundary> {
+    let schema: String = decode(row[1].clone())?;
+    match schema.as_str() {
+        SCHEMA => Ok(Boundary {
+            changed: decode(row[5].clone())?,
+        }),
+        "prompt-state/v1" => {
+            let position: u64 = decode(row[6].clone())?;
+            let changed = match last(
+                owner,
+                request(
+                    TimelineQueryScope::Chain,
+                    position,
+                    &["prompt/changed"],
+                    &["position"],
+                ),
+            )
+            .await?
+            {
+                Some(values) => {
+                    let [position] = <[_; 1]>::try_from(values).expect("changed position");
+                    Some(decode(position)?)
+                }
+                None => None,
+            };
+            Ok(Boundary { changed })
+        }
+        _ => Err(AgentError::fault("Prompt", "unsupported recovery schema")),
+    }
+}
+
+/// A checkpoint row's boundary, whatever schema wrote it.
+struct Boundary {
+    changed: Option<TimelinePosition>,
+}
+
 /// The change at `position`, as the boundary it names.
 async fn change_at(
     owner: &Prompt,
@@ -859,7 +902,8 @@ impl Projection {
                 // `Set` and a `Revoke` alike - so restore initializes.
                 break None;
             };
-            let boundary: Option<TimelinePosition> = decode(row[5].clone())?;
+            let boundary = boundary_of(owner, &row).await?;
+            let boundary = boundary.changed;
             let received = match &boundary {
                 None => true,
                 Some(boundary) => {
@@ -868,7 +912,7 @@ impl Projection {
                 }
             };
             if received {
-                break Some(row);
+                break Some((row, boundary));
             }
             if scope == TimelineQueryScope::Branch {
                 // Its own row does not qualify. Step back past its boundary, so
@@ -879,44 +923,23 @@ impl Projection {
             before = boundary;
         };
         let mut initialize = false;
-        if let Some(row) = saved_row {
+        if let Some((row, boundary)) = saved_row {
             let [
                 position,
-                schema,
+                _schema,
                 entries,
                 revision,
                 system_revision,
-                changed,
-                legacy_through,
+                _changed,
+                _legacy,
             ] = <[_; 7]>::try_from(row).expect("prompt recovery fields");
             let position: TimelinePosition = decode(position)?;
-            let schema: String = decode(schema)?;
             state.snapshot.revision = decode(revision)?;
             state.snapshot.system_revision = decode(system_revision)?;
-            state.changed_through = match schema.as_str() {
-                SCHEMA => decode(changed)?,
-                "prompt-state/v1" => {
-                    let through: u64 = decode(legacy_through)?;
-                    match last(
-                        owner,
-                        request(
-                            TimelineQueryScope::Chain,
-                            through,
-                            &["prompt/changed"],
-                            &["position"],
-                        ),
-                    )
-                    .await?
-                    {
-                        Some(row) => {
-                            let [position] = <[_; 1]>::try_from(row).expect("changed position");
-                            Some(decode(position)?)
-                        }
-                        None => None,
-                    }
-                }
-                _ => return Err(AgentError::fault("Prompt", "unsupported recovery schema")),
-            };
+            // `boundary_of` resolved this from the row's schema before the row
+            // could be accepted; deriving it again here would ask the chain the
+            // same question twice for every restore.
+            state.changed_through = boundary;
             let segments = owner.timeline.segments(through)?;
             if state.snapshot.revision.is_some() != state.changed_through.is_some() {
                 return Err(AgentError::fault(

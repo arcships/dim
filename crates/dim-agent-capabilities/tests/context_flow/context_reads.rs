@@ -4319,3 +4319,121 @@ async fn a_change_naming_two_inputs_waits_for_both() {
         agent.close().await.unwrap();
     }
 }
+
+/// A restore whose newest Prompt checkpoint is a `prompt-state/v1` row reads its
+/// boundary from `source_through`, as that schema wrote it, rather than failing
+/// on the `changed_through` field v1 never had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_reads_a_v1_checkpoints_boundary_from_source_through() {
+    use dim_agent_capabilities::prompt::Prompt;
+
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    // One adoption writes a change, so the chain has a boundary to name.
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    session
+        .service::<Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            None,
+            vec![(
+                PromptSourceTarget {
+                    source: "rules".into(),
+                    scope: scope.clone(),
+                },
+                Some(PromptEntry {
+                    source: "rules".into(),
+                    version: "1".into(),
+                    body: "kept".into(),
+                    scope: scope.clone(),
+                    delivery: PromptDelivery::Context,
+                    order: 0,
+                }),
+            )],
+        )
+        .await
+        .unwrap();
+    agent.close().await.unwrap();
+    drop(session);
+
+    // The checkpoint this branch wrote is `prompt-state/v2`; rewrite it as the
+    // shape `prompt-state/v1` wrote - `source_through`, no `changed_through` -
+    // so restore has to derive the boundary the way the v1 arm does.
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let head = store.head(&key).await.unwrap();
+    let records = store.read(&key, 1..=head).await.unwrap();
+    let mut drafts = Vec::new();
+    for record in &records {
+        let EventKind::Extension(data) = &record.event.kind else {
+            continue;
+        };
+        if data.key() != "prompt-state/recovered" {
+            continue;
+        }
+        let mut saved = data.data().clone();
+        assert_eq!(
+            saved["schema"], "prompt-state/v2",
+            "the checkpoint v2 wrote"
+        );
+        saved["schema"] = "prompt-state/v1".into();
+        // v1 named its boundary by the sequence it had read through, in the
+        // line's own numbering; the v2 field is a position object instead.
+        saved["source_through"] = head.into();
+        saved.as_object_mut().unwrap().remove("changed_through");
+        drafts.push(EventDraft::new(EventKind::Extension(
+            ExtensionEvent::new("prompt-state", "recovered", saved).unwrap(),
+        )));
+    }
+    assert_eq!(drafts.len(), 1, "one v1 checkpoint to seed");
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    timeline
+        .append_batch_registered(drafts, |_| Ok(()))
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .restore_session(id)
+        .await
+        .expect("a v1 checkpoint restores");
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    assert!(
+        state.entries.values().any(|entry| entry.body == "kept"),
+        "the entry the checkpoint carries survives the restore"
+    );
+    agent.close().await.unwrap();
+}
