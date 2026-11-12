@@ -2060,6 +2060,23 @@ does not roll back changes the package manager already made. A failure exits non
 the installer's error. An unknown installation layout, including a source checkout,
 fails with manual installation or rebuild instructions.
 
+The launcher sets `DIMCODE_NPM_PACKAGE` to `dimcode` or `dimcode-alpha`; other values
+are rejected before starting an installer. Without it, the build selects its default
+package. This value selects the package, not the release channel. `DIMCODE_NPM_REGISTRY`
+selects the registry for automatic availability checks only; installation uses the
+package manager's own registry configuration. The installer has no fixed time limit:
+elapsed time reports how long it has run, not proof that it is making progress. The
+operator can interrupt a stalled install; the command waits for process-tree cleanup.
+
+All built-in installation entries, including the dialog, take an exclusive OS file
+lock at the detected manager root before starting the installer. The lock is outside
+the replaced packages, is shared across homes and package identities in that root,
+and remains held through installer cleanup. A concurrent attempt fails without
+starting its package manager. The lock file remains in place after release; deleting
+it while an update runs would allow another inode to be locked independently.
+This serializes installers, not active clients or servers; their admission follows
+the coordinated upgrade contract below.
+
 ```text
 $ dima update
 | Updating dimcode-alpha (alpha) · 5s

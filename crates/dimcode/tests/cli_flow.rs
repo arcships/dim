@@ -667,6 +667,27 @@ echo 'Installed package'
         assert!(!output.stdout.contains(&0x1b));
         assert!(!output.stderr.contains(&0x1b));
     }
+    fs::remove_file(&recorded).unwrap();
+    for package in [
+        "other-package",
+        "dimcode-alpha@latest",
+        "--ignore-scripts",
+        "",
+    ] {
+        let output = Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", package)
+            .env("UPDATE_ARGS", &recorded)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("DIMCODE_NPM_PACKAGE must be dimcode or dimcode-alpha"),
+            "{output:?}"
+        );
+        assert!(!recorded.exists(), "an invalid package must not start npm");
+    }
     let resume = home.0.join("continue-install");
     let launch = |command, width| {
         let terminal = Terminal::launch(command);
@@ -705,6 +726,34 @@ echo 'Installed package'
                 "progress must stay on one row"
             );
             assert!(!terminal.transcript.contains("Downloading package"));
+            if width == 80 {
+                let other = Home::new();
+                let other_install = other.0.join("install-args");
+                let deadline = Instant::now() + HANG_GUARD;
+                while !recorded.exists() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the first installer never started"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let output = Command::new(&executable)
+                    .args(["--home", other.0.to_str().unwrap(), "update"])
+                    .env("DIMCODE_NPM_PACKAGE", "dimcode")
+                    .env("UPDATE_ARGS", &other_install)
+                    .output()
+                    .unwrap();
+                assert!(!output.status.success(), "{output:?}");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("Another update is using this installation"),
+                    "{output:?}"
+                );
+                assert!(
+                    !other_install.exists(),
+                    "the competing installer must not start"
+                );
+            }
             fs::write(&resume, "continue").unwrap();
         }
         assert_eq!(terminal.wait().success(), !fail);

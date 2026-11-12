@@ -38,6 +38,8 @@ pub struct Install {
     pub version: String,
     pub program: PathBuf,
     pub args: Vec<String>,
+    /// The manager's installation root, outside the packages it replaces.
+    pub directory: PathBuf,
     /// What starts the updated CLI: this executable when the install keeps
     /// it in place, else the package's command on `PATH`.
     pub relaunch: PathBuf,
@@ -70,11 +72,16 @@ pub fn registry() -> String {
 }
 
 /// The npm package this copy was started from; the launcher names it.
-fn package() -> String {
-    std::env::var("DIMCODE_NPM_PACKAGE").unwrap_or_else(|_| {
-        let alpha = channel(env!("CARGO_PKG_VERSION")) == "alpha";
-        (if alpha { ALPHA_PACKAGE } else { PACKAGE }).to_owned()
-    })
+fn package() -> Result<String, String> {
+    if let Some(package) = std::env::var_os("DIMCODE_NPM_PACKAGE") {
+        return match package.to_str() {
+            Some(PACKAGE) => Ok(PACKAGE.to_owned()),
+            Some(ALPHA_PACKAGE) => Ok(ALPHA_PACKAGE.to_owned()),
+            _ => Err("DIMCODE_NPM_PACKAGE must be dimcode or dimcode-alpha".to_owned()),
+        };
+    }
+    let alpha = channel(env!("CARGO_PKG_VERSION")) == "alpha";
+    Ok((if alpha { ALPHA_PACKAGE } else { PACKAGE }).to_owned())
 }
 
 /// The dist-tag a version upgrades along: its prerelease identifier, or
@@ -135,36 +142,63 @@ fn manual(package: &str, current: &str) -> String {
 fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
     let path = exe.to_string_lossy().replace('\\', "/");
     let spec = format!("{package}@{version}");
-    let (program, args) = if path.contains("/.bun/install/global/node_modules/") {
-        ("bun".into(), vec!["add", "-g"])
-    } else if path.contains("/.volta/") {
-        ("volta".into(), vec!["install"])
-    } else if path.contains("/pnpm/global/") || path.contains("/.pnpm/") {
-        ("pnpm".into(), vec!["add", "-g"])
-    } else if path.contains("/yarn/global/") {
-        ("yarn".into(), vec!["global", "add"])
-    } else {
-        let marker = if cfg!(windows) {
-            "/node_modules/"
+    let (program, args, directory) =
+        if let Some((prefix, _)) = path.split_once("/.bun/install/global/node_modules/") {
+            (
+                "bun".into(),
+                vec!["add", "-g"],
+                Path::new(prefix).join(".bun/install/global"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/.volta/") {
+            (
+                "volta".into(),
+                vec!["install"],
+                Path::new(prefix).join(".volta"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/pnpm/global/") {
+            (
+                "pnpm".into(),
+                vec!["add", "-g"],
+                Path::new(prefix).join("pnpm/global"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/.pnpm/") {
+            let directory = Path::new(prefix);
+            let directory = if directory.ends_with("node_modules") {
+                directory.parent()?
+            } else {
+                directory
+            };
+            ("pnpm".into(), vec!["add", "-g"], directory.to_path_buf())
+        } else if let Some((prefix, _)) = path.split_once("/yarn/global/") {
+            (
+                "yarn".into(),
+                vec!["global", "add"],
+                Path::new(prefix).join("yarn/global"),
+            )
         } else {
-            "/lib/node_modules/"
+            let marker = if cfg!(windows) {
+                "/node_modules/"
+            } else {
+                "/lib/node_modules/"
+            };
+            let (prefix, _) = path.split_once(marker)?;
+            let npm = if cfg!(windows) {
+                Path::new(prefix).join("npm.cmd")
+            } else {
+                Path::new(prefix).join("bin").join("npm")
+            };
+            let npm = if npm.is_file() { npm } else { "npm".into() };
+            (
+                npm,
+                vec!["install", "-g", "--prefer-online", "--prefix", prefix],
+                PathBuf::from(prefix),
+            )
         };
-        let (prefix, _) = path.split_once(marker)?;
-        let npm = if cfg!(windows) {
-            Path::new(prefix).join("npm.cmd")
-        } else {
-            Path::new(prefix).join("bin").join("npm")
-        };
-        let npm = if npm.is_file() { npm } else { "npm".into() };
-        (
-            npm,
-            vec!["install", "-g", "--prefer-online", "--prefix", prefix],
-        )
-    };
     Some(Install {
         version: version.to_owned(),
         program,
         args: args.into_iter().map(str::to_owned).chain([spec]).collect(),
+        directory,
         relaunch: relaunch(exe, package),
     })
 }
@@ -196,7 +230,7 @@ fn upgrade_tag(version: &str, release: bool) -> Option<&str> {
 /// `None` when there is none or the registry did not answer in time.
 pub async fn available(home: &Path, current: &str) -> Option<Offer> {
     let tag = upgrade_tag(current, crate::version::RELEASE)?;
-    let package = package();
+    let package = package().ok()?;
     let client = reqwest::Client::builder().timeout(TIMEOUT).build().ok()?;
     let tags: serde_json::Value = client
         .get(format!("{}/-/package/{package}/dist-tags", registry()))
@@ -225,7 +259,7 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
 /// of automatic-check preferences and skipped versions. Unknown installation
 /// layouts return a manual command without installing anything.
 pub async fn run() -> crate::Result<i32> {
-    let package = package();
+    let package = package()?;
     let current = crate::version::VERSION;
     let tag = channel(current);
     let executable = std::env::current_exe()?;
@@ -292,6 +326,33 @@ pub async fn run() -> crate::Result<i32> {
 /// Runs `install`; failures report the last nonempty stderr line.
 /// Cancellation terminates and waits for the installer's process tree.
 pub async fn install(install: Install, cancel: CancellationToken) -> Result<(), String> {
+    let path = install.directory.join(".dimcode-update.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = options
+        .open(&path)
+        .map_err(|error| format!("Cannot lock installation {}: {error}", path.display()))?;
+    if !lock
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("Installation lock must be a regular file".to_owned());
+    }
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(
+                "Another update is using this installation; retry after it finishes".to_owned(),
+            );
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
+    }
     let mut command = tokio::process::Command::new(&install.program);
     command
         .args(&install.args)

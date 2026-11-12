@@ -8407,6 +8407,7 @@ mod tests {
                                 "-g".into(),
                                 "dimcode-alpha@0.12.0-alpha.124".into(),
                             ],
+                            directory: "/installation".into(),
                             relaunch: "dima".into(),
                         }),
                     };
