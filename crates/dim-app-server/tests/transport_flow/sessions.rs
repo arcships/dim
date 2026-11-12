@@ -1088,18 +1088,31 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     let first = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
-    let batch = client
-        .rpc(
-            "session.input.withdraw",
-            json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown",
-                "steer":{"content":[{"type":"text","text":"steer"}]}}),
+    let batch = session
+        .inputs(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| InputMessageData {
+                    submission_id: Some(format!("test:batch:{id}")),
+                    ..InputMessageData::text(id, Some(dim_agent_types::InputMode::Append))
+                })
+                .collect(),
+            "main",
         )
-        .await;
-    assert_eq!(batch["result"]["status"], "notHeld", "{batch}");
-    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap() - 1;
+        .await
+        .unwrap();
+    let inside = batch[0].sequence;
     let head = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
+    let page = sessions
+        .ok("history", at(json!({"after":inside - 1,"limit":1})))
+        .await;
+    assert_eq!(
+        page["events"],
+        serde_json::to_value(&batch).unwrap(),
+        "a one-event page limit must not split the two-input batch"
+    );
 
     let mut after = 0;
     let mut events = vec![];
@@ -1130,6 +1143,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
 
     for (request, code) in [
         (at(json!({"after":inside})), "rejected"),
+        (at(json!({"through":inside})), "rejected"),
         (at(json!({"after":first,"through":first - 1})), "rejected"),
         (at(json!({"limit":0})), "rejected"),
         (at(json!({"limit":257})), "rejected"),
@@ -1551,6 +1565,42 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
             .await["error"]["data"]["appError"],
         "publication_unknown"
     );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:steer-held",
+                json!([{"type":"text","text":"replace me"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    let reply = client
+        .rpc(
+            "session.input.withdraw",
+            json!({
+                "sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
+                "steer":{"content":[{"type":"text","text":"replacement"}]}
+            }),
+        )
+        .await;
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+    assert_eq!(
+        reply["error"]["data"]["appError"], "publication_unknown",
+        "{reply}"
+    );
+    assert!(reply.get("result").is_none(), "{reply}");
     server.shutdown();
     let _ = server.join().await;
 }

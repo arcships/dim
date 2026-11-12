@@ -44,18 +44,21 @@ SessionStore。`$DIMCODE_HOME` 是 daemon 服务的产品 home，客户端不拼
 
 1. 校验源工作区是 Git 工作树且不是 bare 仓库，解析仓库根、base 和源工作区相对仓库根的映射前缀；
    映射路径必须留在新根内。
-2. ManagedWorktrees 分配 `<task-id>` 并执行 `git worktree add -b <branch> <root> <base>`。默认分支或
-   目标路径已存在时换一个 `<task-id>` 重试（最多三次），显式 `branch` 冲突直接返回
-   `worktree_branch_exists`，不重试。
+2. ManagedWorktrees 分配 `<task-id>` 并执行 `git worktree add -b <branch> <root> <base>`。`base` 先经
+   `git rev-parse --verify` 解析为 commit，`branch` 由 `-b` 消费且只新建，因此以 `-` 开头的值不会变成
+   Git 选项；默认分支或目标路径已存在时换一个 `<task-id>` 重试（最多三次），显式 `branch` 冲突直接返回
+   `worktree_branch_exists`，不重试。add 失败只删除本次创建的空任务目录：路径与分支可能是并发赢家创建的，
+   本调用不碰它们。
 3. 以根下的映射子树作为新 Session 的 `cwd`（源工作区就是仓库根时即根本身），使
-   [worktree-access §2.2](worktree-access.md#22-仓库身份与目录范围) 的范围映射成为实际工作区。目录记录与
-   使用关联由 SessionStore 在新 Session 的同一事务里写入，记录的 subtree 等于这个 cwd；这一步失败即视为
-   Session 未创建。
-4. 第 2 步之后的任何失败，ManagedWorktrees 用未取消的清理路径删除本次创建的目录与分支；清理也失败时
-   保留它们，由 `list` 列为未登记，入口返回原错误。
+   [worktree-access §2.2](worktree-access.md#22-仓库身份与目录范围) 的范围映射成为实际工作区。映射前缀逐
+   组件拒绝符号链接，解析后的路径必须仍在根内。目录记录与使用关联由 SessionStore 在新 Session 的同一事务
+   里写入，记录的 subtree 等于这个 cwd；这一步失败即视为 Session 未创建。
+4. 第 2 步之后的任何失败，ManagedWorktrees 用未取消的清理路径删除本次创建的目录与分支；Git 拒绝删除或目录
+   写入他人内容时保留它们（不带 `-f`），由 `list` 列为未登记，入口返回原错误。
 
-创建成功后不写 Timeline 事件：worktree 是进程级事实，不是分支状态。已登记根立即进入本 Session 的
-工作区范围，文件工具与显式 `exec` cwd 不再逐文件审批（[§5](worktree-access.md#5-文件工具与进程隔离)）。
+创建成功后不写 Timeline 事件：worktree 是进程级事实，不是分支状态。映射子树进入本 Session 的工作区范围，
+根的其余部分按 worktree-access §2.2 仍需审批；文件工具与显式 `exec` cwd 不再对映射子树逐文件审批
+（[§5](worktree-access.md#5-文件工具与进程隔离)）。
 
 ## 4. 记录
 
@@ -78,29 +81,33 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 路径），`list` 预先给出同一原因，客户端只展示，不自行判断。
 
 - **list**：读 Git 的 `rev-parse` 与 `status --porcelain --ignored` 和 SessionStore 的目录记录、使用关联，join 后给出
-  task-id、仓库、根、分支与 HEAD、所属 Session、最后使用时间、脏/未跟踪计数，以及目录缺失或
-  Git 已不登记。根下既无记录也无 Git 登记的目录列为未登记；管理根外的目录记录不进入本列表，也永不列为删除候选。
+  task-id、仓库、根、分支与 HEAD、所属 Session、最后使用时间、脏/未跟踪计数，以及目录缺失、Git 已不登记或
+  未登记。根下既无记录也无 Git 登记的目录列为未登记；管理根外的目录记录不进入本列表，也永不列为删除候选。
+  `$DIMCODE_HOME/worktrees` 保留给托管 worktree：手工在其中创建的 worktree 同样按托管处理，不另设来源标记。
 - **remove**：删除单个已登记的托管 worktree。仍有关联（任何 Session）、任何 Session 的 cwd 在根下、有未提交
-  或未跟踪内容时拒绝；要清理仍有关联的工作树，先删除对应 Session。`--force` 只覆盖内容检查。删除走
-  `git worktree remove`，与记录删除在同一次存储操作里完成，`dim/<task-id>` 分支保留，已提交内容不随目录
-  消失。根已核验缺失时只删记录并清理 Git 元数据。未登记目录按 task-id 显式删除，要求内容干净、没有
-  Session 的 cwd 在根下且 Git 在该路径没有登记，分支保留并在结果里报告。
+  或未跟踪内容时拒绝；要清理仍有关联的工作树，先删除对应 Session。`--force` 只覆盖内容检查，也只有此时
+  Git 才收到 `--force`，所以内容在检查后出现时 Git 自己会拒绝。删除走 `git worktree remove`，与记录删除在
+  同一次存储操作里完成，分支保留，已提交内容不随目录消失。根已核验缺失，或存在但 Git 已不再登记时，只删
+  记录并 `git worktree prune`；后者在目录非空时需要 `--force`。未登记目录按 task-id 显式删除，要求内容干净、
+  没有 Session 的 cwd 在根下且不含 `.git`；带 `.git` 的残留由用户用 `git worktree remove` 处理，错误信息给出路径。
+  记录只有 repository 与 root，同一路径被手工重建的 worktree 视为同一条记录，这是已知限制。
 - **prune**：候选只包括根在 `$DIMCODE_HOME/worktrees` 下、没有剩余使用关联的目录记录，再按最后使用时间
-  应用 `--older-than` 或 `--keep`；未知时间按 §4 处理，仍有关联、Session 的 cwd 在根下或未登记的目录一律
-  不选。删除前逐项复核，先预览再按确认删除；保留项逐条给出原因，单个候选删除失败时保留其记录并继续其余
-  候选。选择语义与交互沿用 [session cleanup](cli-commands.md#session-deletion-and-cleanup)，不新增第二套。
-- **排斥**：remove 与 prune 在 SessionStore 的会话存储所有权锁内完成复核、Git 删除和记录删除；同一把锁
-  覆盖 `associate_worktree`、Session 创建和删除，所以复核之后不会出现新的关联或新的 Session 行。复核时
-  SessionStore 回答任何存储中的 Session 的 cwd 是否在根下；托管创建在写入 Session 行的同一事务里登记关联，
-  所以有存储时装载中的 Session 一定被这条查询覆盖。可证明的使用只有记录与存储中的 cwd；其余使用不可证明，
-  由预览、确认和 worktree-access §4 的删除授权承担。
+  应用 `--older-than` 或 `--keep`；未知时间按 §4 处理，仍有关联、Session 的 cwd 在根下、Git 已不再登记（除显式
+  `--force`）或未登记的目录一律不选。删除前逐项复核 Git 登记、根未变与内容干净，先预览再按确认删除；apply
+  携带预览的 task id，只删除用户看到的集合，单个候选失败时保留其记录并继续其余候选。保留项逐条给出原因。
+  选择语义与交互沿用 [session cleanup](cli-commands.md#session-deletion-and-cleanup)，不新增第二套。
+- **排斥**：remove 与 prune 经由 SessionStore 的类型化移除操作（`remove_worktree`）完成：它持有会话存储
+  所有权锁，先复核关联与存储中的 Session cwd，再调用调用方传入的 Git 删除步骤，最后删除记录。`Session`
+  创建与 `associate_worktree` 在同一把锁内重新核验 cwd 与根是否仍是目录，所以复核之后不会出现指向已删根的
+  新 Session 或关联。锁跨越一次 Git 删除，其上限是一次 `git worktree remove`（30 秒超时）。
+  可证明的使用只有记录与存储中的 cwd；其余使用不可证明，由预览、确认和 worktree-access §4 的删除授权承担。
 - Session 删除和 `session cleanup` 不删除也不报告遗留的 worktree；`worktree list` 是查看它们的唯一入口。
 
 ## 6. 影响面
 
 | Owner | 现有机制为何不够 | 需要的合同 | 顺序与失败 |
 | --- | --- | --- | --- |
-| SessionStore | `associate_worktree` 要求 Session 已存在，不能补写创建期记录；目录记录没有时间；删除目录记录会撞上未级联的关联外键 | 创建 Session 时同一事务写入目录记录、使用关联与最后使用时间；关联写入/解除更新时间；按根查询任何存储中 Session 的 cwd；Session 创建/删除与关联写入共用所有权锁；删除目录记录的类型化操作（含核验缺失的记录清理）。列变更遵守 native-storage-format.md | 创建失败不留记录；删除成功才删记录，失败保留供重试 |
+| SessionStore | `associate_worktree` 要求 Session 已存在，不能补写创建期记录；目录记录没有时间；删除目录记录会撞上未级联的关联外键 | 创建 Session 时同一事务写入目录记录、使用关联与最后使用时间；关联写入/解除更新时间；按根查询任何存储中 Session 的 cwd；Session 创建/删除、关联写入与移除共用所有权锁，创建与关联在锁内重新核验 cwd/根；类型化移除操作 `remove_worktree` 在锁内运行调用方的 Git 删除与记录删除；删除目录记录的类型化操作（含核验缺失/Git 不登记的记录清理）。列变更遵守 native-storage-format.md | 创建失败不留记录；删除成功才删记录，失败保留供重试 |
 | Agents | 现有 `cwd` 只能指向已存在目录，不能把创建目录和创建 Session 合成一次请求 | `session.create` 的可选 `worktree` 与回复字段；`sessions.launch` 的同一成员留给后续 | 入口只校验格式与权限；Git、失败清除由 ManagedWorktrees 执行，创建失败时入口调用它清除 |
 | App Server 协议 | 客户端各自 `git worktree add` 会重新引入路径分歧；新成员会被旧 daemon 当作未知字段拒绝 | `hello.features` 新增 `session.create.worktree`（仅在产品 home 与原生存储都存在时宣告）、`worktree.list`、`worktree.remove`、`worktree.prune`；`cwd` 声明为源工作区；三个操作注册为 `managementMethods` 的 `worktree` 命名空间，不服务配对设备 | 客户端只在宣告存在时发送；失败不留半成品，重试创建新的 `<task-id>` |
 | CLI 与 Desktop | 没有可调用的创建入口，只能让模型跑 Git | 各自的入口与展示（`--worktree`、`dimcode worktree ...`；TUI 的 `/worktree` 面板留待后续），只消费类型化结果与拒绝原因 | 由各自 owner 更新 cli-commands.md 与 clients.md；不拼路径、不读存储、不直接调用 Git |

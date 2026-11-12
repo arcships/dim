@@ -13247,7 +13247,10 @@
         "path EntryKind::Handover",
         "path EntryKind::Input",
         "path InputQueue",
-        "path QueueState::default"
+        "path QueueState::default",
+        "path Withdrawal::Deleted",
+        "path Withdrawal::NotHeld",
+        "path WithdrawalAnswer"
       ]
     },
     {
@@ -13292,6 +13295,7 @@
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
         "path QueryPage",
+        "path QueryPick::First",
         "path QueryPick::Last",
         "path QuerySelect::Exists",
         "path QuerySelect::Fields",
@@ -13318,11 +13322,20 @@
       "references": [
         "path EventKind::InputApplied",
         "path EventKind::InputDeleted",
+        "path EventKind::InputMessage",
         "path InputAppliedData",
         "path InputDeletedData",
+        "path InputMessageData",
         "path InputMode::Append",
         "path InputMode::Queue",
         "path events"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue::recovery",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
       ]
     },
     {
@@ -25279,6 +25292,13 @@
     },
     {
       "from": "dim_app_server::connection",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path crate::storage::SessionStore"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
       "to": "dim_app_server::tree_protocol",
       "references": [
         "path crate::tree_protocol::BarrierResult"
@@ -25303,6 +25323,7 @@
       "from": "dim_app_server::connection",
       "to": "dim_app_server::worktrees",
       "references": [
+        "path crate::worktrees::CreatedWorktree",
         "path crate::worktrees::ManagedWorktrees"
       ]
     },
@@ -32446,6 +32467,7 @@
       "references": [
         "path Titles",
         "path Titles::new",
+        "path metadata",
         "path metadata::Dispatch",
         "use super::metadata",
         "use super::metadata::Titles"

@@ -127,13 +127,16 @@ pub async fn prune(
         return Err(PRUNE_UNSUPPORTED.into());
     }
     let reply = client
-        .rpc("worktree.prune", prune_params(older_than, keep, yes, force))
+        .rpc(
+            "worktree.prune",
+            prune_params(older_than, keep, false, force, &[]),
+        )
         .await?;
-    if json {
+    let selection: Pruned = decode(reply.clone(), "worktree.prune")?;
+    if json && !yes {
         print_json(&reply)?;
         return Ok(0);
     }
-    let selection: Pruned = decode(reply, "worktree.prune")?;
     let now = now_ms();
     for worktree in &selection.candidates {
         println!("{}", worktree.row(now));
@@ -148,36 +151,42 @@ pub async fn prune(
         println!("{}", nothing_to_prune(older_than, keep));
         return Ok(0);
     }
-    let (removed, failed) = if yes {
-        (selection.removed, selection.failed)
-    } else {
-        if !confirmed(selection.candidates.len())? {
-            println!("Nothing was removed.");
-            return Ok(0);
-        }
-        let reply = client
-            .rpc(
-                "worktree.prune",
-                prune_params(older_than, keep, true, force),
-            )
-            .await?;
-        let applied = decode::<Pruned>(reply, "worktree.prune")?;
-        (applied.removed, applied.failed)
-    };
-    for task_id in &removed {
+    if !yes && !confirmed(selection.candidates.len())? {
+        println!("Nothing was removed.");
+        return Ok(0);
+    }
+    // Apply exactly the previewed task ids: a selector re-read would remove a
+    // set the operator never saw.
+    let ids: Vec<String> = selection
+        .candidates
+        .iter()
+        .map(|candidate| candidate.task_id.clone())
+        .collect();
+    let reply = client
+        .rpc(
+            "worktree.prune",
+            prune_params(older_than, keep, true, force, &ids),
+        )
+        .await?;
+    if json {
+        print_json(&reply)?;
+        return Ok(0);
+    }
+    let applied = decode::<Pruned>(reply, "worktree.prune")?;
+    for task_id in &applied.removed {
         println!("Removed {}", safe_line(task_id));
     }
-    for failure in &failed {
+    for failure in &applied.failed {
         eprintln!(
             "Failed {}: {}",
             safe_line(&failure.task_id),
             safe_line(&failure.message)
         );
     }
-    if removed.is_empty() && failed.is_empty() {
+    if applied.removed.is_empty() && applied.failed.is_empty() {
         println!("Nothing was removed.");
     }
-    Ok(if failed.is_empty() { 0 } else { 1 })
+    Ok(if applied.failed.is_empty() { 0 } else { 1 })
 }
 
 /// One managed worktree as `worktree.list` and `worktree.prune` report it.
@@ -203,6 +212,9 @@ struct Worktree {
     /// The directory is gone; the record is a candidate.
     #[serde(default)]
     missing: bool,
+    /// The directory exists but Git no longer names it as a worktree.
+    #[serde(default)]
+    git_missing: bool,
     /// No record names it: a directory a failed creation left behind.
     #[serde(default)]
     unregistered: bool,
@@ -238,11 +250,12 @@ impl Worktree {
 
     /// What is wrong with the worktree, or `ok` when nothing is.
     fn state(&self) -> &'static str {
-        match (self.missing, self.unregistered) {
-            (false, false) => "ok",
-            (true, false) => "missing",
-            (false, true) => "unregistered",
-            (true, true) => "missing unregistered",
+        match (self.missing, self.git_missing, self.unregistered) {
+            (false, false, false) => "ok",
+            (true, _, false) => "missing",
+            (_, true, false) => "git-missing",
+            (false, false, true) => "unregistered",
+            _ => "unusable",
         }
     }
 }
@@ -307,13 +320,22 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value, method: &str) -> Result<
 
 /// The `worktree.prune` params: the selector, whether to apply, and whether
 /// content is removed regardless.
-fn prune_params(older_than: Option<&str>, keep: Option<usize>, apply: bool, force: bool) -> Value {
+fn prune_params(
+    older_than: Option<&str>,
+    keep: Option<usize>,
+    apply: bool,
+    force: bool,
+    task_ids: &[String],
+) -> Value {
     let mut params = json!({"apply": apply, "force": force});
     if let Some(older_than) = older_than {
         params["olderThan"] = json!(older_than);
     }
     if let Some(keep) = keep {
         params["keep"] = json!(keep);
+    }
+    if !task_ids.is_empty() {
+        params["taskIds"] = json!(task_ids);
     }
     params
 }
@@ -368,6 +390,7 @@ mod tests {
             last_used_at_ms: None,
             sessions: vec!["s1".into(), "s2".into()],
             missing: false,
+            git_missing: false,
             unregistered: false,
         };
         assert_eq!(
@@ -385,7 +408,7 @@ mod tests {
         worktree.missing = true;
         assert_eq!(
             worktree.row(0),
-            "4f2abc\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tmissing unregistered"
+            "4f2abc\t/home/worktrees/4f2abc/dim\t-\t-\t2\t1\t-\t-\tunusable"
         );
     }
 }

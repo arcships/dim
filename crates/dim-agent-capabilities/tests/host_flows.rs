@@ -2673,19 +2673,20 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
         let withdraw = |input_id: &str| InputWithdrawData {
             input_id: input_id.into(),
             reason: Some("user removed it".into()),
+            steer: None,
         };
 
-        let (answer, replacement) = queue.withdraw(withdraw(&first.id), None).await.unwrap();
+        let (answer, replacement) = queue.withdraw(withdraw(&first.id)).await.unwrap();
         let Withdrawal::Deleted { sequence } = answer else {
             panic!("held input not deleted: {answer:?}")
         };
         assert!(replacement.is_none());
         assert_eq!(
-            queue.withdraw(withdraw(&first.id), None).await.unwrap().0,
+            queue.withdraw(withdraw(&first.id)).await.unwrap().0,
             Withdrawal::NotHeld
         );
         assert_eq!(
-            queue.withdraw(withdraw("unknown"), None).await.unwrap().0,
+            queue.withdraw(withdraw("unknown")).await.unwrap().0,
             Withdrawal::NotHeld
         );
         let mut dispatch = session.dispatch_watch("main").unwrap();
@@ -2701,7 +2702,7 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             dispatch.changed().await.unwrap();
         }
         assert_eq!(
-            queue.withdraw(withdraw(&steered.id), None).await.unwrap().0,
+            queue.withdraw(withdraw(&steered.id)).await.unwrap().0,
             Withdrawal::NotHeld
         );
         let user = UserInput {
@@ -2710,24 +2711,24 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             }],
         };
         let (answer, replacement) = queue
-            .withdraw(
-                withdraw(&second.id),
-                Some(InputMessageData {
+            .withdraw(InputWithdrawData {
+                steer: Some(InputMessageData {
                     user: Some(user),
                     mode: Some(InputMode::Steer),
                     ..Default::default()
                 }),
-            )
+                ..withdraw(&second.id)
+            })
             .await
             .unwrap();
         assert!(matches!(answer, Withdrawal::Deleted { .. }));
         let replacement = replacement.unwrap();
         assert!(
             queue
-                .withdraw(
-                    withdraw(&second.id),
-                    Some(InputMessageData::text("x", Some(InputMode::Queue)))
-                )
+                .withdraw(InputWithdrawData {
+                    steer: Some(InputMessageData::text("x", Some(InputMode::Queue))),
+                    ..withdraw(&second.id)
+                })
                 .await
                 .is_err()
         );
@@ -3265,13 +3266,11 @@ async fn a_withdrawn_handover_input_is_deleted_once() {
         queue_consumed_through(&session, handover.sequence).await;
         let queue = session.service::<InputQueue>("main").unwrap();
         let (answer, replacement) = queue
-            .withdraw(
-                InputWithdrawData {
-                    input_id: handover.id.clone(),
-                    reason: Some("user removed it".into()),
-                },
-                None,
-            )
+            .withdraw(InputWithdrawData {
+                input_id: handover.id.clone(),
+                reason: Some("user removed it".into()),
+                steer: None,
+            })
             .await
             .unwrap();
         let Withdrawal::Deleted { sequence } = answer else {

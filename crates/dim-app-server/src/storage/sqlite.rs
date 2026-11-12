@@ -17,7 +17,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 43;
+pub const FORMAT: u32 = 44;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -56,7 +56,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 43))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 44))",
     ),
     (
         "settings_documents",
@@ -261,17 +261,17 @@ UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;
 const V31_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
-/// The text of `worktree_directories` before v43 adds the last-used time;
-/// `schema_of` uses it to recognize a store older than v43.
-const WORKTREE_DIRECTORIES_BEFORE_V43: &str = "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))";
-/// v43 adds the directory's last-used time, written by the association's
+/// The text of `worktree_directories` before v44 adds the last-used time;
+/// `schema_of` uses it to recognize a store older than v44.
+const WORKTREE_DIRECTORIES_BEFORE_V44: &str = "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))";
+/// v44 adds the directory's last-used time, written by the association's
 /// write and removal: an upgrade cannot fill the rows it never recorded, so
 /// the column is nullable and a `NULL` time is unknown.
-const V43_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER";
+const V44_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 29] = [
+const UPGRADES: [(u32, &[&str]); 30] = [
     (
         13,
         &[
@@ -381,9 +381,11 @@ const UPGRADES: [(u32, &[&str]); 29] = [
     // #1421: `automation` joins the creation origins; the rebuild's own
     // statements are in `V42_AGENT_SESSIONS`.
     (41, &[]),
+    // #1413: checked withdrawal candidates, unreadable by v42.
+    (42, &[]),
     // #1451: the managed worktree's last-used time; the column only, and a
     // store this daemon rewrites keeps `NULL` for rows it never recorded.
-    (42, &[]),
+    (43, &[]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -418,8 +420,8 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
                 "agent_sessions" if version < 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
-                "worktree_directories" if version < 43 => {
-                    WORKTREE_DIRECTORIES_BEFORE_V43.to_owned()
+                "worktree_directories" if version < 44 => {
+                    WORKTREE_DIRECTORIES_BEFORE_V44.to_owned()
                 }
                 "session_owners" if version < 41 => SESSION_OWNERS_BEFORE_V38.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
@@ -1091,12 +1093,12 @@ impl SqliteStorage {
                     if *from == 29 {
                         connection.execute_batch(V30_COLUMNS).map_err(storage)?;
                     }
-                    if *from == 42
+                    if *from == 43
                         && actual.iter().any(|(name, sql)| {
-                            name == "worktree_directories" && sql == WORKTREE_DIRECTORIES_BEFORE_V43
+                            name == "worktree_directories" && sql == WORKTREE_DIRECTORIES_BEFORE_V44
                         })
                     {
-                        connection.execute_batch(V43_COLUMNS).map_err(storage)?;
+                        connection.execute_batch(V44_COLUMNS).map_err(storage)?;
                     }
                     if *from == 30 {
                         connection.execute_batch(V31_COLUMNS).map_err(storage)?;

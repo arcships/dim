@@ -122,6 +122,7 @@ async fn failed_worktree_association_changes_neither_directory_nor_usage() {
         repository: directory.join("repo/.git"),
         root: directory.join("repo-wt"),
     };
+    std::fs::create_dir_all(&worktree.root).unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     let sessions = SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
     let store = SqliteTimelineStore::new(db.clone());
@@ -236,6 +237,7 @@ async fn worktree_association_cannot_outlive_delete_or_creation_rollback() {
         repository: directory.join("repo/.git"),
         root: directory.join("repo-wt"),
     };
+    std::fs::create_dir_all(&worktree.root).unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     let sessions = SessionStore::new(db.clone(), root.clone(), 0);
     let store = SqliteTimelineStore::new(db.clone());

@@ -63,6 +63,8 @@ pub struct WorktreeView {
     pub last_used_at_ms: Option<i64>,
     pub sessions: Vec<String>,
     pub missing: bool,
+    /// The directory exists but Git no longer names it as a worktree.
+    pub git_missing: bool,
     pub unregistered: bool,
 }
 
@@ -250,28 +252,15 @@ impl ManagedWorktrees {
             )
             .await;
             if let Err(error) = added {
-                let cleanup = CancellationToken::new();
-                let _ = self
-                    .git(
-                        &top,
-                        &["worktree", "remove", "--force", &directory_text],
-                        &cleanup,
-                    )
-                    .await;
-                let _ = self
-                    .git(&top, &["branch", "-D", &branch_name], &cleanup)
-                    .await;
-                if let WorktreeError::Git(message) = &error
-                    && (message.contains("already exists")
-                        || message.contains("already checked out"))
-                {
-                    last = Some(error);
-                    continue;
-                }
+                // The path and branch were free when this call checked, so a
+                // failure may belong to another actor that won the race: never
+                // remove either. Only the empty task directory this call
+                // created is ours to drop.
+                last = Some(error);
                 if let Some(parent) = directory.parent() {
                     let _ = tokio::fs::remove_dir(parent).await;
                 }
-                return Err(error);
+                continue;
             }
             let root_dir = match canonical(directory).await {
                 Ok(root_dir) => root_dir,
@@ -290,23 +279,23 @@ impl ManagedWorktrees {
                     return Err(error);
                 }
             };
-            let subtree = root_dir.join(&relative);
-            if !subtree.starts_with(&root_dir) {
-                let cleanup = CancellationToken::new();
-                let _ = self
-                    .git(
-                        &top,
-                        &["worktree", "remove", "--force", directory_text.as_str()],
-                        &cleanup,
-                    )
-                    .await;
-                let _ = self
-                    .git(&top, &["branch", "-D", &branch_name], &cleanup)
-                    .await;
-                return Err(WorktreeError::Invalid(
-                    "the Session subtree left the worktree root".into(),
-                ));
-            }
+            let subtree = match checked_subtree(&root_dir, &relative).await {
+                Ok(subtree) => subtree,
+                Err(error) => {
+                    let cleanup = CancellationToken::new();
+                    let _ = self
+                        .git(
+                            &top,
+                            &["worktree", "remove", "--force", directory_text.as_str()],
+                            &cleanup,
+                        )
+                        .await;
+                    let _ = self
+                        .git(&top, &["branch", "-D", &branch_name], &cleanup)
+                        .await;
+                    return Err(error);
+                }
+            };
             return Ok(CreatedWorktree {
                 task_id,
                 prepared: PreparedWorktree {
@@ -333,15 +322,16 @@ impl ManagedWorktrees {
             return;
         };
         // Cleanup must run after the caller's connection gave up; a cancelled
-        // token would skip both Git calls and leak the registration.
+        // token would skip both Git calls and leak the registration. No
+        // `--force`: content that appeared since the creation stays.
         let cancel = CancellationToken::new();
-        let _ = self
-            .git(
-                source,
-                &["worktree", "remove", "--force", root_text],
-                &cancel,
-            )
-            .await;
+        let removed = self
+            .git(source, &["worktree", "remove", root_text], &cancel)
+            .await
+            .is_ok();
+        if !removed {
+            return;
+        }
         let _ = tokio::fs::remove_dir_all(root).await;
         if let Some(parent) = root.parent() {
             let _ = tokio::fs::remove_dir(parent).await;
@@ -435,6 +425,13 @@ impl ManagedWorktrees {
             if !valid_task_id(task_id) {
                 continue;
             }
+            // A task directory is ours; a symlink there is not.
+            if !tokio::fs::symlink_metadata(&entry)
+                .await
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            {
+                continue;
+            }
             let Ok(mut children) = tokio::fs::read_dir(&entry).await else {
                 continue;
             };
@@ -446,9 +443,9 @@ impl ManagedWorktrees {
                 if recorded.contains(&child.path()) {
                     continue;
                 }
-                if !tokio::fs::metadata(child.path())
+                if !tokio::fs::symlink_metadata(child.path())
                     .await
-                    .is_ok_and(|metadata| metadata.is_dir())
+                    .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
                 {
                     continue;
                 }
@@ -488,6 +485,7 @@ impl ManagedWorktrees {
             last_used_at_ms,
             sessions,
             missing: !tokio::fs::try_exists(&root).await.unwrap_or(false),
+            git_missing: false,
             unregistered: repository.is_none(),
         };
         if view.missing || view.unregistered {
@@ -497,7 +495,7 @@ impl ManagedWorktrees {
             .git(&root, &["rev-parse", "--abbrev-ref", "HEAD"], cancel)
             .await
         else {
-            view.missing = true;
+            view.git_missing = true;
             return view;
         };
         let branch = branch.trim().to_owned();
@@ -549,6 +547,13 @@ impl ManagedWorktrees {
                 kept.push(KeptWorktree {
                     worktree: view,
                     reason: "a Session still has an association".into(),
+                });
+                continue;
+            }
+            if view.git_missing && !force {
+                kept.push(KeptWorktree {
+                    worktree: view,
+                    reason: "the directory is no longer a Git worktree; --force removes it".into(),
                 });
                 continue;
             }
@@ -664,15 +669,32 @@ impl ManagedWorktrees {
                         .await;
                         return Ok(());
                     }
+                    let registered = git(
+                        &checked,
+                        &["rev-parse", "--show-toplevel"],
+                        &cancel,
+                        GIT_READ_TIMEOUT,
+                    )
+                    .await
+                    .is_ok();
+                    if !registered {
+                        return cleanup_unregistered_root(&repository, &checked, force, &cancel)
+                            .await;
+                    }
                     if !force {
-                        let status = git(
+                        let status = match git(
                             &checked,
                             &["status", "--porcelain", "--ignored"],
                             &cancel,
                             GIT_READ_TIMEOUT,
                         )
                         .await
-                        .map_err(|error| AgentError::InvalidInput(error.message().to_owned()))?;
+                        {
+                            Ok(status) => status,
+                            Err(error) => {
+                                return Err(AgentError::InvalidInput(error.message().to_owned()));
+                            }
+                        };
                         if !status.trim().is_empty() {
                             return Err(AgentError::InvalidInput(
                                 "the worktree has uncommitted or untracked content".into(),
@@ -680,14 +702,14 @@ impl ManagedWorktrees {
                         }
                     }
                     let root_text = checked.to_string_lossy();
-                    git(
-                        &repository,
-                        &["worktree", "remove", "--force", root_text.as_ref()],
-                        &cancel,
-                        GIT_WRITE_TIMEOUT,
-                    )
-                    .await
-                    .map_err(|error| AgentError::Storage(error.message().to_owned()))?;
+                    let mut args = vec!["worktree", "remove"];
+                    if force {
+                        args.push("--force");
+                    }
+                    args.push(root_text.as_ref());
+                    git(&repository, &args, &cancel, GIT_WRITE_TIMEOUT)
+                        .await
+                        .map_err(|error| AgentError::Storage(error.message().to_owned()))?;
                     Ok(())
                 })
             })
@@ -712,6 +734,15 @@ impl ManagedWorktrees {
                 "no managed worktree has task id {task_id}"
             )));
         }
+        if !tokio::fs::symlink_metadata(&entry)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        {
+            return Err(WorktreeError::InUse(format!(
+                "{} is not a plain directory under the managed root",
+                entry.display()
+            )));
+        }
         let mut children = tokio::fs::read_dir(&entry)
             .await
             .map_err(|error| WorktreeError::Store(error.to_string()))?;
@@ -721,11 +752,18 @@ impl ManagedWorktrees {
             .map_err(|error| WorktreeError::Store(error.to_string()))?
         {
             let path = child.path();
-            let metadata = tokio::fs::metadata(&path)
+            let metadata = tokio::fs::symlink_metadata(&path)
                 .await
                 .map_err(|error| WorktreeError::Store(error.to_string()))?;
-            if !metadata.is_dir() {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 continue;
+            }
+            let resolved = canonical(path.clone()).await?;
+            if resolved != path || !resolved.starts_with(root) {
+                return Err(WorktreeError::InUse(format!(
+                    "{} resolves outside the managed root",
+                    path.display()
+                )));
             }
             if tokio::fs::try_exists(path.join(".git"))
                 .await
@@ -871,6 +909,76 @@ async fn canonical(path: PathBuf) -> Result<PathBuf, WorktreeError> {
     tokio::fs::canonicalize(&path)
         .await
         .map_err(|error| WorktreeError::Store(format!("{}: {error}", path.display())))
+}
+
+/// The Session's starting directory inside the new worktree: the mapped
+/// source-relative prefix, with every component proven not to be a symlink.
+/// A redirect would make a path outside the checkout (or a sibling subtree)
+/// the Session workspace, which worktree-access §2.2 forbids.
+async fn checked_subtree(root: &Path, relative: &Path) -> Result<PathBuf, WorktreeError> {
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        let Component::Normal(part) = part else {
+            return Err(WorktreeError::Invalid(
+                "the source workspace does not map to a relative subtree".into(),
+            ));
+        };
+        current.push(part);
+        let metadata = tokio::fs::symlink_metadata(&current)
+            .await
+            .map_err(|error| WorktreeError::Store(format!("{}: {error}", current.display())))?;
+        if metadata.file_type().is_symlink() {
+            return Err(WorktreeError::Invalid(format!(
+                "{} is a symlink; the Session subtree cannot be redirected",
+                current.display()
+            )));
+        }
+    }
+    let subtree = canonical(current).await?;
+    let root = canonical(root.to_path_buf()).await?;
+    let expected = root.join(relative);
+    if subtree != expected {
+        return Err(WorktreeError::Invalid(
+            "the Session subtree does not resolve inside the worktree root".into(),
+        ));
+    }
+    Ok(subtree)
+}
+
+/// A recorded root that exists but Git no longer names: there is no working
+/// tree to remove. An empty directory is deleted; other content needs the
+/// caller's `--force`; the Git metadata is pruned either way.
+async fn cleanup_unregistered_root(
+    repository: &Path,
+    root: &Path,
+    force: bool,
+    cancel: &CancellationToken,
+) -> Result<(), AgentError> {
+    let mut entries = tokio::fs::read_dir(root)
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?;
+    let empty = entries
+        .next_entry()
+        .await
+        .map_err(|error| AgentError::Storage(error.to_string()))?
+        .is_none();
+    if !empty && !force {
+        return Err(AgentError::InvalidInput(format!(
+            "{} is no longer a Git worktree and is not empty; --force removes it",
+            root.display()
+        )));
+    }
+    if !empty {
+        tokio::fs::remove_dir_all(root)
+            .await
+            .map_err(|error| AgentError::Storage(error.to_string()))?;
+    } else {
+        tokio::fs::remove_dir(root)
+            .await
+            .map_err(|error| AgentError::Storage(error.to_string()))?;
+    }
+    let _ = git(repository, &["worktree", "prune"], cancel, GIT_READ_TIMEOUT).await;
+    Ok(())
 }
 
 async fn existing_directory(path: &Path) -> Result<PathBuf, WorktreeError> {
@@ -1026,15 +1134,22 @@ impl DynPlugin for ManagedWorktreesPlugin {
                                 let mut removed = Vec::new();
                                 let mut failed = Vec::new();
                                 if request.apply {
-                                    for candidate in &selection.candidates {
-                                        match managed
-                                            .remove(&candidate.task_id, request.force, &cancel)
-                                            .await
+                                    let selected = if request.task_ids.is_empty() {
+                                        selection
+                                            .candidates
+                                            .iter()
+                                            .map(|candidate| candidate.task_id.clone())
+                                            .collect()
+                                    } else {
+                                        request.task_ids.clone()
+                                    };
+                                    for task_id in selected {
+                                        match managed.remove(&task_id, request.force, &cancel).await
                                         {
-                                            Ok(_) => removed.push(candidate.task_id.clone()),
+                                            Ok(_) => removed.push(task_id),
                                             Err(error) => {
                                                 failed.push(PruneFailure {
-                                                    task_id: candidate.task_id.clone(),
+                                                    task_id,
                                                     code: error.code().to_owned(),
                                                     message: error.message().to_owned(),
                                                 });
@@ -1078,6 +1193,9 @@ struct PruneParams {
     older_than: Option<String>,
     #[serde(default)]
     keep: Option<usize>,
+    /// The preview's task ids; an apply removes exactly these, rechecked.
+    #[serde(default)]
+    task_ids: Vec<String>,
     #[serde(default)]
     apply: bool,
     #[serde(default)]

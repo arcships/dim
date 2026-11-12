@@ -1836,6 +1836,7 @@ impl Connection {
                 if let (Some(created), Some(managed)) = (&worktree, &managed) {
                     managed.discard(created, &self.closed).await;
                 }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
                 return Err(RpcError::from(error));
             }
         };
@@ -1857,6 +1858,7 @@ impl Connection {
                 if let (Some(created), Some(managed)) = (&worktree, &managed) {
                     managed.discard(created, &self.closed).await;
                 }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
                 return Err(error);
             }
         }
@@ -1925,6 +1927,22 @@ pub(crate) fn configuration_outcome(
             "Configuration was superseded by another update",
         )),
     }
+}
+
+/// A failed creation after the Session transaction removed its rows: the
+/// directory record it wrote stays a candidate, so drop it when nothing
+/// associates it. A cleanup failure is visible in the next `worktree list`.
+async fn clear_worktree_record(
+    rpc: &RpcService,
+    worktree: Option<&crate::worktrees::CreatedWorktree>,
+) {
+    let (Some(created), Some(store)) = (worktree, rpc.ctx.get::<crate::storage::SessionStore>())
+    else {
+        return;
+    };
+    let _ = store
+        .remove_worktree_directory(created.prepared.directory.clone())
+        .await;
 }
 
 /// Session operations wait for the product execution profile.

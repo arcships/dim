@@ -1316,6 +1316,16 @@ impl SessionStore {
         let agent = agent_id.to_owned();
         let leader = leader.map(str::to_owned);
         let _ownership = self.ownership.lock().await;
+        if !tokio::fs::metadata(&config.cwd)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(AgentError::InvalidInput(format!(
+                "the Session workspace {} no longer exists",
+                config.cwd
+            )));
+        }
         let worktree = worktree
             .map(
                 |PreparedWorktree { directory, subtree }| -> Result<(String, String, String, i64)> {
@@ -1383,6 +1393,15 @@ impl SessionStore {
             ));
         }
         let _ownership = self.ownership.lock().await;
+        if !tokio::fs::metadata(&directory.root)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(AgentError::InvalidInput(
+                "the worktree root no longer exists".into(),
+            ));
+        }
         let session = session_id.to_owned();
         let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
         self.timeline
