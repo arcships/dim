@@ -672,13 +672,13 @@ impl AgentIndex {
             .map(|host| host.agent.sessions().len())
             .sum()
     }
-    /// Loaded Sessions with a running turn on `main`: work an idle shutdown
-    /// must not disturb.
+    /// Loaded Sessions with accepted work on any branch or a runtime activity
+    /// hold, including detached work an idle shutdown must not disturb.
     pub(crate) fn running_sessions(&self) -> usize {
         self.hosts()
             .iter()
             .flat_map(|host| host.agent.sessions())
-            .filter(|session| session.state("main").is_ok_and(|state| state.running))
+            .filter(|session| session.in_use().is_some())
             .count()
     }
     /// The public directory: the default Agent and the Agents
