@@ -24861,6 +24861,13 @@
     },
     {
       "from": "dim_app_server::connection",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path dim_agent_runtime::SessionConfig"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
       "to": "dim_agent_runtime::contracts",
       "references": [
         "path dim_agent_runtime::ConfigureOutcome",
@@ -24931,6 +24938,7 @@
       "from": "dim_app_server::connection",
       "to": "dim_agent_types::profile",
       "references": [
+        "path crate::agents::AgentProfile",
         "path dim_agent_types::ModelId"
       ]
     },
@@ -25094,6 +25102,7 @@
         "path Call::McpAppCall",
         "path Call::McpAppWidget",
         "path Call::McpRefresh",
+        "path Call::ModelPreview",
         "path Call::ModelUpdate",
         "path Call::PermissionGet",
         "path Call::PermissionUpdate",
@@ -25123,6 +25132,9 @@
         "path CreateResult",
         "path DeleteResult",
         "path ForkResult",
+        "path ModelPreview",
+        "path ModelPreviewResult",
+        "path ModelSelection",
         "path ModelUpdateResult",
         "path Outbound::message",
         "path Outbound::notice",
@@ -25144,6 +25156,7 @@
         "path Reply::McpAppCall",
         "path Reply::McpState",
         "path Reply::McpWidget",
+        "path Reply::ModelPreview",
         "path Reply::ModelUpdate",
         "path Reply::Permission",
         "path Reply::Ping",
@@ -25181,6 +25194,14 @@
       "references": [
         "path crate::provider::ProviderService",
         "path crate::provider::adopted_selection_preferences"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
+      "to": "dim_app_server::provider::startup",
+      "references": [
+        "path crate::provider::StartupInput",
+        "path crate::provider::StartupSelection"
       ]
     },
     {
@@ -37917,6 +37938,7 @@
       "to": "dim_agent_types::model",
       "references": [
         "path dim_agent_types::CatalogCapabilities",
+        "path dim_agent_types::ModelPreferences",
         "path dim_agent_types::ModelReasoning"
       ]
     },
