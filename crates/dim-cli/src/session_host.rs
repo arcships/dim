@@ -2195,18 +2195,17 @@ impl Worker {
         {
             Ok(reply) if reply.deleted == Some(false) => DeleteOutcome::NothingRemoved,
             Ok(_) => DeleteOutcome::Deleted,
-            Err(error) => match crate::client::app_error(&error) {
-                Some("session_closed") => {
-                    DeleteOutcome::AlreadyClosed(crate::session_command::reason(&error))
-                }
-                _ if error
+            Err(error) => {
+                let close_ran = error
                     .downcast_ref::<client::RpcError>()
-                    .is_some_and(|rpc| rpc.code == -32603) =>
-                {
-                    DeleteOutcome::ClosedNotRemoved(crate::session_command::reason(&error))
+                    .is_some_and(|rpc| rpc.code == -32603);
+                let reason = crate::session_command::reason(&error);
+                if close_ran {
+                    DeleteOutcome::ClosedNotRemoved(reason)
+                } else {
+                    DeleteOutcome::Failed(reason)
                 }
-                _ => DeleteOutcome::Failed(crate::session_command::reason(&error)),
-            },
+            }
         }
     }
 

@@ -298,7 +298,6 @@ impl SessionsPanel {
             DeleteOutcome::Deleted => self.list.remove(session_id),
             DeleteOutcome::NothingRemoved => self.refresh(),
             DeleteOutcome::Unsupported
-            | DeleteOutcome::AlreadyClosed(_)
             | DeleteOutcome::ClosedNotRemoved(_)
             | DeleteOutcome::Failed(_) => {}
         }

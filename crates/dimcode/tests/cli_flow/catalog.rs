@@ -1175,7 +1175,7 @@ fn tui_resume_delete_keeps_the_row_when_the_daemon_cannot_delete() {
 /// A failed delete keeps the row; a `{deleted:false}` reply re-reads the
 /// first page and reports that nothing was removed.
 #[test]
-fn tui_resume_delete_failures_keep_or_refresh_the_row() {
+fn tui_resume_delete_keeps_the_row_on_a_failure_and_refreshes_when_nothing_removed() {
     let home = Home::new();
     let workspace = std::fs::canonicalize(&home.0).unwrap();
     let workspace = workspace.to_str().unwrap().to_owned();

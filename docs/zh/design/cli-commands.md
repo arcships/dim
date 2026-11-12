@@ -1096,8 +1096,9 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
   删除可能等待一次缓慢的关闭，结果会显示在操作者所在的对话记录中。`{deleted:true}` 时行离开列表并显示
   `Deleted {name}.`；`{deleted:false}` 重新读取第一页并显示 `Nothing was removed: no stored
   Session {name}.`；出错时行保留并显示 `Delete failed · <守护进程的句子>`；不支持 `session.delete`
-  的守护进程保留行并说明不能删除 Session。删除当前显示的 Session 时，无论删除成功、关闭已执行而
-  删除失败（`-32603`）、还是已被其他调用方关闭，都像 `/new` 一样返回 Home 且不报告断开：
+  的守护进程保留行并说明不能删除 Session。另一个调用方已先移除的 Session 就是这样的 `{deleted:false}`
+  回复：已没有可移除的行。删除当前显示的 Session 时，无论删除成功、还是关闭已执行而删除失败
+  （`-32603`），都像 `/new` 一样返回 Home 且不报告断开：
   排在其后的 `session.state` 与 `session.closed` 通知不匹配任何 Session 而被忽略。一次只删一行；
   批量选择仍由 `dimcode session cleanup` 提供。
 - `dimcode --resume ID` 仍可恢复任何工作区的 Session，清理也在所有工作区范围内选择。

@@ -2565,7 +2565,6 @@ impl App {
                         t(crate::session_command::DELETE_UNSUPPORTED).to_owned(),
                         Tone::Warning,
                     ),
-                    DeleteOutcome::AlreadyClosed(message) => (message.clone(), Tone::Warning),
                     DeleteOutcome::ClosedNotRemoved(message) | DeleteOutcome::Failed(message) => (
                         [t("Delete failed"), " · ", message.as_str()].concat(),
                         Tone::Warning,

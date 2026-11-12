@@ -1737,10 +1737,11 @@ the selection down.
   `{deleted:false}` reply re-reads the first page and says `Nothing was
   removed: no stored Session {name}.`, an error keeps the row and shows
   `Delete failed · <daemon's sentence>`, and a daemon without `session.delete`
-  keeps the row and says it cannot delete Sessions. Deleting the shown Session
-  returns to Home as `/new` does and reports no disconnect, whether the delete
-  succeeded, the close ran and the removal failed (`-32603`), or another
-  caller closed the Session already: its queued `session.state` and
+  keeps the row and says it cannot delete Sessions. A Session another caller
+  removed before this reply is that `{deleted:false}`: there was nothing left
+  to remove. Deleting the shown Session returns to Home as `/new` does and
+  reports no disconnect, whether the delete succeeded or the close ran and
+  the removal failed (`-32603`): its queued `session.state` and
   `session.closed` match no Session and are ignored. One row at a time;
   `dimcode session cleanup` keeps the bulk selector.
 

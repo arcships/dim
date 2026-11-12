@@ -1160,9 +1160,6 @@ pub enum DeleteOutcome {
     NothingRemoved,
     /// The daemon offers no `session.delete`.
     Unsupported,
-    /// Another caller closed the Session already: the daemon's sentence says
-    /// so, and this daemon neither lists nor loads the Session again.
-    AlreadyClosed(String),
     /// The close ran but the removal failed: the rows stay, and this daemon
     /// neither lists nor loads the Session again.
     ClosedNotRemoved(String),
@@ -1174,10 +1171,7 @@ impl DeleteOutcome {
     /// Whether the call ended the Session in this daemon, so a picker showing
     /// that Session leaves for Home.
     pub fn ends_session(&self) -> bool {
-        matches!(
-            self,
-            Self::Deleted | Self::AlreadyClosed(_) | Self::ClosedNotRemoved(_)
-        )
+        matches!(self, Self::Deleted | Self::ClosedNotRemoved(_))
     }
 }
 
