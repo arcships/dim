@@ -122,18 +122,8 @@ jobs:
           target/debug/xtask check
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
-        shell: bash
         run: |
-          workspace_test_args=(--workspace --test-threads=3)
-          if [[ "$RUNNER_NAME" == macos-9 ]]; then
-            # See #1446.
-            workspace_test_args+=(
-              --skip an_image_is_recognized_under_the_confinement
-              --skip a_pdf_rasterizes_only_the_page_without_a_text_layer
-              --skip modality::ocr_recognizes_through_apple_vision
-            )
-          fi
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl "${workspace_test_args[@]}"
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=3
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'

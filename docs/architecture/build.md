@@ -25,8 +25,6 @@ Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only t
 
 The macOS clipboard flows use private pasteboards and serialize access to the shared pasteboard server; other tests remain parallel.
 
-The macOS ARM64 workspace suite exercises native Apple Vision recognition through the confined helper and product CLI. On the `macos-9` CI runner, the suite temporarily skips the two helper recognition cases and the CLI recognition case because the confined helper returns empty text ([#1446](https://github.com/arcships/dim/issues/1446)). The in-process OCR engine and deterministic helper error cases still run on that runner.
-
 Each runner's OS/libc baseline must be recorded and verified before declaring that platform supported. Cross-built executables are checked for the target architecture during staging, but installation and runtime acceptance still require the corresponding target system.
 
 Public Node provider and MCP interoperability fixtures use development dependencies declared in `runtime/package.json`. Install them with `npm ci --prefix runtime --ignore-scripts`; distribution staging uses `--omit=dev` and does not ship those SDKs.
