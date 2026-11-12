@@ -1950,6 +1950,10 @@ as conflicts; retry does not replay them over later user changes.
 
 P1 shell prefixes apply only to interactive input. Their execution, recording,
 progress, cancellation and lifetime follow [ShellInput](plugins/ShellInput.md).
+At Home, the first `!` or `!!` command creates and attaches the Session using
+the same launch settings and selected model as the first ordinary message,
+then calls `shell.run` without starting a model turn. A creation failure settles
+the command as failed and leaves Home available for configuration and retry.
 The CLI generates `runId` before sending the request and never retries a run.
 The command after the prefix is passed verbatim; an empty command prints usage.
 While a command is pending, a second shell line reports that the caller already
