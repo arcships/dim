@@ -7,6 +7,10 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const MODES: [&str; 3] = ["read-only", "workspace-write", "full-access"];
+/// The `effort` value that says the Session sends no reasoning effort, so the
+/// model's own default stays in force. It is not a native effort name, and
+/// choosing it clears the Session's effort.
+pub(crate) const PROVIDER_DEFAULT: &str = "provider-default";
 
 #[derive(Clone, Deserialize)]
 pub(crate) struct Policy {
@@ -25,6 +29,11 @@ pub(crate) struct Config {
     pub policy: Option<Policy>,
     pub model: Option<Configuration>,
     pub models: Vec<Model>,
+    /// Whether the Session offers `session.model.update` and the daemon
+    /// advertises the model catalog, which only the product provider assembles.
+    /// Effort choices come from the adopted declaration, so the option needs no
+    /// catalog read, but a preference write needs a product provider.
+    pub catalog: bool,
 }
 
 pub(crate) async fn models(rpc: &Rpc) -> Result<Vec<Model>, Error> {
@@ -149,6 +158,7 @@ impl Config {
             );
         }
         if config.methods.contains("session.model.update") && rpc.supports("provider.catalog") {
+            config.catalog = true;
             config.models = models(rpc).await?;
         }
         Ok(config)
@@ -179,7 +189,45 @@ impl Config {
         {
             options.push(json!({"id":"model","name":"Model","category":"model","type":"select","currentValue":current.model_id,"options":self.models.iter().map(|model| json!({"value":model.id,"name":model.name})).collect::<Vec<_>>()}));
         }
+        if let Some((choices, current)) = self.effort() {
+            let current = current.unwrap_or(PROVIDER_DEFAULT);
+            let mut values: Vec<String> = std::iter::once(PROVIDER_DEFAULT.to_owned())
+                .chain(choices)
+                .collect();
+            if !values.iter().any(|value| value == current) {
+                values.push(current.to_owned());
+            }
+            options.push(json!({"id":"effort","name":"Reasoning effort","category":"thought_level","type":"select","currentValue":current,"options":values.into_iter().map(|value| json!({"value":value,"name":value})).collect::<Vec<_>>()}));
+        }
         options
+    }
+
+    /// The effort choices the adopted model declares, and the effort the
+    /// adopted configuration carries, which may be one the declaration does not
+    /// list. A display-only value like that is shown so the option stays
+    /// truthful; `set` validates against the declared choices alone.
+    ///
+    /// `None` when the model declares no reasoning effort, or when the Session
+    /// cannot update it.
+    fn effort(&self) -> Option<(Vec<String>, Option<&str>)> {
+        let current = self.model.as_ref()?;
+        if !self.catalog {
+            return None;
+        }
+        let snapshot = current.capability_snapshot.as_ref()?;
+        let reasoning = snapshot
+            .reasoning
+            .as_ref()
+            .filter(|reasoning| reasoning.supported && snapshot.capabilities.reasoning)?;
+        let choices = reasoning.offered_efforts();
+        if choices.is_empty() {
+            return None;
+        }
+        let adopted = current
+            .model_preferences
+            .as_ref()
+            .and_then(|preferences| preferences.reasoning_effort.as_deref());
+        Some((choices, adopted))
     }
 
     pub(crate) fn response(&self) -> Value {
@@ -216,6 +264,31 @@ impl Config {
                     )
                     .await?,
                 );
+            }
+            "effort" => {
+                #[derive(Deserialize)]
+                struct Adopted {
+                    outcome: String,
+                }
+                let Some((choices, _)) = self.effort() else {
+                    return Err(Error::invalid_params());
+                };
+                let patch = if value == PROVIDER_DEFAULT {
+                    json!({"action":"clear"})
+                } else if choices.iter().any(|choice| choice == value) {
+                    json!(value)
+                } else {
+                    return Err(Error::invalid_params());
+                };
+                let result: Adopted = rpc
+                    .typed(
+                        "session.model.update",
+                        json!({"sessionId":id,"branchId":"main","modelPreferences":{"reasoningEffort":patch}}),
+                    )
+                    .await?;
+                if !matches!(result.outcome.as_str(), "adopted" | "unchanged") {
+                    return Err(Error::internal_error());
+                }
             }
             "model" => {
                 #[derive(Deserialize)]

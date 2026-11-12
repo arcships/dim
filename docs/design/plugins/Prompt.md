@@ -17,7 +17,7 @@ Not Prompt's:
 
 - an entry's words belong to the capability that writes the marker (§6);
 - the request shape belongs to Loop, the adopted configuration to ContextPreparation, the summary path to ContextPolicy;
-- the state and rule sources and the words the model reads in them belong to PromptSources; the two markers are Prompt's, which writes them (§4).
+- the state and rule sources and the words the model reads in them belong to their source owners; the shared markers' guide entries belong to `PromptGuide` (§4).
 
 Not this design: each capability's list of model-facing texts with its protocol and policy marks, and the flow assertion in that writer's own flow ([#551](../model-prompts.md#92-every-capability-that-writes-model-facing-text), [#552](../model-prompts.md#94-timelinetree), [#553](../model-prompts.md#95-goal), [#554](../model-prompts.md#96-contextcompaction)); removing Prompt's two call sites ([#555](../model-prompts.md#97-loop-and-contextpreparation)).
 
@@ -122,7 +122,7 @@ Each built-in entry moves verbatim to the capability that writes its markers, an
 | 120 | `dim-workflow` | Workflow's Session part | session | The run's report and its stage markers |
 | 130 | `dim-event`, `dim-event-guide` | EventHub's Session part | session | The delivered event, and the guide of the source that delivered it |
 
-The registrar is the part that writes the marker, not the part that authors the source's words. Prompt turns any `Context` or `State` source into a `<dim-rule>` or `<dim-state>` input, so those two markers are Prompt's even when the source's words are PromptSources'. A profile that installs Prompt without PromptSources can still be handed a context source, and the markers it writes need their entries.
+For a plugin-specific marker, the registrar is the part that writes it, not the part that authors a source's words. `PromptGuide` owns the shared `dim-rule` and `dim-state` entries: Prompt writes those markers for its registered sources, and runtime parts may also append unkeyed `dim-state` snapshots through the input path. Profiles exposing either form include `PromptGuide`; snapshot writers reuse its entry and do not register competing entries. The state entry explains the latest observed value for a source, not a request or permission. It does not promise retention: the input key governs compaction replay ([model-facing prompts §3](../model-prompts.md#3-channels)).
 
 A compaction's replacement belongs to the policy every strategy is called through, not to a strategy: the policy composes the digest after any strategy returns ([ContextCompaction §5.10](ContextCompaction.md#510-class-3a-the-digest)). The entry therefore registers with the part that binds the policy, and only while a strategy is bound — a Session with no strategy compacts nothing and writes no digest. A Session with a strategy other than the product one still sends `<dim-digest>`, and its guide explains it.
 

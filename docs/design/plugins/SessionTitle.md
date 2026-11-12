@@ -2,7 +2,7 @@
 
 Overall design: [overview](../overview.md) (SessionTitle). Scope: [ADR 002](../../adr/002-plugin-scope.md) (Session).
 
-SessionTitle is a Session plugin that gives an interactive leader Session a title stored through SessionStore metadata. It observes its own Session through the existing Session broadcast; when the first eligible input on `main` is adopted (`input/applied`) — an operator input with `user` content, or Goal's applied objective (A10) — it generates a title from that input's text alone through the routing policy in §3.3. The title is SessionStore state: SessionTitle writes it only through SessionStore's typed `setTitle` operation, and SessionStore announces each change with a Session broadcast notice that clients consume (the delivered C6 notice record is described in [§9](#9-requirements-raised-to-mechanism-owners); the SessionStore title metadata and the Rpc forwarding are supplements in [overview Appendix B.2](../overview.md#b2-app-server-process-plugins)). It serves `session.rename` by registering the namespace `session.rename` with its Session's `sessionMethods` ([methods and tool contributions](../contracts/session-boundary.md)). It writes no Timeline event and has no model-visible effect. Contracts are given in neutral form ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding is in Appendix G.
+SessionTitle is a Session plugin that gives an interactive leader Session a title stored through SessionStore metadata. It observes its own Session through the existing Session broadcast; when the first eligible input on `main` is adopted (`input/applied`) — an operator input with `user` content, or Goal's applied objective (A10) — it generates a title from that input's text alone through the routing policy in §3.3. The title is SessionStore state: SessionTitle writes it only through SessionStore's typed `setTitle` operation, and SessionStore announces each change with a Session broadcast notice that clients consume (the delivered C6 notice record is described in [§9](#9-requirements-raised-to-mechanism-owners); the SessionStore title metadata and the Rpc forwarding are supplements in [overview Appendix B.2](../overview.md#b2-app-server-process-plugins)). It serves `session.rename` by registering the namespace `session.rename` with its Session's `sessionMethods` ([methods and tool contributions](../contracts/session-boundary.md)), and it writes the title a Session's creation requested, once, as the first manual title (§3.4). It writes no Timeline event and has no model-visible effect. Contracts are given in neutral form ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding is in Appendix G.
 
 ## 0. Implementation boundary
 
@@ -138,7 +138,7 @@ flowchart TB
   subgraph STORE["SessionStore metadata (persistent)"]
     MD["revision, title text, source auto or manual"]
   end
-  CONF["SessionConfig: interactive, collaborationRole"]
+  CONF["SessionConfig: interactive, collaborationRole, initialTitle"]
   CFG["session-title: enabled, maxLength, model"]
   MEM["in-flight generation, failed attempts (memory)"]:::new
   FUI -->|"text only"| MEM
@@ -232,6 +232,41 @@ refresh and rejection classification belong to its [runtime contract](../../../c
 SessionTitle receives neither credentials nor an issuer. The model-selection owner, AuxiliaryModel,
 model execution, Timeline and Dispatcher have no title routing policy. No additional registry or wiring plugin is used.
 
+### 3.4 The title a Session's creation requested
+
+`sessions.launch` may carry `title`, the label its caller already knows for the Session
+([sessions service §6.1](../appserver/sessions-service.md#61-launch)). Agents stores it in the new Session's
+fixed configuration as `initialTitle`; SessionTitle is still the title's one writer, so the store never receives a
+title written by the caller.
+
+```mermaid
+sequenceDiagram
+  participant L as sessions.launch
+  participant A as Agents
+  participant ST as SessionTitle (in the Session)
+  participant Meta as SessionStore metadata
+  L->>A: launch {title}
+  A->>A: SessionConfig.initialTitle = title
+  Note over ST: apply, Session published
+  ST->>Meta: metadata: revision 0?
+  ST->>ST: rename's text rule, then maxLength
+  ST->>Meta: setTitle(expected 0, manual)
+  Meta-->>ST: revision 1
+  Note over Meta: title notice on the Session broadcast
+```
+
+- **Once.** The write happens only while the stored revision is 0. A later rename or clear is therefore never undone
+  by a reload: the configuration keeps `initialTitle`, and the part skips the write once anything has titled the
+  Session. A `conflict` at `setTitle` means another writer titled it first, and that title wins.
+- **The text rule.** It is `session.rename`'s: trim the text, and write nothing for an empty one or one with a control
+  character or a line separator. The length is bounded to the operator's `maxLength` the way a fallback title is, and
+  punctuation stays: `title_text` strips it because it is for model output, and this text is the caller's.
+- **When.** The write runs after `apply` and after the Session is published, in the part's own task, so the launch's
+  reply may arrive first. The row shows the title once the title notice is sent, which is the same path a rename takes.
+- **For every Session.** Interactive and non-interactive alike: the initial title needs no model and no eligibility
+  gate. Generation keeps its gate ([§4](#4-timing-and-conflicts)); a Session with an initial title is already titled, so
+  generation would skip it anyway.
+
 ## 4. Timing and conflicts
 
 ```mermaid
@@ -252,6 +287,7 @@ The revision check is the recheck: a manual title always wins.
 | Scenario | Order | Outcome | Owner |
 | --- | --- | --- | --- |
 | Member Session (`collaborationRole`), or a non-interactive Session | `SessionConfig` | Never generated; rename allowed | SessionTitle |
+| Session whose creation requested a title (`initialTitle`) | `SessionConfig`, revision 0 | Written once as a manual title under rename's text rule and `maxLength`; a later rename or clear wins on reload (§3.4) | SessionTitle |
 | Second input before generation finishes | — | Skipped (in flight) | SessionTitle |
 | First input deleted | input < `input/deleted` | Never adopted: no title from it; the next adopted eligible input triggers (A9) | SessionTitle |
 | Generation paths failed | — | Input-excerpt fallback (§3.3); storage failure may retry while untitled (A5) | SessionTitle |
@@ -366,7 +402,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Step | Path |
 | --- | --- |
 | Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; `sessionLifecycle.closing()` or copy cleanup ends owned work |
-| Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"`; native omission means true |
+| Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"` for generation; native omission means true. A requested initial title (`initialTitle`, §3.4) is written for interactive and non-interactive Sessions alike: it needs no model, and it is the caller's own text |
 | Trigger | On `input/applied` at `N`: skip if not eligible, disabled, in flight or failed attempts ≥ 3 (A5); otherwise start a generation task owned by the plugin's lifetime |
 | Check | `sessionMetadata.read({sessionId})`: skip if any title exists; keep revision `r` |
 | Read | The four field queries in §0.1 share published T >= N. No adopted eligible input/text means no title (A8/A10). |

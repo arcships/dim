@@ -21,6 +21,7 @@ enum Answer {
     #[default]
     Proceed,
     ProceedWith(Vec<String>),
+    ProceedWithWarnings(Vec<String>),
     Block(String),
 }
 
@@ -31,6 +32,9 @@ struct TestCheck {
     requests: Mutex<Vec<SubmitCheckRequest>>,
     entered: Mutex<Option<tokio::sync::mpsc::UnboundedSender<()>>>,
     gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// Both callers must reach the check before either returns, so two
+    /// concurrent duplicates race on the write itself.
+    together: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 impl TestCheck {
     fn answer(&self) -> Answer {
@@ -57,15 +61,29 @@ impl CheckSubmission for TestCheck {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request);
             let gate = self.gate.lock().unwrap().clone();
+            let together = self.together.lock().unwrap().clone();
             if let Some(entered) = self.entered.lock().unwrap().take() {
                 let _ = entered.send(());
+            }
+            if let Some(together) = together {
+                together.wait().await;
             }
             if let Some(gate) = gate {
                 let _ = gate.acquire().await;
             }
             Ok(match self.answer() {
-                Answer::Proceed => SubmitCheckReply::Proceed { blocks: Vec::new() },
-                Answer::ProceedWith(blocks) => SubmitCheckReply::Proceed { blocks },
+                Answer::Proceed => SubmitCheckReply::Proceed {
+                    blocks: Vec::new(),
+                    warnings: Vec::new(),
+                },
+                Answer::ProceedWith(blocks) => SubmitCheckReply::Proceed {
+                    blocks,
+                    warnings: Vec::new(),
+                },
+                Answer::ProceedWithWarnings(warnings) => SubmitCheckReply::Proceed {
+                    blocks: Vec::new(),
+                    warnings,
+                },
                 Answer::Block(message) => SubmitCheckReply::Block { message },
             })
         })
@@ -355,6 +373,219 @@ async fn a_block_that_is_not_a_runtime_marker_is_dropped() {
     server.join().await.unwrap();
 }
 
+/// A.6.2: a check's warning reaches the caller as `{check, message}`, names
+/// the registration that raised it, and never enters the input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_proceeding_check_reports_its_warnings_in_the_submit_reply() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWithWarnings(vec![
+        "Hook user did not finish: exited with 3".into(),
+    ]));
+    let (server, agent, _) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert_ok(&submitted);
+    assert_eq!(
+        submitted["result"]["warnings"],
+        json!([{"check": "test", "message": "Hook user did not finish: exited with 3"}]),
+        "the reply names the check that raised the warning"
+    );
+    let user = inputs(&session)
+        .await
+        .pop()
+        .expect("the input was written")
+        .user
+        .expect("the input is operator input");
+    assert_eq!(
+        user.content,
+        vec![ContentBlock::Text {
+            text: "hello".into()
+        }],
+        "a warning is not model context"
+    );
+
+    let idle = client
+        .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
+        .await;
+    assert_ok(&idle);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: the reply carries no `warnings` key when no check raised one, which
+/// is what keeps the reply shape additive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_submit_reply_without_warnings_carries_no_key() {
+    let check = Arc::new(TestCheck::default());
+    let (server, _agent, _) = launch(check).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert_ok(&submitted);
+    assert!(
+        submitted["result"].get("warnings").is_none(),
+        "an empty warning list is absent from the reply: {submitted}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: a block ends the table's work, and the warnings of the checks that
+/// already ran are discarded with it: the block already names the hook that
+/// stopped the input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_block_discards_the_other_checks_warnings() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::Block("Hook test: no prompts today".into()));
+    let (server, _agent, _) = launch(check).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+
+    let refused = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert_eq!(refused["error"]["data"]["appError"], "input_blocked");
+    assert!(
+        refused.get("warnings").is_none() && refused["error"].get("warnings").is_none(),
+        "a block carries no warnings: {refused}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2 and D4: a branch's first input takes no context, but the reply still
+/// names the work a check did not do, because the TUI and the Web open lines
+/// through this entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_branch_create_reply_reports_the_checks_warnings() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWithWarnings(vec![
+        "Hook user did not finish: exited with 3".into(),
+    ]));
+    let (server, agent, _) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": ["branch"]}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": id, "parentBranchId": "main",
+                "at": session.sequence("main").unwrap(), "prompt": "child work"}),
+        )
+        .await;
+    assert_ok(&opened);
+    assert_eq!(
+        opened["result"]["warnings"],
+        json!([{"check": "test", "message": "Hook user did not finish: exited with 3"}]),
+        "the branch's reply names the check that raised the warning"
+    );
+    let child = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = branch_events(&session, &child, ..)
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => data.user.clone(),
+            _ => None,
+        })
+        .expect("the branch's first input");
+    assert_eq!(
+        first.content,
+        vec![ContentBlock::Text {
+            text: "child work".into()
+        }],
+        "a branch's first input is its prompt alone"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: `session.branch_create` is served from protocol v2 on, and the v2
+/// encoding is frozen, so a v2 connection gets no `warnings` key even when the
+/// check raised one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_v2_branch_create_reply_carries_no_warnings() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWithWarnings(vec![
+        "Hook user did not finish: exited with 3".into(),
+    ]));
+    let (server, agent, _) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 2).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": ["branch"]}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId": id, "parentBranchId": "main",
+                "at": session.sequence("main").unwrap(), "prompt": "child work"}),
+        )
+        .await;
+    assert_ok(&opened);
+    assert!(
+        opened["result"].get("warnings").is_none(),
+        "a frozen v2 reply carries no warnings: {opened}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_proceeding_branch_create_drops_the_checks_context() {
     let check = Arc::new(TestCheck::default());
@@ -441,6 +672,134 @@ async fn a_client_that_disconnects_during_a_check_still_gets_its_input_written()
         inputs(&session).await.len(),
         1,
         "a client's disconnect cancels nothing; the input is written"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: a warning describes the write its own call made. Resubmitting a
+/// `submissionId` the branch already holds writes nothing, so the reply is
+/// the first input's receipt and carries none of the retry's warnings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_duplicate_submission_carries_none_of_its_own_warnings() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWith(vec![CONTEXT.into()]));
+    let (server, agent, _) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+
+    let submission = uuid::Uuid::new_v4().to_string();
+    let first = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "submissionId": submission,
+                "text": "ship it"}),
+        )
+        .await;
+    assert_ok(&first);
+    let first_id = first["result"]["event"]["id"].as_str().unwrap().to_owned();
+
+    check.set(Answer::ProceedWithWarnings(vec![
+        "Hook user did not finish: exited with 3".into(),
+    ]));
+    let mut retry = Client::new_version(&server, false, 3).await;
+    let repeated = retry
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "submissionId": submission,
+                "text": "ship it"}),
+        )
+        .await;
+    assert_ok(&repeated);
+    assert_eq!(
+        repeated["result"]["event"]["id"], first_id,
+        "a duplicate returns the input the branch already holds"
+    );
+    let written = inputs(&session).await;
+    assert_eq!(written.len(), 1, "a duplicate writes no second input");
+    let user = written[0]
+        .user
+        .as_ref()
+        .expect("the input is operator input");
+    assert_eq!(
+        user.content,
+        vec![
+            ContentBlock::Text {
+                text: "ship it".into()
+            },
+            ContentBlock::Text {
+                text: CONTEXT.into()
+            },
+        ],
+        "the receipt keeps the context of the write that committed it"
+    );
+    assert!(
+        repeated["result"].get("warnings").is_none(),
+        "a duplicate did not write an input, so it carries no warnings: {repeated}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A.6.2: two concurrent duplicates both run their checks and then race on the
+/// write. The append that commits decides, so exactly one reply carries the
+/// warnings of the write it made and the other answers the committed input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_duplicates_report_warnings_once_for_the_committed_write() {
+    let check = Arc::new(TestCheck::default());
+    check.set(Answer::ProceedWithWarnings(vec![
+        "Hook user did not finish: exited with 3".into(),
+    ]));
+    let (server, agent, _) = launch(check.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc(
+            "session.create",
+            json!({"cwd": std::env::temp_dir(), "tools": []}),
+        )
+        .await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+    let submission = uuid::Uuid::new_v4().to_string();
+    // Both checks are in flight before either reply is decided, so neither
+    // caller can see the other's write by looking first.
+    *check.together.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
+
+    let params = json!({"sessionId": id, "branchId": "main",
+        "submissionId": submission, "text": "ship it"});
+    let mut other = Client::new_version(&server, false, 3).await;
+    let first_id = client.send("session.submit", params.clone()).await;
+    let second_id = other.send("session.submit", params.clone()).await;
+    let first = client.response(first_id).await;
+    let second = other.response(second_id).await;
+    for reply in [&first, &second] {
+        assert_ok(reply);
+    }
+    assert_eq!(
+        first["result"]["event"]["id"], second["result"]["event"]["id"],
+        "both callers answer the one committed input"
+    );
+    assert_eq!(
+        inputs(&session).await.len(),
+        1,
+        "concurrent duplicates write one input"
+    );
+    let warned = [&first, &second]
+        .iter()
+        .filter(|reply| reply["result"].get("warnings").is_some())
+        .count();
+    assert_eq!(
+        warned, 1,
+        "exactly the reply whose write committed carries warnings: {first} {second}"
     );
     server.shutdown();
     server.join().await.unwrap();

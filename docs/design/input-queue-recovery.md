@@ -28,10 +28,10 @@ handover 从不 applied、不计 queued；仅在所指 turn 打开时保留。�
 
 1. 普通输入：kind=input/message，handover 缺失，不存在 consumed/deleted.input_id=id。Fields(id,position,data.mode)。成员索引直接读当前集合，页128。
 2. handover：同一反关联，改为 handover 存在。Fields(id,position,data.handover.turn_id)。v40 的 input-handover/v1 维护 presence=true 分组。
-3. 每个非空当前成员页最多128个 input_id，一次查询 kind IN(applied,withdraw) AND data.input_id IN(本页ID)，按 kind、input_id 分组取 Last；handover 页只查 withdraw。最多256条控制字段，当页用完释放。当前无 applied 且已有 withdraw 的条目写 deleted；已有 applied 的 withdraw 返回 notHeld，不重新 apply。
+3. 每个非空当前成员页最多128个 input_id，一次查询 kind IN(applied,withdraw) AND data.input_id IN(本页ID)，按 kind、input_id 分组取 First，并保留所选 withdraw 的 id、position；handover 页只查 withdraw。最多256条控制字段，当页用完释放。同一输入的第一个 withdraw 决定候选，后续指令不能覆盖；applied 是该输入唯一的交接事实。当前无 applied 且已有 withdraw 的条目欠一个接受决定；已有 applied 的 withdraw 返回 notHeld，不重新 apply，也不加载候选。仅为欠下的接受决定，按所选 withdraw 身份查询可选 data.steer，恢复完整已检查的候选，不重新运行提交检查。没有候选时只写 deleted；有候选时同一原子批次先写替换 input/message、最后写原输入的 input/deleted；不同当前成员的欠下结果按 withdraw 位置排序。已提交该批次的原输入不在当前成员中，不重建替换。候选不是已采纳输入，不进入模型上下文。持久格式见 [v43 决定](appserver/native-storage-format.md#v43-conditional-queued-input-steer)。
 4. start/end 各取最后一条 turn_id、position，构造 turn。存在 released 驱动且 turn 为空时才查最后 interrupt。只比较标量位置，不遍历旧 turns。
 5. 已有 applied 时采用 applied.mode，缺省为 Queue，与原 Loop 一致。只有未 applied 且 input/message.mode 缺失时才对该 input_id 查询 user 的 Present/非 null，按已有 effective_mode 规则恢复。不得为判断存在性返回整个 user。SQLite 对内联 JSON 的解析成本仍计入这一个选中对象，不宣称 Fields 自动免解析。
-6. 建立当前 entries 后执行原调度：已释放不重放；有效 turn 或 starting 时持有 queue；可释放时写原 applied；无效 handover/有效撤回写原 deleted。
+6. 建立当前 entries 后执行原调度：已释放不重放；有效 turn 或 starting 时持有 queue；可释放时写原 applied；无效 handover 写原 deleted，有效撤回写第3步确定的删除或替换批次。
 
 判定 withdraw 使用决定时的状态：applied 在 withdraw 之前已经提交则不可撤回；没有 applied 则 held。按序 owner 不会先写较晚释放再处理较早撤回；发现违背此生产合同的数据报错，不能用最新值掩盖。
 
@@ -43,7 +43,9 @@ handover 从不 applied、不计 queued；仅在所指 turn 打开时保留。�
 
 普通实时处理直接用原 QueueState 更新内存。删除/消费只查目标 id；turn/end 只处理对应 handover 与下一 held 输入。保留原标准有序集合，不为本轮重写调度算法；当前 K 项的查找最坏 O(K)，K不包含已结束历史。queued 使用入队/消费/删除的计数变化维护，不先复制整个 entries 比较。
 
-有 Apply/Delete 输出时沿用原 append_batch 和发布合同；纯 turn/starting 内存变化在该已提交源的处理完成后发布 InputSnapshot，不新增等待恢复事件的门槛。重复 turn 边界、空队列、无效 withdraw 都不写恢复结果。关闭只清理本代 waiter，不刷新快照。
+有 Apply/Delete 输出（包括已接受 Steer 的替换/删除原子批次）时沿用原 append_batch 和发布合同；纯 turn/starting 内存变化在该已提交源的处理完成后发布 InputSnapshot，不新增等待恢复事件的门槛。重复 turn 边界、空队列、无效 withdraw 都不写恢复结果。关闭只清理本代 waiter，不刷新快照。
+
+InputQueue 分支服务返回已提交决定；InputMethods 经分支 facade 确认已接受 Steer 的结果发布后才返回 RPC receipt，确认失败返回 publication_unknown。notHeld 不写替换或删除，也不返回替换 receipt；不能因发布失败把已接受决定改成 notHeld。
 
 ~~~text
 input/message -> 内存 entries -> 必要 input/applied
@@ -54,7 +56,7 @@ reload -> 当前成员 + 每项决定事实 + 最新控制 -> 当前内存 -> �
 
 ## 5. 成本与修改
 
-空队列正常冷读4次 query（两个当前成员组、两个 turn 边界），无正文、无写入。一个非空成员页增加一次批量控制查询，只解码本页当前 Entry；仅旧未释放输入的 mode 缺失时另查存在性。存在 released 驱动且无打开 turn 时再加一次 interrupt。当前集合分多页时每组按128个身份分页，只有有 next 才续页；这些都是当前任务，不是已完成历史。
+空队列正常冷读4次 query（两个当前成员组、两个 turn 边界），无正文、无写入。一个非空成员页增加一次批量控制查询，只解码本页当前 Entry；仅旧未释放输入的 mode 缺失时另查存在性。欠下的接受决定另按所选 withdraw 身份加载 data.steer，其完整候选字节和读取成本单独计入，不为此读取原 input/message 正文或扫描历史。存在 released 驱动且无打开 turn 时再加一次 interrupt。当前集合分多页时每组按128个身份分页，只有有 next 才续页；这些都是当前任务，不是已完成历史。
 
 普通完整聊天一轮 Queue 仍写原 applied 1条；message、consumed、start/end 归原生产者。本设计额外事件为0。自动续行、配置改变、异常终止、空队列重载的恢复事件同样为0；异常后的实际删除/释放逐项按业务决定计数，不在“0快照”中抹去。
 
@@ -77,7 +79,7 @@ reload -> 当前成员 + 每项决定事实 + 最新控制 -> 当前内存 -> �
 
 ## 7. 验收、Rule check 与删减
 
-复用 queue/steer/append、handover、starting/interrupt、消费、撤回、装配恢复与 publication_unknown 流程。覆盖 applied 前后崩溃、withdraw 提交后尚无 deleted、turn/end 尚未清 handover、已消费驱动不误设 starting、同一 cutoff 续页。正常输入消费在其 turn/start 之后；违反此关系不是另造恢复状态的理由。
+复用 queue/steer/append、handover、starting/interrupt、消费、撤回、装配恢复与 publication_unknown 流程。覆盖 applied 前后崩溃、withdraw 提交后尚无 deleted（有候选时恢复原检查结果并原子替换，不重跑检查；已提交替换不重建；notHeld 无替换/删除）、turn/end 尚未清 handover、已消费驱动不误设 starting、同一 cutoff 续页。正常输入消费在其 turn/start 之后；违反此关系不是另造恢复状态的理由。
 
 | 规则 | 本设计 |
 | --- | --- |

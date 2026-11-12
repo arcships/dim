@@ -80,6 +80,20 @@ without resending, even while the connection stays open. Known pre-commit input,
 Session, service and method rejections report their original error. Resume the
 printed Session handle to inspect an uncertain outcome.
 
+A successful reply can carry a submit check's `warnings` — work the input was
+written without, such as a `UserPromptSubmit` hook that did not finish. The CLI
+prints one line per warning, as the check sent it
+(`Hook user did not finish: exited with exit status: 3`): in the terminal UI as a
+status row in the warning colour beside the message it belongs to, in the line
+client as one line (`stdout` when interactive, `stderr` otherwise, so `exec
+--json` stdout stays pure JSON), and in `exec` on `stderr`. The same holds for a
+steer (`session.input.withdraw`) and for opening a line
+(`session.branch_create`). A steer's warnings belong to the replacement that
+call wrote, and a call that wrote none shows none; whether a withdrawal whose
+old message has left the queue writes one is the withdrawal rule's decision
+(`docs/design/contracts/session-access.md` A.4), whose notice is shown either
+way.
+
 The idle prompt edits a multiline draft. Enter sends; Ctrl+J inserts a newline.
 Terminal bracketed paste inserts one group without submitting embedded newlines.
 Multiline pastes and pastes over 16 KiB appear as atomic markers:
@@ -186,7 +200,9 @@ unsupported daemon.
 [--yes]` deletes the Sessions a selector matches. The delete reply says whether the
 call removed the Session: `true` prints `Deleted ID`; `false` prints `Nothing was
 removed: no stored Session ID.` on stderr and exits 1,
-and a reply without the field, from an older App Server, prints `Deleted ID`. Cleanup
+and a reply without the field, from an older App Server, prints `Deleted ID`. The
+TUI's `/resume` calls the same method on one row with the same reply meanings and
+returns to Home as `/new` does when the row is the shown Session. Cleanup
 selects across every workspace, not only the one `/resume` opens on: the classes it
 selects are the ones `/resume` lists by default
 ([classification](../../docs/design/appserver/session-classification.md)): origin
@@ -619,33 +635,53 @@ Modality command: no target is ever replaced. `--json` prints the record and `--
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
-`/permissions` selects a preset and opens the Command rules area:
+`/permissions` groups the Session's preset separately from user-wide settings:
 
 ```text
-Permissions
-  Read only           Read files; deny writes and process commands
-  Workspace write     Write inside the workspace; ask outside it
-  Full access         No path limits; tools run without asking
-  Command rules       List, add and remove the user's command rules
-
-Settings
-  Permission          Workspace write >
-  Process isolation   >
+╭─ Permissions ──────────────────────────────────────────────────────────╮
+│ Permission mode                                                        │
+│   ( ) Read only                                                        │
+│   (*) Workspace write                                                  │
+│   ( ) Full access                                                      │
+│ Related settings                                                       │
+│   Command rules  ›                                                     │
+│   Process isolation  ›                                                 │
+│                                                                        │
+│ Hint: Current session; remembered for new sessions. Workspace writes    │
+│       allowed; commands, network and ungranted outside access usually   │
+│       ask.                                                             │
+╰──── ↑↓/Tab move · Enter keep mode · Esc close ──────────────────────────╯
 ```
+
+Headings are not selectable and have no scope captions. `(*)` marks the effective preset,
+not focus; inactive presets use `( )`, and submenu links use `›`. Only the focused entry's
+Hint explains its scope and consequences. Preset Hints identify the current Session and the
+remembered choice for new Sessions; Command rules and Process isolation Hints identify their
+user-wide scope. Live policy changes update the marker without moving focus.
 
 The Command rules row opens the management panel of `Area::Permissions`: one entry per rule,
 whose id and label are the rule's value (`DECISION MATCH COMMAND`), with `Ctrl+R` reload, `Ctrl+N`
-add and `Ctrl+X` remove. Esc returns to the Permissions panel.
+add and `Ctrl+X` remove. Process isolation opens the Settings control, independently of the
+permission mode, and affects new processes. Esc from either submenu returns to the Permissions
+panel with the originating row focused, including when Permissions was opened from Settings.
 
-Choosing a preset preserves the tool lists and saves `permission` in `config.json` for later
-terminal Sessions. The CLI reads the legacy `permissionPreset` only when `permission` is absent;
-`--permission` takes precedence. Process isolation stays in Settings.
+Opening or navigating the panel writes nothing. The footer says `Enter use mode` for an inactive
+preset, `Enter keep mode` for the effective preset, and `Enter open` for a submenu. With a Session,
+choosing a preset reads the current policy and writes a versioned update only if the preset
+differs, preserving the tool lists. A successful choice saves `permission` in `config.json` for
+later terminal Sessions, even when no policy update was needed. The CLI reads the legacy
+`permissionPreset` only when `permission` is absent; `--permission` takes precedence.
 
 | Preset | Reads | File writes | Commands, network, unclassified tools |
 | --- | --- | --- | --- |
 | `read-only` | run | denied | denied |
 | `workspace-write` (product default) | run | run inside the workspace; ask outside | ask |
 | `full-access` | run | run | run |
+
+These preset decisions do not override explicit denials or process isolation. Full access skips
+preset approval and reevaluates pending calls on the target branch; it does not unconditionally
+allow every call. Reads outside the workspace, system roots, Session-owned files and granted
+paths may ask under Read only and Workspace write.
 
 Under workspace-write, an outside write without a matching Session grant asks for that call,
 even when its tool is explicitly allowed. Approval does not automatically save a grant.
@@ -969,13 +1005,19 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
  ◆ Thinking… · text
  ◐ 1 · cargo build 1m12s  the tasks running apart from the turn
  ╭─ · thinking… ─────────────────────────────╮
- │ › Ask anything...                        │   composer stays anchored
+ │ › Ask anything... · Ctrl+J newline        │   composer stays anchored
  ╰──────────────────────────────────────────╯
 ```
 
 The task row sits above the composer here as it does above the dock in fullscreen,
 so the released space of a closing menu still returns below it and the composer
 keeps its place.
+
+Both modes show `Ask anything... · Ctrl+J newline` in an empty composer,
+translated into the interface language. Typing replaces the placeholder;
+prompt suggestions and shell mode keep their own text. `Ctrl+J` inserts a
+newline without submitting and does not require the terminal to distinguish
+`Shift+Enter` from `Enter`.
 
 While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
 
@@ -987,7 +1029,7 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
  ╭─────────────────────────────── provider / model · effort ─╮      dock: queue, composer
- │                                                            │      and panels stay pinned
+ │ Ask anything... · Ctrl+J newline                           │      and panels stay pinned
  │                                                            │      to the bottom; the box
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
@@ -1007,8 +1049,8 @@ opens `/tasks` while it shows, once no held message is left to steer.
 | Sending a message | Follow the bottom again |
 | Mouse drag | Select transcript text; release copies it (OSC 52, plus `pbcopy` locally on macOS; inside tmux OSC 52 goes through passthrough, which needs `set -g allow-passthrough on`) |
 | Click a link | Opens it in the system browser (OSC 8 links, or a bare `http(s)://` URL); over SSH the status row shows the URL instead |
-| Click a tool group's header or a thought's title | Cycles a tool group through collapsed (`▸`), summary (`▾`) and expanded (`▾`), or shows a settled thought whole or as its one-row summary; a running group keeps the form it is given when it settles. A settled block opens in place: the view stops following the bottom so the header stays under the pointer. A press counts as a click only if no drag followed and its row still shows the same text at the release, so output arriving in between cannot redirect it. `/tools` sets every tool group and compaction row, settled ones included, and lays the transcript out again from the bottom; thinking details have their own switch in `/settings` |
-| `Tab` / `Shift+Tab` | Pick older / newer user messages (`Up` / `Down` while one is picked); past the newest the pick ends. `Esc` ends it, `e` puts the message in the composer to edit and send again; `b` opens a line of the shown line cut just before the message, with the message in the composer as its opening input (`Enter` opens it through `session.branch_create` and shows it, `Esc` cancels); `f`, on `main` only, asks, then forks the Session just before the message (`session.fork`) and attaches to the fork with the message in its composer. A `⑂ line` row, written where a line opened on the shown line, is picked too: `Enter` (or a click) shows that line ([timeline UI](../../docs/design/timeline-ui.md)); so is the load-more row at the top, which `Enter` loads |
+| Click a tool header or a thought's title | Toggles only that batch, codemode or call (`▸` / `▾`), or opens/closes a settled thought. Parent collapse hides children without resetting their choices. Hover and press affect only the title; release must hit the same valid target without dragging. Opening holds the view in place. Output and compare text remain selectable; links and the member-conversation entry are separate actions. `/tools` changes defaults for unchosen nodes, not manual choices; thinking has its own setting |
+| `Tab` / `Shift+Tab` | Pick older / newer transcript targets (`Up` / `Down` while one is picked), including committed tool headers; `Enter` / `Space` toggles only the focused tool node. Past the newest the pick ends. `Esc` ends it. On a user message, `e` puts the message in the composer to edit and send again; `b` opens a line of the shown line cut just before the message, with the message in the composer as its opening input (`Enter` opens it through `session.branch_create` and shows it, `Esc` cancels); `f`, on `main` only, asks, then forks the Session just before the message (`session.fork`) and attaches to the fork with the message in its composer. A `⑂ line` row, written where a line opened on the shown line, is picked too: `Enter` (or a click) shows that line ([timeline UI](../../docs/design/timeline-ui.md)); so is the load-more row at the top, which `Enter` loads |
 | `/`, `Ctrl+O`, `Ctrl+P` | Open the command palette centred over the dimmed transcript, with its own query row; a draft set aside by `Ctrl+O`/`Ctrl+P` returns when the command entry it opened ends (`Enter`, `Esc` or an emptied draft). With a question pending whose free-text answer is not being edited, the palette opens over it instead, and the question keeps its answers while the command's argument is typed |
 | `Home` / `End` | With an empty composer: scroll to the top / bottom of the transcript |
 | `Esc` | Interrupt the run |
@@ -1020,16 +1062,16 @@ the path list, in first-call order. Repeated edits of one path count as one file
 successful edits contribute to the line totals. Mixed tool groups carry the same edit summary.
 Paths retain the tool input's spelling, including directory components to distinguish namesakes.
 On narrow terminals, the path list gives way to a localized remaining-file count; an individual
-path may shorten on grapheme boundaries to keep the totals and disclosure visible. If even
+path may shorten on grapheme boundaries to keep the totals and, in fullscreen, disclosure visible. If even
 those fixed fields exceed the width, the header uses the ordinary one-row truncation.
-Opening the group still shows each tool's full path and diff.
+Expanded details still show each tool's full path and diff. Scrollback examples:
 
 ```text
-✓ Edited src/main.rs (+12 -3) ▸
-✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs ▸
-✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more ▸
-✓ Ran 1 command, edited src/main.rs (+12 -3) · python ▸
-✓ Ran 2 commands, ran 1 search · python ×2, rg ▸
+✓ Edited src/main.rs (+12 -3)
+✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs
+✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more
+✓ Ran 1 command, edited src/main.rs (+12 -3) · python
+✓ Ran 2 commands, ran 1 search · python ×2, rg
 ```
 
 Collapsed headers also show shell program names, as defined by the
@@ -1042,7 +1084,7 @@ nonblank line followed by `…`; output, diff bodies and script bodies stay hidd
 until expanded. Member summary rows still open their conversations.
 
 ```text
-✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3) ▾
+✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3)
   ✓ Exec · cargo check -p dim-cli
   ✓ Read · docs/INDEX.md
   ✓ Edited src/main.rs (+12 -3)
@@ -1056,7 +1098,7 @@ answer text (including its retained streaming tail)
 · stopped
 ```
 
-The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
+The composer box: no prompt mark, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
 
 The Git branch label follows branch switches in both modes, including switches made by tools or another terminal. At startup the client resolves the workspace's own Git `HEAD` path (including linked worktrees); the existing UI timer reads that file at most once every 10 seconds, without spawning more Git processes, and requests a repaint only when the name changes. Detached HEAD displays `HEAD`; a transient read failure keeps the last known name until the next check.
 
@@ -1091,26 +1133,29 @@ An explicit provider error presentation keeps its message and suggested action.
  ■ turn failed: <reason>
 ```
 
-The expanded row shows only the summary body:
+The expanded row shows only the summary body (scrollback):
 
 ```text
  › try the RwLock for the cache lock
  … reply …
  · Compacting context…
- ✓ Context compacted ▾
+ ✓ Context compacted
  ▎ The cache lock moved into a RwLock; the parser race is next.
  ▎ …
  › carry on
  ✗ Context compaction failed · the summarizer returned nothing
  ◦ Context compaction skipped · nothing to cut
  ◦ Context compaction cancelled · the capability was reloading
- ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K ▸
+ ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K
 ```
 
-`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: a click on the row toggles it (`▸` closed, `▾` open). `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
+`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: in fullscreen, a click on the row toggles it (`▸` closed, `▾` open). Scrollback draws no disclosure arrow. `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
 
 
 A user message's row carries the operator's words. Context a hook appended for the model is not theirs, so each `dim-hooks` block draws as its own muted status row directly under the message: `Hook context · N lines` (`Hook context · 1 line` for one stored line), `▸` closed and `▾` open. `/tools` opens and closes it exactly as it opens a compaction's body, and a click on the row does the same; the body is the hook's own words, drawn as text, not Markdown. The stored Session and the model's request keep the block verbatim. A message that itself opens a marker keeps it as the operator's text, because the first block is always theirs.
+
+A `Stop` hook's follow-up is not a message either. It is the Queue input that drives the next turn, so its row stands where the input was written: `Stop hook follow-up · N lines` (`… · 1 line` for one stored line) with the same `▸`/`▾`, the same `/tools` cycle, the same click and the same rule that only `expanded` opens the body. The plain log prints that label and no body, because the log has no disclosure; the Markdown export keeps the raw block under `### Runtime input`; the AcpGateway replays nothing.
+
 `/models` uses Ctrl+X to clear the highlighted model's saved reasoning/tier preferences with the displayed record version; Enter adopts it separately. For noninteractive recovery, run `dimcode models PROVIDER --clear-preferences MODEL`. A concurrent change fails and requires a reread/retry, and the reread lands before that notice, so a retry uses the record's current version; preferences are never silently discarded.
 
 Pickers (`/resume`, `/models`, `/connect`, `/login`, `/approvals`, `/theme`, `/language`, `/settings`) open as centred boxes too; the mouse wheel moves their selection. Approval prompts, question prompts and the exit confirmation take the composer's place until they are answered, in both modes: there is nothing to type into meanwhile. A question is the exception: while its free-text answer is not being edited, `/`, `Ctrl+O` and `Ctrl+P` open the palette over it (see [Questions in the terminal UI](#questions-in-the-terminal-ui)). The live tail above (the tool group waiting on the answer, a running thought) stays where it is. Every panel is framed the same way: the title in the top border, the keys in the bottom one (`╰── Enter select · Esc close ─╯`, keys in the keybinding colour), and a filterable list has a `> query` row between blank rows instead of a count; the query is a line editor like the composer's (cursor keys, Home/End, Delete, pastes).
@@ -1128,13 +1173,13 @@ Pickers (`/resume`, `/models`, `/connect`, `/login`, `/approvals`, `/theme`, `/l
                       ╰────────────────────────────────────╯
 ```
 
-Both scrollback and fullscreen palettes list slash commands in the fixed, curated order defined by the [command menu design](../../docs/design/cli-commands.md#command-menu): `/new` is first and `/exit` is last in the unfiltered command list, and the menu draws no category column. Each row shows its `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists `Enter` queue and `Ctrl+S` steer while a run is in progress (`Enter` on an empty draft steers too), `Esc` interrupt, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
+Both scrollback and fullscreen palettes list slash commands in the fixed, curated order defined by the [command menu design](../../docs/design/cli-commands.md#command-menu): `/new` is first and `/exit` is last in the unfiltered command list, and the menu draws no category column. Each row shows its `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists the active [send keys](../../docs/design/cli-commands.md#run-keys-and-queue), `Esc` interrupt, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
 
 Opening `/` selects `/new`; pressing Enter starts a new session. `/permissions` is the single visible permission entry; `/approvals` and `/approval` are compatibility aliases for the same unified flow. Selecting an incomplete `exit` match only fills the command name; its exact name or alias is required before dispatch. Thus `/ex` + Enter completes `/exit` without quitting, and another Enter executes the completed command. `Tab` only completes the selected row and never runs or sends: a command fills its name, a command with an argument also fills the space after it, a Skill row fills its `$skill: <name> ` marker, and an empty match changes nothing.
 
 Typing ranks the matches: the exact name, a name prefix, an alias prefix, a prefix of a name part (`reload-skills` for `sk`), a name containing the query, a description word starting with it, then three or more letters in order through the name (`stg` for `settings`); a match inside a description word does not count. Equally ranked matches keep the fixed order.
 
-`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. Collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. Compaction bodies show only in expanded, and so does a hook's context (below). `/tools` cycles the three forms without changing thinking. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), the default send mode (`tuiDefaultSendMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. In scrollback, collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. In fullscreen these are defaults for independent nodes: collapsed closes batches, summary opens containers with call details closed, and expanded opens both; explicit per-node choices take precedence. Edit and Write details show recorded old/new unified comparisons, including new-file additions; records without a diff explicitly say comparison is unavailable. Compaction bodies show only in expanded, and so does a hook's context (below). `/tools` cycles the defaults without changing thinking or clearing fullscreen manual choices. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
 
 Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; any other terminal gets a bell, which it turns into a Dock bounce, a taskbar flash or a tab badge. Inside a multiplexer the bytes differ, because neither carries the form upward by itself and a notification asserts nothing after it is delivered, so the record's reasons for staying inside a multiplexer (`ui::status`, `ui::progress`) do not apply to it. tmux gets the form in its passthrough wrapper (`ESC P tmux;`, the sequence's `ESC`s doubled, `ESC \`) followed by a bare `BEL`: tmux 3.3 and later default `allow-passthrough` to off, so a tmux that forwards the wrapper draws the notification and one that drops it still rings. GNU screen follows the same rule for the same reason: it doubles no `ESC` (`ESC P` opens a passthrough it ends differently from tmux, which a notification does not need), and some builds forward an `OSC` closed by `BEL` while others drop every `OSC` a pane writes — so a `BEL`-terminated form (`OSC 9`, `OSC 777`) goes through unwrapped as it is and a bare `BEL` follows it, which draws the notification where the form is forwarded and rings where it is dropped. kitty's `ST`-terminated `OSC 99` has no shape screen carries whole, so it becomes the bell alone. herdr gets a bell whatever its `TERM_PROGRAM` says: it reads a pane's `OSC`s for itself and notifies from its own list of terminals, so a form the pane's variables name is not known to reach the user, while a `BEL` is not an `OSC` it takes.
 
@@ -1229,6 +1274,8 @@ When only the transcript scrolls, blank cached rows are inserted at the old tail
 The transcript is a virtual list. The CLI keeps each committed block once, as its source (Markdown text, tool records), up to 5,000 blocks; fullscreen keeps only every block's height for the current width and renders the rows of the blocks within about a screen of the viewport, dropping them as it moves away. Heights start as estimates (Markdown by its wrapped source lines) and become exact when the viewport first reaches a block, so a settled resize or theme change lays out only the blocks around the view. A scrolled view is held by its top block, so it stays put while heights above it settle and across a resize. The scrollback interface lays out the newest 10,000 rows of the same history when it rewrites the terminal's scrollback.
 
 `/tui` switches modes inside a running session, including during a run. Entering fullscreen erases the scrollback composer and lays the history out on the alternate screen; leaving rewrites the history into the terminal's scrollback. Exiting fullscreen returns to the shell's screen and prints the resume panel there.
+
+When Kitty keyboard negotiation succeeds, Dim keeps its flags on the active screen: it pops them before switching screens and pushes them on the destination. The main and alternate screens have independent keyboard stacks; this preserves modified keys such as Shift+Enter in fullscreen and restores the caller's flags on exit or while an external editor runs.
 
 ```bash
 dimcode --fullscreen            # this run only
@@ -1398,7 +1445,7 @@ The terminal UI reaches the same Session methods as the line client:
 | `/scheduled` (`/schedule`) | Lists the jobs the Scheduler holds from `schedule.list`, one entry per job with its schedule, next window, last outcome, target and disabled reason as its detail, and a job whose schedule the owner cannot use marked with that error; jobs are the host's, not the Session's or workspace's, and only a new job's default `cwd` comes from the Session. `Enter` or `Space` enables or pauses the job (`schedule.set_enabled`), `Ctrl+E` edits the job's document in `$EDITOR` with the revision the list reported (`schedule.save`), `Ctrl+N` creates a job from the document the adapter supplies, `Ctrl+X` removes the job after `Remove NAME? Enter confirm · Esc cancel` (`schedule.delete`), `Ctrl+T` runs it now (`schedule.run_now`) and reports the delivery it recorded for the manual window, `Tab` asks the inspect kind, which the Scheduler serves as history (`schedule.history`), and shows the job's recent runs in place of the list with `Esc` returning to it, `Ctrl+R` reads the list again. An edit sends only the members the draft changed |
 | `/login` | Opens the Dim sign-in panel. It shows the account from `account.status` as a status line; signed out, its entries are browser, enterprise-email or device sign-in through `account.login.*` at the entry's account directory (below), each entering its own flow (`Esc` after a failure returns to the entries); signed in, it shows the account's name and email, its plan, credits, token windows and feature meters from `account.usage` (`Ctrl+R` asks again; a plugin without the method shows why), and its entries open `/models`, refresh the model list, open the plan page at the account directory's `/console/subscription` in the browser, or sign out with `account.logout`, after which the panel shows the sign-in entries again. Browser sign-in redirects to `http://localhost:54321/auth/callback` (`--redirect-uri` overrides it), catches the callback on a loopback listener when that port is free and opens the authorization URL (neither over SSH); a callback URL pasted in the panel completes it too; device sign-in shows the code and polls the attempt every second. `Esc` closes the panel and cancels a pending attempt. On sign-in, `provider.refresh` refreshes the catalog before `/models` opens. On refresh failure, the account panel shows the error and offers a retry |
 | `/connect` | Reads safe connection snapshots with `provider.management`. `Test + apply` probes the unsaved draft, then updates only changed fields at the form's original version with `provider.update`; a record whose models are its own has them replaced by the new endpoint's listing in that same write when the edit changes `baseUrl`, `credential` or `headers`, so the catalog follows the new endpoint, while a proxy or timeout edit saves alone and a builtin whose models are the bundled catalog's keeps them; unsupported model listing still permits saving and reports that the key was not tested. Other probe failures keep the draft. `Disconnect` atomically clears credentials and disables the record, and a catalog of the record's own goes with it, because the listing taken with that key is that key's view; the next connect lists the endpoint again. Enable/Disable update only that flag. With no unsaved connection edits, `Edit models` opens that Provider's `Models · <name>` management panel even while disabled; `Ctrl+R` in that panel fetches the catalog when the Provider offers `refresh`. `Add custom provider` probes a Name, Base URL and API Key draft, then calls `provider.create` with the form's retained UUID and discovered defaults. IDs never derive from names. Failures retain edits; rereads update the safe status/version and require confirmation before retrying. `Ctrl+R` rereads without discarding the draft. Fields and filters use the composer's line editor. A row whose entry carries an `account` descriptor opens the account step instead of the form: signed out, its row says `Sign in` and opening it starts the only flow the descriptor's `loginMethods` list, and signed in, it shows `Signed in` and signs out through `<namespace>.logout`; a daemon that does not advertise the method reports that instead; a row whose namespace is `account` opens the Dim account's `/login` panel instead |
-| `/resume` | Lists saved Sessions, 50 at a time through `session.catalog`; moving near the end loads the next page. The first read carries the workspace `dimcode` was launched in, so every open starts there; git detection in the background names the local scope `This repository` even for one worktree, and re-reads the first page when the set holds more than one workspace. Ctrl+S toggles between that local scope and all workspaces — two states — and the title names the scope shown; a scope change keeps the query, drops the cursor and reads the first page again. Each row is labelled by the Session's creation origin — `[Chat]`, `[ACP ]` or `[Agent]` — and reads its title, else its first message, else its id; the placeholder `New session` counts as no title. Sessions Dim created for its own work are not listed; ACP Sessions are listed only while `/settings` → Show ACP sessions is on, and only on a daemon that advertises `session.catalog.origins`. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Older daemons use `session.summaries` and local filtering, with the scope applied to the rows the client receives |
+| `/resume` | Lists saved Sessions, 50 at a time through `session.catalog`; moving near the end loads the next page. The first read carries the workspace `dimcode` was launched in, so every open starts there; git detection in the background names the local scope `This repository` even for one worktree, and re-reads the first page when the set holds more than one workspace. Ctrl+S toggles between that local scope and all workspaces — two states — and the title names the scope shown; a scope change keeps the query, drops the cursor and reads the first page again. Each row is labelled by the Session's creation origin — `[Chat]`, `[ACP ]` or `[Agent]` — and reads its title, else its first message, else its id; the placeholder `New session` counts as no title. Sessions Dim created for its own work are not listed; ACP Sessions are listed only while `/settings` → Show ACP sessions is on, and only on a daemon that advertises `session.catalog.origins`. The filter searches the server after 150 ms, including Sessions not loaded yet. Ctrl+R refreshes; closing, refreshing or replacing a search cancels the pending read when the daemon advertises `session.catalog.cancel`. Ctrl+X removes the selected row after `Delete "{name}"? Enter confirm · Esc cancel` — the name is captured at the key press, every other key cancels the question, Esc does not close the picker, and the row leaves on `{deleted:true}` with `Deleted {name}.`, a `{deleted:false}` reply re-reads the first page with `Nothing was removed: no stored Session {name}.`, an error keeps the row with `Delete failed · <daemon's sentence>`, and a daemon without `session.delete` says it cannot delete Sessions; deleting the shown Session returns to Home as `/new` does. Older daemons use `session.summaries` and local filtering, with the scope applied to the rows the client receives |
 | `/models` | Lists enabled, executable models from `provider.list`/`provider.catalog`; a model whose context window or maximum output no source declares is not offered. Every provider with such a model keeps one muted row after its models, counting them and naming `dimcode models PROVIDER --set-missing-limits`; when the provider has nothing selectable, that row replaces its empty-provider row. A static provider whose catalog holds no models is asked to fill it with `provider.refresh` once per catalog version in a connection when the daemon says its models can be listed, and the picker shows what the catalog then holds, because the Provider owner decides what a catalog holds; a successful refresh records the version it wrote, so a listing that comes back empty is not asked for again, and a write to the record asks once more; the picker re-reads the list when such a refresh returns while it is open, and a reply that arrives after it closed is shown by the next open. A provider that offers nothing selectable keeps a muted row saying why: no models with `dimcode models PROVIDER --refresh` when the daemon says its models can be listed, no models with `provider.models.create` when it cannot, an unreadable catalog, or how many models are unavailable, disabled, or both, and `dimcode models PROVIDER` for the details. An explicit pick sends the saved effort/tier preferences for that exact `{providerId, modelId}` with `session.create` or `session.model.update`, then saves the scoped default with `provider.select`. The adopted model stays in effect even when saving the default fails; the failure is reported as a notice. Unsupported saved preferences are reported and retained for the user to edit or clear; there is no silent fallback. When the daemon advertises `collaboration.model_policy`/`collaboration.set_model_policy`, a "Subagent models" row chooses Agent choice, Inherit requesting branch or a fixed model (from the same model list) for new Collaboration members; it writes only `collaboration.set_model_policy` with the revision it read, and after a revision conflict the next choice rereads before saving ([subagent model policy](../../docs/design/subagent-model-policy.md#5-native-cli-interaction)) |
 | `/lines` | Lists `main` and every line under the line it was opened from, ordered by where it was cut and labelled `after message N`, each with its state (working, waiting, ended itself, ended by an operation, creation failed); while a line is shown the composer's bottom border names its path from `main` (`line main ▸ b-91 · after message 4`); Enter shows the selected line's conversation in place of `main`'s, and the composer, `!command` and the interrupt then address that line; `x`, then `y`, ends the selected line through `session.branch_end`, refused on `main` |
 | `/timeline` | Lists the shown line's user messages, oldest first, numbered, each with the first text of its answer, the newest selected. `Enter` opens an action dialog: jump, edit as a new draft, quote, branch or fork. Up/Down and Enter choose; 1–5 select directly. Esc returns to the message list with its selection intact. Typing does not filter: `e`, `q`, `b` and `f` remain shortcuts in both lists. Jump picks the message in fullscreen, or draws an earlier-history page in scrollback when not drawn yet; otherwise scrollback says `/tui` can jump to it. Dialogs are live controls in scrollback and overlays in fullscreen ([timeline UI §4.6](../../docs/design/timeline-ui.md#46-timeline-jumping-to-a-message)) |
@@ -1595,7 +1642,7 @@ The terminal UI's `/connect` row for a described account opens the same flow: a 
 
 `models PROVIDER` reads the cached catalog; `--refresh` obtains and persists a fresh catalog through the provider. Each line contains the model ID, display name and `available`, `disabled`, `unavailable` or `undeclared`, separated by tabs; `undeclared` means no source declares the model's context window or maximum output, either of which keeps it from being selected. `--set-limits MODEL --context-window N --max-output-tokens N` declares both for one model, and `--set-missing-limits --context-window N --max-output-tokens N` declares them for every model the list marks `undeclared` — an enabled model whose missing limits are its only blocker, so a disabled model or one unavailable for another reason is not written; both named values are required with either form, both write through `models.edit` at the current record version, and both print the catalog afterwards. When a listed model still needs a window, the command names the declaration below its rows. Credential/account fields and private failure details are not printed. A missing cached catalog gives sign-in and refresh guidance, and a cached catalog that holds no models is named on standard error with the refresh command that fills it; a `--refresh` that lists nothing says the provider listed none. Select an available model with `--provider PROVIDER --model MODEL_ID` for a new session.
 
-An existing shared daemon of the CLI's own version is reused. One client at a time decides what to do with the daemon (`<home>/rust/daemon.start.lock`), so two clients starting together start or replace it once and both connect. A client that finds no socket but a progress note from another live process waits for that process — the store is owned and has no socket until its upgrade finishes — and connects when it serves. A daemon of another version that this executable would start (one left running across an upgrade) is replaced only while it is idle: no other client connection is open and no Session has an attached client or a running turn. An idle one is stopped with verified shutdown and replaced; one in use is kept, the client prints a line on standard error (the TUI shows it once as a notice) naming `dimcode daemon stop` as the way to upgrade when those clients are done, and the next start after that runs the new version. A daemon without verified shutdown is reported for `dimcode daemon stop` from its matching CLI. A `--server PATH` daemon is reused whatever its version and is never started or replaced by the CLI. Plugin paths apply when starting a new product daemon; use an isolated home when changing a plugin/runtime configuration. Explicit `--model-config` and account plugin options cannot be combined.
+An existing shared daemon of the CLI's own version is reused. One client at a time decides what to do with the daemon (`<home>/rust/daemon.start.lock`), so two clients starting together start or replace it once and both connect. A client that finds no socket but a progress note from another live process waits for that process — the store is owned and has no socket until its upgrade finishes — and connects when it serves. A daemon of another version that this executable would start (one left running across an upgrade) is replaced only while it is idle: no other client connection is open and no Session has an attached client or a running turn. An idle one is stopped with verified shutdown and replaced; one in use at the client's own protocol is kept, the client prints a line on standard error (the TUI shows it once as a notice) naming `dimcode daemon stop` as the way to upgrade when those clients are done, and the next start after that runs the new version. One in use that speaks an older protocol is not used at all: the client prints one notice naming `dimcode daemon stop`, starts no Session and exits 1, because a Session created there would be stored at that older protocol. A daemon without verified shutdown is reported for `dimcode daemon stop` from its matching CLI. A `--server PATH` daemon is reused whatever its version and is never started or replaced by the CLI. Plugin paths apply when starting a new product daemon; use an isolated home when changing a plugin/runtime configuration. Explicit `--model-config` and account plugin options cannot be combined.
 
 The repository root `./dev` prepares the local provider package, builds incrementally and restarts only its development daemon. See [local development](../../docs/architecture/development.md) for setup and source selection.
 
@@ -1603,7 +1650,7 @@ The repository root `./dev` prepares the local provider package, builds incremen
 dimcode --home /path/to/plugin-home daemon stop
 ```
 
-`daemon stop` authenticates an existing endpoint for the selected home without spawning a server or creating a missing home. It requires `daemon.shutdown.completed`, requests normal shutdown, and waits up to 30 seconds for a successful cleanup-completion response followed by connection closure. EOF alone, cleanup errors and timeout report failure without force-killing the process. An older daemon without the feature is left running; stop it using its matching CLI before upgrading. Account and session files remain available for restart. This command accepts a daemon with a different model profile and does not read model/plugin files, so configuration edits cannot prevent an explicit stop. It never removes or waits on a replacement endpoint; successful cleanup includes releasing the original daemon's storage and listener ownership.
+`daemon stop` authenticates an existing endpoint for the selected home without spawning a server or creating a missing home. It requires `daemon.shutdown.completed`, requests normal shutdown, and waits up to 30 seconds for a successful cleanup-completion response followed by connection closure. EOF alone, cleanup errors and timeout report failure without force-killing the process. An older daemon without the feature is left running; stop it using its matching CLI before upgrading. A daemon of another build at protocol v3 or above is reached directly: the client asks for its own version, accepts the daemon's highest one down to v3, and then requests a normal shutdown. Account and session files remain available for restart. This command accepts a daemon with a different model profile and does not read model/plugin files, so configuration edits cannot prevent an explicit stop. It never removes or waits on a replacement endpoint; successful cleanup includes releasing the original daemon's storage and listener ownership.
 
 ## Web workspace
 

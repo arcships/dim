@@ -2403,18 +2403,49 @@ impl Gateway {
                 message = incoming.recv() => match message {
                     Some(Incoming::Request(request, reply)) => self.request(request, *reply)?,
                     Some(Incoming::Notification(notification)) => self.cancel(notification)?,
-                    Some(Incoming::Work(generation,work)) => self.work(generation,*work).await?,
+                    Some(Incoming::Work(generation,work)) => {
+                        // The App Server publishes a command's facts before it
+                        // replies, so a notice queued here happened first.
+                        // Applying the result before it would read a
+                        // configuration the owner has already replaced.
+                        for _ in 0..native.len() {
+                            let Ok(message) = native.try_recv() else { break };
+                            if self.handle_native(Some(message)).await? {
+                                return Ok(());
+                            }
+                        }
+                        self.work(generation,*work).await?;
+                    }
                     None => return Ok(()),
                 },
-                message = native.recv() => match message {
-                    Some(Native::Notice { method, params }) => self.notice(method, params)?,
-                    Some(Native::Lost) => self.lost()?,
-                    Some(Native::Restored { same_instance,generation,deadline }) if generation == self.rpc.generation() && self.rpc.ready() => self.restore(same_instance,generation,deadline),
-                    Some(Native::Restored { .. })=>{},
-                    Some(Native::Closed) | None => return self.fail_connection().await,
+                message = native.recv() => {
+                    if self.handle_native(message).await? {
+                        return Ok(());
+                    }
                 },
             }
         }
+    }
+
+    /// Handles one native message, and reports whether the connection ends.
+    async fn handle_native(&mut self, message: Option<Native>) -> Result<bool, Error> {
+        match message {
+            Some(Native::Notice { method, params }) => self.notice(method, params)?,
+            Some(Native::Lost) => self.lost()?,
+            Some(Native::Restored {
+                same_instance,
+                generation,
+                deadline,
+            }) if generation == self.rpc.generation() && self.rpc.ready() => {
+                self.restore(same_instance, generation, deadline)
+            }
+            Some(Native::Restored { .. }) => {}
+            Some(Native::Closed) | None => {
+                self.fail_connection().await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

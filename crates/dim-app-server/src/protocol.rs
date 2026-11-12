@@ -98,6 +98,7 @@ pub enum Call {
     Ping,
     Shutdown(Shutdown),
     Create(Create),
+    ModelPreview(ModelPreview),
     Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
@@ -535,6 +536,19 @@ pub struct ModelSelection {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreview {
+    pub cwd: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model: Option<ModelSelection>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_preferences: Option<crate::provider::ModelPreferences>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub agent_id: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
     pub cwd: String,
     #[serde(default, deserialize_with = "optional_non_null")]
@@ -611,6 +625,11 @@ pub struct Catalog {
     /// Whether Sessions whose origin is `acp` are listed (#557).
     #[serde(default)]
     pub with_acp_sessions: bool,
+    /// Whether Sessions whose origin is `automation` are listed: work a saved
+    /// configuration launched with no person present (#1421). Independent of
+    /// both other class filters.
+    #[serde(default)]
+    pub with_automation_sessions: bool,
     /// Whether the catalog also lists Sessions this daemon closed, which
     /// keep their stored rows. The flag is part of the cursor's filter set.
     #[serde(default)]
@@ -816,7 +835,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 39] = [
+const BUILTIN_METHODS: [&str; 40] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -831,6 +850,7 @@ const BUILTIN_METHODS: [&str; 39] = [
     "ui.shutdown",
     "ui.replace",
     "session.create",
+    "session.model.preview",
     "session.summaries",
     "session.catalog",
     "session.catalog.cancel",
@@ -909,6 +929,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
             "session.create" => Call::Create(params(raw_params)?),
+            "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
@@ -1152,6 +1173,13 @@ pub struct PingResult {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelPreviewResult {
+    pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
@@ -1177,6 +1205,7 @@ pub struct ForkResult {
 pub struct DeleteResult {
     pub deleted: bool,
 }
+/// Who created a Session and why it exists (`session-classification.md` §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionOrigin {
@@ -1184,6 +1213,9 @@ pub enum SessionOrigin {
     Acp,
     Internal,
     Unknown,
+    /// A Session `sessions.launch` created because its caller declared that a
+    /// saved configuration runs the work, with no person present (#1421).
+    Automation,
 }
 impl SessionOrigin {
     /// The value the stored Session record holds for this origin.
@@ -1193,6 +1225,7 @@ impl SessionOrigin {
             Self::Acp => "acp",
             Self::Internal => "internal",
             Self::Unknown => "unknown",
+            Self::Automation => "automation",
         }
     }
     /// The origin a stored value names; `None` for a value this build does not
@@ -1203,6 +1236,7 @@ impl SessionOrigin {
             "acp" => Some(Self::Acp),
             "internal" => Some(Self::Internal),
             "unknown" => Some(Self::Unknown),
+            "automation" => Some(Self::Automation),
             _ => None,
         }
     }
@@ -1232,7 +1266,7 @@ pub struct SessionInfo {
 }
 /// The `session.attach` reply: the attached Session's directory record, as
 /// `session.summaries` gives it, plus the preferences its adopted
-/// configuration sends. Only this reply and `session.create` name them.
+/// configuration sends. Summaries do not include these preferences.
 #[derive(Debug, Serialize)]
 pub struct AttachResult {
     #[serde(flatten)]
@@ -1271,6 +1305,11 @@ pub struct AgentInfo {
 #[derive(Debug, Serialize)]
 pub struct SubmitResult {
     pub event: Arc<AgentEvent>,
+    /// Work the submit checks did not do, for the caller to show: each warning
+    /// names the check that raised it (Hooks A.6.2). Absent when empty, and
+    /// never filled for protocol v1 or v2.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
@@ -1285,6 +1324,7 @@ pub enum Reply {
     Contributed(Value),
     Ping(PingResult),
     Create(CreateResult),
+    ModelPreview(ModelPreviewResult),
     Fork(ForkResult),
     /// The `session.delete` reply: whether this call removed the Session.
     Deleted(DeleteResult),

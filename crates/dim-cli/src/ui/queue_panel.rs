@@ -91,7 +91,7 @@ impl QueuePanel {
                 });
         }
         let effect = match self.list.handle_key(key) {
-            Event::Pick(input_id) => Effect::InputControl {
+            Event::Pick { id: input_id, .. } => Effect::InputControl {
                 input_id,
                 action: "steer",
             },

@@ -742,16 +742,17 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
         .await
         .unwrap();
     let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
 
-    // Exactly `now - grace`: the pass's own clock reading is later, so the
-    // record is past the grace when the pass classifies it. No input was ever
-    // accepted for it, so the expiry holds even though the pass looks the
-    // submission id up first.
     let at = (chrono::Utc::now() - chrono::Duration::seconds(60))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["at"] = json!(at);
     });
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
     wait_state(home.path(), &wakeup_id, "expired").await;
     let settled_at = stored_wakeups(home.path())[0]["settled_at"]
         .as_str()

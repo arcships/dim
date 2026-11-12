@@ -178,7 +178,8 @@ MemoryTimelineStore 执行同一份表达式。它可以扫描已经持有的事
 | InputQueue | 按当前输入成员、每项applied/withdraw及最新turn/interrupt读取；不重放八类历史，不保存完整队列快照。 | 队列和仍欠缺的决定；不能简化为“输入减去 consumed”。 |
 | Loop | 查询已 applied、未 consumed 的输入；分别恢复当前轮次及未完成压缩的控制状态。 | 待消费输入和当前执行状态。输入可能早于本轮开始，不能统一从最近 turn-start 截断。 |
 | Prompt、Permission、Wait 等 | 按各自契约查询最新记录、按键最新记录或未完成项；存在多步决定时继续有序处理所需字段。 | 当前有效配置或等待状态。 |
-| BranchLine、Hooks、Collaboration | 用现有状态机逐页消费所需字段；只有能证明旧事实不再影响决定时才收紧起点。 | 各自的业务状态，不额外保留事件列表。 |
+| Hooks | 装载只登记实时交接，不读历史；实际触发按身份及本轮位置查询。 | 无恢复快照；具体字段、轮次 tag 和兼容规则见 [Hooks §3.5](plugins/Hooks.md#35-loading-and-reads-at-hook-points)。 |
+| BranchLine、Collaboration | 用现有状态机逐页消费所需字段；只有能证明旧事实不再影响决定时才收紧起点。 | 各自的业务状态，不额外保留事件列表。 |
 | Goal | 按 [Goal 状态设计](plugins/Goal-state-read.md)索引读取最后一个完整业务状态；未结束则在内存暂停，不恢复执行。旧格式仅按兼容设计读取目标定义。 | 当前目标、judge 和有效状态；次数、轮次和评估是本实例内存，不重建旧控制流。 |
 | BackgroundExec | 从生命周期字段恢复任务目录；未结束任务结算，缺少通知交接的终态继续处理。 | 契约要求的任务目录，包括仍需展示的已结束任务，不能全部删掉。 |
 

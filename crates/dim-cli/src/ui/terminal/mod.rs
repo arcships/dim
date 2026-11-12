@@ -268,11 +268,17 @@ impl Terminal {
     /// Switches to the fullscreen interface's alternate screen with mouse
     /// reporting, or back to the shell's screen. Queued behind the frames
     /// already written, so they land on the screen they were drawn for.
+    /// With Kitty, queues the source pop, screen switch and destination push
+    /// together. Success acknowledges queueing, not an atomic terminal write.
+    /// An unavailable writer returns an error; callers must end the interface.
     pub fn set_fullscreen(&mut self, on: bool) -> io::Result<()> {
         if on == modes::is_live(Mode::AltScreen) {
             return Ok(());
         }
         let mut bytes = Vec::new();
+        if self.keyboard == KeyboardProtocol::Kitty {
+            bytes.extend_from_slice(Mode::KittyKeyboard.restore_sequence());
+        }
         if on {
             bytes.extend_from_slice(Mode::AltScreen.enable_sequence());
             bytes.extend_from_slice(Mode::Mouse.enable_sequence());
@@ -283,6 +289,9 @@ impl Terminal {
             bytes.extend_from_slice(Mode::AltScreen.restore_sequence());
             modes::clear(Mode::Mouse);
             modes::clear(Mode::AltScreen);
+        }
+        if self.keyboard == KeyboardProtocol::Kitty {
+            bytes.extend_from_slice(Mode::KittyKeyboard.enable_sequence());
         }
         self.writer.send(bytes)
     }

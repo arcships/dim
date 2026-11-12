@@ -2142,7 +2142,7 @@ async fn restoring_a_never_started_session_starts_it() {
 }
 
 #[tokio::test]
-async fn context_only_initial_prompt_is_inherited_and_unchanged_in_a_child() {
+async fn an_undelivered_initial_context_prompt_is_adopted_again_in_a_child() {
     let calls = Arc::new(AtomicUsize::new(0));
     let target = PromptSourceTarget {
         source: "rules".into(),
@@ -2168,10 +2168,29 @@ async fn context_only_initial_prompt_is_inherited_and_unchanged_in_a_child() {
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // `main` runs no turn, so the block that delivers the initial entry is
+    // never consumed: the entry is in force but the model never received it.
+    let undelivered = chain_events(&session, "main", ..).await.unwrap();
+    let main_change = undelivered
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::PromptChanged(data) => Some(data),
+            _ => None,
+        })
+        .expect("main wrote its initial change");
+    assert_eq!(
+        main_change.inputs.len(),
+        1,
+        "an Initialize change names its delivery input"
+    );
     assert!(
-        !chain_events(&session, "main", ..)
-            .await
-            .unwrap()
+        undelivered
+            .iter()
+            .all(|event| !matches!(event.kind, EventKind::InputConsumed(_))),
+        "nothing consumed the initial delivery input"
+    );
+    assert!(
+        !undelivered
             .iter()
             .any(|event| matches!(event.kind, EventKind::ContextConfigured(_)))
     );
@@ -2189,12 +2208,124 @@ async fn context_only_initial_prompt_is_inherited_and_unchanged_in_a_child() {
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // The child's prefix never consumed the delivery block, so it does not
+    // inherit the change as delivered: it adopts the source itself, and its
+    // own change names its own delivery input.
+    let events = branch_events(&session, &child, ..).await.unwrap();
+    let changes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::PromptChanged(data) if data.timeline == child => Some(data.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes.len(), 1, "the child adopts the source once");
+    let change = &changes[0];
+    assert_eq!(
+        change.reason,
+        PromptChangeReason::Refresh,
+        "the child inherited main's revision, so its change is a refresh"
+    );
+    assert_eq!(change.changes.len(), 1);
+    let PromptChange::Set { entry } = &change.changes[0] else {
+        panic!("the child sets the rule: {:?}", change.changes)
+    };
+    assert_eq!(entry.source, "rules");
+    assert_eq!(
+        change.inputs.len(),
+        1,
+        "the child's change names its own delivery input"
+    );
+    let named: Vec<_> = events
+        .iter()
+        .filter(|event| change.inputs.contains(&event.id))
+        .collect();
+    assert_eq!(named.len(), 1, "the named input is on the child");
     assert!(
-        !branch_events(&session, &child, ..)
-            .await
+        matches!(named[0].kind, EventKind::InputMessage(_)),
+        "the named input is the block that delivers the change"
+    );
+    assert!(
+        session
+            .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
             .unwrap()
-            .iter()
-            .any(|event| matches!(event.kind, EventKind::PromptChanged(_)))
+            .unwrap()
+            .entries
+            .values()
+            .any(|entry| entry.version == "1")
+    );
+    agent.close().await.unwrap();
+}
+
+/// The companion: when `main` consumed the initial block, the child inherits
+/// the change as delivered and records none of its own.
+#[tokio::test]
+async fn a_delivered_initial_context_prompt_is_inherited_and_unchanged_in_a_child() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let target = PromptSourceTarget {
+        source: "rules".into(),
+        scope: PromptScope::Branch {
+            timeline: "main".into(),
+        },
+    };
+    let host = Arc::new(Prompts(Mutex::new(BTreeMap::from([(
+        "rules".into(),
+        Reply::Counted(calls.clone(), context_entry("rules", "1", "inherited")),
+    )]))));
+    let agent = MinimalHost::start(&builder_with_initial(
+        host,
+        ConfigureUpdate {
+            sources: vec![target],
+            model: None,
+        },
+    ))
+    .await
+    .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    // One turn consumes the initial delivery block.
+    session
+        .submit("first".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let main = chain_events(&session, "main", ..).await.unwrap();
+    let main_change = main
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::PromptChanged(data) => Some(data.clone()),
+            _ => None,
+        })
+        .expect("main wrote its initial change");
+    assert!(
+        main.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::InputConsumed(data) if main_change.inputs.contains(&data.input_id)
+        )),
+        "main consumed the initial delivery input"
+    );
+    let child = session
+        .branch(
+            "main".into(),
+            session.sequence("main").unwrap(),
+            BranchOptions {
+                prompt: "branch".into(),
+                source: BranchSource::Host {
+                    operation_id: "prompt".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let events = branch_events(&session, &child, ..).await.unwrap();
+    assert!(
+        !events.iter().any(
+            |event| matches!(&event.kind, EventKind::PromptChanged(data) if data.timeline == child)
+        ),
+        "the child inherits the delivered change and writes none"
     );
     assert!(
         session

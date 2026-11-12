@@ -178,6 +178,8 @@ The `modality` source is user scope only: operation defaults belong to the user,
 
 Modality is not branch work: turn and branch facts never affect tasks. Races are decided by the task record `revision` under the per-task lock.
 
+Startup recovery reports completed listing, record reads, settlement and retention removals as real opening progress under the [startup inactivity contract](../rutis-usage.md#a3-settled-questions). A large task store can take multiple intervals to recover; a blocked operation still consumes the existing inactivity bound. This adds no heartbeat, service or durable event.
+
 ```mermaid
 sequenceDiagram
   participant C as Client

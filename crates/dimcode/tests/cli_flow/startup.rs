@@ -59,6 +59,130 @@ fn home_browsing_and_exit_need_no_session_in_both_tui_modes() {
 }
 
 #[test]
+fn first_shell_command_creates_once_without_submitting_a_model_turn() {
+    for fullscreen in [false, true] {
+        for private in [false, true] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&[]);
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                wire.created();
+                let attach = wire.read("session.attach");
+                wire.reply(&attach, attach_record(&attach));
+                let history = wire.read("session.history");
+                wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+                for text in ["printf first-shell", "printf second-shell"] {
+                    let run = wire.read("shell.run");
+                    assert_eq!(run["params"]["sessionId"], "session");
+                    assert_eq!(run["params"]["branchId"], "main");
+                    assert_eq!(run["params"]["command"], text);
+                    assert_eq!(run["params"]["mode"], if private { "private" } else { "record" });
+                    wire.reply(&run, json!({"runId":run["params"]["runId"],"status":"completed","exitCode":0,"output":format!("{text}-output\n"),"truncated":false,"durationMs":1}));
+                    if text == "printf first-shell" {
+                        wire.no_context();
+                    }
+                }
+                let submit = wire.read("session.submit");
+                assert_eq!(submit["params"]["sessionId"], "session");
+                assert_eq!(submit["params"]["text"], "next message");
+                wire.reply(&submit, json!({"event":{}}));
+                wire.event(9, "text", json!({"turn_id":"next","request_id":"model","delta":"message accepted"}));
+                assert_eq!(wire.trailing_request(), None);
+            });
+            let mut command = command(&home);
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until("Welcome to DIM");
+            terminal.write(if private {
+                b"!!printf first-shell\r"
+            } else {
+                b"!printf first-shell\r"
+            });
+            terminal.until("first-shell-output");
+            terminal.write(if private {
+                b"!!printf second-shell\r"
+            } else {
+                b"!printf second-shell\r"
+            });
+            terminal.until("second-shell-output");
+            terminal.write(b"next message\r");
+            terminal.until("message accepted");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+            assert!(!terminal.transcript.contains("Sign in with /login"));
+        }
+    }
+}
+
+#[test]
+fn home_previews_the_model_without_creating_a_session_and_survives_preview_errors() {
+    for fullscreen in [false, true] {
+        for outcome in [
+            "ready",
+            "rejected",
+            "preview-timeout",
+            "preferences-timeout",
+        ] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                if outcome == "preferences-timeout" {
+                    wire.hello(&["session.model.preview", "provider.management"]);
+                    let preferences = wire.read("provider.management");
+                    assert_eq!(preferences["params"], json!({"providerId":"configured-provider"}));
+                } else {
+                    wire.hello(&["session.model.preview"]);
+                    let preview = wire.read("session.model.preview");
+                    assert!(preview["params"].get("model").is_none());
+                    assert!(preview["params"].get("permissionPolicy").is_none());
+                    if outcome == "rejected" {
+                        reject(wire, &preview);
+                    } else if outcome == "ready" {
+                        wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
+                    }
+                }
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                assert_eq!(wire.trailing_request(), None, "Preview and browsing must not create or attach a Session");
+            });
+            let mut command = command(&home);
+            command.args(["--permission", "read-only"]);
+            if outcome == "preferences-timeout" {
+                command.args([
+                    "--provider",
+                    "configured-provider",
+                    "--model",
+                    "configured-model",
+                ]);
+            }
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until(if outcome == "ready" {
+                "preview-provider / preview-model"
+            } else {
+                "Cannot preview startup model"
+            });
+            if outcome == "ready" {
+                terminal.until("high");
+            }
+            terminal.write(b"/permissions\r");
+            terminal.until("Full access");
+            terminal.write(b"\x1b[27u");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+        }
+    }
+}
+
+#[test]
 fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
     for fullscreen in [false, true] {
         for draft in [false, true] {
@@ -67,10 +191,15 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
             let long = "x".repeat(16 * 1024 + 1);
             let expected_long = long.clone();
             let daemon = home.daemon(move |wire| {
-                wire.hello(&[]);
+                wire.hello(&["session.model.preview"]);
+                let preview = wire.read("session.model.preview");
+                wire.reply(&preview, json!({"model":{"providerId":"temporary-preview","modelId":"first-model"},"modelPreferences":{"reasoningEffort":"high"}}));
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
                 let create = wire.created();
+                let mut model_params = create["params"].clone();
+                model_params.as_object_mut().unwrap().remove("permissionPolicy");
+                assert_eq!(preview["params"], model_params, "Preview must not replace launch options with its resolved identity");
                 assert_eq!(create["params"]["model"], json!({"modelId":"first-model"}));
                 assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"high"}));
                 assert_eq!(create["params"]["permissionPolicy"], json!({"preset":"read-only"}));
@@ -120,7 +249,7 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
                 command.arg("--fullscreen");
             }
             let mut terminal = Terminal::launch_tui(command);
-            terminal.until("Welcome to DIM");
+            terminal.until("temporary-preview / first-model");
             if draft {
                 terminal.paste(&long);
                 terminal.until("16385 chars");

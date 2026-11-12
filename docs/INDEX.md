@@ -7,8 +7,9 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Model startup](design/model-startup.md): temporary model, effort and multi-protocol connections with branch/member/compaction inheritance
 - [Model failures](design/model-failures.md)（[中文](zh/design/model-failures.md)）: the failure kind, the fact on the terminal event, who words the line, and retry (#1197)
 - [模型请求重试与任务续接方案](design/research/model-retry-recovery.md)（中文，#1210）：请求重试的可见性、独立恢复能力的边界及所有者合同需求
-- [服务面：跨语言形状的策略、盘点与第一批改造](design/service-faces.md)（中文，Draft）：#1289 的标记与检查、#1300 的当前 118 个名字 face 盘点、#1292 的第一批数据面
+- [服务面：跨语言形状的策略、盘点与第一批改造](design/service-faces.md)（中文，Draft），装配现状见[生成的服务目录](architecture/rust-agent/generated/catalog.md)。
 - [插件远程化：可行性与落地路径](design/research/remote-plugins.md)（中文，研究稿）：rutis 链路能跨什么、HostPlatform/exec/基础工具/存储各自能不能远程化、推荐拓扑与分阶段
+- [Resource and store data faces](design/resource-faces.md) (Draft): `execHost`, `fsHost` and `store` as the only public contracts for processes, files and Session state (#1295, #1296, #1297, #1298)
 - [Watch：任务观察与 side branch](design/research/side-eval.md)（中文，设计提案）：Watch 与 Pursuit 的用户边界、分支切点、订阅与 prompt 的组合、管理与关注、采样开销
 - [Overall design for undesigned features](design/overview.md)（[中文](zh/design/overview.md)）
 - [Plugin designs index](design/plugins/README.md)（[中文](zh/design/plugins/README.md)）
@@ -63,6 +64,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Context assembly and recognition requirements](design/context-assembly-requirements.md)（中文）：业务必须保证什么，内存与读取加速允许改变什么
 - [Compaction requirements](design/compaction-quality.md): what compaction keeps, what users see and control, its cost bounds, how its quality is judged (#428)（[中文](zh/design/compaction-quality.md)）
 - [Model-facing prompts](design/model-prompts.md): the channels that carry model text, protocol versus policy, who may change what, the input guide, one prompt language, and how a prompt change is judged (#429)（[中文](zh/design/model-prompts.md)）
+- [Agent environment awareness](design/agent-environment.md): clients and settings as model state; client view deferred; the snapshot delivery pattern, noise budget and boundaries (#1018–#1022)
 - [Timeline-first TUI](design/timeline-ui.md): the TUI's Timeline as the primary surface, opening lines and forks from a point of it, line markers and cuts（[中文](zh/design/timeline-ui.md)）
 - [Local-execution plugin contracts](architecture/rust-agent/plugins/README.md)
 - [Build environment](architecture/build.md)
