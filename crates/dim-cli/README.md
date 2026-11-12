@@ -619,33 +619,53 @@ Modality command: no target is ever replaced. `--json` prints the record and `--
 ## Permission presets and approvals
 
 The App Server decides each tool call; the CLI selects settings and never decides a call itself.
-`/permissions` selects a preset and opens the Command rules area:
+`/permissions` groups the Session's preset separately from user-wide settings:
 
 ```text
-Permissions
-  Read only           Read files; deny writes and process commands
-  Workspace write     Write inside the workspace; ask outside it
-  Full access         No path limits; tools run without asking
-  Command rules       List, add and remove the user's command rules
-
-Settings
-  Permission          Workspace write >
-  Process isolation   >
+╭─ Permissions ──────────────────────────────────────────────────────────╮
+│ Permission mode                                                        │
+│   ( ) Read only                                                        │
+│   (*) Workspace write                                                  │
+│   ( ) Full access                                                      │
+│ Related settings                                                       │
+│   Command rules  ›                                                     │
+│   Process isolation  ›                                                 │
+│                                                                        │
+│ Hint: Current session; remembered for new sessions. Workspace writes    │
+│       allowed; commands, network and ungranted outside access usually   │
+│       ask.                                                             │
+╰──── ↑↓/Tab move · Enter keep mode · Esc close ──────────────────────────╯
 ```
+
+Headings are not selectable and have no scope captions. `(*)` marks the effective preset,
+not focus; inactive presets use `( )`, and submenu links use `›`. Only the focused entry's
+Hint explains its scope and consequences. Preset Hints identify the current Session and the
+remembered choice for new Sessions; Command rules and Process isolation Hints identify their
+user-wide scope. Live policy changes update the marker without moving focus.
 
 The Command rules row opens the management panel of `Area::Permissions`: one entry per rule,
 whose id and label are the rule's value (`DECISION MATCH COMMAND`), with `Ctrl+R` reload, `Ctrl+N`
-add and `Ctrl+X` remove. Esc returns to the Permissions panel.
+add and `Ctrl+X` remove. Process isolation opens the Settings control, independently of the
+permission mode, and affects new processes. Esc from either submenu returns to the Permissions
+panel with the originating row focused, including when Permissions was opened from Settings.
 
-Choosing a preset preserves the tool lists and saves `permission` in `config.json` for later
-terminal Sessions. The CLI reads the legacy `permissionPreset` only when `permission` is absent;
-`--permission` takes precedence. Process isolation stays in Settings.
+Opening or navigating the panel writes nothing. The footer says `Enter use mode` for an inactive
+preset, `Enter keep mode` for the effective preset, and `Enter open` for a submenu. With a Session,
+choosing a preset reads the current policy and writes a versioned update only if the preset
+differs, preserving the tool lists. A successful choice saves `permission` in `config.json` for
+later terminal Sessions, even when no policy update was needed. The CLI reads the legacy
+`permissionPreset` only when `permission` is absent; `--permission` takes precedence.
 
 | Preset | Reads | File writes | Commands, network, unclassified tools |
 | --- | --- | --- | --- |
 | `read-only` | run | denied | denied |
 | `workspace-write` (product default) | run | run inside the workspace; ask outside | ask |
 | `full-access` | run | run | run |
+
+These preset decisions do not override explicit denials or process isolation. Full access skips
+preset approval and reevaluates pending calls on the target branch; it does not unconditionally
+allow every call. Reads outside the workspace, system roots, Session-owned files and granted
+paths may ask under Read only and Workspace write.
 
 Under workspace-write, an outside write without a matching Session grant asks for that call,
 even when its tool is explicitly allowed. Approval does not automatically save a grant.
