@@ -4,9 +4,11 @@
 //! ever upgrades within itself, as the publish scripts guarantee from the
 //! other side.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 const PACKAGE: &str = "dimcode";
 /// Alphas ship as their own package with the `dima` command, so they install
@@ -233,34 +235,48 @@ pub async fn run() -> crate::Result<i32> {
             manual(&package, current)
         )
     })?;
+    let mut signals = crate::plugins::Signals::listen()?;
     let mut stderr = std::io::stderr();
     let interactive = stderr.is_terminal();
     if !interactive {
-        println!("Updating {package} on the {tag} channel...");
+        writeln!(stderr, "Updating {package} on the {tag} channel...")?;
     }
-    let installation = install(installation);
+    let cancel = CancellationToken::new();
+    let installation = install(installation, cancel.clone());
     tokio::pin!(installation);
     let started = tokio::time::Instant::now();
     let mut progress = tokio::time::interval(Duration::from_millis(120));
+    let mut output_error = None;
     let result = loop {
         tokio::select! {
             result = &mut installation => break result,
-            _ = progress.tick(), if interactive => {
+            _ = signals.received(), if !cancel.is_cancelled() => cancel.cancel(),
+            _ = progress.tick(), if interactive && output_error.is_none() => {
                 let elapsed = started.elapsed();
                 let frame = ['|', '/', '-', '\\'][(elapsed.as_millis() / 120 % 4) as usize];
-                let text = crate::sanitize::safe_line(&format!(
-                    "{frame} Updating {package} ({tag}) · {}s", elapsed.as_secs()
-                ));
+                let detail = crate::sanitize::safe_line(&format!("({tag}) · {}s", elapsed.as_secs()));
                 let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+                let label_width = usize::from(width).saturating_sub(
+                    unicode_width::UnicodeWidthStr::width(detail.as_str()) + 4
+                );
+                let label = crate::sanitize::safe_line(&format!("Updating {package}"));
+                let label = crate::ui::text::truncate_cells(&label, label_width);
+                let text = format!("{frame} {label} {detail}");
                 let text = crate::ui::text::truncate_cells(&text, width.saturating_sub(1).into());
-                crossterm::execute!(stderr,
+                if let Err(error) = crossterm::execute!(stderr,
                     crossterm::cursor::MoveToColumn(0),
                     crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
                     crossterm::style::Print(text),
-                )?;
+                ) {
+                    output_error = Some(error);
+                    cancel.cancel();
+                }
             }
         }
     };
+    if let Some(error) = output_error {
+        return Err(format!("{error}; {}", result.unwrap_err()).into());
+    }
     if interactive {
         crossterm::execute!(
             stderr,
@@ -269,27 +285,53 @@ pub async fn run() -> crate::Result<i32> {
         )?;
     }
     result?;
-    println!("Updated {package} on the {tag} channel.");
+    writeln!(stderr, "Updated {package} on the {tag} channel.")?;
     Ok(0)
 }
 
-/// Runs `install`; the last line it wrote to stderr when it fails.
-pub async fn install(install: Install) -> Result<(), String> {
-    let output = tokio::process::Command::new(&install.program)
+/// Runs `install`; failures report the last nonempty stderr line.
+/// Cancellation terminates and waits for the installer's process tree.
+pub async fn install(install: Install, cancel: CancellationToken) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(&install.program);
+    command
         .args(&install.args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
+        .stdin(std::process::Stdio::null());
+    let mut tree = dim_agent_capabilities::host_platform::ProcessTree::spawn(command)
         .map_err(|error| format!("{}: {error}", install.program.display()))?;
-    if output.status.success() {
+    let mut stdout = tree.stdout();
+    let mut stderr = tree.stderr();
+    let mut errors = Vec::new();
+    let mut sink = tokio::io::sink();
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err("Update interrupted".to_owned()),
+        result = async {
+            let (status, _, _) = tokio::try_join!(
+                tree.wait(),
+                tokio::io::copy(&mut stdout, &mut sink),
+                stderr.read_to_end(&mut errors),
+            )?;
+            Ok::<_, std::io::Error>(status)
+        } => result.map_err(|error| error.to_string()),
+    };
+    let status = match result {
+        Ok(status) => status,
+        Err(error) => {
+            tree.terminate()
+                .await
+                .map_err(|cleanup| format!("{error}; {cleanup}"))?;
+            return Err(error);
+        }
+    };
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&errors);
     Err(stderr
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .map_or_else(|| output.status.to_string(), |line| line.trim().to_owned()))
+        .map_or_else(|| status.to_string(), |line| line.trim().to_owned()))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

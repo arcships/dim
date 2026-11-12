@@ -6472,10 +6472,10 @@
         "crossterm::execute",
         "env",
         "format",
-        "println",
         "tokio::pin",
         "tokio::select",
-        "vec"
+        "vec",
+        "writeln"
       ]
     },
     {
@@ -47325,9 +47325,23 @@
     },
     {
       "from": "dim_cli::update",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path dim_agent_capabilities::host_platform::ProcessTree::spawn"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
       "to": "dim_cli",
       "references": [
         "path crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
+      "to": "dim_cli::plugins",
+      "references": [
+        "path crate::plugins::Signals::listen"
       ]
     },
     {

@@ -1229,6 +1229,27 @@ current directory; ~ is literal; use an absolute path for another base`。调用
 
 ## 更新对话框
 
+`dimcode update`（也可用 `dim update` 和 `dima update`）按当前版本渠道升级：
+alpha 使用 `alpha`，beta 使用 `beta`，稳定版使用 `latest`。复用更新对话框的
+包管理器识别，保留 npm 安装前缀及 alpha 包身份；忽略自动检查开关和跳过版本，
+不启动或停止 daemon，不创建 Session，也不自动重启客户端。
+
+安装日志被捕获，不逐行刷屏。进度和最终结果统一写到 stderr，stdout 为空。
+终端中只原地刷新一行旋转指示、包名、渠道和耗时；窄屏先缩短标签，为渠道和耗时
+留出空间，整行不换行。结束时清除进度行再显示成功或错误。重定向 stderr 时只输出
+开始和最终结果，不含动画或终端控制符；只重定向 stdout 时，进度和结果仍留在终端。
+耗时不是完成百分比。Ctrl+C、SIGTERM 或进度写入失败会终止并等待安装进程树，
+然后以非零状态返回；这不回滚包管理器已经做出的修改。安装失败显示安装器错误，
+未知安装布局（包括源码构建）显示手动安装或重建说明。
+
+```text
+$ dima update
+| Updating dimcode-alpha (alpha) · 5s
+
+24 列：
+| Updatin… (alpha) · 5s
+```
+
 既有更新对话框在 fullscreen 和 scrollback 中使用相同的动作，并适应可用列数和行数。
 较长的版本、命令和错误文字换行，必要时用 Up/Down 滚动。标题和动作行保持可见。
 所有动作无法放在同一行时，只显示当前聚焦的动作及其序号；Left/Right 和 Tab/BackTab 仍循环

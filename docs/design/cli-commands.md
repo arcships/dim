@@ -2012,15 +2012,23 @@ automatic-update preferences or skipped versions, start or stop a daemon, or
 relaunch the client. The package manager resolves the tag and performs the install;
 its output is captured so installation logs do not scroll the screen. On a terminal,
 one progress row redraws in place with a spinner, the package and channel, and elapsed
-seconds. It fits the terminal width without wrapping and clears before success or
-an error is printed. Redirected output has one start message and the final result,
-without animation or terminal control sequences. Elapsed time is not a completion
-percentage. A failure exits nonzero with the installer's error. An unknown installation
-layout, including a source checkout, fails with manual installation or rebuild instructions.
+seconds. It shortens the label before the channel and elapsed time, fits the terminal
+width without wrapping, and clears before success or an error is printed. All progress
+and result messages use stderr; stdout is empty. Redirecting stderr produces one start
+message and the final result without animation or terminal control sequences. Redirecting
+only stdout leaves the progress and result on the terminal. Elapsed time is not a completion
+percentage. Ctrl+C, SIGTERM, or a progress-output failure cancels installation: the command
+terminates and waits for the installer process tree before returning nonzero. Termination
+does not roll back changes the package manager already made. A failure exits nonzero with
+the installer's error. An unknown installation layout, including a source checkout,
+fails with manual installation or rebuild instructions.
 
 ```text
 $ dima update
 | Updating dimcode-alpha (alpha) · 5s
+
+24 columns:
+| Updatin… (alpha) · 5s
 ```
 
 The same row becomes the result when installation finishes:

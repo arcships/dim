@@ -599,7 +599,27 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
     let npm = prefix.join("bin/npm");
     fs::write(
         &npm,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UPDATE_ARGS\"\nif [ \"$UPDATE_FAIL\" = 1 ]; then\n  echo 'fixture install failed' >&2\n  exit 7\nfi\necho 'Downloading package' >&2\nif [ -n \"$UPDATE_CONTINUE\" ]; then\n  while [ ! -f \"$UPDATE_CONTINUE\" ]; do sleep 0.1; done\nfi\necho 'Installed package'\n",
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$UPDATE_ARGS"
+if [ "$UPDATE_FAIL" = 1 ]; then
+  echo 'fixture install failed' >&2
+  exit 7
+fi
+echo 'Downloading package' >&2
+if [ -n "$UPDATE_CHILD" ]; then
+  echo $$ > "$UPDATE_PID"
+  sh -c '
+    if [ "$UPDATE_IGNORE_TERM" = 1 ]; then trap "" TERM; fi
+    echo $$ > "$UPDATE_CHILD"
+    while [ ! -f "$UPDATE_CONTINUE" ]; do sleep 0.1; done
+    echo installed > "$UPDATE_MARKER"
+  ' &
+  wait
+elif [ -n "$UPDATE_CONTINUE" ]; then
+  while [ ! -f "$UPDATE_CONTINUE" ]; do sleep 0.1; done
+fi
+echo 'Installed package'
+"#,
     )
     .unwrap();
     fs::set_permissions(&npm, fs::Permissions::from_mode(0o700)).unwrap();
@@ -633,26 +653,21 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
         );
         if fail {
             assert!(String::from_utf8_lossy(&output.stderr).contains("fixture install failed"));
-            assert!(!String::from_utf8_lossy(&output.stdout).contains("Updated "));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Updated "));
         } else {
             assert!(
-                String::from_utf8_lossy(&output.stdout).contains(&format!("Updated {package}"))
+                String::from_utf8_lossy(&output.stderr).contains(&format!("Updated {package}"))
             );
-            assert!(!String::from_utf8_lossy(&output.stdout).contains("Installed package"));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Installed package"));
         }
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("Updating {package}")));
+        assert!(output.stdout.is_empty());
         assert!(!output.stdout.contains(&0x1b));
         assert!(!output.stderr.contains(&0x1b));
     }
     let resume = home.0.join("continue-install");
-    for (width, fail) in [(80, false), (24, false), (80, true)] {
-        let mut command = Command::new(&executable);
-        command
-            .args(["--home", home.0.to_str().unwrap(), "update"])
-            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
-            .env("UPDATE_ARGS", &recorded)
-            .env("UPDATE_CONTINUE", &resume)
-            .env("UPDATE_FAIL", if fail { "1" } else { "0" });
-        let mut terminal = Terminal::launch(command);
+    let launch = |command, width| {
+        let terminal = Terminal::launch(command);
         let size = libc::winsize {
             ws_row: 24,
             ws_col: width,
@@ -669,9 +684,20 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
             },
             0
         );
+        terminal
+    };
+    for (width, fail) in [(80, false), (24, false), (80, true)] {
+        let mut command = Command::new(&executable);
+        command
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_FAIL", if fail { "1" } else { "0" });
+        let mut terminal = launch(command, width);
         if !fail {
-            terminal.until("Updating dimcode");
-            terminal.until("Updating dimcode");
+            terminal.until(&format!("({tag}) · 0s"));
+            terminal.until(&format!("({tag}) · 1s"));
             assert!(
                 !terminal.transcript.contains('\n'),
                 "progress must stay on one row"
@@ -694,6 +720,116 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
         if !fail {
             fs::remove_file(&resume).unwrap();
         }
+    }
+    let log = home.0.join("update.log");
+    for redirect in ["stdout", "stderr"] {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                if redirect == "stdout" {
+                    "exec \"$@\" > \"$UPDATE_LOG\""
+                } else {
+                    "exec \"$@\" 2> \"$UPDATE_LOG\""
+                },
+                "sh",
+            ])
+            .arg(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_LOG", &log);
+        let mut terminal = launch(command, 80);
+        if redirect == "stdout" {
+            terminal.until(&format!("({tag}) · 0s"));
+        } else {
+            let deadline = Instant::now() + HANG_GUARD;
+            while !fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("Updating dimcode-alpha")
+            {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        fs::write(&resume, "continue").unwrap();
+        assert!(terminal.wait().success());
+        let logged = fs::read_to_string(&log).unwrap();
+        if redirect == "stdout" {
+            assert!(logged.is_empty());
+            assert!(terminal.transcript.contains("Updated dimcode-alpha"));
+        } else {
+            assert!(terminal.transcript.is_empty());
+            assert!(logged.contains("Updating dimcode-alpha"));
+            assert!(logged.contains("Updated dimcode-alpha"));
+            assert!(!logged.contains('\u{1b}'));
+        }
+        fs::remove_file(&resume).unwrap();
+    }
+    let installer_pid = home.0.join("installer-pid");
+    let child_pid = home.0.join("child-pid");
+    let marker = home.0.join("installed");
+    for interruption in ["SIGTERM", "SIGINT", "closed terminal"] {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap '' HUP; exec \"$@\"", "sh"])
+            .arg(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_PID", &installer_pid)
+            .env("UPDATE_CHILD", &child_pid)
+            .env("UPDATE_MARKER", &marker)
+            .env(
+                "UPDATE_IGNORE_TERM",
+                if interruption == "SIGTERM" { "1" } else { "0" },
+            );
+        let mut terminal = launch(command, 80);
+        terminal.until(&format!("({tag}) · 0s"));
+        let deadline = Instant::now() + HANG_GUARD;
+        while fs::read_to_string(&child_pid)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let pids: Vec<i32> = [&installer_pid, &child_pid]
+            .into_iter()
+            .map(|path| fs::read_to_string(path).unwrap().trim().parse().unwrap())
+            .collect();
+        if interruption == "closed terminal" {
+            drop(terminal.master.take());
+            assert!(!terminal.wait_without_reading().success());
+        } else {
+            terminal.signal(if interruption == "SIGTERM" {
+                libc::SIGTERM
+            } else {
+                libc::SIGINT
+            });
+            assert!(!terminal.wait().success());
+            assert!(terminal.transcript.contains("Update interrupted"));
+            assert!(!terminal.transcript.contains("Updated dimcode-alpha"));
+        }
+        for pid in pids {
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "{interruption} left process {pid} alive"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
+        fs::write(&resume, "continue").unwrap();
+        assert!(!marker.exists(), "an interrupted install must not complete");
+        fs::remove_file(&resume).unwrap();
+        fs::remove_file(&installer_pid).unwrap();
+        fs::remove_file(&child_pid).unwrap();
     }
     let output = home.command().arg("update").output().unwrap();
     assert!(!output.status.success());

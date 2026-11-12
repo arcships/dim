@@ -1734,7 +1734,8 @@ impl Worker {
                 let updates = self.updates.clone();
                 tokio::spawn(async move {
                     let version = install.version.clone();
-                    let result = update::install(install).await;
+                    let result =
+                        update::install(install, tokio_util::sync::CancellationToken::new()).await;
                     let _ = updates.send(Update::UpgradeInstalled { version, result });
                 });
             }
