@@ -2203,6 +2203,30 @@ Installing a new release while old consumers remain active would instead require
 versioned payloads, including plugins and Web assets, and a separate activation decision.
 It is not achieved by leaving the old daemon's executable mapped while replacing its files.
 
+#### Proposed mechanism requirements
+
+The refusal policy above does not by itself define a lifecycle mechanism. These requirements
+need alignment with the lifecycle and launch owners before changing their contracts (#1457).
+
+- **Blocked requirement:** an idle decision must remain true until the old process releases
+  its resources. `Session::in_use` is a query, not a freeze; `Session::unload_if_idle` requires
+  its host to exclude new uses. `daemon.shutdown.ifIdle` excludes concurrent hello/attach,
+  but does not exclude new work originating in Scheduler or other process plugins.
+- **Lifecycle requirement:** the process owner needs an atomic, non-blocking quiescence
+  operation covering accepted work and creation/input admission. It refuses while work is
+  owned; success prevents new work until shutdown completes or the admission is released.
+  Refusal must not cancel accepted work. Reuse Session leases and activity holds, rather
+  than interpreting each business plugin's state from the updater. The owner specifies
+  the language-neutral face and verifies concurrent input, creation and detached work.
+- **Launch requirement:** consumers of one installation need live OS-owned leases before
+  using its payload, across homes, coordinated with the installer lock. Recorded home/PID
+  metadata alone is not proof of occupancy or idleness. An unrecognized or older consumer
+  that cannot participate must lead to refusal, not an assumed empty installation.
+- **Effects and ownership:** quiescence changes admission, not Timeline order, batching,
+  recovery formats or already accepted work. The App Server/lifecycle owners implement
+  and verify the generic operation; native launch and installation owners implement the
+  cross-process leases and new-client activation. The updater consumes those contracts.
+
 ## Terminal interaction
 
 ```text
