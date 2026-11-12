@@ -1077,12 +1077,75 @@ async fn display_tail(
 ) -> Result<wire::HistoryResult, RpcError> {
     let top = before.saturating_sub(1).min(through);
     let low = top.saturating_sub(limit.saturating_sub(1) as u64).max(1);
-    let mut next = top;
+    if top == 0 {
+        return Ok(wire::HistoryResult {
+            events: Vec::new(),
+            through,
+            next_after: 0,
+            done: true,
+            next_before: None,
+            turn_start: None,
+        });
+    }
+    let selected = read
+        .query(
+            branch,
+            TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: Some(TimelinePosition {
+                    branch_id: branch.into(),
+                    sequence: low,
+                }),
+                through: Some(top),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::And {
+                        conditions: vec![
+                            wire::ProductEvent::query_filter(),
+                            QueryFilter::Not {
+                                condition: Box::new(QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["context/configured".into()],
+                                }),
+                            },
+                        ],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["position.sequence".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![QueryOrder {
+                        key: QueryOrderKey::Position,
+                        direction: TimelineQueryDirection::Descending,
+                    }],
+                },
+                page: Some(QueryPage {
+                    limit: std::num::NonZeroU64::new(limit as u64).unwrap(),
+                    after: None,
+                }),
+            },
+        )
+        .await
+        .map_err(history_error)?;
+    let QueryOutput::Rows { rows } = selected.result else {
+        unreachable!("display positions")
+    };
+    let positions = rows
+        .into_iter()
+        .map(|row| match &row.values[0] {
+            QueryValue::Value { value } => value.as_u64().expect("display position"),
+            _ => unreachable!("display position"),
+        })
+        .collect::<Vec<_>>();
     let mut bytes = 0;
     let mut kept = Vec::new();
-    'page: while next >= low && next > 0 {
-        let start = next.saturating_sub(7).max(low);
-        let items = window_items(read, branch, start, next, true, false).await?;
+    let mut truncated = false;
+    'page: for batch in positions.chunks(8) {
+        let items =
+            window_items(read, branch, *batch.last().unwrap(), batch[0], true, false).await?;
         for item in items.into_iter().rev() {
             if item.bytes > REPLY_FRAME_BYTES {
                 return Err(RpcError::app(
@@ -1092,16 +1155,20 @@ async fn display_tail(
                 ));
             }
             if bytes > 0 && bytes + item.bytes > HISTORY_TURN_BYTES {
+                truncated = true;
                 break 'page;
             }
             bytes += item.bytes;
             kept.push(item);
         }
-        next = start - 1;
     }
     kept.reverse();
-    let next_before = kept.first().map(|item| item.sequence);
-    let next_after = kept.last().map_or(through, |item| item.sequence);
+    let next_before = if truncated {
+        kept.first().map(|item| item.sequence)
+    } else {
+        Some(low)
+    };
+    let next_after = top;
     Ok(wire::HistoryResult {
         events: kept.into_iter().filter_map(|item| item.event).collect(),
         through,
