@@ -162,17 +162,6 @@ function createReasoningOffOverrideState(overrides) {
     if (models === undefined) {
       throw new Error(`Reasoning off override provider ${providerId} models must be an object`)
     }
-    if (providerId === "dimcode-api-oauth") {
-      // dimcode-api-oauth has no static provider file (models come from a live
-      // OAuth call), so this section isn't merged into the bundled catalog —
-      // model-enrichment applies it at runtime as a fallback for models the
-      // server hasn't reported reasoning.off for yet. Still validate the shape
-      // here so a malformed entry fails the build instead of silently no-oping.
-      for (const [modelId, modelConfig] of Object.entries(models)) {
-        validateReasoningOffOverride(providerId, modelId, modelConfig)
-      }
-      continue
-    }
     const providerModels = new Map()
     for (const [modelId, modelConfig] of Object.entries(models)) {
       providerModels.set(modelId, validateReasoningOffOverride(providerId, modelId, modelConfig))
@@ -640,10 +629,27 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"))
 }
 
+function renderCatalog(catalog) {
+  const providers = catalog.providers.map((provider) => {
+    const fields = Object.entries(provider).map(([key, value]) => {
+      if (key === "models" && provider.models.length > 0) {
+        const models = provider.models.map((model) => `        ${JSON.stringify(model)}`)
+        return `      "models": [\n${models.join(",\n")}\n      ]`
+      }
+      return `      ${JSON.stringify(key)}: ${JSON.stringify(value)}`
+    })
+    return `    {\n${fields.join(",\n")}\n    }`
+  })
+  const fields = Object.entries(catalog).map(([key, value]) => key === "providers" && providers.length > 0
+    ? `  "providers": [\n${providers.join(",\n")}\n  ]`
+    : `  ${JSON.stringify(key)}: ${JSON.stringify(value)}`)
+  return `{\n${fields.join(",\n")}\n}\n`
+}
+
 async function writeCatalog(previous: string, candidate) {
   const temporary = `${catalogOutput}.${randomUUID()}.tmp`
   try {
-    await writeFile(temporary, JSON.stringify(candidate), { flag: "wx" })
+    await writeFile(temporary, renderCatalog(candidate), { flag: "wx" })
     if (await readFile(catalogOutput, "utf8") !== previous) {
       throw new Error("The catalog changed during sync. Run the command again.")
     }

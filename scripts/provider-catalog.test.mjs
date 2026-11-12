@@ -32,6 +32,22 @@ test("the maintenance command validates the bundled catalog offline", async (t) 
   assert.equal(await readFile(join(cwd, bundled), "utf8"), await readFile(join(root, bundled), "utf8"));
 });
 
+test("a full sync of the committed model descriptors leaves the catalog byte-identical", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const original = await readFile(path, "utf8");
+  const { providers } = JSON.parse(original);
+  await Promise.all(providers.map(({ providerId, metadata, models }) => {
+    const source = metadata.raw.providerDbSourceId ?? providerId;
+    return writeFile(join(upstream, `${source}.json`), JSON.stringify({
+      api: metadata.raw.api,
+      models: models.map((model) => model.metadata.raw),
+    }));
+  }));
+  execFileSync(process.execPath, [script, "--sync"], { cwd, env });
+  assert.equal(await readFile(path, "utf8"), original);
+});
+
 test("a scoped sync validates its candidate and publishes only the complete catalog", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);
@@ -54,6 +70,7 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   const { providers, updatedAt } = JSON.parse(generated);
   const refreshed = providers.find((provider) => provider.providerId === old.providerId);
   assert.notEqual(updatedAt, previous.updatedAt);
+  assert.match(generated, /\n        {"modelId":"new-model",/);
   assert.deepEqual({ ...refreshed, models: old.models }, old);
   assert.deepEqual(refreshed.models.map((model) => model.modelId), [defaultId, "new-model"]);
   assert.deepEqual(providers.filter((provider) => provider !== refreshed), previous.providers.filter((provider) => provider !== old));

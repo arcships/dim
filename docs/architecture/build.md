@@ -44,11 +44,14 @@ node scripts/update-provider-catalog.ts --sync kimi-for-coding # Sync one provid
 node scripts/update-provider-catalog.ts --sync                # Sync all configured remote sources
 ```
 
-The catalog holds local provider settings and curated model declarations. The script
-lists the providers that sync and the fields and models each keeps locally. Sync fetches
-upstream model data, applies the existing reasoning overrides, and replaces the complete
-catalog after validation. A sync that produces the same content preserves the file and
-its timestamp. A fetch or validation failure leaves the catalog as it was.
+The bundled catalog owns provider settings such as authentication, adapter, and
+`remoteModelList`. Upstream supplies model descriptors and the API base URL. Sync derives
+the default model from the refreshed model list. The script's `remoteProviders` table can
+keep a provider's base URL, default model, and curated models local. When onboarding an
+upstream-backed provider, add its definition to the catalog and its policy to that table.
 
-Review and commit the complete catalog after a sync. Upstream responses and intermediate
-model lists stay in memory.
+Sync applies the existing reasoning overrides and replaces the complete catalog after
+validation. A sync that produces the same content preserves the file and its timestamp.
+A fetch or validation failure leaves the catalog as it was. Review and commit the complete
+catalog after a sync. Model entries occupy individual lines for review. Upstream responses
+and intermediate model lists stay in memory.
