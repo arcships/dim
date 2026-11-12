@@ -1,5 +1,73 @@
 use super::*;
 
+struct ProcessOwner {
+    activity: rutis::host::Key<dim_app_server::ProcessActivity>,
+    captured: Arc<std::sync::OnceLock<Arc<dim_app_server::ProcessActivity>>>,
+}
+
+impl rutis::host::DynPlugin for ProcessOwner {
+    fn name(&self) -> &str {
+        "ProcessOwner"
+    }
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.activity.erase()]
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let activity = ctx.require_at(&self.activity)?;
+            let _ = self.captured.set(activity);
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepted_process_work_refuses_idle_shutdown_before_any_session_exists() {
+    let captured = Arc::new(std::sync::OnceLock::new());
+    let (server, _) = launch_with(Arc::new(MockTools), ServerConfig::default(), {
+        let captured = captured.clone();
+        move |builder| {
+            builder.plugin(move |names| {
+                Ok(Box::new(ProcessOwner {
+                    activity: names.key()?,
+                    captured: captured.clone(),
+                }) as Box<dyn rutis::host::DynPlugin>)
+            });
+        }
+    })
+    .await;
+    let activity = captured.get().unwrap();
+    let first = activity.hold().unwrap();
+    let second = activity.take_hold().unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        client.rpc("daemon.ping", json!({})).await["result"]["sessions"],
+        0
+    );
+    for release_first in [false, true] {
+        if release_first {
+            assert!(activity.release(first));
+        }
+        let refused = client.rpc("daemon.shutdown", json!({"ifIdle":true})).await;
+        assert_eq!(
+            refused["error"]["data"]["appError"], "daemon_busy",
+            "{refused}"
+        );
+        assert_ok(&client.rpc("daemon.ping", json!({})).await);
+    }
+    drop(second);
+    assert_ok(&client.rpc("session.create", create(json!([]))).await);
+    assert_ok(&client.rpc("daemon.shutdown", json!({"ifIdle":true})).await);
+    assert_eq!(server.join().await.unwrap(), ShutdownReason::Graceful);
+    assert!(
+        activity.take_hold().is_none(),
+        "completed shutdown stays closed"
+    );
+}
+
 /// The daemon an idle shutdown would disturb is counted and kept: another
 /// connection, a Session another connection attached, and a Session the
 /// requesting connection attached itself all refuse it, with the counts that

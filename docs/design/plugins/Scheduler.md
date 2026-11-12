@@ -8,6 +8,16 @@ Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-
 
 Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `sessions.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
 
+Scheduler also declares the process-scoped data service
+[`processActivity`](../../../crates/dim-app-server/README.md#process-activity).
+It retains admission from before a delivery's durable acceptance through its
+terminal record, including the intervals between inconclusive lookups and a row
+reload. These live holds survive a disabled row; a new process reconstructs them
+from its `delivering` records before recovery; inert legacy records retain their
+compatibility behavior (A.7). Due timer, wakeup, stop and retention passes hold admission
+while executing; a future deadline alone is not active work. A paused timer pass
+does not consume its deadline. This adds no Scheduler event or record field.
+
 ## 1. Structure
 
 ```mermaid

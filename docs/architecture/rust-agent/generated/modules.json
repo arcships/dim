@@ -20754,6 +20754,7 @@
         "path SchedulerPlugin",
         "path SchedulerPlugin::new",
         "path SchedulerPlugin::new_with_testing",
+        "path methods::DeliveryHolds::default",
         "use methods::ScheduleJobs",
         "use methods::SchedulerPlugin"
       ]
@@ -21044,6 +21045,7 @@
       "to": "dim_agent_scheduler::runs",
       "references": [
         "path Delivery",
+        "path DeliveryState::Delivering",
         "path SchedulerError",
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
@@ -21055,6 +21057,7 @@
         "path stamp",
         "use crate::runs",
         "use crate::runs::Delivery",
+        "use crate::runs::DeliveryState",
         "use crate::runs::SchedulerError",
         "use crate::runs::SessionOrigin",
         "use crate::runs::stamp"
@@ -21096,6 +21099,15 @@
       "references": [
         "path InputMode",
         "use dim_agent_types::InputMode"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_app_server::control",
+      "references": [
+        "path ProcessActivity",
+        "path dim_app_server::ProcessHold",
+        "use dim_app_server::ProcessActivity"
       ]
     },
     {
@@ -22288,9 +22300,12 @@
       "to": "dim_app_server::control",
       "references": [
         "mod control",
+        "path ProcessActivity",
         "path ServerControl",
         "path ServerControlPlugin::new",
         "path control",
+        "use control::ProcessActivity",
+        "use control::ProcessHold",
         "use control::ServerControl",
         "use control::ServerControlPlugin"
       ]
@@ -22730,6 +22745,7 @@
         "path InUse::Held",
         "path InUse::Running",
         "path Session",
+        "path dim_agent_runtime::SessionPause",
         "use dim_agent_runtime::Agent",
         "use dim_agent_runtime::InUse",
         "use dim_agent_runtime::Session"
@@ -22768,6 +22784,7 @@
         "path AgentError::Build",
         "path AgentError::Closed",
         "path AgentError::InvalidInput",
+        "path AgentError::Reloading",
         "path AgentError::Storage",
         "path AgentError::aggregate",
         "path AgentError::fault",
@@ -22927,6 +22944,16 @@
       "references": [
         "mod tests",
         "path tests::creation_held"
+      ]
+    },
+    {
+      "from": "dim_app_server::agents",
+      "to": "dim_app_server::control",
+      "references": [
+        "path ProcessActivity",
+        "path ProcessHold",
+        "use crate::ProcessActivity",
+        "use crate::ProcessHold"
       ]
     },
     {
@@ -24829,6 +24856,7 @@
         "path RpcError::from",
         "path RpcError::invalid",
         "path RpcError::reloading",
+        "path RpcError::service",
         "path RpcError::wire",
         "path dim_agent_capabilities::methods::valid_name",
         "path params",
@@ -25742,6 +25770,13 @@
       "references": [
         "path UiExtensions",
         "use crate::ui_extensions::UiExtensions"
+      ]
+    },
+    {
+      "from": "dim_app_server::control",
+      "to": "dim_agent_runtime::agent",
+      "references": [
+        "path dim_agent_runtime::SessionPause"
       ]
     },
     {

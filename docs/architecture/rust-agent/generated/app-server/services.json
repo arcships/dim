@@ -159,6 +159,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "status": "Ready"
@@ -179,6 +184,12 @@
             "service": "dim_agent_runtime::parts::PartRegistry",
             "scope": null,
             "provider": 45,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "provider": 3,
             "generation": 1
           },
           {
@@ -204,6 +215,12 @@
           {
             "service": "dim_agent_runtime::parts::PartRegistry",
             "provider": 45,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "provider": 3,
             "declared": true,
             "external": true
           },
@@ -263,6 +280,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "status": "Ready"
@@ -288,6 +310,12 @@
             "service": "dim_agent_runtime::parts::PartRegistry",
             "scope": null,
             "provider": 45,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "provider": 3,
             "generation": 1
           },
           {
@@ -319,6 +347,12 @@
           {
             "service": "dim_agent_runtime::parts::PartRegistry",
             "provider": 45,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "provider": 3,
             "declared": true,
             "external": true
           },
@@ -1520,6 +1554,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::settings::SettingsService",
             "scope": null,
             "status": "Ready"
@@ -1551,6 +1590,12 @@
             "service": "dim_app_server::agents::AgentDirectory",
             "scope": null,
             "provider": 37,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "scope": null,
+            "provider": 3,
             "generation": 1
           },
           {
@@ -1588,6 +1633,12 @@
           {
             "service": "dim_app_server::agents::AgentDirectory",
             "provider": 37,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::control::ProcessActivity",
+            "provider": 3,
             "declared": true,
             "external": true
           },
@@ -3315,6 +3366,12 @@
         "removing": false
       },
       {
+        "service": "dim_app_server::control::ProcessActivity",
+        "provider": 3,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::control::ServerControl",
         "provider": 3,
         "generation": 1,
@@ -3485,6 +3542,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#pluginFiles",
         "provider": 13,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#processActivity",
+        "provider": 3,
         "generation": 1,
         "removing": false
       },

@@ -2236,8 +2236,8 @@ need alignment with the lifecycle and launch owners before changing their contra
 
 - **Blocked requirement:** an idle decision must remain true until the old process releases
   its resources. `Session::in_use` is a query, not a freeze; `Session::unload_if_idle` requires
-  its host to exclude new uses. `daemon.shutdown.ifIdle` excludes concurrent hello/attach,
-  but does not exclude new work originating in Scheduler or other process plugins.
+  its host to exclude new uses. Excluding concurrent hello/attach alone cannot exclude
+  new work originating in Scheduler or other process plugins.
 - **Lifecycle requirement:** the process owner needs an atomic, non-blocking quiescence
   operation covering accepted work and creation/input admission. It refuses while work is
   owned; success prevents new work until shutdown completes or the admission is released.
@@ -2248,6 +2248,12 @@ need alignment with the lifecycle and launch owners before changing their contra
   using its payload, across homes, coordinated with the installer lock. Recorded home/PID
   metadata alone is not proof of occupancy or idleness. An unrecognized or older consumer
   that cannot participate must lead to refusal, not an assumed empty installation.
+- **First migration:** installing a lease-aware build cannot retroactively register older
+  running consumers. Until a trustworthy baseline exists, automatic updates refuse. The
+  manual path requires exiting all clients and stopping all old servers before reinstalling.
+  An explicit operator confirmation that this manual migration is complete could initialize
+  the baseline; this is a proposed trust boundary requiring owner approval, not an automatic
+  inference from the installed version or permission to override a known active lease.
 - **Effects and ownership:** quiescence changes admission, not Timeline order, batching,
   recovery formats or already accepted work. The App Server/lifecycle owners implement
   and verify the generic operation; native launch and installation owners implement the

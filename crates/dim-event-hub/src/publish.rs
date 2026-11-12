@@ -117,6 +117,10 @@ pub(crate) async fn publish(
     request: PublishRequest,
 ) -> Result<Value, EventHubError> {
     validate_publish(&request)?;
+    let activity = shared
+        .activity
+        .take_hold()
+        .ok_or_else(|| EventHubError::new("service_reloading", "Process admission is paused"))?;
     let owner = ctx.instance();
     let declaration = shared
         .state
@@ -141,12 +145,10 @@ pub(crate) async fn publish(
     // Once the publish starts it runs to completion in a task EventHub owns:
     // a caller that drops its reply, or a reload, neither stops it nor frees
     // the event lock (design §2.4).
-    tokio::spawn(publish_to_completion(
-        shared,
-        request,
-        declaration,
-        declared_mode,
-    ))
+    tokio::spawn(async move {
+        let _activity = activity;
+        publish_to_completion(shared, request, declaration, declared_mode).await
+    })
     .await
     .map_err(|error| EventHubError::transport(format!("the publish task ended: {error}")))?
 }
@@ -737,6 +739,9 @@ async fn reconcile_closed(shared: &Shared, deliveries: &[Delivery]) {
 /// subscriptions in one transaction, at most eight reads at a time (design
 /// §3.4). Any error keeps them.
 pub(crate) async fn reconcile(shared: Arc<Shared>) {
+    let Some(_activity) = shared.activity.take_hold() else {
+        return;
+    };
     let mut sessions: Vec<String> = Vec::new();
     for subscription in shared.store.read() {
         if !sessions.contains(&subscription.target.session_id) {
@@ -747,7 +752,9 @@ pub(crate) async fn reconcile(shared: Arc<Shared>) {
         .map(|session_id| {
             let shared = shared.clone();
             async move {
-                if session_exists(&shared, &session_id).await == Some(false) {
+                if !shared.stop.is_cancelled()
+                    && session_exists(&shared, &session_id).await == Some(false)
+                {
                     shared.remove_session(&session_id).await;
                 }
             }

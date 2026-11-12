@@ -7,6 +7,63 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use support::*;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_accepted_launch_survives_idle_shutdown_before_its_session_exists() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {
+                "name": "admission", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Complete the accepted work.",
+                "target": {"kind": "launch", "cwd": home.path()}
+            }}),
+        )
+        .await
+        .unwrap();
+    let job = saved["job"]["id"].as_str().unwrap();
+    let release = holds(home.path()).hold_next_launch();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job}))
+        .await
+        .unwrap();
+    assert_eq!(accepted["state"], "delivering");
+    assert_eq!(
+        client.rpc("daemon.ping", json!({})).await.unwrap()["sessions"],
+        0
+    );
+    let error = client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        dim_client::app_error(&error),
+        Some("daemon_busy"),
+        "{error}"
+    );
+    release.notify_one();
+    let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": run["session_id"], "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(
+        server.join().await.unwrap(),
+        dim_app_server::ShutdownReason::Graceful
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_document() {
     let home = home();
