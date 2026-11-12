@@ -11,6 +11,7 @@ pub const HELP: &str = r#"dimcode [OPTIONS]
 Pure Rust scrollback client. With redirected stdin, run one prompt and exit.
 
 Commands:
+  update                          Install the latest version on this channel
   tui [-p TEXT] [--image PATH ...]
                                   Open the interactive scrollback client;
                                   -p sends TEXT as its first message
@@ -351,6 +352,7 @@ pub enum Action {
     Chat,
     Tui,
     Exec,
+    Update,
     Migration(crate::migration_command::Command),
     Acp {
         agent_id: Option<String>,
@@ -919,6 +921,9 @@ impl Options {
                 }
                 "tui" if matches!(options.action, Action::Chat) => options.action = Action::Tui,
                 "exec" if matches!(options.action, Action::Chat) => options.action = Action::Exec,
+                "update" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Update
+                }
                 "resume" if matches!(options.action, Action::Exec) => {
                     if options.resume.replace(value(&mut args)?).is_some() {
                         return Err("Supply the Session only once".into());
@@ -2017,6 +2022,7 @@ impl Options {
             | Action::RuntimeList
             | Action::RuntimeInstall(_)
             | Action::RuntimeConfig { .. }
+            | Action::Update
             | Action::DaemonStop
             | Action::Web { .. }
             | Action::WebInstall

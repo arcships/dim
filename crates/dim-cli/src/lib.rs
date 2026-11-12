@@ -552,6 +552,9 @@ async fn run_acp(
 }
 
 async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
+    if matches!(options.action, Action::Update) {
+        return update::run().await;
+    }
     // `block_on` polls `act` on this thread, so the thread-local language
     // holds; the connection code may run on another thread, so it carries the
     // same language as a value.
@@ -917,6 +920,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         | Action::Migration(_)
         | Action::Help
         | Action::Version
+        | Action::Update
         | Action::DaemonStop
         | Action::DaemonVacuum { .. }
         | Action::Timeline { .. }

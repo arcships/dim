@@ -586,6 +586,104 @@ fn a_build_from_source_reports_its_version_as_source() {
 }
 
 #[test]
+fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
+    let home = Home::new();
+    fs::remove_dir_all(home.0.join("rust")).unwrap();
+    let prefix = home.0.join("node prefix");
+    let executable = prefix.join("lib/node_modules/dimcode-alpha/bin/dimcode");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_dimcode"), &executable).unwrap();
+    let executable = fs::canonicalize(executable).unwrap();
+    let prefix = fs::canonicalize(prefix).unwrap();
+    fs::create_dir(prefix.join("bin")).unwrap();
+    let npm = prefix.join("bin/npm");
+    fs::write(
+        &npm,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$UPDATE_ARGS\"\nif [ \"$UPDATE_FAIL\" = 1 ]; then\n  echo 'fixture install failed' >&2\n  exit 7\nfi\necho 'Downloading package' >&2\nif [ -n \"$UPDATE_CONTINUE\" ]; then\n  while [ ! -f \"$UPDATE_CONTINUE\" ]; do sleep 0.1; done\nfi\necho 'Installed package'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o700)).unwrap();
+    let recorded = home.0.join("install-args");
+    let tag = env!("CARGO_PKG_VERSION")
+        .split_once('-')
+        .map_or("latest", |(_, prerelease)| {
+            prerelease.split('.').next().unwrap()
+        });
+    for (package, fail) in [
+        ("dimcode-alpha", false),
+        ("dimcode", false),
+        ("dimcode-alpha", true),
+    ] {
+        let output = Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", package)
+            .env("DIMCODE_UPDATE_CHECK", "0")
+            .env("DIM_EFFORT_LEVEL", "invalid")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_FAIL", if fail { "1" } else { "0" })
+            .output()
+            .unwrap();
+        assert_eq!(output.status.success(), !fail, "{output:?}");
+        assert_eq!(
+            fs::read_to_string(&recorded).unwrap(),
+            format!(
+                "install\n-g\n--prefer-online\n--prefix\n{}\n{package}@{tag}\n",
+                prefix.display()
+            )
+        );
+        if fail {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("fixture install failed"));
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("Updated "));
+        } else {
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains(&format!("Updated {package}"))
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("Installed package"));
+        }
+    }
+    let resume = home.0.join("continue-install");
+    let mut child = Command::new(&executable)
+        .args(["--home", home.0.to_str().unwrap(), "update"])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+        .env("UPDATE_ARGS", &recorded)
+        .env("UPDATE_CONTINUE", &resume)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            send.send(line.unwrap()).unwrap();
+        }
+    });
+    let download = receive.recv_timeout(PATIENCE);
+    let waiting = receive.recv_timeout(PATIENCE);
+    fs::write(resume, "continue").unwrap();
+    let output = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(download.unwrap(), "Downloading package");
+    assert!(
+        waiting
+            .unwrap()
+            .starts_with("Still updating dimcode-alpha... ")
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Installed package"));
+    let output = home.command().arg("update").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Cannot update this installation automatically")
+    );
+    let output = home.command().args(["update", "--help"]).output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Install the latest version"));
+    assert!(!home.0.join("rust").exists());
+}
+
+#[test]
 fn model_catalog_lists_safe_ids_and_availability_and_refreshes_explicitly() {
     for refresh in [false, true] {
         let home = Home::new();

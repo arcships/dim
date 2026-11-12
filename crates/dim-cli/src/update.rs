@@ -218,6 +218,46 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
     })
 }
 
+/// Updates this installation's package on its current channel, independently
+/// of automatic-check preferences and skipped versions. Unknown installation
+/// layouts return a manual command without installing anything.
+pub async fn run() -> crate::Result<i32> {
+    let package = package();
+    let current = crate::version::VERSION;
+    let tag = channel(current);
+    let executable = std::env::current_exe()?;
+    let installation = installer(&executable, &package, tag).ok_or_else(|| {
+        format!(
+            "Cannot update this installation automatically. For a package install, run: {}. For a source build, pull and rebuild the source.",
+            manual(&package, current)
+        )
+    })?;
+    println!("Updating {package} on the {tag} channel...");
+    println!("{}", installation.command_line());
+    let mut child = tokio::process::Command::new(&installation.program)
+        .args(&installation.args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()?;
+    let started = tokio::time::Instant::now();
+    let period = Duration::from_secs(5);
+    let mut progress = tokio::time::interval_at(started + period, period);
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status?,
+            _ = progress.tick() => {
+                eprintln!("Still updating {package}... {}s elapsed.", started.elapsed().as_secs());
+            }
+        }
+    };
+    if !status.success() {
+        return Err(format!("{} failed: {status}", installation.program.display()).into());
+    }
+    println!("Updated {package} on the {tag} channel.");
+    Ok(0)
+}
+
 /// Runs `install`; the last line it wrote to stderr when it fails.
 pub async fn install(install: Install) -> Result<(), String> {
     let output = tokio::process::Command::new(&install.program)

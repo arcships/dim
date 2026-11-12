@@ -1417,6 +1417,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 
 | Entry | Behavior |
 | --- | --- |
+| `dimcode update` | Install the latest version on this installation's channel with its original package manager and install prefix, without starting a Session or daemon. |
 | `dimcode tui [-p TEXT] [--image PATH ...]` | Open the existing interactive scrollback client; `-p` sends TEXT as its first message ([starting with a first message](#starting-with-a-first-message)). |
 | `dimcode acp [--agent ID]` | Serve ACP over stdin/stdout through the client-host [AcpGateway](plugins/AcpGateway.md); lifecycle and unsupported features follow its contract. |
 | `dimcode exec [-p TEXT] [--image PATH ...] [--json]` | Run text and/or local images and exit; read redirected stdin when `-p` is absent. |
@@ -2002,6 +2003,26 @@ request is a `model/call` line in it; the request snapshot filters of the
 feature list are not implemented.
 
 ## Update dialog
+
+`dimcode update` (also `dim update` and `dima update`) explicitly installs the
+current package's channel tag: alpha follows `alpha`, beta follows `beta`, and
+stable follows `latest`. It uses the same package-manager detection as the dialog,
+preserving the npm prefix and the alpha package's identity. It does not consult
+automatic-update preferences or skipped versions, start or stop a daemon, or
+relaunch the client. The package manager resolves the tag and performs the install;
+its stdout and stderr stream directly to the terminal, and a waiting notice reports
+elapsed seconds every five seconds until it exits. Elapsed time is not a completion
+percentage. A failure exits nonzero with its error. An unknown installation layout,
+including a source checkout, fails with manual installation or rebuild instructions.
+
+```text
+$ dima update
+Updating dimcode-alpha on the alpha channel...
+npm install -g --prefer-online --prefix /path/to/node dimcode-alpha@alpha
+Still updating dimcode-alpha... 5s elapsed.
+<package manager output appears as it is produced>
+Updated dimcode-alpha on the alpha channel.
+```
 
 The existing update dialog uses the same actions in fullscreen and scrollback.
 It fits the available columns and rows: long version, command and error text
