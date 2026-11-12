@@ -268,6 +268,37 @@ impl Config {
                     .await?,
                 );
             }
+            "effort" => {
+                #[derive(Deserialize)]
+                struct Adopted {
+                    outcome: String,
+                }
+                let Some((choices, _)) = self.effort() else {
+                    return Err(Error::invalid_params());
+                };
+                let patch = if value == PROVIDER_DEFAULT {
+                    json!({"action":"clear"})
+                } else if choices.iter().any(|choice| choice == value) {
+                    json!(value)
+                } else {
+                    return Err(Error::invalid_params());
+                };
+                let result: Adopted = rpc
+                    .typed(
+                        "session.model.update",
+                        json!({"sessionId":id,"branchId":"main","modelPreferences":{"reasoningEffort":patch}}),
+                    )
+                    .await?;
+                if !matches!(result.outcome.as_str(), "adopted" | "unchanged") {
+                    return Err(Error::internal_error());
+                }
+                if let Some(model) = &mut self.model {
+                    let mut preferences = model.model_preferences.take().unwrap_or_default();
+                    preferences.reasoning_effort =
+                        (value != PROVIDER_DEFAULT).then(|| value.to_owned());
+                    model.model_preferences = Some(preferences);
+                }
+            }
             "model" => {
                 #[derive(Deserialize)]
                 struct Adopted {
