@@ -141,7 +141,11 @@ impl Connection {
         params: History,
         display: bool,
         tail: bool,
+        transcript: bool,
     ) -> Result<Reply, RpcError> {
+        if transcript && !tail {
+            return Err(RpcError::invalid("transcript requires tail"));
+        }
         if tail && (params.latest_turn || params.after.is_some()) {
             return Err(RpcError::invalid(
                 "tail cannot be combined with latestTurn or after",
@@ -247,7 +251,9 @@ impl Connection {
             } else {
                 HistoryRead::Open(&session, self.protocol_version())
             };
-            let reply = if tail {
+            let reply = if transcript {
+                display_transcript(&read, branch, before, limit, through).await
+            } else if tail {
                 display_tail(&read, branch, before, limit, through).await
             } else {
                 window_at(&read, branch, before, limit, through, turn, display).await
@@ -263,7 +269,9 @@ impl Connection {
                         .is_some_and(|data| data.app_error == "branch_ended") =>
                 {
                     let ended = HistoryRead::Ended(&tree, self.protocol_version());
-                    if tail {
+                    if transcript {
+                        display_transcript(&ended, branch, before, limit, through).await
+                    } else if tail {
                         display_tail(&ended, branch, before, limit, through).await
                     } else {
                         window_at(&ended, branch, before, limit, through, turn, display).await
@@ -1096,6 +1104,195 @@ async fn window_at(
     history_window(read, branch, events, through, turn).await
 }
 
+async fn display_transcript(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    before: u64,
+    limit: usize,
+    through: u64,
+) -> Result<wire::HistoryResult, RpcError> {
+    let top = before.saturating_sub(1).min(through);
+    let limit = limit.min(256);
+    if top == 0 {
+        return Ok(wire::HistoryResult {
+            events: Vec::new(),
+            through,
+            next_after: through,
+            done: true,
+            next_before: None,
+            turn_start: None,
+        });
+    }
+    let kinds = |values: &[&str]| QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values: values.iter().map(|value| (*value).into()).collect(),
+    };
+    let filters = [
+        (
+            false,
+            kinds(&[
+                "input/message",
+                "input/applied",
+                "input/consumed",
+                "input/withdraw",
+                "input/deleted",
+                "step/text",
+                "step/thinking",
+                "step/tool-use",
+                "step/tool-use-start",
+                "step/tool-call",
+                "step/tool-start",
+                "step/tool-completed",
+                "step/tool-result",
+                "step/model-output-end",
+                "turn/end",
+                "exec/started",
+                "exec/ended",
+                "collaboration/request",
+                "collaboration/delivered",
+                "collaboration/result",
+                "branch/create",
+                "branch/create-failed",
+                "branch/ended",
+                "context/compaction-start",
+            ]),
+        ),
+        (true, kinds(&["context/compaction"])),
+    ];
+    let template = TimelineQuery {
+        scope: TimelineQueryScope::Branch,
+        from: None,
+        through: Some(top),
+        include_publishing: false,
+        query: QuerySpec {
+            filter: None,
+            select: QuerySelect::Fields {
+                fields: vec!["position.sequence".into()],
+            },
+            group_by: Vec::new(),
+            pick: None,
+            order_by: vec![QueryOrder {
+                key: QueryOrderKey::Position,
+                direction: dim_agent_runtime::TimelineQueryDirection::Descending,
+            }],
+        },
+        page: Some(QueryPage {
+            limit: std::num::NonZeroU64::new(limit as u64).unwrap(),
+            after: None,
+        }),
+    };
+    let mut candidates = std::collections::BTreeMap::new();
+    let mut more = false;
+    for (compaction, filter) in filters {
+        let mut query = template.clone();
+        query.query.filter = Some(filter);
+        let page = read.query(branch, query).await.map_err(history_error)?;
+        more |= page.next.is_some();
+        let QueryOutput::Rows { rows } = page.result else {
+            unreachable!("transcript positions")
+        };
+        for row in rows {
+            let [QueryValue::Value { value }] =
+                <[_; 1]>::try_from(row.values).expect("one position")
+            else {
+                unreachable!("position value")
+            };
+            candidates.insert(value.as_u64().expect("event position"), compaction);
+        }
+    }
+    more |= candidates.len() > limit;
+    let positions: Vec<_> = candidates.into_iter().rev().take(limit).collect();
+    let version = match read {
+        HistoryRead::Open(_, v) | HistoryRead::Ended(_, v) => *v,
+    };
+    let mut kept = Vec::new();
+    let mut bytes = 0;
+    'body: for batch in positions.chunks(8) {
+        let ordinary: Vec<_> = batch
+            .iter()
+            .filter(|(_, compaction)| !compaction)
+            .map(|(sequence, _)| serde_json::Value::from(*sequence))
+            .collect();
+        let mut items = Vec::new();
+        if !ordinary.is_empty() {
+            let mut query = template.clone();
+            query.query.filter = Some(QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "position.sequence".into(),
+                },
+                values: ordinary,
+            });
+            query.query.select = QuerySelect::Events;
+            query.query.order_by.clear();
+            let page = read.query(branch, query).await.map_err(history_error)?;
+            let QueryOutput::Events { events } = page.result else {
+                unreachable!("selected transcript events")
+            };
+            for row in events {
+                items.extend(history_items(vec![row.event], version)?);
+            }
+        }
+        let summaries: Vec<_> = batch
+            .iter()
+            .filter(|(_, compaction)| *compaction)
+            .map(|(sequence, _)| serde_json::Value::from(*sequence))
+            .collect();
+        if !summaries.is_empty() {
+            let low = batch.last().unwrap().0;
+            let high = batch.first().unwrap().0;
+            items.extend(
+                compaction_items(
+                    read,
+                    branch,
+                    low,
+                    high,
+                    batch.len() as u64,
+                    QueryFilter::And {
+                        conditions: vec![
+                            kinds(&["context/compaction"]),
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "position.sequence".into(),
+                                },
+                                values: summaries,
+                            },
+                        ],
+                    },
+                )
+                .await?,
+            );
+        }
+        items.sort_by_key(|item| std::cmp::Reverse(item.sequence));
+        for item in items {
+            if item.bytes > REPLY_FRAME_BYTES {
+                return Err(RpcError::app(
+                    -32000,
+                    "history_too_large",
+                    "A display event exceeds the reply frame budget",
+                ));
+            }
+            if bytes > 0 && bytes + item.bytes > HISTORY_TURN_BYTES {
+                more = true;
+                break 'body;
+            }
+            bytes += item.bytes;
+            kept.push(item);
+        }
+    }
+    let next_before = kept.last().map(|item| item.sequence);
+    kept.sort_by_key(|item| item.sequence);
+    Ok(wire::HistoryResult {
+        events: kept.into_iter().filter_map(|item| item.event).collect(),
+        through,
+        next_after: through,
+        done: !more,
+        next_before,
+        turn_start: None,
+    })
+}
+
 async fn display_tail(
     read: &HistoryRead<'_>,
     branch: &str,
@@ -1277,136 +1474,24 @@ async fn window_items(
     };
     let mut visible = history_items(events.into_iter().map(|row| row.event).collect(), version)?;
     if display {
-        let reply = read
-            .query(
+        visible.extend(
+            compaction_items(
+                read,
                 branch,
-                TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    from: Some(dim_agent_types::TimelinePosition {
-                        branch_id: branch.into(),
-                        sequence: low,
-                    }),
-                    through: Some(end),
-                    include_publishing: false,
-                    query: QuerySpec {
-                        filter: Some(QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec!["context/compaction".into()],
-                        }),
-                        select: QuerySelect::Fields {
-                            fields: [
-                                "id",
-                                "position.sequence",
-                                "create_at",
-                                "data.start",
-                                "data.strategy",
-                                "data.diagnostics.insufficientSpace",
-                                "data.status",
-                            ]
-                            .map(String::from)
-                            .to_vec(),
-                        },
-                        group_by: vec![],
-                        pick: None,
-                        order_by: vec![],
+                low,
+                end,
+                limit,
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
                     },
-                    page: Some(QueryPage {
-                        limit: std::num::NonZeroU64::new(limit).unwrap(),
-                        after: None,
-                    }),
+                    values: vec!["context/compaction".into()],
                 },
             )
-            .await
-            .map_err(history_error)?;
-        let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("display selects summary fields")
-        };
-        let mut other = Vec::new();
-        for row in rows {
-            let [
-                id,
-                sequence,
-                create_at,
-                start,
-                strategy,
-                insufficient_space,
-                status,
-            ]: [_; 7] = row.values.try_into().expect("compaction summary fields");
-            let value = |value| match value {
-                QueryValue::Value { value } => value,
-                _ => unreachable!("required compaction summary field"),
-            };
-            let optional = |value| match value {
-                QueryValue::Missing => None,
-                QueryValue::Value { value } => Some(value),
-                _ => unreachable!("scalar compaction summary field"),
-            };
-            if value(status) != "completed" {
-                other.push(value(id));
-                continue;
-            }
-            let item = wire::CompactionItem {
-                id: serde_json::from_value(value(id)).expect("event id"),
-                sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
-                create_at: serde_json::from_value(value(create_at)).expect("event creation time"),
-                data: dim_agent_types::CompactionSummary {
-                    start: optional(start)
-                        .map(|value| serde_json::from_value(value).expect("compaction start")),
-                    strategy: serde_json::from_value(value(strategy)).expect("compaction strategy"),
-                    insufficient_space: optional(insufficient_space)
-                        .map(|value| serde_json::from_value(value).expect("insufficient space")),
-                },
-            };
-            let encoded = serde_json::value::to_raw_value(&item)
-                .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
-            visible.push(HistoryItem {
-                sequence: item.sequence,
-                bytes: encoded.get().len(),
-                event: Some(encoded),
-            });
-        }
-        if !other.is_empty() {
-            let reply = read
-                .query(
-                    branch,
-                    TimelineQuery {
-                        scope: TimelineQueryScope::Branch,
-                        from: Some(TimelinePosition {
-                            branch_id: branch.into(),
-                            sequence: low,
-                        }),
-                        through: Some(end),
-                        include_publishing: false,
-                        query: QuerySpec {
-                            filter: Some(QueryFilter::In {
-                                value: QueryOperand::Field { path: "id".into() },
-                                values: other,
-                            }),
-                            select: QuerySelect::Events,
-                            group_by: vec![],
-                            pick: None,
-                            order_by: vec![],
-                        },
-                        page: Some(QueryPage {
-                            limit: std::num::NonZeroU64::new(limit).unwrap(),
-                            after: None,
-                        }),
-                    },
-                )
-                .await
-                .map_err(history_error)?;
-            let QueryOutput::Events { events } = reply.result else {
-                unreachable!("compaction events")
-            };
-            visible.extend(history_items(
-                events.into_iter().map(|event| event.event).collect(),
-                version,
-            )?);
-        }
-        visible.sort_unstable_by_key(|item| item.sequence);
+            .await?,
+        );
     }
+    visible.sort_unstable_by_key(|item| item.sequence);
     let mut visible = visible.into_iter().peekable();
     Ok((low..=end)
         .map(|sequence| {
@@ -1433,6 +1518,146 @@ fn completed_compaction() -> QueryFilter {
             })
             .collect(),
     }
+}
+
+async fn compaction_items(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    low: u64,
+    end: u64,
+    limit: u64,
+    filter: QueryFilter,
+) -> Result<Vec<HistoryItem>, RpcError> {
+    let version = match read {
+        HistoryRead::Open(_, v) | HistoryRead::Ended(_, v) => *v,
+    };
+    let mut visible = Vec::new();
+    let reply = read
+        .query(
+            branch,
+            TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: Some(dim_agent_types::TimelinePosition {
+                    branch_id: branch.into(),
+                    sequence: low,
+                }),
+                through: Some(end),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(filter),
+                    select: QuerySelect::Fields {
+                        fields: [
+                            "id",
+                            "position.sequence",
+                            "create_at",
+                            "data.start",
+                            "data.strategy",
+                            "data.diagnostics.insufficientSpace",
+                            "data.status",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: std::num::NonZeroU64::new(limit).unwrap(),
+                    after: None,
+                }),
+            },
+        )
+        .await
+        .map_err(history_error)?;
+    let QueryOutput::Rows { rows } = reply.result else {
+        unreachable!("display selects summary fields")
+    };
+    let mut other = Vec::new();
+    for row in rows {
+        let [
+            id,
+            sequence,
+            create_at,
+            start,
+            strategy,
+            insufficient_space,
+            status,
+        ]: [_; 7] = row.values.try_into().expect("compaction summary fields");
+        let value = |value| match value {
+            QueryValue::Value { value } => value,
+            _ => unreachable!("required compaction summary field"),
+        };
+        let optional = |value| match value {
+            QueryValue::Missing => None,
+            QueryValue::Value { value } => Some(value),
+            _ => unreachable!("scalar compaction summary field"),
+        };
+        if value(status) != "completed" {
+            other.push(value(id));
+            continue;
+        }
+        let item = wire::CompactionItem {
+            id: serde_json::from_value(value(id)).expect("event id"),
+            sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
+            create_at: serde_json::from_value(value(create_at)).expect("event creation time"),
+            data: dim_agent_types::CompactionSummary {
+                start: optional(start)
+                    .map(|value| serde_json::from_value(value).expect("compaction start")),
+                strategy: serde_json::from_value(value(strategy)).expect("compaction strategy"),
+                insufficient_space: optional(insufficient_space)
+                    .map(|value| serde_json::from_value(value).expect("insufficient space")),
+            },
+        };
+        let encoded = serde_json::value::to_raw_value(&item)
+            .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
+        visible.push(HistoryItem {
+            sequence: item.sequence,
+            bytes: encoded.get().len(),
+            event: Some(encoded),
+        });
+    }
+    if !other.is_empty() {
+        let reply = read
+            .query(
+                branch,
+                TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: Some(TimelinePosition {
+                        branch_id: branch.into(),
+                        sequence: low,
+                    }),
+                    through: Some(end),
+                    include_publishing: false,
+                    query: QuerySpec {
+                        filter: Some(QueryFilter::In {
+                            value: QueryOperand::Field { path: "id".into() },
+                            values: other,
+                        }),
+                        select: QuerySelect::Events,
+                        group_by: vec![],
+                        pick: None,
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: std::num::NonZeroU64::new(limit).unwrap(),
+                        after: None,
+                    }),
+                },
+            )
+            .await
+            .map_err(history_error)?;
+        let QueryOutput::Events { events } = reply.result else {
+            unreachable!("compaction events")
+        };
+        visible.extend(history_items(
+            events.into_iter().map(|event| event.event).collect(),
+            version,
+        )?);
+    }
+    visible.sort_unstable_by_key(|item| item.sequence);
+
+    Ok(visible)
 }
 
 /// One event of a history page with its encoded form, built once, and size.

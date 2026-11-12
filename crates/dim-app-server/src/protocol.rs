@@ -106,7 +106,7 @@ pub enum Call {
     Submit(Submit),
     InputLookup(InputLookup),
     History(History),
-    HistoryDisplay(History, bool),
+    HistoryDisplay(History, bool, bool),
     HistoryDetail(HistoryDetail),
     Keys(Keys),
     Stop(Stop),
@@ -932,7 +932,13 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
                     .map(params::<bool>)
                     .transpose()?
                     .unwrap_or(false);
-                Call::HistoryDisplay(params(value)?, tail)
+                let transcript = value
+                    .as_object_mut()
+                    .and_then(|object| object.remove("transcript"))
+                    .map(params::<bool>)
+                    .transpose()?
+                    .unwrap_or(false);
+                Call::HistoryDisplay(params(value)?, tail, transcript)
             }
             "session.history.detail" => Call::HistoryDetail(params(raw_params)?),
             "session.keys" => Call::Keys(params(raw_params)?),

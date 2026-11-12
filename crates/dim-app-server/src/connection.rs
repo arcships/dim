@@ -680,7 +680,7 @@ impl Connection {
                 (Some(&p.session_id), Some(&p.branch_id))
             }
             Call::InputLookup(p) => (Some(&p.session_id), Some(&p.branch_id)),
-            Call::History(p) | Call::HistoryDisplay(p, _) => {
+            Call::History(p) | Call::HistoryDisplay(p, ..) => {
                 (Some(&p.session_id), Some(&p.branch_id))
             }
             Call::HistoryDetail(p) => (Some(&p.session_id), Some(&p.branch_id)),
@@ -863,7 +863,7 @@ impl Connection {
         let session_id = match &call {
             Call::Submit(p) => Some(&p.session_id),
             Call::InputLookup(p) => Some(&p.session_id),
-            Call::History(p) | Call::HistoryDisplay(p, _) => Some(&p.session_id),
+            Call::History(p) | Call::HistoryDisplay(p, ..) => Some(&p.session_id),
             Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
@@ -1168,8 +1168,10 @@ impl Connection {
             }
             Call::Submit(params) => self.submit(rpc, params).await,
             Call::InputLookup(params) => self.input_lookup(rpc, params).await,
-            Call::History(params) => self.history(rpc, params, false, false).await,
-            Call::HistoryDisplay(params, tail) => self.history(rpc, params, true, tail).await,
+            Call::History(params) => self.history(rpc, params, false, false, false).await,
+            Call::HistoryDisplay(params, tail, transcript) => {
+                self.history(rpc, params, true, tail, transcript).await
+            }
             Call::HistoryDetail(params) => tokio::select! {
                 biased;
                 _ = self.closed.cancelled() => return None,

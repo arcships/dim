@@ -60,8 +60,136 @@ async fn position_projection_returns_inline_and_packed_coordinates_without_a_sec
             .iter()
             .all(|statement| statement.stage != "selected_properties")
     );
+    let mut selected = fields(&[]);
+    selected.select = QuerySelect::Events;
+    selected.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "position.sequence".into(),
+        },
+        values: vec![json!(3), json!(1), json!(3)],
+    });
+    parity(&store, &memory, &scope(3), &selected).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &selected, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Events { events } = result.result else {
+        panic!("point events")
+    };
+    assert_eq!(
+        events
+            .iter()
+            .map(|row| row.position.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    let statistics = store.take_query_statistics();
+    assert_eq!(
+        statistics
+            .iter()
+            .filter(|statement| statement.stage == "selected_events")
+            .count(),
+        1
+    );
+    assert!(
+        statistics
+            .iter()
+            .all(|statement| statement.stage != "selection")
+    );
     store.close().await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn indexed_input_controls_do_not_compare_every_selected_identity_against_every_row() {
+    let mut costs = Vec::new();
+    for size in [16u64, 128] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..size {
+            let id = format!("input-{i}");
+            records.push(query_record(
+                2 * i + 1,
+                2 * i + 1,
+                &id,
+                EventKind::InputMessage(InputMessageData::text("input", Some(InputMode::Append))),
+            ));
+            records.push(query_record(
+                2 * i + 2,
+                2 * i + 2,
+                &format!("applied-{i}"),
+                EventKind::InputApplied(InputAppliedData {
+                    input_id: id.clone(),
+                    mode: Some(InputMode::Append),
+                }),
+            ));
+            ids.push(json!(id));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                eq("kind", json!("input/applied")),
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "data.input_id".into(),
+                    },
+                    values: ids,
+                },
+            ],
+        });
+        query.group_by = vec!["kind".into(), "data.input_id".into()];
+        query.pick = Some(QueryPick::Last);
+        parity(&store, &memory, &scope(size * 2), &query).await;
+        store.record_query_statistics();
+        let result = store
+            .query(&scope(size * 2), &query, Some(&page(128)))
+            .await
+            .unwrap();
+        let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+            panic!("input controls")
+        };
+        assert_eq!(rows.len(), size as usize);
+        let statistics = store.take_query_statistics();
+        assert!(statistics.iter().any(|statement| {
+            statement
+                .plan
+                .iter()
+                .any(|step| step.contains("timeline_events_inputs"))
+        }));
+        costs.push(
+            statistics
+                .iter()
+                .map(|statement| statement.vm_steps as u64)
+                .sum::<u64>(),
+        );
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 14,
+        "identity-list growth must not cause pairwise comparison: {costs:?}"
+    );
 }
 
 #[tokio::test]
@@ -2972,4 +3100,88 @@ async fn optional_physical_properties_keep_typed_boolean_semantics() {
     }
     store.close().await.unwrap();
     db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn kind_pages_bound_index_work_and_preserve_packed_output_cursors() {
+    let mut costs = Vec::new();
+    for size in [100, 1000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db);
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        for sequence in 1..=size {
+            records.push(record(
+                sequence,
+                EventKind::Extension(
+                    ExtensionEvent::new("hidden", "saved", json!({"payload":"x".repeat(2048)}))
+                        .unwrap(),
+                ),
+            ));
+        }
+        for sequence in size + 1..=size * 2 {
+            records.push(text(sequence, &"y".repeat(512)));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec![
+                "input/message".into(),
+                "step/text".into(),
+                "step/thinking".into(),
+            ],
+        });
+        query.order_by = vec![QueryOrder {
+            key: QueryOrderKey::Position,
+            direction: TimelineQueryDirection::Descending,
+        }];
+        let scope = scope(size * 2);
+        let mut page = page(16);
+        let mut steps = 0;
+        for _ in 0..2 {
+            store.record_query_statistics();
+            let native = store.query(&scope, &query, Some(&page)).await.unwrap();
+            let stats = store.take_query_statistics();
+            steps += stats.iter().map(|s| i64::from(s.vm_steps)).sum::<i64>();
+            let expected = memory.query(&scope, &query, Some(&page)).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert!(
+                stats.iter().any(|s| s
+                    .plan
+                    .iter()
+                    .any(|line| line.contains("timeline_events_by_kind"))),
+                "{stats:?}"
+            );
+            page.after = native.next;
+        }
+        eprintln!("kind page history={size} steps={steps}");
+        costs.push(steps);
+        store.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 3,
+        "fixed pages must not scan growing packed output: {costs:?}"
+    );
 }

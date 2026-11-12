@@ -236,8 +236,9 @@ fn an_orphan_tool_result_reads_its_arguments_only_after_expanding_details() {
 fn tui_attach_keeps_buffered_configuration_and_skips_ended_branch_inventories() {
     let home = Home::new();
     let (ready, received) = std::sync::mpsc::channel();
+    let (release, resumed) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
-        wire.hello(&["session.methods", "session.branches"]);
+        wire.hello(&["session.methods", "session.branches", "provider.catalog"]);
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
         let methods = wire.read("session.methods");
@@ -256,14 +257,18 @@ fn tui_attach_keeps_buffered_configuration_and_skips_ended_branch_inventories() 
         wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":configured}));
         wire.reply(&history, json!({"events":[text(10,"reply","bounded first screen")],"through":10,"nextBefore":10,"nextAfter":10,"done":true}));
         wire.2 = false;
+        let mut catalog = None;
         while let Some(line) = wire.trailing_request() {
             let request:Value = serde_json::from_str(&line).unwrap();
             assert_ne!(request["params"]["branchId"],"finished","ended branches have no actionable state");
             match request["method"].as_str().unwrap() {
+                "provider.catalog" => catalog = Some(request),
                 "session.input.pending" => wire.reply(&request,json!({"branchId":"main","through":10,"inputs":[],"next":null})),
                 "session.turn.get" => {
                     wire.reply(&request,json!({"branchId":"main","through":10,"turn":null,"output":null}));
                     ready.send(()).unwrap();
+                    resumed.recv_timeout(PATIENCE).unwrap();
+                    wire.reply(&catalog.take().expect("catalog remains pending while history is shown"), json!({"catalog":null}));
                 }
                 "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                 "account.providers" => wire.reply(&request,json!([])),
@@ -275,6 +280,7 @@ fn tui_attach_keeps_buffered_configuration_and_skips_ended_branch_inventories() 
     terminal.until("bounded first screen");
     terminal.until_anywhere("updated-provider / updated-model");
     received.recv_timeout(PATIENCE).unwrap();
+    release.send(()).unwrap();
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();

@@ -706,7 +706,10 @@ impl Gateway {
                 self.spawn(async move {
                     let mut query =
                         json!({"sessionId":args.session_id,"branchId":"main","limit":limit});
-                    if rpc.supports("session.history.display.tail") {
+                    if rpc.supports("session.history.display.transcript") {
+                        query["tail"] = json!(true);
+                        query["transcript"] = json!(true);
+                    } else if rpc.supports("session.history.display.tail") {
                         query["tail"] = json!(true);
                     } else if args.before.is_none() {
                         query["latestTurn"] = json!(true);
@@ -2599,8 +2602,12 @@ async fn read_history(
         }
         let mut window = Window::default();
         loop {
-            let args =
-                window.params_with_tail(id, "main", rpc.supports("session.history.display.tail"));
+            let args = window.params_with_display(
+                id,
+                "main",
+                rpc.supports("session.history.display.tail"),
+                rpc.supports("session.history.display.transcript"),
+            );
             let page: HistoryWindow = if rpc.supports("session.history.display")
                 && rpc.supports("session.history.detail")
             {

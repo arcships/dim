@@ -307,10 +307,11 @@ impl Worker {
                 );
                 continue;
             }
-            let params = observation.window.params_with_tail(
+            let params = observation.window.params_with_display(
                 &id,
                 "main",
                 self.client.offers("session.history.display.tail"),
+                self.client.offers("session.history.display.transcript"),
             );
             let method = if self
                 .client

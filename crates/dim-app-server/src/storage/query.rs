@@ -1824,7 +1824,7 @@ fn sources<'a>(
     reader: &mut Reader,
     cancel: &CancellationToken,
     #[cfg(feature = "testing")] statistics: &Statistics,
-) -> Result<String> {
+) -> Result<Option<String>> {
     fn collect<'a>(filter: &'a QueryFilter, filters: &mut Vec<&'a QueryFilter>) {
         match filter {
             QueryFilter::TextCandidate { .. } => {
@@ -1975,6 +1975,11 @@ fn sources<'a>(
             statistics,
         )?
     {
+        if members.positions.is_empty()
+            && scope.segments.iter().all(|segment| segment.tail.is_empty())
+        {
+            return Ok(None);
+        }
         let table =
             temporary.table("ord INTEGER,seq INTEGER,physical INTEGER,PRIMARY KEY(ord,seq)")?;
         let connection = &*temporary.connection;
@@ -2361,8 +2366,8 @@ fn sources<'a>(
         .filter(|(_, (_, requirement))| requirement.join)
         .map(|(i, _)| format!(",query_match_key(p{i}) AS k{i}"))
         .collect::<String>();
-    Ok(format!("{inline}, properties AS NOT MATERIALIZED (SELECT i.ord,i.branch,i.seq{columns} FROM inline i {join}{tail}),
-      events AS {materialized} (SELECT properties.*{keys} FROM properties)"))
+    Ok(Some(format!("{inline}, properties AS NOT MATERIALIZED (SELECT i.ord,i.branch,i.seq{columns} FROM inline i {join}{tail}),
+      events AS {materialized} (SELECT properties.*{keys} FROM properties)")))
 }
 
 struct Sort {
@@ -2620,6 +2625,84 @@ fn selected_properties(
 }
 
 #[cfg_attr(feature = "testing", allow(clippy::too_many_arguments))]
+fn position_events(
+    connection: &Connection,
+    scope: &TimelineReadScope,
+    query: &QuerySpec,
+    page: Option<&QueryPage>,
+    reader: &mut Reader,
+    cancel: &CancellationToken,
+    #[cfg(feature = "testing")] statistics: &Statistics,
+) -> Result<Option<QueryResult>> {
+    let [segment] = scope.segments.as_slice() else {
+        return Ok(None);
+    };
+    let Some(QueryFilter::In {
+        value: QueryOperand::Field { path },
+        values,
+    }) = &query.filter
+    else {
+        return Ok(None);
+    };
+    if path != "position.sequence"
+        || !matches!(query.select, QuerySelect::Events)
+        || !query.group_by.is_empty()
+        || query.pick.is_some()
+        || !query.order_by.is_empty()
+        || !segment.tail.is_empty()
+        || values.len() > 128
+        || page.is_none_or(|page| page.after.is_some() || page.limit.get() < values.len() as u64)
+    {
+        return Ok(None);
+    }
+    let Some(mut positions) = values.iter().map(Value::as_u64).collect::<Option<Vec<_>>>() else {
+        return Ok(None);
+    };
+    positions.sort_unstable();
+    positions.dedup();
+    let positions: Vec<_> = positions
+        .into_iter()
+        .filter(|sequence| {
+            *sequence >= segment.from && *sequence <= segment.through.min(segment.stored_through)
+        })
+        .map(|sequence| (0, sequence))
+        .collect();
+    let mut events = Vec::with_capacity(positions.len());
+    if !positions.is_empty() {
+        for mut wire in selected_wires(
+            connection,
+            scope,
+            &positions,
+            #[cfg(feature = "testing")]
+            statistics,
+        )? {
+            let event = loop {
+                cancelled(cancel)?;
+                match reader.decode(connection, &scope.key.session_id, wire)? {
+                    Ok(record) => break record.event,
+                    Err(pending) => {
+                        wire = pending;
+                        reader.begin_hold();
+                    }
+                }
+            };
+            events.push(QueryEvent {
+                group: Vec::new(),
+                position: TimelinePosition {
+                    branch_id: segment.branch_id.clone(),
+                    sequence: event.sequence,
+                },
+                event,
+            });
+        }
+    }
+    Ok(Some(QueryResult {
+        result: QueryOutput::Events { events },
+        next: None,
+    }))
+}
+
+#[cfg_attr(feature = "testing", allow(clippy::too_many_arguments))]
 pub(super) fn execute(
     connection: &mut Connection,
     scope: &TimelineReadScope,
@@ -2641,6 +2724,18 @@ pub(super) fn execute(
         if segment.stored_through.min(segment.through) > stored as u64 {
             return Err(error("property read exceeds stored history"));
         }
+    }
+    if let Some(result) = position_events(
+        connection,
+        scope,
+        query,
+        page,
+        reader,
+        cancel,
+        #[cfg(feature = "testing")]
+        statistics,
+    )? {
+        return Ok(result);
     }
     let binding = scope.query_binding(query)?;
     let mut compiler = Compiler::new(query);
@@ -2798,7 +2893,7 @@ pub(super) fn execute(
         connection,
         names: Vec::new(),
     };
-    let source = sources(
+    let Some(source) = sources(
         scope,
         query,
         &mut compiler,
@@ -2807,12 +2902,37 @@ pub(super) fn execute(
         cancel,
         #[cfg(feature = "testing")]
         statistics,
-    )?;
+    )?
+    else {
+        return Ok(QueryResult {
+            result: match query.select {
+                QuerySelect::Events => QueryOutput::Events { events: Vec::new() },
+                _ => QueryOutput::Rows { rows: Vec::new() },
+            },
+            next: None,
+        });
+    };
     let connection = &*temporary.connection;
-    let filter = query.filter.as_ref().map_or_else(
-        || "1".to_owned(),
-        |filter| compiler.filter(filter, "a", "a", None, None),
-    );
+    let filter = match &query.filter {
+        Some(filter) => {
+            let parameters = compiler.parameters.len();
+            let complete = related.is_empty()
+                && scope.segments.iter().all(|segment| segment.tail.is_empty())
+                && kind_values(filter).is_some_and(|kinds| {
+                    kinds
+                        .iter()
+                        .all(|kind| !matches!(kind.as_str(), Some("step/text" | "step/thinking")))
+                })
+                && compiler.physical_filter(filter, false).is_some();
+            compiler.parameters.truncate(parameters);
+            if complete {
+                "1".to_owned()
+            } else {
+                compiler.filter(filter, "a", "a", None, None)
+            }
+        }
+        None => "1".to_owned(),
+    };
     let filtered = format!("{source}, filtered AS (SELECT a.* FROM events a WHERE {filter})");
     if query.group_by.is_empty()
         && matches!(

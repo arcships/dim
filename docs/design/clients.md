@@ -212,9 +212,16 @@ The changes apply to every entry, not just the main TUI:
 | CLI `question/line.rs` | Questions on other branches come from the unanswered-question read, not a complete branch replay. |
 | ACP `gateway.rs::read_history` | Load/resume returns only the window; model/configuration comes from attach and public current-state reads. A `forkAtTurn` lookup must resolve the requested terminal turn outside the window; full-history/export APIs keep their explicit full-prefix semantics. |
 
+Negotiated `session.history.display.transcript` uses the kind-filtered page contract in
+[display reads](appserver/session-display-read.md). CLI, ACP and Web initial pages request
+64 selected events and stop on the first page with transcript rows. Earlier reads request
+256 selected events. The four-page and retention limits below still apply; they do not
+trigger full-history discovery. Servers without that capability retain the existing
+bounded raw-position windows. ACP's explicit history extension returns one selected page.
+
 Acceptance opens histories differing by at least ten times with the same visible
 tail. Native initial reading stops at the first page with visible transcript rows, after
-four empty pages, or at the branch start. Explicit earlier reads and the Web window
+four empty pages, or at the branch start. Explicit earlier reads and the legacy Web window
 retain the 100-row/four-page budget. After that stop, the
 300-row retention budget drops only older whole pages, subject to the required
 newest-page and visible-page exceptions above. It never causes another read.

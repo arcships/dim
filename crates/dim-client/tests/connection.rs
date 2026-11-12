@@ -144,6 +144,10 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
     };
     let event = |at| json!({"id":format!("event-{at}"),"sequence":at,"create_at":at,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"message"}]}}});
     let mut window = Window::default();
+    let params = window.params_with_display("session", "main", true, true);
+    assert_eq!(params["limit"], 64);
+    assert_eq!(params["transcript"], true);
+    assert!(params.get("latestTurn").is_none());
     let empty: HistoryWindow = serde_json::from_value(
         json!({"events":[],"through":302,"nextAfter":302,"nextBefore":302,"done":false}),
     )

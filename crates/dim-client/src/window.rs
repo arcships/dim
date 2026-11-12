@@ -39,14 +39,31 @@ impl Window {
     pub fn params_with_tail(&self, session: &str, branch: &str, tail: bool) -> Value {
         let mut params =
             json!({"sessionId":session,"branchId":branch,"limit":if self.initial {64} else {256}});
+        if let Some(through) = self.through {
+            params["through"] = json!(through);
+        }
         if let Some(before) = self.before {
             params["before"] = json!(before);
-            params["through"] = json!(self.through);
         } else if !tail {
             params["latestTurn"] = json!(true);
         }
         if tail {
             params["tail"] = json!(true);
+        }
+        params
+    }
+
+    /// Selects indexed display kinds when the server advertises transcript pages.
+    pub fn params_with_display(
+        &self,
+        session: &str,
+        branch: &str,
+        tail: bool,
+        transcript: bool,
+    ) -> Value {
+        let mut params = self.params_with_tail(session, branch, tail || transcript);
+        if transcript {
+            params["transcript"] = json!(true);
         }
         params
     }

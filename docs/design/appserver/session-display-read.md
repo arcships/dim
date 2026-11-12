@@ -20,6 +20,23 @@ hello 在协议 v3 公布 session.history.display 和 session.history.detail。�
 
 `session.history.display.tail` 公布后，客户端在显示读取传 `tail=true`。它与 `latestTurn`、`after` 互斥，只选择固定已发布 `through` 以下最近的有界序号窗口。初始页不查询 turn 起点、首个请求或 consumed 输入；后续 `before` 仍为排他上界。显示页允许在原子批次内结束，不扩张到整批。当前控制状态由 owner inventories 和实时通知提供；显示页不恢复它们。旧 history、显式 latestTurn 和导出的原子批次合同不变。旧服务器仍使用已有有界读取，不全量回退。
 
+
+协商 `session.history.display.transcript` 后，显示读取同时传 `tail=true, transcript=true`。
+`limit` 是所选 kind 的逻辑事件数，上限 256，不是原始序号跨度，也不是屏幕行数。
+显示类型为 input/message、input/applied、input/consumed、input/withdraw、input/deleted，
+step/text、step/thinking、step/tool-use、step/tool-use-start、step/tool-call、step/tool-start、
+step/tool-completed、step/tool-result、step/model-output-end，turn/end，exec/started、exec/ended，
+collaboration/request、collaboration/delivered、collaboration/result，branch/create、branch/create-failed、
+branch/ended，以及 context/compaction-start、context/compaction。
+`input/message` 整类保留，不按正文前缀或来源进一步筛选；原客户端决定如何显示其内容。
+
+普通显示事件与压缩事件分别用现有 kind 索引定位最近的有界位置，再按原序号合并，最多保留 limit 个。
+只为这些位置读取普通正文或压缩摘要。查询的 before 是排他上界，through 固定；后续页沿用同一 through。
+不补齐整轮、整批或窗口外的输入控制事件。控制状态仍由 owner inventories 提供。
+不新增索引、业务事件、缓存或存储格式；未知类型仍由原完整 history/导出合同提供。
+CLI 行模式、主线、分支和成员视图、ACP 加载及单页扩展、Web 加载/重连/加载更早均协商此模式。
+未支持该能力的服务器继续使用既有 tail 或 latestTurn 路径。
+
 历史 context/configured 不进入 tail。attach 的模型配置及其后实时配置按自己的 model_through 交接，不能因配置序号已被聊天窗口覆盖而丢弃。工具起点不在窗口时保留调用身份/结果，完整参数按详情需要点读，不为首屏补齐旧工具输入。
 
 压缩事件先按 kind 和窗口范围定位，再一次提取状态及摘要字段；不能在普通事件候选和摘要筛选中重复解析大正文。completed 使用下面的摘要，其他结果保留原产品事件。字段投影必须保留 Missing 与 null 的原语义；不外置压缩正文、不新增格式或缓存。
@@ -48,11 +65,11 @@ detail 只读本分支已发布且身份、sequence 同时匹配的完成压缩�
 
 ## 3. 窗口与数据读取
 
-1. 固定 through 和原始位置游标。协商 tail 的显示页按位置取最近窗口，端点不要求完整批次；旧显式 latestTurn 保持原约定。
-2. tail 每批最多处理 8 个原始位置，在正文解码前按同一 ProductEvent 可见性规则选择普通正文或压缩摘要；排除历史配置、隐藏 model/call、context/prepare 和私有事实。没有再加一次包含全部可见类型的位置查询；混合输出展开会使内联大行重复读取。
+1. 固定 through 和原始位置游标。transcript 先按 kind 筛选并限制位置数量；仅协商 tail 时保留原始序号窗口。端点不要求完整批次；旧显式 latestTurn 保持原约定。
+2. transcript 每批最多读取 8 个已选位置；旧 tail 每批最多处理 8 个原始位置，在正文解码前按同一 ProductEvent 可见性规则选择普通正文或压缩摘要；排除历史配置、隐藏 model/call、context/prepare 和私有事实。没有再加一次包含全部可见类型的位置查询；混合输出展开会使内联大行重复读取。
 3. 完成压缩只取摘要字段，不在客户端丢弃已传输的 replacement。
 4. 按实际编码字节执行原窗口预算；隐藏位置保留内部零载荷位置项，仍推进游标，不伪造事件。
-5. 客户端投影该页后释放原始页。首开仍按原客户端预算：100 个 transcript 行、最多四页及 300 个身份；缺 turn/start 的分支也按此预算停止，不提前伪造 done=true。
+5. 客户端投影后释放原始页。transcript 首开每页 64 个所选事件，出现可展示条目即停止；加载更早每页 256 个所选事件。单次仍限制四页或 100 个条目身份，保留最多 300 个身份及完整页边界。Shell/Hook 等输入可能不形成普通聊天条目，因此不承诺一页填满屏幕，也不扫描完整历史填屏。缺 turn/start 不影响此规则。
 6. owner inventories 使用窗口固定头建立完整控制状态，然后交接后续实时事实；较早显示页不再推进当前 Goal/pending/turn 状态。同一 exec/started 同时出现在显示窗口与 pending 清单时，按分支和事件 ID 保留一个任务，停止全部对该任务只发一次请求。
 
 摘要字段仍位于同一存储事件 JSON。该物理行的读取和 SQLite JSON 解析计入服务端成本；本次不增加摘要表、不外置整个 compaction、不承诺摘要点读只触碰几个字节。确定减少的是 replacement 网络传输、客户端解码和折叠视图内存。隐藏请求的外置消息节点加载必须为零。
@@ -78,6 +95,8 @@ TUI 两种模式沿用 [CLI 详情设置](../cli-commands.md#transcript-detail-s
 沿用现有 worker 和 RPC 完成通知。只保存目标身份、projection generation、RPC ID，以及 unloaded/loading/loaded/error 状态；一次至多一个详情 RPC，不建立字节分块队列或拼接缓冲。目标包含 Session、分支、事件 ID 和 sequence。主线、侧线和选中成员使用相同的可见/展开判断；不能渲染为 Expanded 却因全局 Collapsed 不发请求。
 
 收起、切换附件或关闭视图后释放正文；已发回复按目标及 generation 丢弃。一次失败不循环重试；重新展开才重试。worker 和视图共享已读对象，不复制成视图外永久缓存。
+
+模型目录、权限读数和技能目录在首屏历史请求发出后分别异步取得，回复按本次附件和模型身份处理；首屏不等待这些回复。切换附件时丢弃旧请求身份，权限实时变化使旧权限回复失效。
 
 usage 请求独立于历史和用户命令等待，不占用同一串行 await。未配置结果保留到配置变化，不在每轮空闲重复发送。它的服务端成本归 ContextUsage，异步消费本身不算计算优化。
 

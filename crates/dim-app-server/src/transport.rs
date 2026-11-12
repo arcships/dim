@@ -777,6 +777,7 @@ async fn run_connection(
                                             features.push("session.history.latestTurn");
                                             if params.protocol_version >= 3 {
                                                 features.push("session.history.display.tail");
+                                                features.push("session.history.display.transcript");
                                             }
                                         }
                                     }

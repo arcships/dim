@@ -260,6 +260,77 @@ async fn display_tail_pages_inside_a_batch() {
     assert_ok(&second);
     assert_eq!(second["result"]["items"].as_array().unwrap().len(), 3);
     assert_eq!(second["result"]["nextBefore"], through - 5);
+    for transcript in [false, true] {
+        let mut before = None;
+        let mut found = Vec::new();
+        for _ in 0..4 {
+            let mut params = json!({"sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3,"transcript":transcript});
+            if let Some(cursor) = before {
+                params["before"] = json!(cursor);
+            }
+            let reply = client.rpc("session.history.display", params).await;
+            assert_ok(&reply);
+            let page = &reply["result"];
+            let next = page["nextBefore"].as_u64().unwrap();
+            assert!(before.is_none_or(|before| next < before));
+            before = Some(next);
+            found.extend(
+                page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|event| event["sequence"].as_u64().unwrap()),
+            );
+        }
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            batch.iter().map(|event| event.sequence).collect::<Vec<_>>()
+        );
+    }
+    let expected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&expected);
+    let hidden = timeline
+        .append_batch_registered(
+            (0..100)
+                .map(|_| {
+                    EventKind::Extension(
+                        dim_agent_types::ExtensionEvent::new(
+                            "test-hidden",
+                            "saved",
+                            json!({"payload":"not displayed"}),
+                        )
+                        .unwrap(),
+                    )
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let selected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,
+                "through":hidden.last().unwrap().sequence,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&selected);
+    assert_eq!(selected["result"]["items"], expected["result"]["items"]);
     let invalid = client
         .rpc(
             "session.history.display",

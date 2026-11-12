@@ -9,7 +9,7 @@ use crate::model::view::{MemberTarget, TaskKind};
 
 #[derive(Default)]
 pub(super) struct BranchHistory {
-    window: dim_client::window::Window,
+    pub(super) window: dim_client::window::Window,
     pub done: bool,
     pub ended: bool,
     pub error: Option<String>,
@@ -61,6 +61,7 @@ impl HistoryRequest {
 impl Worker {
     /// The replacement releases this attachment after creating or finding its Session.
     pub(super) fn invalidate_projection(&mut self) -> String {
+        self.opening_reads.clear();
         self.compaction_targets(Default::default());
         self.release_members();
         self.projection_id += 1;
@@ -359,10 +360,11 @@ impl Worker {
                 } else {
                     "session.history"
                 },
-                self.task_history[&branch_id].window.params_with_tail(
+                self.task_history[&branch_id].window.params_with_display(
                     &self.session_id,
                     &branch_id,
                     self.client.offers("session.history.display.tail"),
+                    self.client.offers("session.history.display.transcript"),
                 ),
             )
         };

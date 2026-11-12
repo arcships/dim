@@ -2262,7 +2262,7 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
         let cwd = fs::canonicalize(&home.0).unwrap();
         let daemon = home.daemon(move |wire| {
         let mut methods = METHODS.to_vec();
-        if display { methods.extend(["session.history.display", "session.history.detail", "session.history.display.tail"]); }
+        if display { methods.extend(["session.history.display", "session.history.detail", "session.history.display.tail", "session.history.display.transcript"]); }
         wire.hello(&methods);
         let method = if display { "session.history.display" } else { "session.history" };
         let field = if display { "items" } else { "events" };
@@ -2272,18 +2272,15 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
         wire.reply(&attach, json!({"title":"Saved title","titleRevision":2}));
         let first = wire.read(method);
         assert_eq!(first["params"].get("tail"),display.then_some(&json!(true)));
+        assert_eq!(first["params"].get("transcript"), display.then_some(&json!(true)));
         assert!(first["params"].get("through").is_none());
         wire.reply(
             &first,
-            json!({(field):if display { vec![
-                event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"})),
-                event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"})),
-                event(8,"compact-8","display","compaction",json!({"strategy":"summary"}))
-            ] } else { vec![] },"through":8,"nextBefore":4,"nextAfter":8,"done":false}),
+            json!({(field):[],"through":9,"nextBefore":9,"nextAfter":9,"done":false}),
         );
         let second = wire.read(method);
-        assert_eq!(second["params"]["through"], 8);
-        assert_eq!(second["params"]["before"], 4);
+        assert_eq!(second["params"]["through"], 9);
+        assert_eq!(second["params"]["before"], 9);
         let text = event(
             3,
             "answer",
@@ -2298,14 +2295,18 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
         if display {
             wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"}))}));
             wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"}))}));
-            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(9,"compact-9","context","compaction-start",json!({"through":8,"trigger":"manual","strategy":"summary"}))}));
+            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(10,"compact-10","context","compaction-start",json!({"through":9,"trigger":"manual","strategy":"summary"}))}));
             for _ in 0..2 {
-                wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(10,"compact-10","display","compaction",json!({"start":9,"strategy":"summary"}))}));
+                wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(11,"compact-11","display","compaction",json!({"start":10,"strategy":"summary"}))}));
             }
         }
         wire.reply(
             &second,
-            json!({(field):[text],"through":8,"nextBefore":1,"nextAfter":3,"done":true}),
+            json!({(field):if display { vec![text,
+                event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"})),
+                event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"})),
+                event(8,"compact-8","display","compaction",json!({"strategy":"summary"}))
+            ] } else { vec![text] },"through":9,"nextBefore":1,"nextAfter":8,"done":true}),
         );
         detached_eof(wire);
     });
@@ -2362,7 +2363,7 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
                 5,
                 "replay/live duplicates do not repeat activities: {activities:?}"
             );
-            for start in [6, 9] {
+            for start in [6, 10] {
                 let id = json!(["compaction", start]).to_string();
                 let pair: Vec<_> = activities
                     .iter()
