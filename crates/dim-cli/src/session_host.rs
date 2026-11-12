@@ -750,10 +750,10 @@ impl Worker {
         }
         let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
             let mut params = session_create_from_options(&mut self.client, &self.options).await?;
-            params
-                .as_object_mut()
-                .expect("creation parameters")
-                .remove("permissionPolicy");
+            let object = params.as_object_mut().expect("creation parameters");
+            object.remove("permissionPolicy");
+            // Creation-only member: `session.model.preview` denies it.
+            object.remove("worktree");
             self.client.typed("session.model.preview", params).await
         })
         .await??;
