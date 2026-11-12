@@ -69,10 +69,10 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   assert.match(invalidLimit.stderr, /contextWindow must be a positive safe integer/);
   assert.equal(await readFile(path, "utf8"), initialCatalog);
 
-  await writeFile(join(upstream, "nvidia.json"), JSON.stringify({ models: [] }));
-  const empty = spawnSync(process.execPath, [script, "--sync", "nvidia"], { cwd, env, encoding: "utf8" });
+  await writeFile(join(upstream, "openrouter.json"), JSON.stringify({ models: [] }));
+  const empty = spawnSync(process.execPath, [script, "--sync", "openrouter"], { cwd, env, encoding: "utf8" });
   assert.equal(empty.status, 1);
-  assert.match(empty.stderr, /sync would remove every bundled model/);
+  assert.match(empty.stderr, /sync would remove every upstream model/);
   assert.equal(await readFile(path, "utf8"), initialCatalog);
 
   const kimiPro = old.models.find((model) => model.modelId === "k3.1-pro").metadata.raw;

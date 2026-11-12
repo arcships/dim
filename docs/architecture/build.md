@@ -59,8 +59,9 @@ The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus s
 The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
 
 Sync applies the existing reasoning overrides and replaces the complete catalog after
-validation. Sync rejects a candidate that removes every bundled model from a provider
-that had models. A sync that produces the same content preserves the file and its timestamp.
+validation. A sync must supply at least one usable upstream model for a provider whose
+bundled catalog includes models outside its local policy. A sync that produces the same
+content preserves the file and its timestamp.
 A fetch or validation failure leaves the catalog as it was. Review and commit the complete
 catalog after a sync. Model entries occupy individual lines for review. Upstream responses
 and intermediate model lists stay in memory.

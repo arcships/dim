@@ -113,6 +113,11 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
     return model
   }
   const upstream = applyLocalModelOverrides(id, remote.models.filter((model) => !isFilteredModel(model)), previous)
+  if (upstream.length === 0 && provider.models.some(({ modelId }) =>
+    !policy.localModels?.includes(modelId) && !policy.mediaModels?.includes(modelId)
+  )) {
+    throw new Error(`Provider ${id}: sync would remove every upstream model`)
+  }
   const models = new Map(upstream.map((model) => [model.id.trim(), model]))
   for (const modelId of policy.localModels ?? []) models.set(modelId, local(modelId))
   let defaultModelId = provider.metadata.defaultModelId
@@ -128,9 +133,6 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
 
   for (const modelId of policy.mediaModels ?? []) {
     models.set(modelId, { ...models.get(modelId), ...mediaOverlay(id, local(modelId)) })
-  }
-  if (models.size === 0 && provider.models.length > 0) {
-    throw new Error(`Provider ${id}: sync would remove every bundled model`)
   }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
