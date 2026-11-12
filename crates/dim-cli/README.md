@@ -80,6 +80,20 @@ without resending, even while the connection stays open. Known pre-commit input,
 Session, service and method rejections report their original error. Resume the
 printed Session handle to inspect an uncertain outcome.
 
+A successful reply can carry a submit check's `warnings` — work the input was
+written without, such as a `UserPromptSubmit` hook that did not finish. The CLI
+prints one line per warning, as the check sent it
+(`Hook user did not finish: exited with exit status: 3`): in the terminal UI as a
+status row in the warning colour beside the message it belongs to, in the line
+client as one line (`stdout` when interactive, `stderr` otherwise, so `exec
+--json` stdout stays pure JSON), and in `exec` on `stderr`. The same holds for a
+steer (`session.input.withdraw`) and for opening a line
+(`session.branch_create`). A steer's warnings belong to the replacement that
+call wrote, and a call that wrote none shows none; whether a withdrawal whose
+old message has left the queue writes one is the withdrawal rule's decision
+(`docs/design/contracts/session-access.md` A.4), whose notice is shown either
+way.
+
 The idle prompt edits a multiline draft. Enter sends; Ctrl+J inserts a newline.
 Terminal bracketed paste inserts one group without submitting embedded newlines.
 Multiline pastes and pastes over 16 KiB appear as atomic markers:
