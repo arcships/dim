@@ -93,7 +93,7 @@ root.plugin(DaemonLink{options})
   ── DaemonLink Active
   Tui: raw mode, Home (no Session and no UI registration)
     --resume ID: attach the requested Session immediately
-    otherwise: wait for the first user message or shell command
+    otherwise: read the startup model preview, then wait for the first user message or shell command
       Home settings, model selection, /web, exit: no Session creation
       first message or shell command: session.create {cwd, permissionPolicy, model?, startup?}
   session.attach
@@ -401,9 +401,14 @@ counted viewers.
 
 **Home before a Session.** Ordinary startup does not call `session.create`,
 whether a usable model is configured or not. `/connect`, `/login`, `/models`,
-settings and `/web` remain available without a Session. Only submitting the
-first message or shell command creates one, using the launch options unless the
-user selected a model at Home. Shell commands follow the [CLI shell contract](../cli-commands.md).
+settings and `/web` remain available without a Session. Home reads the
+[startup model preview](../model-configuration.md#model-preview-before-creation)
+for its model label. A five-second deadline covers parameter preparation,
+including saved model preferences, and the preview request. Failure or timeout
+shows `Cannot preview startup model: …` and leaves Home available.
+Only submitting the first message or shell command creates one, using the launch
+options unless the user selected a model at Home. Shell commands follow the
+[CLI shell contract](../cli-commands.md).
 A failed creation is reported at that submission and leaves
 Home available for configuration and retry. No UI leaf exists until a Session
 has been attached; the same `Tui` then opens its leaf with the existing
@@ -411,13 +416,13 @@ has been attached; the same `Tui` then opens its leaf with the existing
 overrides before accepting input. An explicit `--permission` must be applied
 before attachment; unsupported preset methods or a failed permission change
 abort startup without attaching or accepting input. Headless execution is
-unchanged. No fake model, implicit model substitution, new protocol or
+unchanged. No fake model, implicit model substitution, new protocol version or
 background setup process is introduced.
 
 ```text
-start -> Tui Home -> first message -> create / attach -> ui.open / ui.attach -> submit
-                  ` configure or exit: no Session
-resume -----------> attach ------> ui.open / ui.attach
+start -> Tui Home + model preview -> first message -> create / attach -> ui.open / ui.attach -> submit
+         ` configure or exit: no Session
+resume -> attach -> ui.open / ui.attach
 ```
 
 #### Later: UI events toward the agent (not implemented)

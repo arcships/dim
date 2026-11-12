@@ -938,8 +938,8 @@ fn edit_management(
     Ok(())
 }
 
-/// The adopted model as the label draws it: `provider / model`, and the
-/// reasoning effort the configuration sends when it carries one.
+/// The startup preview or adopted model: `provider / model` and its
+/// reasoning effort when present.
 struct ModelLabel {
     model: String,
     effort: Option<String>,
@@ -1014,7 +1014,7 @@ struct App {
     report_sequence: u64,
     banner_committed: bool,
     snapshot: Option<ViewSnapshot>,
-    /// The adopted model and its reasoning effort, once the session exists.
+    /// Home's startup preview or the attached Session's adopted model.
     label: Option<ModelLabel>,
     failure: Option<String>,
     /// Whether running the same command again could open the Session this

@@ -3,8 +3,8 @@
 //! spawn wait, the one line on stderr and JSON stdout staying clean (#1213,
 //! #1335).
 //!
-//! Every test here shortens a startup bound through `DIM_TEST_*`, which only a
-//! debug build reads, so the module is a debug-build check.
+//! The startup bounds are controlled through `DIM_TEST_*`, which only a debug
+//! build reads, so the module is a debug-build check.
 #![cfg(debug_assertions)]
 use super::*;
 
@@ -34,7 +34,7 @@ fn model_fixture(home: &Home) -> (PathBuf, thread::JoinHandle<()>) {
     let model = thread::spawn(move || {
         // The title request, then the turn itself.
         for _ in 0..2 {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + HANG_GUARD;
             let stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
@@ -95,7 +95,7 @@ fn note_write(note: &std::path::Path, pid: &str, counter: usize) -> String {
     )
 }
 
-/// A server that reports progress past the shortened start bound and then
+/// A server that reports progress past the start bound and then
 /// serves is waited for: the client connects, and says so once on stderr.
 #[test]
 fn a_starting_daemon_is_waited_for_while_it_reports_progress() {
@@ -104,7 +104,7 @@ fn a_starting_daemon_is_waited_for_while_it_reports_progress() {
     let mut body = String::new();
     for counter in 1..=14 {
         body.push_str(&note_write(&note, "$$", counter));
-        body.push_str("\nsleep 0.3\n");
+        body.push_str("\nsleep 0.8\n");
     }
     body.push_str(&format!(
         "exec '{}' app-server \"$@\"",
@@ -113,12 +113,16 @@ fn a_starting_daemon_is_waited_for_while_it_reports_progress() {
     let server = script(&home, "slow-server", &body);
     let output = home
         .command()
-        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "3000")
+        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "10000")
         .args(["--server", server.to_str().unwrap(), "models", "fixture"])
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
+    assert!(
+        output.status.success(),
+        "{stderr}\ndaemon log: {}",
+        fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default()
+    );
     assert_eq!(
         stderr.matches(UPGRADING).count(),
         1,
@@ -137,7 +141,7 @@ fn the_upgrade_line_follows_the_saved_locale() {
     let mut body = String::new();
     for counter in 1..=14 {
         body.push_str(&note_write(&note, "$$", counter));
-        body.push_str("\nsleep 0.3\n");
+        body.push_str("\nsleep 0.8\n");
     }
     body.push_str(&format!(
         "exec '{}' app-server \"$@\"",
@@ -146,7 +150,7 @@ fn the_upgrade_line_follows_the_saved_locale() {
     let server = script(&home, "slow-server", &body);
     let output = home
         .command()
-        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "3000")
+        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "10000")
         .args(["--server", server.to_str().unwrap(), "models", "fixture"])
         .output()
         .unwrap();
@@ -402,7 +406,7 @@ fn the_upgrade_line_stays_off_json_stdout() {
     let mut body = String::new();
     for counter in 1..=14 {
         body.push_str(&note_write(&note, "$$", counter));
-        body.push_str("\nsleep 0.3\n");
+        body.push_str("\nsleep 0.8\n");
     }
     body.push_str(&format!(
         "exec '{}' app-server \"$@\"",
@@ -412,7 +416,7 @@ fn the_upgrade_line_stays_off_json_stdout() {
     let (model, fixture) = model_fixture(&home);
     let output = home
         .command()
-        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "3000")
+        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "10000")
         .args([
             "--server",
             server.to_str().unwrap(),
@@ -425,9 +429,13 @@ fn the_upgrade_line_stays_off_json_stdout() {
         ])
         .output()
         .unwrap();
-    fixture.join().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
+    assert!(
+        output.status.success(),
+        "{stderr}\ndaemon log: {}",
+        fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default()
+    );
+    fixture.join().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout
         .lines()

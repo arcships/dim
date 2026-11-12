@@ -1227,7 +1227,7 @@ async fn install_packages_cancelled_kills_npm_and_leaves_the_directory() {
     let pid = fixture.path("pid");
     // npm blocks on a file until it is killed.
     fixture.npm(&format!(
-        "echo $$ > '{}'\nexec tail -f '{}'",
+        "echo $$ > '{0}.tmp' && mv '{0}.tmp' '{0}'\nexec tail -f '{1}'",
         pid.display(),
         running.display()
     ));

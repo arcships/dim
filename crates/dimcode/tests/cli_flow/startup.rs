@@ -120,6 +120,69 @@ fn first_shell_command_creates_once_without_submitting_a_model_turn() {
 }
 
 #[test]
+fn home_previews_the_model_without_creating_a_session_and_survives_preview_errors() {
+    for fullscreen in [false, true] {
+        for outcome in [
+            "ready",
+            "rejected",
+            "preview-timeout",
+            "preferences-timeout",
+        ] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                if outcome == "preferences-timeout" {
+                    wire.hello(&["session.model.preview", "provider.management"]);
+                    let preferences = wire.read("provider.management");
+                    assert_eq!(preferences["params"], json!({"providerId":"configured-provider"}));
+                } else {
+                    wire.hello(&["session.model.preview"]);
+                    let preview = wire.read("session.model.preview");
+                    assert!(preview["params"].get("model").is_none());
+                    assert!(preview["params"].get("permissionPolicy").is_none());
+                    if outcome == "rejected" {
+                        reject(wire, &preview);
+                    } else if outcome == "ready" {
+                        wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
+                    }
+                }
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                assert_eq!(wire.trailing_request(), None, "Preview and browsing must not create or attach a Session");
+            });
+            let mut command = command(&home);
+            command.args(["--permission", "read-only"]);
+            if outcome == "preferences-timeout" {
+                command.args([
+                    "--provider",
+                    "configured-provider",
+                    "--model",
+                    "configured-model",
+                ]);
+            }
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until(if outcome == "ready" {
+                "preview-provider / preview-model"
+            } else {
+                "Cannot preview startup model"
+            });
+            if outcome == "ready" {
+                terminal.until("high");
+            }
+            terminal.write(b"/permissions\r");
+            terminal.until("Full access");
+            terminal.write(b"\x1b[27u");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+        }
+    }
+}
+
+#[test]
 fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
     for fullscreen in [false, true] {
         for draft in [false, true] {
@@ -128,10 +191,15 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
             let long = "x".repeat(16 * 1024 + 1);
             let expected_long = long.clone();
             let daemon = home.daemon(move |wire| {
-                wire.hello(&[]);
+                wire.hello(&["session.model.preview"]);
+                let preview = wire.read("session.model.preview");
+                wire.reply(&preview, json!({"model":{"providerId":"temporary-preview","modelId":"first-model"},"modelPreferences":{"reasoningEffort":"high"}}));
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
                 let create = wire.created();
+                let mut model_params = create["params"].clone();
+                model_params.as_object_mut().unwrap().remove("permissionPolicy");
+                assert_eq!(preview["params"], model_params, "Preview must not replace launch options with its resolved identity");
                 assert_eq!(create["params"]["model"], json!({"modelId":"first-model"}));
                 assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"high"}));
                 assert_eq!(create["params"]["permissionPolicy"], json!({"preset":"read-only"}));
@@ -181,7 +249,7 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
                 command.arg("--fullscreen");
             }
             let mut terminal = Terminal::launch_tui(command);
-            terminal.until("Welcome to DIM");
+            terminal.until("temporary-preview / first-model");
             if draft {
                 terminal.paste(&long);
                 terminal.until("16385 chars");

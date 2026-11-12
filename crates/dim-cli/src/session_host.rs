@@ -731,6 +731,38 @@ impl Worker {
             adopt_startup(&mut self.client, &self.options, &id).await?;
             return self.attach(id, SwitchKind::Resumed).await;
         }
+        if self.client.offers("session.model.preview")
+            && let Err(error) = self.preview_model().await
+        {
+            self.send(Update::Notice(format!(
+                "Cannot preview startup model: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn preview_model(&mut self) -> crate::Result<()> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Preview {
+            model: ModelId,
+            model_preferences: Option<dim_agent_types::ModelPreferences>,
+        }
+        let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut params = session_create_from_options(&mut self.client, &self.options).await?;
+            params
+                .as_object_mut()
+                .expect("creation parameters")
+                .remove("permissionPolicy");
+            self.client.typed("session.model.preview", params).await
+        })
+        .await??;
+        self.send(Update::Ready(Configuration {
+            provider_id: preview.model.provider_id,
+            model_id: preview.model.model_id,
+            capability_snapshot: None,
+            model_preferences: preview.model_preferences,
+        }));
         Ok(())
     }
 

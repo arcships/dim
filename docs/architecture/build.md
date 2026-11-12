@@ -37,6 +37,4 @@ Public Node provider and MCP interoperability fixtures use development dependenc
 
 Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
 
-The full-screen permission acceptance flow runs manually while [#1454](https://github.com/arcships/dim/issues/1454) tracks its intermittent stall. Run `cargo test --locked -p dimcode --test cli_flow tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules -- --ignored --exact`.
-
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
