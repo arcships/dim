@@ -1593,6 +1593,7 @@ impl Shared {
                 return;
             }
         };
+        dim_agent_runtime::opening_advanced(&self.ctx);
         let mut records = Vec::new();
         for entry in entries {
             if entry.kind != EntryKind::Directory {
@@ -1608,6 +1609,7 @@ impl Shared {
                     tracing::warn!(%error, task = %task_id, "task record could not be read")
                 }
             }
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         // Slots are ordered by creation, so `list` stays newest first.
         records.sort_by(|left, right| {
@@ -1620,6 +1622,7 @@ impl Shared {
         let mut settled = Vec::with_capacity(records.len());
         for record in records {
             settled.push(self.startup_settle(record).await);
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         let expired: BTreeSet<String> = retention_expired(
             settled
@@ -1633,6 +1636,7 @@ impl Shared {
         .collect();
         for task_id in &expired {
             let _ = task::remove_task(&self.files, task_id).await;
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         settled.retain(|record| !expired.contains(&record.task_id));
         let mut slots = Vec::new();

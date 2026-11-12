@@ -1520,6 +1520,7 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
     assert_eq!(remote.features, json!([]));
     for (method, params) in [
         ("session.create", json!({"cwd":work})),
+        ("session.model.preview", json!({"cwd":work})),
         ("skills.catalog", json!({})),
         ("mcp.catalog", json!({})),
         ("session.mcp", json!({"sessionId":"remote"})),

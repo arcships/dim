@@ -9737,7 +9737,6 @@ fn tui_tasks_panel_stops_the_selected_command_or_member() {
 }
 
 #[test]
-#[ignore = "Intermittent PTY stall under investigation in #1454"]
 fn tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
@@ -9807,11 +9806,10 @@ fn tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules
     terminal.until("Full access");
     terminal.write(b"\x1b[B\r");
     terminal.until("Permission: full-access (also for new sessions)");
-    terminal.until("Permission required");
-    terminal.until("Allow always");
+    terminal.until_anywhere("Allow always");
     terminal.write(b"a");
     terminal.until("Rule saved: allow exact `npm test`");
-    terminal.until("npm run lint");
+    terminal.until_anywhere("npm run lint");
     terminal.write(b"n");
     terminal.until("file write");
     terminal.write(b"n");

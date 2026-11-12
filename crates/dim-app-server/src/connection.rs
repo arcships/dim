@@ -645,6 +645,7 @@ impl Connection {
                     | Call::Catalog(_)
                     | Call::CatalogCancel(_)
                     | Call::SessionMethods(_)
+                    | Call::ModelPreview(_)
                     | Call::Delete(_)
                     | Call::Fork(_)
                     | Call::BranchEnd(_)
@@ -703,6 +704,16 @@ impl Connection {
             Call::Create(p) => {
                 if p.agent_id.is_some() && self.protocol_version() < 3 {
                     return Err(RpcError::invalid("agentId requires protocol v3"));
+                }
+                (None, None)
+            }
+            Call::ModelPreview(_) => {
+                if self.entry != Entry::Local {
+                    return Err(RpcError::app(
+                        -32000,
+                        "local_transport_required",
+                        "Model preview requires a protected local connection",
+                    ));
                 }
                 (None, None)
             }
@@ -983,6 +994,7 @@ impl Connection {
                 return None;
             }
             Call::Create(params) => self.create(rpc, params).await,
+            Call::ModelPreview(params) => rpc.preview_model(params).await,
             Call::CatalogCancel(params) => {
                 if let Some(Some(cancel)) = self
                     .ids
@@ -1664,12 +1676,6 @@ impl Connection {
         let mut config = crate::agents::session_config(&host.profile, &rpc.config.session_defaults);
         config.cwd = cwd.clone();
         let mut startup_admission = None;
-        let preferences = params.model_preferences.unwrap_or_default();
-        if !rpc.index.selects_models() && preferences != Default::default() {
-            return Err(RpcError::invalid(
-                "Model preferences require the product provider",
-            ));
-        }
         if let Some(source) = &source {
             let adopted = source
                 .session
@@ -1706,74 +1712,16 @@ impl Connection {
                     .startup_connection(connection)
                     .map_err(provider_error)?;
             }
-        } else if let Some(startup) = params.startup {
-            let provider = rpc
-                .ctx
-                .get::<crate::provider::ProviderService>()
-                .ok_or_else(RpcError::reloading)?;
-            let target = params.model.unwrap_or_else(|| {
-                host.profile
-                    .model
-                    .clone()
-                    .map(|model| crate::protocol::ModelSelection {
-                        provider: Some(model.provider_id),
-                        model_id: Some(model.model_id),
-                    })
-                    .unwrap_or_default()
-            });
-            let admission = provider
-                .startup_configuration(
-                    target,
-                    Path::new(&cwd),
-                    preferences,
-                    startup,
-                    None,
-                    &rpc.unloading,
-                )
-                .await
-                .map_err(provider_error)?;
-            config.model = admission.model.clone();
-            startup_admission = Some(admission);
-        } else if rpc.index.selects_models() {
-            if params
-                .model
-                .as_ref()
-                .is_some_and(|model| model.provider.is_some() != model.model_id.is_some())
-            {
-                return Err(RpcError::invalid(
-                    "Explicit model requires provider and modelId",
-                ));
-            }
-            config.model = rpc
-                .model_selection(
-                    params
-                        .model
-                        .as_ref()
-                        .and_then(|model| {
-                            model
-                                .model_id
-                                .as_ref()
-                                .map(|model_id| dim_agent_types::ModelId {
-                                    provider_id: model
-                                        .provider
-                                        .clone()
-                                        .expect("explicit provider was validated"),
-                                    model_id: model_id.clone(),
-                                })
-                        })
-                        .or_else(|| host.profile.model.clone()),
-                    Some(cwd.into()),
-                    preferences,
+        } else {
+            startup_admission = rpc
+                .session_model(
+                    &mut config,
+                    &host.profile,
+                    params.model,
+                    params.model_preferences.unwrap_or_default(),
+                    params.startup,
                 )
                 .await?;
-        } else if let Some(model) = params.model {
-            config.model = dim_agent_types::ModelSelection {
-                provider_id: model.provider.unwrap_or(config.model.provider_id),
-                model_id: model.model_id.unwrap_or(config.model.model_id),
-                capability_snapshot: None,
-                config: None,
-                metadata: None,
-            };
         }
         if let Some(prompt) = params.system_prompt {
             config.system_prompt = prompt;
@@ -2266,6 +2214,126 @@ pub(crate) struct RpcService {
 }
 
 impl RpcService {
+    async fn preview_model(&self, params: ModelPreview) -> Result<Reply, RpcError> {
+        let cwd = session_cwd(&params.cwd).await?;
+        let host = self
+            .index
+            .host(params.agent_id.as_deref())
+            .ok_or_else(agent_unknown)?;
+        let mut config =
+            crate::agents::session_config(&host.profile, &self.config.session_defaults);
+        config.cwd = cwd;
+        let _admission = self
+            .session_model(
+                &mut config,
+                &host.profile,
+                params.model,
+                params.model_preferences.unwrap_or_default(),
+                params.startup,
+            )
+            .await?;
+        Ok(Reply::ModelPreview(ModelPreviewResult {
+            model_preferences: crate::provider::adopted_selection_preferences(
+                config.model.config.as_ref(),
+                config.model.metadata.as_ref(),
+            ),
+            model: dim_agent_types::ModelId {
+                provider_id: config.model.provider_id,
+                model_id: config.model.model_id,
+            },
+        }))
+    }
+
+    async fn session_model(
+        &self,
+        config: &mut dim_agent_runtime::SessionConfig,
+        profile: &crate::agents::AgentProfile,
+        model: Option<ModelSelection>,
+        preferences: crate::provider::ModelPreferences,
+        startup: Option<crate::provider::StartupInput>,
+    ) -> Result<Option<crate::provider::StartupSelection>, RpcError> {
+        if !self.index.selects_models() && preferences != Default::default() {
+            return Err(RpcError::invalid(
+                "Model preferences require the product provider",
+            ));
+        }
+        if let Some(startup) = startup {
+            if self.config.product_home.is_none() {
+                return Err(RpcError::invalid(
+                    "Model startup requires the protected-local product entry",
+                ));
+            }
+            let provider = self
+                .ctx
+                .get::<crate::provider::ProviderService>()
+                .ok_or_else(RpcError::reloading)?;
+            let target = model.unwrap_or_else(|| {
+                profile
+                    .model
+                    .clone()
+                    .map(|model| ModelSelection {
+                        provider: Some(model.provider_id),
+                        model_id: Some(model.model_id),
+                    })
+                    .unwrap_or_default()
+            });
+            let admission = provider
+                .startup_configuration(
+                    target,
+                    Path::new(&config.cwd),
+                    preferences,
+                    startup,
+                    None,
+                    &self.unloading,
+                )
+                .await
+                .map_err(provider_error)?;
+            config.model = admission.model.clone();
+            return Ok(Some(admission));
+        }
+        if self.index.selects_models() {
+            let explicit = match model {
+                Some(ModelSelection {
+                    provider: Some(provider_id),
+                    model_id: Some(model_id),
+                }) => Some(dim_agent_types::ModelId {
+                    provider_id,
+                    model_id,
+                }),
+                None
+                | Some(ModelSelection {
+                    provider: None,
+                    model_id: None,
+                }) => None,
+                _ => {
+                    return Err(RpcError::invalid(
+                        "Explicit model requires provider and modelId",
+                    ));
+                }
+            };
+            config.model = self
+                .model_selection(
+                    explicit.or_else(|| profile.model.clone()),
+                    Some(PathBuf::from(&config.cwd)),
+                    preferences,
+                )
+                .await?;
+        } else if let Some(model) = model {
+            config.model = dim_agent_types::ModelSelection {
+                provider_id: model
+                    .provider
+                    .unwrap_or_else(|| config.model.provider_id.clone()),
+                model_id: model
+                    .model_id
+                    .unwrap_or_else(|| config.model.model_id.clone()),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            };
+        }
+        Ok(None)
+    }
+
     async fn model_selection(
         &self,
         explicit: Option<dim_agent_types::ModelId>,
