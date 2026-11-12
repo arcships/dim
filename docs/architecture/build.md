@@ -32,3 +32,23 @@ Public Node provider and MCP interoperability fixtures use development dependenc
 Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
 
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
+
+## Bundled provider catalog
+
+The App Server embeds the checked-in `crates/dim-app-server/resources/default-catalog.json`.
+It also serves as the starting catalog for maintenance. Use the Node version in `.node-version`.
+
+```sh
+node scripts/update-provider-catalog.ts                       # Validate the checked-in catalog offline
+node scripts/update-provider-catalog.ts --sync kimi-for-coding # Sync one provider from PublicProviderConf
+node scripts/update-provider-catalog.ts --sync                # Sync all configured remote sources
+```
+
+The catalog holds local provider settings and curated model declarations. The script
+lists the providers that sync and the fields and models each keeps locally. Sync fetches
+upstream model data, applies the existing reasoning overrides, and replaces the complete
+catalog after validation. A sync that produces the same content preserves the file and
+its timestamp. A fetch or validation failure leaves the catalog as it was.
+
+Review and commit the complete catalog after a sync. Upstream responses and intermediate
+model lists stay in memory.
