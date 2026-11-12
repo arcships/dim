@@ -588,6 +588,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它，而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}），而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}）；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }

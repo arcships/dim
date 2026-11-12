@@ -255,6 +255,8 @@ mod tests {
         // while every locale silently falls back to English.
         const PLAIN: &str = crate::DAEMON_BUSY;
         const COUNTS: &str = crate::DAEMON_BUSY_COUNTS;
+        const TOO_OLD: &str = crate::DAEMON_TOO_OLD;
+        const TOO_OLD_COUNTS: &str = crate::DAEMON_TOO_OLD_COUNTS;
         const UPGRADING: &str = crate::DAEMON_UPGRADING;
         let previous = active();
         for (locale, code, _) in LOCALES {
@@ -264,6 +266,8 @@ mod tests {
             for key in [
                 PLAIN,
                 COUNTS,
+                TOO_OLD,
+                TOO_OLD_COUNTS,
                 UPGRADING,
                 crate::ui::sessions_panel::HINT,
                 "Delete \"{name}\"?",
@@ -287,6 +291,25 @@ mod tests {
                     vec![
                         ("server", "9.9.9-old"),
                         ("client", "9.9.9-new"),
+                        ("connections", "2"),
+                        ("attached", "1"),
+                        ("running", "1"),
+                    ],
+                ),
+                (
+                    TOO_OLD,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
+                    ],
+                ),
+                (
+                    TOO_OLD_COUNTS,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
                         ("connections", "2"),
                         ("attached", "1"),
                         ("running", "1"),

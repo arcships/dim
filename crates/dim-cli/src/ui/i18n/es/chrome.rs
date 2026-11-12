@@ -625,6 +625,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "El App Server sigue siendo {server} porque otros clientes lo están usando; este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando, y habla el protocolo v{protocol}, que este cliente {client} no puede usar. No se inició ninguna sesión. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "El App Server sigue siendo {server} porque otros clientes lo están usando (conexiones: {connections}, sesiones adjuntas: {attached}, turnos en ejecución: {running}), y habla el protocolo v{protocol}, que este cliente {client} no puede usar. No se inició ninguna sesión. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "El App Server sigue siendo {server} porque otros clientes lo están usando (conexiones: {connections}, sesiones adjuntas: {attached}, turnos en ejecución: {running}); este cliente {client} también lo usa. Ejecuta `dimcode daemon stop` cuando terminen; el próximo inicio ejecutará {client}."
         }
