@@ -50135,6 +50135,13 @@
     },
     {
       "from": "dim_modality::engine",
+      "to": "dim_agent_runtime::assembly",
+      "references": [
+        "path dim_agent_runtime::opening_advanced"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
       "to": "dim_agent_types::profile",
       "references": [
         "path ModelId",
