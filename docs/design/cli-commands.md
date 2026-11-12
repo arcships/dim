@@ -1888,7 +1888,7 @@ unregistered entry.
 recorded directory under the managed root with its owning Sessions, branch and HEAD, last
 use, dirty and untracked counts, or a directory that is missing, no longer named by Git
 (`git-missing`), or unregistered. A directory a failed creation left behind is listed with
-its task id as unregistered, and `prune` never selects it unless `--force` is given.
+its task id as unregistered; `prune` never selects an unregistered entry, and it is removed by task id.
 
 `dimcode worktree remove TASK_ID` removes one recorded worktree after its Sessions are
 deleted. A Session association, uncommitted or untracked content (ignored files

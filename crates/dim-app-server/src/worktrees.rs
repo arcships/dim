@@ -337,9 +337,10 @@ impl ManagedWorktrees {
     ) -> Result<Vec<WorktreeView>, WorktreeError> {
         let root = match canonical(self.root.clone()).await {
             Ok(root) => root,
-            Err(WorktreeError::Store(_))
-                if !tokio::fs::try_exists(&self.root).await.unwrap_or(false) =>
-            {
+            Err(error @ WorktreeError::Store(_)) => {
+                if path_exists(&self.root).await? {
+                    return Err(error);
+                }
                 return Ok(Vec::new());
             }
             Err(error) => return Err(error),
