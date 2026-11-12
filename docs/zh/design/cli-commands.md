@@ -717,10 +717,12 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` 不经面板的确认直接移除；`dimcode models PROVIDER inspect MODEL` 打印详情显示的那些行。
+
+Enter 同时写入新 Session 在此文件夹读取的默认值（[Provider 管理 §4](appserver/provider-management.md#4-客户端集成)）。
 
 ### Workflow 领域
 
@@ -812,23 +814,10 @@ run 就是 `mcp.test`：它执行或联系已存条目一次，不写入领域�
 
 命令规则（#819）：Permissions 面板的 Command rules 行，以及 `dimcode permissions list|add PATH|remove RULE`，管理用户的命令规则（[权限控制](#权限控制)、[命令规则](appserver/permission-command-rules.md)）。所有者用 `permission.rules` 报告规则列表及其 Settings revision，并用 `permission.set_rules` 按该 revision 替换整个列表；revision 过期即为 `permission_rules_conflict`。
 
-该行追加在三个权限档之后，现有行因此保持原位置。它打开本领域的面板，Esc 返回 Permissions 面板。
+该行位于 Permissions 面板的 Related settings 分组，在三个预设之后（见[权限控制](#权限控制)）。
+它打开本领域的面板，Esc 返回 Permissions，并保持 Command rules 行的焦点。
 
 ```text
-╭─ Permissions ─────────────────────────────────────────────────╮
-│ >                                                             │
-│   Read only            reads only; writes and commands are    │
-│                        refused                                │
-│   Workspace write      writes inside the workspace; asks      │
-│                        outside it                             │
-│   Full access          no path limits; tools run without      │
-│                        asking                                 │
-│   Command rules                                             › │
-│   Process isolation                                Settings › │
-│                                                               │
-│   The preset fixes the path boundary.                         │
-╰──── ↑↓/Tab move · Enter apply · Esc close ────────────────────╯
-
 ╭─ Command rules ───────────────────────────────────────────────╮
 │ >                                                             │
 │   user                                                        │
@@ -871,7 +860,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode session delete SESSION` | 永久删除该 Session 及存储为它保留的一切；不弹出确认。 |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | 列出某个选择器命中的 Session，确认后删除。 |
 | `/rename TITLE` 或 `/rename --clear` | 设置或清除所显示 Session 的手动标题；该文本是命令，永不成为模型输入。 |
-| `/resume` | 在当前工作区上打开 Session 选择面板（[`/resume` 选择面板](#resume-选择面板)）；`Ctrl+S` 在本地范围（启动工作区，或 git 回答后的当前仓库）与所有工作区之间切换。 |
+| `/resume` | 在当前工作区上打开 Session 选择面板（[`/resume` 选择面板](#resume-选择面板)）；`Ctrl+S` 在本地范围（启动工作区，或 git 回答后的当前仓库）与所有工作区之间切换，`Ctrl+X` 在确认后一次删除一行。 |
 | `/export markdown PATH` 或 `/export json PATH` | 交互客户端空闲时把当前主分支导出到文件。 |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | 不经守护进程，把 Session 的完整 Timeline 写成带版本的 JSONL（[Timeline 导出](appserver/timeline-export.md)）；未给输出路径时写到 stdout。 |
 | `dimcode daemon vacuum [--database PATH]` | 用 SQLite `VACUUM` 重写离线原生库，回收已删除 Session 留下的页，并打印操作前后的大小（[存储格式](appserver/native-storage-format.md#sqlite-运行参数与空间回收)）；守护进程持库时失败，也不创建或升级库。 |
@@ -933,7 +922,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `!command` / `!!command` | 以 record/private 模式调用 Session 现有的 `shell.run`，模型回合进行中也可用。 |
 | `--permission read-only\|workspace-write\|full-access` | 为 `dimcode`、`tui`、`exec` 和 `exec resume` 选择新建或恢复的 Session 的预设（[权限控制](#权限控制)）。 |
 | `/goal [OBJECTIVE \| set OBJECTIVE \| edit OBJECTIVE \| pause \| resume \| clear]` | 在行客户端和两种终端 UI 模式下读取并写入当前显示线的目标（[目标](#目标)）。 |
-| `/permissions` | 打开 Permissions 面板：三个预设以及各自允许什么、链接到 Settings 进程隔离控件的行，以及列出、添加、删除用户命令规则的 Command rules 行（[权限控制](#权限控制)）。 |
+| `/permissions` | 打开 Permissions 面板：Permission mode 分组以单选标记展示三个预设；Related settings 分组提供 Command rules 和 Process isolation 子菜单入口。只有焦点条目的 Hint 说明其作用范围与后果（[权限控制](#权限控制)）。 |
 | `/approvals`、`/approval` | `/permissions` 的兼容别名，支持相同的预设参数。 |
 
 `dimcode hooks` 只写用户的 Hook 文档，而且只经 edit 这一种类：`dimcode hooks edit`、
@@ -1050,7 +1039,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1060,7 +1049,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1070,7 +1059,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - 切换范围像一次新的查询：取消尚未完成的读取、丢掉游标、重新读第一页；查询保留，并在新范围内生效。
@@ -1088,6 +1077,19 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
   的本地范围、所有工作区范围以及无匹配行都显示 `No saved sessions yet.`。
 - 没有 `session.catalog` 的守护进程经 `session.summaries` 列目录，客户端把范围应用到收到的行上：
   恰好是启动工作区、属于 git 集合，或不过滤。
+- `Ctrl+X` 在 `Delete "{name}"? Enter confirm · Esc cancel` 确认后删除所选行，其中 `{name}`
+  是该行去掉来源标签后的名称，在按键时捕获——之后到来的分页、范围回答或刷新都不会重新指向问题，
+  Enter 也不会再按行查找。问题占据所有按键：Enter 发送 `session.delete {sessionId}`
+  （不带 `requireInactive`，因此正在运行的 Session 也会连同其收尾一起被删除），其余任何按键都取消，
+  Esc 不关闭面板。守护进程回答期间行保持绘制，除 Esc 外按键不产生作用——Esc 关闭面板：
+  删除可能等待一次缓慢的关闭，结果会显示在操作者所在的对话记录中。`{deleted:true}` 时行离开列表并显示
+  `Deleted {name}.`；`{deleted:false}` 重新读取第一页并显示 `Nothing was removed: no stored
+  Session {name}.`；出错时行保留并显示 `Delete failed · <守护进程的句子>`；不支持 `session.delete`
+  的守护进程保留行并说明不能删除 Session。另一个调用方已先移除的 Session 就是这样的 `{deleted:false}`
+  回复：已没有可移除的行。删除当前显示的 Session 时，无论删除成功、还是关闭已执行而删除失败
+  （`-32603`），都像 `/new` 一样返回 Home 且不报告断开：
+  排在其后的 `session.state` 与 `session.closed` 通知不匹配任何 Session 而被忽略。一次只删一行；
+  批量选择仍由 `dimcode session cleanup` 提供。
 - `dimcode --resume ID` 仍可恢复任何工作区的 Session，清理也在所有工作区范围内选择。
 
 ### 会话标题
@@ -1125,7 +1127,8 @@ TITLE 视为缺失，也按同样方式拒绝。
 `true` 时打印 `Deleted ID`，为 `false` 时在 stderr 打印
 `Nothing was removed: no stored Session ID.` 并以 1 退出。守护进程
 在这个 id 下没有行，是一次什么都没移除的成功删除；这不是用法错误，命令行本身写错才是。回复不带该字段
-（来自更旧的 App Server）时按一次删除处理：两种情况下行都已不在，也就是所要求的状态。
+（来自更旧的 App Server）时按一次删除处理：两种情况下行都已不在，也就是所要求的状态。TUI 的 `/resume`
+对一行调用同一个方法，回复含义相同（[`/resume` 选择面板](#resume-选择面板)），从不多行删除。
 
 `dimcode session cleanup` 用同样的两个方法组合删除，符合
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) 的要求。它用
@@ -1148,9 +1151,10 @@ TITLE 视为缺失，也按同样方式拒绝。
 清理在所有工作区范围内选择，而不只是 `/resume` 打开时所在的那一个：它选的类别就是 `/resume`
 默认列出的那些
 （[分类](../../design/appserver/session-classification.md#35-catalog-visibility)）：来源为 `client` 或 `unknown`。
-`internal` 的 Session
+这是一份正向名单，没有列出的来源一律不会被选中。`internal` 的 Session
 永远不会被选中：成员随其 leader 的删除一起消失，启动的 Session 属于它的插件。`acp` 的 Session
-同样不会被选中；用 `dimcode session delete ID` 删除它。不被选中的 Session 既不占用 `--keep N`
+同样不会被选中；用 `dimcode session delete ID` 删除它。`automation` 的 Session 也一样：它由已保存的配置启动，
+由启动它的插件按自己的保留策略删除。不被选中的 Session 既不占用 `--keep N`
 的名额，也不出现在预览里。
 
 轮次正在运行或仍有客户端附着的 Session 会被保留：预览在选择结果之后以 `Kept (active):` 列出这些
@@ -1372,7 +1376,7 @@ Ctrl+C 提示 CLI 正在等待结果，并持续消费后续中断直到操作�
 Permission 拥有由 `session.create {permissionPolicy}` 初始化、经带版本的
 `session.permission.get/update` 更新的分支策略。策略就是预设与工具名单，见
 [Permission 合同](../../architecture/rust-agent/plugins/Permission.md#policy-contract)；
-预设决定路径边界，进程隔离留在 Settings（[ADR 018](../../adr/018-permission-is-the-preset.md)）。命令规则仍使用
+参见 [ADR 018](../../adr/018-permission-is-the-preset.md)。命令规则仍使用
 `permission.rules`/`permission.set_rules`（[F2](appserver/permission-command-rules.md)）；文件授权仍使用
 `session.grants.add/remove`（[ADR 012](../../adr/012-session-grants.md)）。
 
@@ -1382,18 +1386,9 @@ Permission 拥有由 `session.create {permissionPolicy}` 初始化、经带版�
 | Path scope | 由预设和 Session grant 决定 | [文件访问事实](../../adr/014-file-access-facts.md) |
 | Process isolation | Off / Sandboxed · No network / Sandboxed · Network allowed | `execution` 设置，不属于 Permission |
 
-```text
-/permissions
-  > Read only        reads only; writes and commands are refused
-    Workspace write  writes inside the workspace; asks outside it
-    Full access      no path limits; tools run without asking
-    Command rules    >
-    Process isolation  Settings >
-  The preset fixes the path boundary.
-```
-
-`↑↓` 移动，`Enter` 应用高亮的那一档，`Esc` 关闭。没有第二个策略控件：预设同时回答"什么能运行"和
-"什么先询问"，所以客户端不把文件范围或进程隔离当作权限维度。
+[Permissions 面板](#permissions)把 Session 的预设与用户范围的设置分组展示。
+没有第二个策略控件：预设同时回答"什么能运行"和"什么先询问"，所以客户端不把文件范围或进程隔离
+当作权限维度（[ADR 018](../../adr/018-permission-is-the-preset.md)）。
 
 各预设按风险判定，在 `disallowedTools` 和 deny 规则之后，文件检查仍优先：
 
@@ -1401,7 +1396,7 @@ Permission 拥有由 `session.create {permissionPolicy}` 初始化、经带版�
 | --- | --- |
 | `read-only` | 读取工作区、系统目录、Session 自有文件和已授权路径直接运行，其他读取需要询问；Session 工具运行；文件写入、命令、网络和未分类工具被拒绝 |
 | `workspace-write` | 上述读取直接运行、其他读取需要询问；工作区内文件写入和 Session 工具运行；写入系统目录或 Session 自有文件被拒绝；其他工作区外写入、命令、网络和未分类工具需要询问 |
-| `full-access` | 每个工具调用都直接运行，不询问 |
+| `full-access` | 跳过预设审批；显式拒绝与进程隔离仍然生效 |
 
 deny 规则在任何预设下都生效。allow 规则只把简单命令的询问变成运行，从不解除拒绝。产品和配置型
 守护进程配置以 `workspace-write` 创建 Session；这个默认值不变。
@@ -1468,6 +1463,23 @@ Assistant: ...
 上下文对窗口的占用，以及一个显示当前状态的槽位——通知、需要回答或审批、`esc interrupt` 或后台任务数。
 模型（放得下时连同推理强度）靠右对齐；整行按终端宽度截断。
 
+### 提交检查的警告
+
+成功的 `session.submit`、`session.input.withdraw {steer}` 或 `session.branch_create` 回复可以带
+`warnings: [{check, message}]`：提交检查没有做的工作，例如以 `onFailure: continue` 失败的
+`UserPromptSubmit` Hook（[Hooks A.6.2](plugins/Hooks.md#a62-操作者输入入口处的提交检查)）。行客户端与两种终端 UI
+模式按检查给出的原样，每条警告打印一行：
+
+```text
+◦ Hook user did not finish: exited with exit status: 3
+◦ Hook project did not finish: timed out after 30s
+```
+
+在终端 UI 里每行是警告色的状态行，提交进 transcript、紧挨它所属的那条消息
+（`Update::Report { warning: true }`）。行客户端里它只是一条记录：交互时写 `stdout`，否则写
+`stderr`。`exec` 写到 `stderr`，因此 `exec --json` 的 stdout 仍是一行一条 JSON-RPC 通知。这行不是错误：
+输入已经写入。steer 的警告属于该调用写入的那条替代输入，没写入替代输入的调用也就不显示警告；旧消息已离开队列的撤回是否写入替代输入，由 A.4 决定（[Session 访问 A.4](contracts/session-access.md#a4-撤回)），而「消息已离开队列」的提示两种情况都会显示。
+
 ### 无头执行
 
 `exec` 保持其合同：审批请求得到普通拒绝，回合停止并收尾，退出码为 3。
@@ -1511,25 +1523,45 @@ Session 创建配置 --> main 当前策略 --分支点--> 子分支策略
 预设选择器。选择作用于 `main`，每次更新使用当前完整策略与版本，保留工具列表。
 保存失败既不改变记住的选择，也不回退到其他预设。
 
-Process isolation 行链接到 Settings 的进程隔离控件；Esc 返回本面板。
-Command rules 行打开[命令规则领域](#命令规则领域)的管理面板，在那里列出、添加和删除规则；Esc 返回本面板。终端 UI 中 `/permissions` 后面的参数改为打开该面板，而不是被忽略；面板打开时就带着一行说明参数在哪里生效——行内提示符与 `dimcode permissions`——这行一直显示在面板的答复之上，直到用户在这里按下第一个键，无论首次读取要多久；紧凑语法属于行内提示符。
+Process isolation 行链接到 Settings 的进程隔离控件；Esc 返回本面板并保持该行的焦点。
+Command rules 行打开[命令规则领域](#命令规则领域)的管理面板，在那里列出、添加和删除规则；
+Esc 返回本面板并保持 Command rules 行的焦点。两种 TUI 模式都保留返回时的焦点，包括从 Settings
+打开 Permissions 的情况。
+
+终端 UI 中 `/permissions` 后面的参数改为打开该面板，而不是被忽略；面板打开时就带着一行说明参数在哪里生效——行内提示符与 `dimcode permissions`——这行一直显示在面板的答复之上，直到用户在这里按下第一个键，无论首次读取要多久；紧凑语法属于行内提示符。
 
 ```text
-Permissions (main branch)
-> Read only        reads only; writes and commands are refused
-  Workspace write  writes inside the workspace; asks outside it
-  Full access      no path limits; tools run without asking
-  Command rules                             >
-  Process isolation                 Settings >
-
-The preset fixes the path boundary.
-
-↑↓/Tab move · Enter apply · Esc close
+╭─ Permissions ──────────────────────────────────────────────────────────╮
+│ Permission mode                                                        │
+│   ( ) Read only                                                        │
+│   (*) Workspace write                                                  │
+│   ( ) Full access                                                      │
+│ Related settings                                                       │
+│   Command rules  ›                                                     │
+│   Process isolation  ›                                                 │
+│                                                                        │
+│ Hint: Current session; remembered for new sessions. Workspace writes    │
+│       allowed; commands, network and ungranted outside access usually   │
+│       ask.                                                             │
+╰──── ↑↓/Tab move · Enter keep mode · Esc close ──────────────────────────╯
 ```
 
-每一行都写明该预设允许什么、会询问什么，所以不需要第二个菜单。仅打开面板不写入；`Enter` 通过带版本的更新
-写入预设，工具列表保持不变。说明指出预设决定路径边界，并指向 Settings 的进程隔离设置。
+两个分组标题不可选择，以加粗的强调色显示，比选项向左对齐两列，不带作用范围说明。
+面板标题仍在边框内，说明仍在选项下方。颜色与缩进区分标题和可选内容，不在矮终端上增加行。
+`(*)` 标记生效的预设，与焦点行无关；其他预设用 `( )`。焦点使用现有的选择高亮。
+Related settings 使用 `›`，不用单选标记。实时策略更新改变生效标记，不移动焦点。
+只有焦点条目的说明出现在 Hint 中。预设的 Hint 说明作用于当前 Session，并记住为新 Session 的选择；
+启动行为仍由[启动时选择](#启动时选择)定义。Read only 拒绝写入与命令，外部读取可能询问；
+Workspace write 允许工作区写入，命令、网络与未授权的外部访问通常询问；Full access 跳过预设审批，
+重新评估目标分支的待处理调用，但显式拒绝与隔离仍然生效。Command rules 作用于用户范围；
+allow 规则只跳过询问，从不解除拒绝。Process isolation 的 Hint 说明其用户范围；它打开 Settings，
+影响新进程，且独立于权限模式。
 
+`↑↓`/`Tab` 在条目间移动，`Esc` 关闭。未生效的预设在页脚显示 `Enter use mode`，
+生效的预设显示 `Enter keep mode`，子菜单显示 `Enter open`。仅打开或浏览面板不写入。
+已有 Session 时，在预设上按 `Enter` 会读取当前策略；只有所选预设不同时才执行带版本的更新，
+保留工具列表。保持已生效的预设不写入策略更新。成功选择后仍会保存后续 Session 的偏好，
+即使不需要策略更新（见[启动时选择](#启动时选择)）；Home 上尚无 Session 时，标记反映记住的偏好。
 审批提示不提供组合式放宽快捷入口。
 
 行模式提示符下，无参数命令打印生效的预设与支持时的编号命令规则。打印的规则与 revision 保留给 `remove`。
@@ -1553,7 +1585,7 @@ Command rules (user scope, every Session):
 | 形式 | 调用 | 冲突 |
 | --- | --- | --- |
 | `/permissions` | 对 `main` 调用 `session.permission.get`；`permission.rules`；现有 execution 设置读取 | 无 |
-| 面板中选择预设 | `get` 后 `update`，保留工具列表 | 每次重试前重新读取；从不替换工具列表 |
+| 面板中选择预设（已有 Session） | `get`；只有预设不同时才 `update`，保留工具列表 | 每次重试前重新读取；所选预设已生效时不写入；从不替换工具列表 |
 | `/permissions PRESET`（旧操作） | `get`；`full-access` 需要 `[y/N]` 确认，回车、其他回答、EOF 和 Ctrl+C 都表示否；然后用读取的版本和其余不变的策略 `update` | `permission_conflict`：重新读取，打印当前策略，不写入；由用户重新决定 |
 | `/permissions allow\|deny exact\|prefix COMMAND` | `permission.rules`；除非已有相同规则，否则 `set_rules(revision, rules + rule)`，然后打印新列表 | 重新读取并重试，最多 3 次：添加不取决于其他规则 |
 | `/permissions remove N` | `set_rules(列表的修订号, 去掉第 N 条后的列表)`，然后打印新列表 | `permission_rules_conflict`：重新读取，打印当前列表，不删除 |

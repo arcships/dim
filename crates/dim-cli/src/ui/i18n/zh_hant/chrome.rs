@@ -101,6 +101,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "工作階段現在沒有標題。",
         "This daemon does not support renaming Sessions" => "此守護進程不支援重新命名工作階段",
         "Renaming failed" => "重新命名失敗",
+        "Delete \"{name}\"?" => "刪除「{name}」？",
+        "Deleted {name}." => "已刪除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "沒有刪除任何內容：沒有已儲存的工作階段 {name}。"
+        }
+        "Delete failed" => "刪除失敗",
+        "This daemon does not support deleting Sessions" => "此守護進程不支援刪除工作階段",
         "Starting" => "啟動中",
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -317,9 +324,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "離開",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 選擇 · ←/→ 推理強度 · Ctrl+X 清除已儲存 · Esc 清除/關閉"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 選擇並設為預設 · ←/→ 推理強度 · Ctrl+X 清除已儲存 · Esc 清除/關閉"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "新工作階段在 {folder} 的預設模型：{model}"
+        }
+        "Default for new sessions: {model}" => "新工作階段的預設模型：{model}",
         "Enter select · Esc clear/close" => "Enter 選擇 · Esc 清除/關閉",
         "esc close" => "esc 關閉",
         "Suggestions" => "建議",
@@ -327,6 +338,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "已載入技能：{name}",
         "Hook context · {count} line" => "鉤子上下文 · {count} 行",
         "Hook context · {count} lines" => "鉤子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 鉤子後續輸入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 鉤子後續輸入 · {count} 行",
         "Commands" => "指令",
         "Command Palette" => "命令面板",
         "No matches" => "無相符項目",
@@ -379,8 +392,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "目前工作區沒有已儲存的工作階段。Ctrl+S 顯示更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 開啟 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 開啟 · Ctrl+X 刪除 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
         }
         "Loading sessions..." => "正在載入工作階段…",
         "No saved sessions yet." => "尚無已儲存的工作階段。",
@@ -527,6 +540,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因為其他用戶端正在使用它；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它，而它使用協定 v{protocol}，這個 {client} 用戶端無法使用。沒有啟動工作階段。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}），而它使用協定 v{protocol}，這個 {client} 用戶端無法使用。沒有啟動工作階段。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}）；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"

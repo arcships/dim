@@ -19,6 +19,8 @@ context that is one runtime marker element becomes a text block after the
 steer's own content, and one that is not is dropped with a diagnostic. This is
 Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
 with none registered the validated candidate has no submit-check additions.
+The reply carries the named submit-check warnings only with the receipt for
+a committed replacement ([Hooks A.6.2](../../../design/plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)).
 The checked candidate is passed inside the withdrawal command, not submitted
 as an independent input. Passing checks does not reserve the held input;
 InputQueue decides conditional acceptance in sequence order

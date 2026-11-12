@@ -336,8 +336,8 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 指令 | `input/withdraw { input_id, reason?, steer? }`，一个分支指令事件。`reason` 是通用可选文本，不带业务含义，由客户端为被删除的输入显示；不带它的事件不变。可选的 `steer` 持久保存完整的已检查替代输入候选，包括提交检查添加的上下文；它本身不是已采纳的输入。生产方：撤回服务（客户端、进程调用方）。它本身从不是关于该输入的事实 |
 | 结果事实 | `input/deleted { input_id }`，只由 InputQueue 写入，且只在它消费 `input/withdraw` 时仍持有该输入、尚未应用的情况下写入 |
 | 持有 | InputQueue 从某输入的 `input/message` 起持有它，直到为其写入 `input/applied` 或 `input/deleted`。 |
-| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写结果事实或替代输入，也没有失败事件；调用方收到的回复为 `notHeld` |
-| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，只有 `deleted` 回复还带 `steer: {inputId, sequence}`，表示已提交的替代输入 |
+| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写入结果事实或替代输入，也没有失败事件；调用方收到的回复为 `notHeld` |
+| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，只有 `deleted` 回复还带 `steer: {inputId, sequence}`，即已提交的替代输入，并随之带提交检查没有做的工作（Hooks A.6.2）对应的 `warnings?: [{check, message}]`，没有时缺省。这些警告描述的就是这次替代写入，并随它的回执出现：没有写入替代输入的回复两者都不带 |
 | 进程与分支部分路径 | 进程调用方使用 `sessions.withdraw`，分支部分使用 InputQueue 的分支撤回服务：按调用方写入输入时拿到的 `input_id` |
 | 写入路径 | 该服务追加 `input/withdraw`，然后以 InputQueue 对该指令的决定作答。InputQueue 的复核只使用其自身的决策状态（持有集合），从不对另一所有者的事实加锁 |
 | 撤回并作为 Steer 重新提交 | InputQueue 只有接受旧的被持有输入的撤回时，才接受替代输入。替代 Steer `input/message` 与旧输入的 `input/deleted` 在同一个原子结果批次中提交，`input/deleted` 放在最后。`notHeld` 决定不创建替代输入 |
@@ -362,7 +362,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 
 持久化指令的表示是 InputQueue 的事件格式决定，不是新的 Timeline 原语。可选指令成员 `steer` 保存完整的已检查输入（包括提交检查上下文），模式为 `steer`。普通撤回与旧指令省略它。只有被接受的结果中的 `input/message` 采纳该内容。外部校验在准入前拒绝无效候选输入，无论原输入是否被持有。
 
-原生存储写入 **v42**，并升级 v41 接受的格式，不改写历史事件。v42 读取带或不带 `steer` 的指令；v41 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v42 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v42-conditional-queued-input-steer)。冻结事件样本保持不变。
+原生存储写入 **v43**，并升级 v42 接受的格式，不改写历史事件。v43 读取带或不带 `steer` 的指令；v42 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v43 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v43-conditional-queued-input-steer)。冻结事件样本保持不变。
 
 线协议兼容性独立于存储门禁：v3 投递原生 `input/withdraw` 事件，包含其可选 `steer` 成员。使用旧版严格指令类型构建的客户端会拒绝带该成员的事件；存储升级无法保护已经连接的旧客户端。不增加协议版本、剥离字段的适配层或回退替代输入。这沿用 [Session 边界 A.6](../../../design/contracts/session-boundary.md#a6-tool-effects) 的客户端与 daemon 配套发布策略：解码原生事件的客户端必须与 daemon 一同升级。普通撤回保持原有线协议形状，冻结的 v1 投影不变。
 

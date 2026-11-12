@@ -127,6 +127,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Daemon ini tidak mendukung penggantian nama Sesi"
         }
         "Renaming failed" => "Penggantian nama gagal",
+        "Delete \"{name}\"?" => "Hapus \"{name}\"?",
+        "Deleted {name}." => "{name} dihapus.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Tidak ada yang dihapus: tidak ada Sesi tersimpan {name}."
+        }
+        "Delete failed" => "Penghapusan gagal",
+        "This daemon does not support deleting Sessions" => {
+            "Daemon ini tidak mendukung penghapusan Sesi"
+        }
         "Starting" => "Memulai",
         "Delegation result" => "Hasil delegasi",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -371,9 +380,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "keluar",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter pilih · ←/→ upaya · Ctrl+X hapus simpanan · Esc hapus/tutup"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter pilih + default · ←/→ upaya · Ctrl+X hapus simpanan · Esc hapus/tutup"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Model default untuk sesi baru di {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Model default untuk sesi baru: {model}",
         "Enter select · Esc clear/close" => "Enter pilih · Esc hapus/tutup",
         "esc close" => "esc tutup",
         "Suggestions" => "Saran",
@@ -381,6 +394,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill dimuat: {name}",
         "Hook context · {count} line" => "Konteks hook · {count} baris",
         "Hook context · {count} lines" => "Konteks hook · {count} baris",
+        "Stop hook follow-up · {count} line" => "Tindak lanjut hook Stop · {count} baris",
+        "Stop hook follow-up · {count} lines" => "Tindak lanjut hook Stop · {count} baris",
         "Commands" => "Perintah",
         "Command Palette" => "Palet Perintah",
         "No matches" => "Tak ada hasil",
@@ -437,8 +452,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Belum ada sesi tersimpan di workspace ini. Ctrl+S menampilkan lebih banyak."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter buka · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter buka · Ctrl+X hapus · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
         }
         "Loading sessions..." => "Memuat sesi…",
         "No saved sessions yet." => "Belum ada sesi tersimpan.",
@@ -593,6 +608,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya; klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya, dan ia memakai protokol v{protocol}, yang tidak dapat dipakai klien {client} ini. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}), dan ia memakai protokol v{protocol}, yang tidak dapat dipakai klien {client} ini. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}); klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."

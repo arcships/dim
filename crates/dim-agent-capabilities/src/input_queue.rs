@@ -421,8 +421,26 @@ pub struct SubmitCheckRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitCheckReply {
     /// The input may be written; these contexts go after the operator's own
-    /// content, in name order.
-    Proceed { blocks: Vec<String> },
+    /// content, in name order. `warnings` are for the caller to show, never
+    /// for the model: work the check did not do, which is not a block.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// The input must not be written; the message is the caller's error.
+    Block { message: String },
+}
+
+/// What the table decided for the input (Hooks A.6.2): every check that ran,
+/// combined in name order. A block ends the table's work and carries neither
+/// blocks nor warnings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmitDecision {
+    /// The input may be written.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<SubmitWarning>,
+    },
     /// The input must not be written; the message is the caller's error.
     Block { message: String },
 }
@@ -463,15 +481,16 @@ impl SubmitChecks {
     }
 
     /// Calls each registered check in name order. The first block in name
-    /// order is the answer; otherwise every check's blocks are returned in
-    /// name order. `Err` means the entry's own call was interrupted while a
-    /// check ran, and nothing may be written.
+    /// order is the answer; otherwise every check's blocks and warnings are
+    /// returned in name order. `Err` means the entry's own call was
+    /// interrupted while a check ran, and nothing may be written.
     pub async fn check(
         &self,
         request: &SubmitCheckRequest,
         cancel: &CancellationToken,
-    ) -> std::result::Result<SubmitCheckReply, CheckInterrupted> {
+    ) -> std::result::Result<SubmitDecision, CheckInterrupted> {
         let mut blocks = Vec::new();
+        let mut warnings = Vec::new();
         for registration in self.checks.all() {
             if cancel.is_cancelled() {
                 return Err(CheckInterrupted);
@@ -481,9 +500,30 @@ impl SubmitChecks {
                 .check(request.clone(), cancel.clone())
                 .await
             {
-                Ok(SubmitCheckReply::Proceed { blocks: added }) => blocks.extend(added),
+                Ok(SubmitCheckReply::Proceed {
+                    blocks: added,
+                    warnings: raised,
+                }) => {
+                    for block in added {
+                        // A context lands after the operator's own content, so
+                        // index 1 is the first place one may go; anything else
+                        // would be read as the operator's words (A.6.2).
+                        if !markup::runtime_context(1, &block) {
+                            tracing::warn!(
+                                check = %registration.name,
+                                "submit check context dropped: it is not a runtime marker element"
+                            );
+                            continue;
+                        }
+                        blocks.push(block);
+                    }
+                    warnings.extend(raised.into_iter().map(|message| SubmitWarning {
+                        check: registration.name.clone(),
+                        message,
+                    }));
+                }
                 Ok(SubmitCheckReply::Block { message }) => {
-                    return Ok(SubmitCheckReply::Block { message });
+                    return Ok(SubmitDecision::Block { message });
                 }
                 Err(_) if cancel.is_cancelled() => return Err(CheckInterrupted),
                 Err(_) => {}
@@ -492,7 +532,7 @@ impl SubmitChecks {
         if cancel.is_cancelled() {
             return Err(CheckInterrupted);
         }
-        Ok(SubmitCheckReply::Proceed { blocks })
+        Ok(SubmitDecision::Proceed { blocks, warnings })
     }
 }
 
@@ -513,6 +553,9 @@ pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
         return;
     };
     for text in blocks {
+        // The submit-check table decides this drop for every in-tree entry;
+        // the gate here guards a caller that appends blocks without going
+        // through the table.
         if !markup::runtime_context(user.content.len(), &text) {
             tracing::warn!("submit check context dropped: it is not a runtime marker element");
             continue;
@@ -588,6 +631,7 @@ impl DynPlugin for InputMethodsPlugin {
                             mode: Some(InputMode::Steer),
                             ..Default::default()
                         });
+                        let mut checks_warnings = Vec::new();
                         if let Some(input) = &steer {
                             // The operator's own content is validated before
                             // the checks run: a check's context must never be
@@ -611,13 +655,17 @@ impl DynPlugin for InputMethodsPlugin {
                                 .await
                             {
                                 Err(CheckInterrupted) => return Err(RpcError::interrupted()),
-                                Ok(SubmitCheckReply::Block { message }) => {
+                                Ok(SubmitDecision::Block { message }) => {
                                     return Err(RpcError::app(-32000, "input_blocked", message));
                                 }
-                                Ok(SubmitCheckReply::Proceed { blocks }) => {
+                                Ok(SubmitDecision::Proceed {
+                                    blocks,
+                                    warnings,
+                                }) => {
                                     if let Some(steer) = &mut steer {
                                         append_blocks(&mut steer.user, blocks);
                                     }
+                                    checks_warnings = warnings;
                                 }
                             }
                         }
@@ -653,6 +701,12 @@ impl DynPlugin for InputMethodsPlugin {
                         };
                         if let Some(event) = replacement {
                             result["steer"] = serde_json::json!({"inputId": event.id, "sequence": event.sequence});
+                            // A warning describes the replacement this call
+                            // wrote; a withdrawal that wrote none carries
+                            // neither.
+                            if !checks_warnings.is_empty() {
+                                result["warnings"] = serde_json::json!(checks_warnings);
+                            }
                         }
                         reply(result)
                     })
@@ -676,6 +730,10 @@ mod tests {
     /// waits for the token it was handed and reports that the token fired.
     enum Answer {
         Proceed(Vec<String>),
+        ProceedWith {
+            blocks: Vec<String>,
+            warnings: Vec<String>,
+        },
         Block(String),
         Fail,
         Gate {
@@ -702,7 +760,16 @@ mod tests {
             match &self.answer {
                 Answer::Proceed(blocks) => {
                     let blocks = blocks.clone();
-                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks }) })
+                    Box::pin(async move {
+                        Ok(SubmitCheckReply::Proceed {
+                            blocks,
+                            warnings: Vec::new(),
+                        })
+                    })
+                }
+                Answer::ProceedWith { blocks, warnings } => {
+                    let (blocks, warnings) = (blocks.clone(), warnings.clone());
+                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks, warnings }) })
                 }
                 Answer::Block(message) => {
                     let message = message.clone();
@@ -742,8 +809,29 @@ mod tests {
             answer,
         })
     }
+    /// A check that proceeds with one runtime marker context per text, as a
+    /// producer builds them (A.6.2).
     fn proceed(blocks: &[&str]) -> Answer {
-        Answer::Proceed(blocks.iter().map(|block| (*block).to_owned()).collect())
+        Answer::Proceed(blocks.iter().map(|block| marker(block)).collect())
+    }
+    /// The same, with the check's own work that failed reported as warnings.
+    fn proceed_with(blocks: &[&str], warnings: &[&str]) -> Answer {
+        Answer::ProceedWith {
+            blocks: blocks.iter().map(|block| marker(block)).collect(),
+            warnings: warnings
+                .iter()
+                .map(|warning| (*warning).to_owned())
+                .collect(),
+        }
+    }
+    /// One context block, as a producer returns it: a single runtime marker
+    /// element (A.6.2).
+    fn marker(text: &str) -> String {
+        format!("<dim-hooks kind=\"prompt-submit\">{text}</dim-hooks>")
+    }
+    /// The contexts of `blocks`, in the form a producer returns them.
+    fn marked(blocks: &[&str]) -> Vec<String> {
+        blocks.iter().map(|block| marker(block)).collect()
     }
 
     /// A part that registers its checks on apply, as an owner does.
@@ -800,7 +888,7 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
@@ -828,11 +916,89 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["1".into(), "2".into(), "3".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1", "2", "3"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "mid", "zeta"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: each warning names the check that raised it, and the table keeps
+    /// them in name order beside the contexts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warnings_name_their_check_in_name_order() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                (
+                    "zeta",
+                    check(&log, "zeta", proceed_with(&[], &["zeta failed"])),
+                ),
+                (
+                    "alpha",
+                    check(&log, "alpha", proceed_with(&["1"], &["alpha failed"])),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1"]),
+                warnings: vec![
+                    SubmitWarning {
+                        check: "alpha".into(),
+                        message: "alpha failed".into(),
+                    },
+                    SubmitWarning {
+                        check: "zeta".into(),
+                        message: "zeta failed".into(),
+                    },
+                ],
+            })
+        );
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a block that is not one runtime marker element is dropped here,
+    /// where the registration name is known, and is not a warning: it is a
+    /// producer defect, not work the check did not do.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_block_that_is_not_a_marker_is_dropped_and_is_no_warning() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![(
+                "alpha",
+                check(
+                    &log,
+                    "alpha",
+                    Answer::ProceedWith {
+                        blocks: vec!["bare text".into(), marker("kept")],
+                        warnings: Vec::new(),
+                    },
+                ),
+            )],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["kept"]),
+                warnings: Vec::new(),
+            })
+        );
         part.shutdown().await.unwrap();
         root.shutdown().await.unwrap();
     }
@@ -855,8 +1021,9 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["b".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["b"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "beta"]);
@@ -983,7 +1150,10 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(*log.lock().unwrap(), ["dup"]);
         again.shutdown().await.unwrap();
@@ -1008,14 +1178,17 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
         part.shutdown().await.unwrap();
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(
             *log.lock().unwrap(),

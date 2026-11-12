@@ -24,6 +24,10 @@ pub enum RowKind {
     /// status row under the message, its body behind the detail setting. Not a
     /// message, so no pick, count or rail reads it.
     HookContext,
+    /// A `Stop` hook's follow-up: the input that continued the conversation.
+    /// One muted status row where the input was written, with the same detail
+    /// setting as a hook's context, and never a message either.
+    HookFollowUp,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -52,6 +56,8 @@ pub enum RowTone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRow {
     pub row_id: String,
+    /// The progress-only thinking ID replaced by the first durable event.
+    pub provisional_id: Option<String>,
     pub kind: RowKind,
     /// Presentation of an image message; `text` remains editable text only.
     pub display: Option<String>,

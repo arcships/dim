@@ -338,7 +338,7 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 | Result fact | `input/deleted { input_id }`, written only by InputQueue, only when it consumes an `input/withdraw` while it holds that input unapplied |
 | Held | InputQueue holds an input from its `input/message` until it writes `input/applied` or `input/deleted` for it. |
 | No effect | Unknown id, input already applied, or already deleted: InputQueue writes no result fact or replacement input and no failure event exists; the caller's reply is `notHeld` |
-| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement |
+| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement, and with it `warnings?: [{check, message}]` for the submit checks' work that did not happen (Hooks A.6.2), absent when there is none. The warnings describe the replacement this call wrote, so they appear only with its receipt: a reply that wrote no replacement carries neither |
 | Process and branch-part path | `sessions.withdraw` for process callers, InputQueue's branch withdrawal service for branch parts: by the `input_id` returned when the caller wrote the input |
 | Write path | The service appends `input/withdraw`, then replies with InputQueue's decision for that command. InputQueue's recheck uses only its own decision state (held set), never a lock on another owner's facts |
 | Withdraw and re-submit as Steer | InputQueue accepts the replacement only when it accepts withdrawal of the old held input. The replacement Steer `input/message` and the old input's `input/deleted` commit in one atomic result batch, with `input/deleted` last. A `notHeld` decision creates no replacement |
@@ -403,12 +403,12 @@ for plain withdrawals and old commands. Only the accepted result's
 `input/message` adopts that content. External validation rejects an invalid
 candidate before admission, regardless of whether the original is held.
 
-The native store writes **v42** and upgrades the formats accepted by v41 without
-rewriting historical events. v42 reads commands with or without `steer`; v41 and
-earlier readers reject the v42 store at startup because their strict command
+The native store writes **v43** and upgrades the formats accepted by v42 without
+rewriting historical events. v43 reads commands with or without `steer`; v42 and
+earlier readers reject the v43 store at startup because their strict command
 decoder cannot read the new member. The format gate, not a per-command fallback,
 prevents an older writer from opening the upgraded store. See the
-[storage owner's format decision](../appserver/native-storage-format.md#v42-conditional-queued-input-steer).
+[storage owner's format decision](../appserver/native-storage-format.md#v43-conditional-queued-input-steer).
 Frozen event fixtures remain unchanged.
 
 Wire compatibility is independent of the store gate: v3 delivers the native
