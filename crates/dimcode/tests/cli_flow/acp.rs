@@ -2532,7 +2532,9 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
         ])
         .output()
         .unwrap();
-    assert_eq!(limited.status.code(), Some(2));
+    // An output-limit stop ends its turn Completed, so the run succeeded even
+    // though the failure line still reports the limit and what to do about it.
+    assert_eq!(limited.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&limited.stderr);
     assert!(
         stderr.contains("local/fixture-model stopped at max_tokens"),
