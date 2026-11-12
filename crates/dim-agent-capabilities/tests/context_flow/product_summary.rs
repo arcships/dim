@@ -34,6 +34,7 @@ fn reply_usage() -> Usage {
         total_tokens: 1_020.,
         cache_read_tokens: Some(600.),
         cache_write_tokens: None,
+        reasoning_tokens: None,
         cost: None,
         currency: None,
     }

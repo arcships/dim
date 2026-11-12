@@ -419,6 +419,16 @@ pub struct Usage {
     )]
     #[serde(serialize_with = "crate::finite_number::serialize_optional")]
     pub cache_write_tokens: Option<f64>,
+    /// The part of `completion_tokens` the model spent thinking; already
+    /// inside the completion and the total, never added to either. Absent
+    /// when the provider did not report it, not `0`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    pub reasoning_tokens: Option<f64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

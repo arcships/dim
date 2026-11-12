@@ -279,6 +279,41 @@ fn failure_chain_roundtrips_and_rejects_invalid_contracts() {
 }
 
 #[test]
+fn reasoning_tokens_are_optional_and_absent_when_unreported() {
+    // A `model/usage` record written before the field still decodes and
+    // re-encodes without it; the frozen fixtures stay unchanged.
+    let old = fixture("model/usage", None);
+    let old_event: AgentEvent = serde_json::from_value(old.clone()).unwrap();
+    equal_json(&serde_json::to_value(old_event).unwrap(), &old);
+
+    let mut event = old;
+    event["data"]["usage"]["reasoningTokens"] = json!(2.0);
+    let decoded: AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &event);
+    let decoded_v1: v1::AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded_v1).unwrap(), &event);
+
+    // A reported zero is a count; an absent one is unreported, and explicit
+    // null is not a count.
+    let mut zero = fixture("model/usage", None);
+    zero["data"]["usage"]["reasoningTokens"] = json!(0.0);
+    let decoded: AgentEvent = serde_json::from_value(zero.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &zero);
+    let mut null = fixture("model/usage", None);
+    null["data"]["usage"]["reasoningTokens"] = Value::Null;
+    assert!(
+        serde_json::from_value::<AgentEvent>(null.clone()).is_err(),
+        "{null}"
+    );
+    let mut non_finite = fixture("model/usage", None);
+    non_finite["data"]["usage"]["reasoningTokens"] = json!("2");
+    assert!(
+        serde_json::from_value::<AgentEvent>(non_finite.clone()).is_err(),
+        "{non_finite}"
+    );
+}
+
+#[test]
 fn retry_forbidden_roundtrips_and_rejects_invalid_contracts() {
     use std::sync::Arc;
     let old = fixture("step/model-output-end", Some("failed"));
