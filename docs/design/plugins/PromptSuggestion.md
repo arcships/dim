@@ -246,8 +246,8 @@ The CLI sends `session.suggestion.request` only after it witnessed a `turn/end` 
 ```text
 scrollback, empty composer            fullscreen, empty composer
 ┌──────────────────────────────┐      ┌──────────────────────────────┐
-│ › run the tests              │      │                              │
-│                              │      │ run the tests                │
+│ › run the tests              │      │ run the tests                │
+│                              │      │                              │
 └──────────────────────────────┘      └──────────────────────────────┘
    the hint placeholder is              the hint placeholder is
    replaced by the offer                replaced by the offer

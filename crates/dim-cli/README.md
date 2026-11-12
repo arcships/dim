@@ -1029,7 +1029,7 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
  ╭─────────────────────────────── provider / model · effort ─╮      dock: queue, composer
- │ Ask anything... · Ctrl+J newline                            │      and panels stay pinned
+ │ Ask anything... · Ctrl+J newline                           │      and panels stay pinned
  │                                                            │      to the bottom; the box
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
@@ -1098,7 +1098,7 @@ answer text (including its retained streaming tail)
 · stopped
 ```
 
-The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
+The composer box: no prompt mark, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
 
 The Git branch label follows branch switches in both modes, including switches made by tools or another terminal. At startup the client resolves the workspace's own Git `HEAD` path (including linked worktrees); the existing UI timer reads that file at most once every 10 seconds, without spawning more Git processes, and requests a repaint only when the name changes. Detached HEAD displays `HEAD`; a transient read failure keeps the last known name until the next check.
 
