@@ -343,7 +343,7 @@ impl TasksPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => {
+            Event::Pick { id, .. } => {
                 let Some(task) = self.tasks.iter().find(|task| task.id == id).cloned() else {
                     return Effect::None;
                 };
@@ -616,7 +616,7 @@ impl TasksPanel {
                     }
                     let block = project_row(&snapshot.rows, index, ToolDetail::Expanded);
                     lines.extend(crate::ui::transcript::blocks::render_block(
-                        &block, inner, p, markdown,
+                        &block, inner, p, markdown, false,
                     ));
                     lines.push(String::new());
                 }

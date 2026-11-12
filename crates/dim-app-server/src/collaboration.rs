@@ -2380,13 +2380,11 @@ impl CollaborationSession {
         }
         match session
             .service::<dim_agent_capabilities::input_queue::InputQueue>("main")?
-            .withdraw(
-                InputWithdrawData {
-                    input_id: input.to_owned(),
-                    reason: Some(reason.into()),
-                },
-                None,
-            )
+            .withdraw(InputWithdrawData {
+                input_id: input.to_owned(),
+                reason: Some(reason.into()),
+                steer: None,
+            })
             .await?
             .0
         {
@@ -3806,13 +3804,11 @@ async fn restore(
                 let queue = branch.service::<dim_agent_capabilities::input_queue::InputQueue>()?;
                 for input_id in stale_inputs {
                     queue
-                        .withdraw(
-                            InputWithdrawData {
-                                input_id,
-                                reason: Some(RELOADING.into()),
-                            },
-                            None,
-                        )
+                        .withdraw(InputWithdrawData {
+                            input_id,
+                            reason: Some(RELOADING.into()),
+                            steer: None,
+                        })
                         .await?;
                 }
                 Ok::<_, AgentError>(())

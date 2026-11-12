@@ -122,6 +122,10 @@ export interface LaunchRequest {
   model?: ModelId | null;
   policy?: Partial<PermissionPolicy> | null;
   starter?: SessionRef | null;
+  /** The class of work the launch runs; absent: the caller's own, `internal`. */
+  origin?: 'automation' | null;
+  /** The label a picker shows before the first input; SessionTitle writes it. */
+  title?: string | null;
 }
 export interface LaunchReply { sessionId: string; policy: PermissionPolicy }
 export interface RawBlock {

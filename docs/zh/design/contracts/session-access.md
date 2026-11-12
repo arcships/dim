@@ -141,7 +141,7 @@ sequenceDiagram
 | Retire 块 | 投递一次；该 key 失效 | 消费位置 |
 | 已删除的输入（从未应用） | 无：其用户内容与 raw 块从不进入上下文，其带 key 的块从不生效，压缩也从不看到它。客户端可依据 `input/deleted` 将其显示为已删除，且它不出现在 `session.keys` 中 | — |
 
-Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在运行中 turn 的下一个边界被消费，分支空闲时会启动一个 turn。Append 输入随下一次模型请求被消费，从不启动 turn。经过压缩后，已消费的输入只保留在摘要中，但每个生效 key 的最新块会原样重放。子分支看到截至其切点的祖先前缀，包括切点处生效的 key，且从不采纳父分支的待处理输入。模型从不看到 `submissionId`、模式、`SessionConfig` 字段或租约。
+Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在运行中 turn 的下一个边界被消费，分支空闲时会启动一个 turn。Append 输入随下一次模型请求被消费，从不启动 turn。经过压缩后，已消费的输入只保留在摘要中，但每个生效 key 的最新块会原样重放。子分支看到截至其切点的祖先前缀，包括切点处生效的 key，且从不采纳父分支的待处理输入。提示词状态遵循同一规则：投递输入还没有在继承前缀里被消费的祖先 `prompt/changed` 不计入子分支的状态，子分支按来源的当前值自行采用，在本线自己的消费位置交付；变更的 `System` 部分来自前缀的配置，两种情况都生效。模型从不看到 `submissionId`、模式、`SessionConfig` 字段或租约。
 
 ## 6. 接口（摘要）
 
@@ -171,10 +171,10 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | §4 第 2 条（交接） | `input/applied` 把输入从 InputQueue 交给 Loop；之后输入不能撤回，只能用 `stop/interrupt` 中断。 |
 | §4 第 3 条（只用 before 回调） | 入口只检查参数格式和授权；不使用 before 回调。 |
 | §4 第 4 条（核心不带业务含义） | `reason`、标记、key 和 `submissionId` 是通用数据；InputQueue 与 Agents 从不解释来源。 |
-| §4 第 5 条（批次） | InputQueue 按序处理 `input/message` 与 `input/withdraw`；“撤回并作为 Steer 重新提交”在同一批次中先写撤回。 |
+| §4 第 5 条（批次） | InputQueue 按序处理 `input/message` 与 `input/withdraw`；被接受的排队输入 Steer 把替代输入与删除一起提交，起决定作用的删除放在最后（A.4）。 |
 | §4 第 6 条（模型上下文） | 被删除的输入从不进入上下文；已消费的输入放在其消费位置（§5）。 |
 | §4 第 7 条（公开事件与服务） | 进程调用方只通过 `sessions` 访问 Session，只通过 InputQueue 公开的撤回服务撤回输入。 |
-| §4 第 8 条（需求） | #4 与可选部分的装配在 §9 提出；固定前缀读取由现有门面组合实现（§9.2）。 |
+| §4 第 8 条（需求） | #4 与可选部分的装配在 §9 提出；固定前缀读取由现有门面组合实现（§9.2）。条件 Steer 的持久化候选输入是 InputQueue 自己的事件格式决定（A.4）；不要求机制变更。 |
 | §4 第 9 条（只有决定用的事实进 Timeline） | `SessionConfig`、租约和调用方进度不进 Timeline；只有输入、撤回的指令和结果，以及 `stop` 写入的 `stop/interrupt` 是事件；必需事件 `input/withdraw` 上的描述性字段 `reason` 符合第 9 条。`submissionId` 是必需事件 `input/message` 的字段，调用方的恢复决定经 `lookup` 读取它（#32）。 |
 | §1（Capability 与 App Server 边界） | Agents 只提供访问；调用方的业务逻辑留在各自插件中。 |
 | ADR 002 D1 | `sessions` 是 Agents 的进程服务；InputQueue 的撤回留在其分支部分，由其 Session 部分提供给客户端。 |
@@ -333,16 +333,38 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 
 | 项目 | 内容 |
 | --- | --- |
-| 指令 | `input/withdraw { input_id, reason? }`，一个分支指令事件。`reason` 是通用可选文本，不带业务含义，由客户端为被删除的输入显示；不带它的事件不变。生产方：撤回服务（客户端、进程调用方）。它本身从不是关于该输入的事实 |
+| 指令 | `input/withdraw { input_id, reason?, steer? }`，一个分支指令事件。`reason` 是通用可选文本，不带业务含义，由客户端为被删除的输入显示；不带它的事件不变。可选的 `steer` 持久保存完整的已检查替代输入候选，包括提交检查添加的上下文；它本身不是已采纳的输入。生产方：撤回服务（客户端、进程调用方）。它本身从不是关于该输入的事实 |
 | 结果事实 | `input/deleted { input_id }`，只由 InputQueue 写入，且只在它消费 `input/withdraw` 时仍持有该输入、尚未应用的情况下写入 |
 | 持有 | InputQueue 从某输入的 `input/message` 起持有它，直到为其写入 `input/applied` 或 `input/deleted`。 |
-| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写入任何内容，也没有失败事件；调用方收到的回复为 `notHeld` |
-| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，回复还带 `steer: {inputId, sequence}`，即新 Steer 输入 |
+| 无效果 | 未知 id、输入已应用或已删除：InputQueue 不写入结果事实或替代输入，也没有失败事件；调用方收到的回复为 `notHeld` |
+| 客户端路径 | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`，由 InputQueue 经 `sessionMethods` 提供（命名空间 `session.input`；Session 级部分 `InputMethods`，S1 已实现，调用分支的撤回服务），因此 Rpc 不点名任何所属服务 → `{status: "deleted", sequence}` 或 `{status: "notHeld"}`。带 `steer`（一个 `UserInput`）时，只有 `deleted` 回复还带 `steer: {inputId, sequence}`，即已提交的替代输入，并随之带提交检查没有做的工作（Hooks A.6.2）对应的 `warnings?: [{check, message}]`，没有时缺省。这些警告描述的就是这次替代写入，并随它的回执出现：没有写入替代输入的回复两者都不带 |
 | 进程与分支部分路径 | 进程调用方使用 `sessions.withdraw`，分支部分使用 InputQueue 的分支撤回服务：按调用方写入输入时拿到的 `input_id` |
 | 写入路径 | 该服务追加 `input/withdraw`，然后以 InputQueue 对该指令的决定作答。InputQueue 的复核只使用其自身的决策状态（持有集合），从不对另一所有者的事实加锁 |
-| 撤回并作为 Steer 重新提交 | 一个原子批次：针对旧输入的 `input/withdraw` 加新的 Steer `input/message`。撤回只在旧输入仍被持有时生效；新输入无论如何都会写入 |
+| 撤回并作为 Steer 重新提交 | InputQueue 只有接受旧的被持有输入的撤回时，才接受替代输入。替代 Steer `input/message` 与旧输入的 `input/deleted` 在同一个原子结果批次中提交，`input/deleted` 放在最后。`notHeld` 决定不创建替代输入 |
 | 应用之后 | 已应用的输入无法撤回；Loop 照常消费它，无需改动 |
 | 被拒绝的 `steer` | `steer` 按操作者送来的样子、在任何提交检查之前、撤回被决定之前校验，因此没有操作者内容的 `steer` 以 `session_invalid_input` 失败；针对队列并不持有的输入的 `steer` 回答这个错误而不是 `notHeld`，并且撤回与替代输入都不写入 |
+
+#### 条件 Steer 的顺序
+
+操作以所寻址分支中的原输入 id 为范围，不以文本、客户端连接或时间窗口为范围。对同一原输入，带或不带 `steer` 的竞争撤回共享 InputQueue 按序作出的撤回决定。至多一个能删除该输入，且只有被接受的 Steer 能创建替代输入。删除或召回先胜出时，后来的 Steer 不能让消息复活。应用先胜出时，原输入照常被消费，不创建替代输入。其他被持有的输入和显式的新提交（包括相同文本）彼此独立。
+
+InputMethods 在准入 Steer 指令前执行现有校验与提交检查。检查拦截时既不写指令也不写替代输入，仍被持有的输入可重试。通过检查不是预留：InputQueue 消费指令时仍须作决定。两个调用方可以都通过检查，但不能都替换同一原输入。
+
+指令与结果彼此独立。决定为 `notHeld` 时，已提交的指令可以保留，但不写结果或替代输入。服务不得在接受之前把候选输入发布为 `input/message`，也不得分两次结果提交删除原输入和提交替代输入。回复在被接受的结果批次发布之后发出；`sequence` 标识删除，`steer.sequence` 标识其前面的替代输入。
+
+InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 方法提供方，不是另一个 Capability。面向客户端的入口仍是经 `sessionMethods` 的纯数据 RPC；请求字段、授权以及 Session 方法的中断与断连规则不变。Timeline 与 Dispatcher 提供现有的顺序、原子提交和发布机制，不引入 Steer 专用事务或新服务面。客户端快照、防抖计时器、按连接的锁或内存去重集合不能代替所有者按序作出的决定。
+
+#### 恢复与兼容性
+
+已提交但尚未得到结果的指令必须保留足够的持久化信息，以便恢复后结算已检查的替代输入；仅仅记录候选输入不得使其进入模型上下文。恢复必须区分这种情况与结果批次已经提交的情况，前者只结算一次，后者绝不重建。不得重新运行外部提交检查来重建此前已检查的内容。重载或回复丢失不能授权再次替换已删除的原输入；重试返回 `notHeld` 且不带 Steer 回执，而不是再次发送已接受的替代输入。
+
+这改变了现有可选 `steer` 参数的含义：撤回返回 `notHeld` 时，调用方不得再期待新的回执。普通撤回保持原有回复。历史上的替代输入仍是普通的已提交输入；恢复不得为追溯执行新规则而改写或删除它们。保证按分支成立，不是跨独立分叉历史的全局保证。
+
+持久化指令的表示是 InputQueue 的事件格式决定，不是新的 Timeline 原语。可选指令成员 `steer` 保存完整的已检查输入（包括提交检查上下文），模式为 `steer`。普通撤回与旧指令省略它。只有被接受的结果中的 `input/message` 采纳该内容。外部校验在准入前拒绝无效候选输入，无论原输入是否被持有。
+
+原生存储写入 **v43**，并升级 v42 接受的格式，不改写历史事件。v43 读取带或不带 `steer` 的指令；v42 及更早的读取器因其严格指令解码器无法读取新成员，在启动时拒绝 v43 存储。由格式门禁而非逐指令回退阻止旧写入器打开升级后的存储。见[存储所有者的格式决定](../../../design/appserver/native-storage-format.md#v43-conditional-queued-input-steer)。冻结事件样本保持不变。
+
+线协议兼容性独立于存储门禁：v3 投递原生 `input/withdraw` 事件，包含其可选 `steer` 成员。使用旧版严格指令类型构建的客户端会拒绝带该成员的事件；存储升级无法保护已经连接的旧客户端。不增加协议版本、剥离字段的适配层或回退替代输入。这沿用 [Session 边界 A.6](../../../design/contracts/session-boundary.md#a6-tool-effects) 的客户端与 daemon 配套发布策略：解码原生事件的客户端必须与 daemon 一同升级。普通撤回保持原有线协议形状，冻结的 v1 投影不变。
 
 ### A.5 固定前缀读取
 
@@ -379,7 +401,9 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | 应用之后的 `input/withdraw` | `input/applied` < withdraw | 无效果；`notHeld`；照常被消费 | InputQueue、Loop |
 | 对同一输入的两次撤回 | withdraw₁ < withdraw₂ | 第一次删除（若被持有）；第二次 `notHeld` | InputQueue |
 | 撤回未知 id | — | 无效果；`notHeld` | InputQueue |
-| 撤回并作为 Steer 重新提交，旧输入已应用 | applied < batch | 旧输入照常被消费；新 Steer 输入照常应用 | InputQueue |
+| 撤回并作为 Steer 重新提交，旧输入已应用 | applied < withdraw | 旧输入照常被消费；`notHeld`，无替代输入或 Steer 回执 | InputQueue |
+| 同一被持有输入的两次排队输入 Steer | withdraw₁ < withdraw₂ | 第一次删除并替换一次；第二次 `notHeld`，无替代输入或 Steer 回执 | InputQueue |
+| 不带 `steer` 的撤回先于排队输入 Steer | deletion decision < later withdrawal decision | `notHeld`；不重新提交已删除的输入 | InputQueue |
 | 写入与消费之间发生压缩 | input < compaction < consumed | 放在摘要之后；已删除的输入从不被压缩看到 | ContextPreparation |
 | 写入与消费之间切出子分支 | input < cut < consumed | 子分支不采纳它 | InputQueue（子分支） |
 | 两个写入方，同一 key | Timeline 顺序 | 后者取代前者；所有者前缀按约定避免冲突 | 历史投影 |
@@ -397,6 +421,14 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 3. 在工具批次期间写入的 Queue、Steer 与 Append 按文档所述顺序被消费，标记位于用户内容之前。
 4. 带 key 的块在压缩后保留，已 retire 的 key 不保留，子分支独立继承 key。
 5. InputQueue 持有输入时的 `input/withdraw` 产生 `input/deleted`，且该输入永不被应用；在 `input/applied` 之后则不写入任何内容并回复 `notHeld`；对于一个输入，`input/applied` 与 `input/deleted` 至多存在其一。已删除输入的 raw 块与带 key 的块从不到达模型。
+
+   排队输入 Steer 还须通过以下公开流程验收，同时检查持久化 Timeline 事实和 RPC 回复：
+   - 两个独立客户端并发 Steer 同一被持有的输入，只创建一个替代输入和一个删除。失败方返回 `notHeld`，不带 `steer` 回执；调用方提供不同替代文本时也如此。
+   - 不带 `steer` 的撤回与 Steer 竞争，以及应用与 Steer 竞争，都遵循 InputQueue 的决定顺序；失败的操作不创建替代输入。未知和已删除的 id 也不创建。
+   - 提交检查拦截时不留下指令或替代输入；输入仍被持有时可重试成功。显式提交相同文本仍然合法。
+   - 指令提交后、结果提交前重启，只结算一次被接受的操作。结果提交后、回复前重启再重试，不创建第二个替代输入。原输入的删除与被接受的替代输入不能部分提交或部分恢复。
+   - 两个不同的被持有输入各可 Steer 一次；去重不得合并不同输入身份或独立分支历史。
+
 6. 在已分发的 `turn/end` 之后调用带 `atLeast` 的 `history`，返回的 `through` ≥ 该序号。
 
 ## 附录 D. 假设
@@ -406,7 +438,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | A1 | 每个来源输入都以一个标记块开头 | 现有 context-block 格式 | 每个插件自行定义识别方式 |
 | A2 | 已移入 [A.3](#a3-sessionconfig-字段) 的格式决定 | — | — |
 | A3 | 进程调用方可以对自己启动的 Session 调用 `idle` 和 `stop` | Collaboration 先例 | 另设停止路径 |
-| A4 | “撤回并作为 Steer 重新提交”由 InputQueue 的 `session.input.withdraw` 通过可选参数 `steer`（新输入的用户内容）写成一个批次（S1） | 判断 | 单独的内建方法 |
+| A4 | “撤回并作为 Steer 重新提交”使用 InputQueue 的 `session.input.withdraw` 及可选的 `steer` 用户内容；只有被接受的撤回才提交替代输入与删除的结果批次（A.4） | 判断 | 单独的内建方法 |
 
 ## 附录 E. Rust 绑定
 
@@ -418,7 +450,7 @@ fork 复制源 Session 的整个 `SessionConfig`；权限预设随复制过来�
 | `input` | `Session::input(InputMessageData, branch)`（已有；对分支已持有的标识返回已提交的输入）；key 为 `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`，与 `session.input_lookup` 共用：读分支的提交标识索引，等待找到的输入发布 |
 | `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `Session::service::<InputQueue>(branch)`，然后 `InputQueue::withdraw(InputWithdrawData { input_id, reason }, None) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>`（S1）：追加 `input/withdraw`，在 InputQueue 写下决定后回复；`Withdrawal::Deleted { sequence }` 或 `Withdrawal::NotHeld`。Agents 等该 `input/deleted` 发布后才回复 `deleted` |
+| `withdraw` | `Session::service::<InputQueue>(branch)`，然后 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer }) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>`：指令持久保存可选的已检查 `InputMessageData`；返回 `Withdrawal::Deleted { sequence }` 及其可选的已提交替代输入，或 `(Withdrawal::NotHeld, None)`。`InputMethods` 经分支的 `Publication` 确认被接受的 Steer 结果已发布，再返回 RPC 回执；无法确认发布时报告 `publication_unknown`。普通撤回保留 Agents 原有的发布等待 |
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |

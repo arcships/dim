@@ -45,7 +45,7 @@ Gateway 实现位于 `crates/dim-acp`。公开 RPC 引擎、产品事件边界�
 
 每个稳定 v1 agent/client/protocol 方法、选定的 unstable 表面和 Lody 方法，分别在[计划 §4](../../../design/acp-gateway-implementation.md#4-稳定-acp-v1-方法逐项映射)、[§8](../../../design/acp-gateway-implementation.md#8-lody-方法和能力逐项决策) 判定。能力只来自已实现 handler 和真实 native availability，不复制历史能力对象。
 
-首版覆盖标准 Session create/list/load/resume、prompt/cancel、工具输出、审批、图片和文本资源。账户认证、mode/model、表单提问、close/delete、fork 按现有 native 接口的可用性提供。Lody 子集为 history、compaction、终态 turn fork 锚点、新会话 startup model 和 permission mode、detached exec task lifecycle 和双向协商的 snapshot-only subagent events。steering、Goal 控制、token 统计、额度、subagent 查询/输出/取消、scheduled tasks、session activity、标题接管、项目归属及文件回滚不在首版；计划区分原生合同缺口与交付取舍。
+首版覆盖标准 Session create/list/load/resume、prompt/cancel、工具输出、审批、图片和文本资源。账户认证、mode/model/effort、表单提问、close/delete、fork 按现有 native 接口的可用性提供。Lody 子集为 history、compaction、终态 turn fork 锚点、新会话 startup model 和 permission mode、detached exec task lifecycle 和双向协商的 snapshot-only subagent events。steering、Goal 控制、token 统计、额度、subagent 查询/输出/取消、scheduled tasks、session activity、标题接管、项目归属及文件回滚不在首版；计划区分原生合同缺口与交付取舍。
 
 Lody 方法和 metadata 按固定 Core DTO 及语义注释实现，不设连接级 Lody 总开关，不从一项推导整套支持。Subagent snapshot 可以如实声明无输出流、progress、read 或 cancel；最小投影不需要旧 SDK task API。准确协商、native fact 关联、startup config 和各项限制见[计划 §8](../../../design/acp-gateway-implementation.md#8-lody-方法和能力逐项决策)。Lody canonical tool ID 不能填任意 native 工具名。
 
@@ -74,7 +74,7 @@ Provider 管理已经归 daemon 的 ProviderPlugin 所有，CLI 使用其公开�
 
 创建普通交互 Session（session.create 省略 interactive），然后经 RPC attach。已有 Session 保留自己的配置。并发 load/resume 共用每 Session 的一个准备/runtime 槽位。
 
-load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message；能力在操作者的话之后追加的上下文也一样：`dim-hooks` 块会被存储、导出并被模型读到，但网关不为它回放任何 `user_message_chunk`，所以编辑器里的消息仍是操作者发出的内容。已加载的 Skill 保留它那一行。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
+load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message；能力在操作者的话之后追加的上下文也一样：`dim-hooks` 块会被存储、导出并被模型读到，但网关不为它回放任何 `user_message_chunk`，所以编辑器里的消息仍是操作者发出的内容。`Stop` 钩子的后续输入同样不回放任何东西：它是驱动 turn 的 Queue 输入，不是操作者写的消息，而网关的 `sessionUpdate` 也没有可以显示它的状态通道。已加载的 Skill 保留它那一行。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
 
 ### 4.2 Prompt 与取消
 

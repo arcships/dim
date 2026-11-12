@@ -3,17 +3,18 @@
 //! `approval/respond`. Interrupts arrive through the caller's cancellation
 //! token; branch close and reload settle what remains.
 //!
-//! Every path that ends a request removes it under the Approval lock and
-//! writes `approval/cancelled` after releasing it, while [`Approval::replay`]
-//! reads under the same lock: the end of a replayed request always follows
-//! the replay, and a removed request is not replayed.
+//! Pending requests are replayed under the lock that removes them, so an end
+//! notification follows any replay that included the request. Requests end through
+//! a consumed `approval/respond` or an `approval/cancelled` terminal; automatic
+//! policy settlement registers removal with its terminal. A removed request is
+//! not replayed.
 use crate::{
     host::HostError,
-    permission::{Decision, Permission},
+    permission::{Decision, Permission, PermissionState},
 };
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryComparison, QueryFilter,
-    QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, Timeline,
+    QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, StateCell, Timeline,
     TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
@@ -66,7 +67,9 @@ struct Inner {
 
 pub struct Approval {
     timeline: Arc<Timeline>,
+    dispatcher: Arc<Dispatcher>,
     permission: Arc<Permission>,
+    policy: Arc<StateCell<PermissionState>>,
     inner: Mutex<Inner>,
 }
 impl Approval {
@@ -80,18 +83,20 @@ impl Approval {
     /// `Ok` means the call may start. `cancel` is the caller's batch token;
     /// the last cancellation check before the start happens here. The
     /// admission decision asks Permission's advisors with the call's source
-    /// (Hooks A.6.1); the recheck after an answer is a plain decision.
+    /// (Hooks A.6.1); subsequent rechecks are plain decisions without advisors.
     pub async fn admit(
         &self,
         call: AdmitCall,
         risk: Option<&str>,
         cancel: CancellationToken,
     ) -> Result<(), HostError> {
-        let reason = match self
+        let mut policies = self.policy.subscribe();
+        let mut dispatched = self.dispatcher.watch();
+        let admission = self
             .permission
             .admit_decision(&call.call, &call.source, risk, &cancel)
-            .await?
-        {
+            .await?;
+        let reason = match admission.decision {
             Decision::Allow if cancel.is_cancelled() => {
                 return Err(HostError::Cancelled(CANCELLED.into()));
             }
@@ -103,7 +108,7 @@ impl Approval {
             return Err(HostError::Cancelled(CANCELLED.into()));
         }
         let checked = call.call.clone();
-        let (response, received) = oneshot::channel();
+        let (response, mut received) = oneshot::channel();
         let registered = cancel.clone();
         let mut registered_id = None;
         let committed = self.timeline.append_registered(
@@ -154,15 +159,108 @@ impl Approval {
             approval_id: approval_id.clone(),
             armed: true,
         };
-        let decision = tokio::select! {
-            biased;
-            decision = received => decision,
-            _ = cancel.cancelled() => {
-                let taken = take(&mut self.inner.lock().unwrap(), approval_id);
-                if taken.is_some() {
-                    self.cancelled(approval_id, CANCELLED);
+        let mut recheck = false;
+        let decision = loop {
+            tokio::select! {
+                biased;
+                decision = &mut received => break decision,
+                _ = cancel.cancelled() => {
+                    let taken = take(&mut self.inner.lock().unwrap(), approval_id);
+                    if taken.is_some() {
+                        self.cancelled(approval_id, CANCELLED);
+                    }
+                    return Err(HostError::Cancelled(CANCELLED.into()));
                 }
-                return Err(HostError::Cancelled(CANCELLED.into()));
+                decision = async {
+                    if !recheck {
+                        policies.changed().await.map_err(|_| {
+                            HostError::Cancelled(CAPABILITY_RELOADING.into())
+                        })?;
+                    }
+                    let through = loop {
+                        let state = dispatched.borrow_and_update().clone();
+                        if let Some(error) = state.failure {
+                            return Err(HostError::failed(error.to_string()));
+                        }
+                        if state.sequence >= self.timeline.committed() {
+                            break state.sequence;
+                        }
+                        dispatched.changed().await.map_err(|_| {
+                            HostError::Cancelled(CAPABILITY_RELOADING.into())
+                        })?;
+                    };
+                    self.permission.decide(&checked, risk, &cancel).await.map(|decision| (through, decision))
+                } => {
+                    recheck = false;
+                    let (through, decision) = decision?;
+                    let result = match decision {
+                        _ if cancel.is_cancelled() => Err(HostError::Cancelled(CANCELLED.into())),
+                        Decision::Allow if !admission.advisor_approval => Ok(()),
+                        Decision::Allow | Decision::Ask { .. } => continue,
+                        Decision::Deny { reason } => Err(HostError::failed(reason)),
+                    };
+                    let reason = match &result {
+                        Ok(()) => "Approval no longer required by the permission policy".into(),
+                        Err(error) => error.to_string(),
+                    };
+                    let mut deferred = false;
+                    let committed = self.timeline.append_registered(
+                        EventKind::ApprovalCancelled(ApprovalCancelledData {
+                            approval_id: approval_id.clone(),
+                            reason,
+                        }).into(),
+                        |event| {
+                            if let Some(error) = self.dispatcher.failure() {
+                                return Err(error);
+                            }
+                            if through + 1 != event.sequence
+                                || take(&mut self.inner.lock().unwrap(), approval_id).is_none()
+                            {
+                                deferred = true;
+                                return Err(AgentError::Cancelled("Approval settlement deferred".into()));
+                            }
+                            Ok(())
+                        },
+                    );
+                    if deferred {
+                        recheck = true;
+                        continue;
+                    }
+                    let terminal = committed.map_err(|error| HostError::failed(error.to_string()))?;
+                    pending.disarm();
+                    let mut published = self.timeline.watch();
+                    loop {
+                        if let Some(error) = self.timeline.failure().or_else(|| self.dispatcher.failure()) {
+                            return Err(HostError::failed(error.to_string()));
+                        }
+                        let (sequence, closed) = *published.borrow_and_update();
+                        if sequence >= terminal.sequence {
+                            break;
+                        }
+                        if closed {
+                            return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
+                        }
+                        tokio::select! {
+                            _ = cancel.cancelled() => return Err(HostError::Cancelled(CANCELLED.into())),
+                            changed = published.changed() => {
+                                changed.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
+                            }
+                            changed = dispatched.changed() => {
+                                changed.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
+                            }
+                        }
+                    }
+                    if result.is_ok()
+                        && let Decision::Deny { reason } | Decision::Ask { reason } =
+                            self.permission.decide(&checked, risk, &cancel).await?
+                    {
+                        return Err(HostError::failed(reason));
+                    }
+                    if cancel.is_cancelled() {
+                        return Err(HostError::Cancelled(CANCELLED.into()));
+                    }
+                    return result;
+                }
             }
         };
         pending.disarm();
@@ -419,6 +517,7 @@ pub struct ApprovalPlugin {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     permission: Key<Permission>,
+    policy: Key<StateCell<PermissionState>>,
 }
 impl ApprovalPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
@@ -427,6 +526,7 @@ impl ApprovalPlugin {
             timeline: names.key()?,
             dispatcher: names.key()?,
             permission: names.key()?,
+            policy: names.state_cell()?,
         })
     }
 }
@@ -439,6 +539,7 @@ impl DynPlugin for ApprovalPlugin {
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.permission.erase(),
+            self.policy.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -446,9 +547,12 @@ impl DynPlugin for ApprovalPlugin {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let permission = ctx.require_at(&self.permission)?;
+            let policy = ctx.require_at(&self.policy)?;
             let service = Arc::new(Approval {
                 timeline,
+                dispatcher: dispatcher.clone(),
                 permission,
+                policy,
                 inner: Mutex::new(Inner::default()),
             });
             let closing = service.clone();

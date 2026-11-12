@@ -156,6 +156,7 @@ flowchart LR
   p73 -->|"dim_agent_capabilities::permission::Permission@main"| p63
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p63
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p63
+  p73 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main"| p63
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p5
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p56

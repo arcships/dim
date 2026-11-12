@@ -54,6 +54,29 @@ configuration and no profile record of its own. Its implementation is
   `PromptSnapshot` contains prompt entries and revisions, but no adopted model
   configuration; F3 adds that derived value to this owner-held snapshot.
 
+## Model preview before creation
+
+The protected-local `session.model.preview` read accepts `{cwd, agentId?, model?,
+modelPreferences?, startup?}` with the same field shapes and resolution rules as
+`session.create`. It returns `{model: {providerId, modelId}, modelPreferences?}`,
+using the effective preferences described below. It is advertised in v3/v4
+`hello.features` for local Session-execution clients, in both the product and
+model-config profiles. Clients call it only when advertised.
+
+The read resolves through the same model owner as creation, including Agent
+profile selection, workspace/global defaults, automatic selection and startup
+overrides. It creates no Session, UI registration or Timeline facts, saves no
+selection or preference, and releases any temporary connection admission before
+returning. Credentials and connection details are not returned. A direct
+connection's preview identity is temporary, not an identity to reuse for creation.
+Errors use the ordinary model-resolution errors and leave creation available.
+
+The initial TUI Home displays this preview without adopting it as a model choice.
+Submission still resolves the original launch inputs against the current defaults;
+the attached Session's adopted configuration replaces the preview. A preview is
+not a reservation: another client's settings changes may alter the eventual model.
+An older daemon without this read keeps the existing selection/attachment display.
+
 ## Temporary startup adoption
 
 [Model startup](model-startup.md) adds optional `startup` to the protected-local
@@ -135,7 +158,9 @@ guessed complete selection.
 `/effort VALUE`, alias `/reasoning VALUE`, sends `reasoningEffort` without a target.
 The `/models` picker cycles a model's advertised efforts with ←/→. Enter saves a
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
-saved preferences.
+saved preferences. Enter also writes the default the next Session in the launch
+workspace reads — the workspace's own row when the folder has one, else `global`
+([provider management §4](appserver/provider-management.md#4-client-integration)).
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
 The CLI reads the adopted provider/model identity and `capability_snapshot` from
 the public `context/configured` view and takes choices from that declaration.
@@ -539,6 +564,7 @@ become model input; headless prompt/stdin content keeps its literal meaning.
 | --- | --- |
 | Provider / current model-update entry | Apply preferences to an adopted base when no target is supplied; apply the per-field set/clear patch, clearing one field from the model's declared configuration while keeping the sibling; preserve explicit-target behavior. |
 | App Server `session.attach` | Derive the reply's `model` and `modelPreferences` from the latest adopted configuration, falling back to the creation configuration. |
+| App Server `session.model.preview` / TUI Home | Read the prospective model without creating a Session; stored-selection reads cannot resolve startup overrides or automatic fallback. Reuse creation's resolver. |
 | Agents Session entry | Resolve a profile and submit prompt/model through one contributed method, and answer a branch's recorded profile from its published snapshot. |
 | Prompt | Accept frozen sources through its current command/adoption path; expose adopted ModelConfiguration in its existing published snapshot. |
 | PromptSources | Reuse System-entry construction and refresh dynamic sources only. |
@@ -547,7 +573,8 @@ become model input; headless prompt/stdin content keeps its literal meaning.
 New public content is the absent-target model-update semantics, the per-field
 clear action and the attach reply's current source, the Agent Session methods and
 the adopted configuration's profile record, Prompt's resolved-source operation
-and its derived configuration snapshot field. Each serves the operations above.
+and its derived configuration snapshot field, plus the pre-creation model read.
+Each serves the operations above.
 No core port, durable event, persistence format, loader option, lifecycle stage,
 dependency manager or general configuration registry is added.
 
@@ -591,7 +618,7 @@ supplies immutable content. Neither owns another module's state.
 | §4.7 | Public profiles, model resolution, published Prompt state and Prompt operations. |
 | §4.8 | Existing infrastructure suffices; no mechanism-owner requirement. |
 | §4.9 | Only adopted facts are durable; names, choices and replies remain UI data. A clear stores no state; the readback stays derived. |
-| §1 / D1 | Process catalogs, Session entry and branch state keep their owners; App Server adds only the Agents entry. |
+| §1 / D1 | Process catalogs, Session entry and branch state keep their owners; App Server entries expose adoption and pre-creation resolution without owning model state. The preview is not a Capability. |
 | D2 | No registry/manager wiring part; the entry serves profile adoption. |
 | D3 | Dependencies point outward; Provider lookup per call does not gate core loading. |
 | D4 | Business changes adopt data without loader edits/reloads. |
