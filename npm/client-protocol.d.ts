@@ -121,7 +121,10 @@ export type PermissionState = { version: number; policy: PermissionPolicy }
 /** A message the server holds in the queue of a running branch. */
 export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; user: UserInput }
 
-/** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
+/**
+ * `session.input.withdraw`: the queued input was removed, or the server had already adopted it.
+ * `warnings` is present only when the call wrote a replacement Steer, and describes that replacement.
+ */
 export type WithdrawResult =
   | { status: "deleted"; warnings?: SubmitWarning[] }
   | { status: "notHeld"; warnings?: SubmitWarning[] }
