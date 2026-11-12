@@ -1,5 +1,10 @@
 //! Markup shared by the runtime's writers and readers: the escape for an
 //! element attribute or its text, and the element names the runtime writes.
+//!
+//! Which reader belongs to which block kind: a message's `ContentBlock::Text`
+//! blocks use [`runtime_element`]/[`runtime_context`], where the first block is
+//! always the operator's own words; a raw input block (`InputBlock::Raw`) uses
+//! [`element`], which is never the operator's, whatever its position.
 
 /// Escapes a value for one XML attribute or for element text, so text a
 /// producer or a job wrote cannot open or close a tag.
