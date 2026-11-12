@@ -31,6 +31,8 @@ branch/ended，以及 context/compaction-start、context/compaction。
 `input/message` 整类保留，不按正文前缀或来源进一步筛选；原客户端决定如何显示其内容。
 
 普通显示事件与压缩事件分别用现有 kind 索引定位最近的有界位置，再按原序号合并，最多保留 limit 个。
+位置查询直接读取现有 kind 索引；普通事件的序号直接返回，合并文本只读物理记录的起止序号，
+按本页剩余数量产生逻辑序号，不解析 records 正文。每种 kind 最多提供 limit+1 个位置，再合并取最新页。
 只为这些位置读取普通正文或压缩摘要。查询的 before 是排他上界，through 固定；后续页沿用同一 through。
 不补齐整轮、整批或窗口外的输入控制事件。控制状态仍由 owner inventories 提供。
 不新增索引、业务事件、缓存或存储格式；未知类型仍由原完整 history/导出合同提供。

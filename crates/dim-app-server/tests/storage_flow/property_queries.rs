@@ -3174,10 +3174,35 @@ async fn kind_pages_bound_index_work_and_preserve_packed_output_cursors() {
                     .any(|line| line.contains("timeline_events_by_kind"))),
                 "{stats:?}"
             );
+            assert!(
+                stats
+                    .iter()
+                    .all(|s| s.full_scan_steps == 0 && s.sorts == 0 && s.automatic_index_rows == 0),
+                "{stats:?}"
+            );
             page.after = native.next;
         }
         eprintln!("kind page history={size} steps={steps}");
         costs.push(steps);
+        let mut clipped = scope.clone();
+        clipped.segments[0].from = size + 7;
+        clipped.segments[0].through = size + 39;
+        query.select = QuerySelect::Fields {
+            fields: vec![
+                "position".into(),
+                "position.sequence".into(),
+                "position.branch_id".into(),
+            ],
+        };
+        for direction in [
+            TimelineQueryDirection::Ascending,
+            TimelineQueryDirection::Descending,
+        ] {
+            query.order_by[0].direction = direction;
+            parity(&store, &memory, &clipped, &query).await;
+        }
+        query.order_by.clear();
+        parity(&store, &memory, &clipped, &query).await;
         store.close().await.unwrap();
     }
     assert!(

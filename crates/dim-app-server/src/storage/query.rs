@@ -2625,6 +2625,208 @@ fn selected_properties(
 }
 
 #[cfg_attr(feature = "testing", allow(clippy::too_many_arguments))]
+fn kind_positions(
+    connection: &Connection,
+    scope: &TimelineReadScope,
+    query: &QuerySpec,
+    page: Option<&QueryPage>,
+    cancel: &CancellationToken,
+    #[cfg(feature = "testing")] statistics: &Statistics,
+) -> Result<Option<QueryResult>> {
+    let [segment] = scope.segments.as_slice() else {
+        return Ok(None);
+    };
+    let QuerySelect::Fields { fields } = &query.select else {
+        return Ok(None);
+    };
+    let Some(page) = page else { return Ok(None) };
+    if !segment.tail.is_empty()
+        || !query.group_by.is_empty()
+        || query.pick.is_some()
+        || !fields.iter().all(|field| {
+            matches!(
+                field.as_str(),
+                "position" | "position.sequence" | "position.branch_id"
+            )
+        })
+        || !matches!(query.order_by.as_slice(), [] | [_])
+        || query
+            .order_by
+            .first()
+            .is_some_and(|order| order.key != QueryOrderKey::Position)
+    {
+        return Ok(None);
+    }
+    let Some(filter @ (QueryFilter::In { .. } | QueryFilter::Compare { .. })) = &query.filter
+    else {
+        return Ok(None);
+    };
+    let Some(values) = kind_values(filter) else {
+        return Ok(None);
+    };
+    let Some(kinds) = values
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<std::collections::BTreeSet<_>>>()
+    else {
+        return Ok(None);
+    };
+    if kinds.len() > 32 {
+        return Ok(None);
+    }
+    let binding = scope.query_binding(query)?;
+    let mut compiler = Compiler::new(query);
+    let keys = sorting(query, &compiler);
+    after(&mut compiler, &keys, page.after.as_ref(), &binding)?;
+    let descending = keys[0].descending;
+    let mut low = segment.from;
+    let mut high = segment.through.min(segment.stored_through);
+    if let Some(cursor) = &page.after {
+        let [
+            QueryValue::Value { value: ordinal },
+            QueryValue::Value { value: sequence },
+            ..,
+        ] = cursor.keys.as_slice()
+        else {
+            unreachable!("validated position cursor")
+        };
+        if ordinal.as_u64() != Some(0)
+            || cursor
+                .keys
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .any(|pair| pair != &cursor.keys[..2])
+        {
+            return Ok(None);
+        }
+        let sequence = sequence.as_u64().expect("validated position cursor");
+        if descending {
+            high = high.min(sequence.saturating_sub(1));
+        } else {
+            low = low.max(sequence.saturating_add(1));
+        }
+    }
+    let limit = page.limit.get().saturating_add(1).min(i64::MAX as u64);
+    let mut positions = std::collections::BTreeSet::new();
+    if low <= high {
+        for kind in kinds {
+            cancelled(cancel)?;
+            let packed = matches!(kind, "step/text" | "step/thinking");
+            let lower = if packed {
+                "coalesce((SELECT sequence FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND sequence<=?4 ORDER BY sequence DESC LIMIT 1),?4)"
+            } else {
+                "?4"
+            };
+            let last = if packed { "last_sequence" } else { "sequence" };
+            let direction = if descending { "DESC" } else { "ASC" };
+            let sql = format!(
+                "SELECT sequence,{last} FROM timeline_events INDEXED BY timeline_events_by_kind WHERE session_id=?1 AND branch_id=?2 AND kind=?3 AND sequence BETWEEN {lower} AND ?5 ORDER BY sequence {direction} LIMIT ?6"
+            );
+            let parameters = vec![
+                scope.key.session_id.clone().into(),
+                segment.branch_id.clone().into(),
+                SqlValue::Text(kind.into()),
+                (low as i64).into(),
+                (high as i64).into(),
+                (limit as i64).into(),
+            ];
+            let mut statement = connection.prepare_cached(&sql).map_err(error)?;
+            #[cfg(feature = "testing")]
+            for status in [
+                rusqlite::StatementStatus::VmStep,
+                rusqlite::StatementStatus::FullscanStep,
+                rusqlite::StatementStatus::Sort,
+                rusqlite::StatementStatus::AutoIndex,
+            ] {
+                statement.reset_status(status);
+            }
+            let mut rows = statement
+                .query(params_from_iter(&parameters))
+                .map_err(error)?;
+            let mut remaining = limit;
+            while remaining > 0 {
+                let Some(row) = rows.next().map_err(error)? else {
+                    break;
+                };
+                let start = (row.get::<_, i64>(0).map_err(error)? as u64).max(low);
+                let end = (row.get::<_, i64>(1).map_err(error)? as u64).min(high);
+                if start > end {
+                    continue;
+                }
+                let count = remaining.min(end - start + 1);
+                if descending {
+                    positions.extend(end - count + 1..=end);
+                } else {
+                    positions.extend(start..start + count);
+                }
+                remaining -= count;
+            }
+            drop(rows);
+            #[cfg(feature = "testing")]
+            record_statement(
+                statistics,
+                connection,
+                &statement,
+                &sql,
+                &parameters,
+                "kind_positions",
+            )?;
+        }
+    }
+    let mut positions: Vec<_> = positions.into_iter().collect();
+    if descending {
+        positions.reverse();
+    }
+    let more = positions.len() as u64 > page.limit.get();
+    positions.truncate(usize::try_from(page.limit.get()).unwrap_or(usize::MAX));
+    let next = if more {
+        positions.last().map(|sequence| QueryCursor {
+            binding,
+            keys: keys
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .flat_map(|_| {
+                    [
+                        QueryValue::Value { value: 0.into() },
+                        QueryValue::Value {
+                            value: (*sequence).into(),
+                        },
+                    ]
+                })
+                .collect(),
+        })
+    } else {
+        None
+    };
+    let positions: Vec<_> = positions
+        .into_iter()
+        .map(|sequence| (0, sequence))
+        .collect();
+    let fields: Vec<_> = fields.iter().map(String::as_str).collect();
+    let rows = selected_properties(
+        connection,
+        scope,
+        &positions,
+        &fields,
+        false,
+        #[cfg(feature = "testing")]
+        statistics,
+    )?
+    .into_iter()
+    .map(|values| QueryRow {
+        group: Vec::new(),
+        values,
+    })
+    .collect();
+    Ok(Some(QueryResult {
+        result: QueryOutput::Rows { rows },
+        next,
+    }))
+}
+
+#[cfg_attr(feature = "testing", allow(clippy::too_many_arguments))]
 fn position_events(
     connection: &Connection,
     scope: &TimelineReadScope,
@@ -2724,6 +2926,17 @@ pub(super) fn execute(
         if segment.stored_through.min(segment.through) > stored as u64 {
             return Err(error("property read exceeds stored history"));
         }
+    }
+    if let Some(result) = kind_positions(
+        connection,
+        scope,
+        query,
+        page,
+        cancel,
+        #[cfg(feature = "testing")]
+        statistics,
+    )? {
+        return Ok(result);
     }
     if let Some(result) = position_events(
         connection,
