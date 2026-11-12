@@ -7410,6 +7410,10 @@
       "to": "dim_acp::rpc",
       "references": [
         "path Native",
+        "path Native::Closed",
+        "path Native::Lost",
+        "path Native::Notice",
+        "path Native::Restored",
         "path Rpc",
         "path rpc",
         "path rpc::unavailable",
