@@ -740,15 +740,14 @@ impl Worker {
             model: ModelId,
             model_preferences: Option<dim_agent_types::ModelPreferences>,
         }
-        let mut params = session_create_from_options(&mut self.client, &self.options).await?;
-        params
-            .as_object_mut()
-            .expect("creation parameters")
-            .remove("permissionPolicy");
-        let preview: Preview = tokio::time::timeout(
-            Duration::from_secs(5),
-            self.client.typed("session.model.preview", params),
-        )
+        let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut params = session_create_from_options(&mut self.client, &self.options).await?;
+            params
+                .as_object_mut()
+                .expect("creation parameters")
+                .remove("permissionPolicy");
+            self.client.typed("session.model.preview", params).await
+        })
         .await??;
         self.send(Update::Ready(Configuration {
             provider_id: preview.model.provider_id,

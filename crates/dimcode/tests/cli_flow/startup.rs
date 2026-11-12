@@ -122,17 +122,28 @@ fn first_shell_command_creates_once_without_submitting_a_model_turn() {
 #[test]
 fn home_previews_the_model_without_creating_a_session_and_survives_preview_errors() {
     for fullscreen in [false, true] {
-        for unavailable in [false, true] {
+        for outcome in [
+            "ready",
+            "rejected",
+            "preview-timeout",
+            "preferences-timeout",
+        ] {
             let home = Home::new();
             let daemon = home.daemon(move |wire| {
-                wire.hello(&["session.model.preview"]);
-                let preview = wire.read("session.model.preview");
-                assert!(preview["params"].get("model").is_none());
-                assert!(preview["params"].get("permissionPolicy").is_none());
-                if unavailable {
-                    reject(wire, &preview);
+                if outcome == "preferences-timeout" {
+                    wire.hello(&["session.model.preview", "provider.management"]);
+                    let preferences = wire.read("provider.management");
+                    assert_eq!(preferences["params"], json!({"providerId":"configured-provider"}));
                 } else {
-                    wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
+                    wire.hello(&["session.model.preview"]);
+                    let preview = wire.read("session.model.preview");
+                    assert!(preview["params"].get("model").is_none());
+                    assert!(preview["params"].get("permissionPolicy").is_none());
+                    if outcome == "rejected" {
+                        reject(wire, &preview);
+                    } else if outcome == "ready" {
+                        wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
+                    }
                 }
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
@@ -140,16 +151,24 @@ fn home_previews_the_model_without_creating_a_session_and_survives_preview_error
             });
             let mut command = command(&home);
             command.args(["--permission", "read-only"]);
+            if outcome == "preferences-timeout" {
+                command.args([
+                    "--provider",
+                    "configured-provider",
+                    "--model",
+                    "configured-model",
+                ]);
+            }
             if fullscreen {
                 command.arg("--fullscreen");
             }
             let mut terminal = Terminal::launch_tui(command);
-            terminal.until(if unavailable {
-                "Cannot preview startup model"
-            } else {
+            terminal.until(if outcome == "ready" {
                 "preview-provider / preview-model"
+            } else {
+                "Cannot preview startup model"
             });
-            if !unavailable {
+            if outcome == "ready" {
                 terminal.until("high");
             }
             terminal.write(b"/permissions\r");

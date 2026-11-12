@@ -1047,6 +1047,7 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
         json!({"model":{}}),
         json!({"startup":{}}),
         json!({"modelPreferences":{}}),
+        json!({"modelPreferences":{"reasoningEffort":"high"}}),
     ] {
         let mut params = json!({"cwd":home,"modelFromSession":sid});
         params
@@ -1054,7 +1055,11 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         let rejected = client.rpc("session.create", params).await;
-        assert!(rejected.get("error").is_some(), "{rejected}");
+        assert_eq!(
+            rejected["error"]["message"],
+            "modelFromSession cannot be combined with model, startup or modelPreferences",
+            "{rejected}"
+        );
     }
     let rejected = remote
         .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))

@@ -93,7 +93,7 @@ root.plugin(DaemonLink{options})
   ── DaemonLink Active
   Tui: raw mode, Home (no Session and no UI registration)
     --resume ID: attach the requested Session immediately
-    otherwise: wait for the first user message or shell command
+    otherwise: read the startup model preview, then wait for the first user message or shell command
       Home settings, model selection, /web, exit: no Session creation
       first message or shell command: session.create {cwd, permissionPolicy, model?, startup?}
   session.attach
@@ -403,7 +403,9 @@ counted viewers.
 whether a usable model is configured or not. `/connect`, `/login`, `/models`,
 settings and `/web` remain available without a Session. Home reads the
 [startup model preview](../model-configuration.md#model-preview-before-creation)
-for its model label; a failed preview is a notice, not a failed TUI startup.
+for its model label. A five-second deadline covers parameter preparation,
+including saved model preferences, and the preview request. Failure or timeout
+shows `Cannot preview startup model: …` and leaves Home available.
 Only submitting the first message or shell command creates one, using the launch
 options unless the user selected a model at Home. Shell commands follow the
 [CLI shell contract](../cli-commands.md).
