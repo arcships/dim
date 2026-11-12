@@ -375,7 +375,7 @@ fn project(
         .filter(|item| item.call().parent.is_some())
         .collect();
     let sections = ordered_sections(&roots);
-    let mut header = header_spans(&roots, &sections, interactive);
+    let mut header = header_spans(&roots, &sections);
     if let Some(first) = header.first_mut() {
         first.text = capitalize(&first.text);
     }
@@ -663,7 +663,7 @@ fn append_interactive(
                             }
                         }
                     } else if matches!(item, Item::Program { .. }) {
-                        header.spans = phrase(PhraseKey::Program, &[item], true);
+                        header.spans = phrase(PhraseKey::Program, &[item]);
                         if children > 0 {
                             header.spans.push(span(
                                 format!(" · {}", counted(children, TOOL_CALL)),
@@ -770,7 +770,7 @@ fn append_interactive(
 fn append_summary(lines: &mut Vec<Line>, item: &Item<'_>) {
     let call = item.call();
     let mut spans = match item {
-        Item::Edit { .. } => edit_header(&[item], false),
+        Item::Edit { .. } => edit_header(&[item]),
         _ => {
             let detail = if let Item::Agent { detail, .. } = item {
                 detail.clone()
@@ -965,11 +965,11 @@ fn explore_command(
     }
 }
 
-fn header_spans(items: &[&Item<'_>], sections: &[Section], recorded: bool) -> Vec<Span> {
+fn header_spans(items: &[&Item<'_>], sections: &[Section]) -> Vec<Span> {
     if let [section] = sections {
         return match section {
             Section::Explore => explore_header(items),
-            _ => phrase(phrase_key(items[0]), items, recorded),
+            _ => phrase(phrase_key(items[0]), items),
         };
     }
     let mut keys: Vec<PhraseKey> = Vec::new();
@@ -989,7 +989,7 @@ fn header_spans(items: &[&Item<'_>], sections: &[Section], recorded: bool) -> Ve
             .copied()
             .filter(|item| phrase_key(item) == key)
             .collect();
-        spans.extend(phrase(key, &members, recorded));
+        spans.extend(phrase(key, &members));
     }
     spans
 }
@@ -1030,7 +1030,7 @@ fn running(members: &[&Item<'_>]) -> bool {
 }
 
 /// `ran 2 commands`: the verb in the progressive while any member runs.
-fn phrase(key: PhraseKey, members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
+fn phrase(key: PhraseKey, members: &[&Item<'_>]) -> Vec<Span> {
     let verb = |past: &'static str, progressive: &'static str| {
         t(if running(members) { progressive } else { past })
     };
@@ -1069,7 +1069,7 @@ fn phrase(key: PhraseKey, members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
             format!("{verb} {items}")
         }
         PhraseKey::Command => format!("{} {}", verb("ran", "running"), counted(n, COMMAND)),
-        PhraseKey::Edit => return edit_header(members, recorded),
+        PhraseKey::Edit => return edit_header(members),
         PhraseKey::Check => format!("{} {}", verb("checked on", "checking on"), counted(n, TASK)),
         PhraseKey::Agent => {
             let rejected = members.iter().filter(|item| item.rejected()).count();
@@ -1126,7 +1126,7 @@ fn explore_header(members: &[&Item<'_>]) -> Vec<Span> {
 }
 
 /// File paths and total line changes, using `changed` when a write is among them.
-fn edit_header(members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
+fn edit_header(members: &[&Item<'_>]) -> Vec<Span> {
     let verb = match (all_edits(members), running(members)) {
         (true, false) => "edited",
         (true, true) => "editing",
@@ -1135,17 +1135,10 @@ fn edit_header(members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
     };
     let (mut added, mut removed) = (0, 0);
     for item in members {
-        if let Item::Edit { call, write } = item
-            && call.state != State::Failed
+        if let Item::Edit { call, .. } = item
+            && call.state == State::Done
         {
-            let diff = if recorded {
-                call.diff
-                    .filter(|_| call.state == State::Done)
-                    .map(read_diff_lines)
-                    .unwrap_or_default()
-            } else {
-                edit_lines(call, *write)
-            };
+            let diff = call.diff.map(read_diff_lines).unwrap_or_default();
             let (a, r) = diff_counts(&diff);
             added += a;
             removed += r;
@@ -1166,10 +1159,9 @@ fn edit_header(members: &[&Item<'_>], recorded: bool) -> Vec<Span> {
     }
     let summary = format_counts(added, removed);
     if !summary.is_empty()
-        && (!recorded
-            || members
-                .iter()
-                .all(|item| item.call().state != State::Done || item.call().diff.is_some()))
+        && members
+            .iter()
+            .all(|item| item.call().state != State::Done || item.call().diff.is_some())
     {
         spans.push(span(" (", Tone::Muted));
         spans.push(span(summary, Tone::Text));
@@ -1476,17 +1468,26 @@ fn append_command(lines: &mut Vec<Line>, call: &Call<'_>, command: &str) {
 }
 
 fn append_edit(lines: &mut Vec<Line>, call: &Call<'_>, write: bool, single: bool) {
-    let diff = if call.state == State::Failed {
-        Vec::new()
-    } else {
-        edit_lines(call, write)
-    };
+    let diff = call
+        .diff
+        .filter(|_| call.state == State::Done)
+        .map(read_diff_lines)
+        .unwrap_or_default();
     let (added, removed) = diff_counts(&diff);
-    let label = match (write, removed) {
-        (true, 0) => "Create",
-        (true, _) => "Write",
-        _ if single && call.state == State::Done => "Edited",
-        _ => "Edit",
+    let label = if write {
+        if call.state == State::Done
+            && call
+                .diff
+                .is_some_and(|diff| diff.starts_with("--- /dev/null\n"))
+        {
+            "Create"
+        } else {
+            "Write"
+        }
+    } else if single && call.state == State::Done {
+        "Edited"
+    } else {
+        "Edit"
     };
     let mut spans = vec![
         span(format!("{} ", t(label)), Tone::Text),
@@ -1502,7 +1503,25 @@ fn append_edit(lines: &mut Vec<Line>, call: &Call<'_>, write: bool, single: bool
     match call.state {
         State::Failed => append_error(lines, call, 4),
         State::Running => {}
-        State::Done => append_diff(lines, &diff, false),
+        State::Done => {
+            if call.diff.is_none() {
+                lines.push(body_line(
+                    4,
+                    t("Before/after comparison is unavailable for this record."),
+                    Tone::Muted,
+                    Overflow::Wrap,
+                ));
+            } else if diff.is_empty() {
+                lines.push(body_line(
+                    4,
+                    t("No content changes."),
+                    Tone::Muted,
+                    Overflow::Wrap,
+                ));
+            } else {
+                append_diff(lines, &diff, false);
+            }
+        }
     }
 }
 
@@ -1670,55 +1689,6 @@ fn append_diff(lines: &mut Vec<Line>, diff: &[DiffLine], compare: bool) {
             Overflow::Truncate,
         ));
     }
-}
-
-/// The real diff carries file line numbers and context. Without it — a call
-/// that has not finished — the change is rebuilt from the input with no
-/// numbers rather than numbers the file does not have.
-fn edit_lines(call: &Call<'_>, write: bool) -> Vec<DiffLine> {
-    if write {
-        let Some(content) = call.string("content") else {
-            return Vec::new();
-        };
-        let content = normalize(content);
-        let body = content.strip_suffix('\n').unwrap_or(&content);
-        return std::iter::once(DiffLine::Gap(0))
-            .chain(
-                body.split('\n')
-                    .enumerate()
-                    .map(|(index, text)| DiffLine::Line {
-                        marker: '+',
-                        old: 0,
-                        new: index + 1,
-                        text: text.to_owned(),
-                    }),
-            )
-            .collect();
-    }
-    if let Some(diff) = call.diff.filter(|d| !d.is_empty()) {
-        return read_diff_lines(diff);
-    }
-    let changed: Vec<String> = prefix_lines(call.string("oldText"), '-')
-        .chain(prefix_lines(call.string("newText"), '+'))
-        .collect();
-    if changed.is_empty() {
-        return Vec::new();
-    }
-    let removed = changed.iter().filter(|l| l.starts_with('-')).count();
-    let added = changed.len() - removed;
-    let fallback = format!("@@ -1,{removed} +1,{added} @@\n{}", changed.join("\n"));
-    read_diff_lines(&fallback)
-        .into_iter()
-        .map(|line| match line {
-            DiffLine::Line { marker, text, .. } => DiffLine::Line {
-                marker,
-                old: 0,
-                new: 0,
-                text,
-            },
-            gap => gap,
-        })
-        .collect()
 }
 
 /// Every hunk line, context included, each behind its file line number; a gap
@@ -2010,17 +1980,6 @@ fn grep_matches(result: Option<&str>) -> impl Iterator<Item = &str> {
         .split('\n')
         .filter(|line| line.starts_with("  ") && !line.trim().is_empty())
         .map(str::trim)
-}
-
-fn prefix_lines(value: Option<&str>, prefix: char) -> impl Iterator<Item = String> {
-    let lines: Vec<String> = match value {
-        Some(value) => normalize(value)
-            .split('\n')
-            .map(|line| format!("{prefix}{line}"))
-            .collect(),
-        None => Vec::new(),
-    };
-    lines.into_iter()
 }
 
 /// First string among the well-known input keys, else the first string
