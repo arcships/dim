@@ -968,7 +968,7 @@ impl Connection {
                 rpc.control.shutdown().cancel();
                 return None;
             }
-            Call::Create(params) => self.create(rpc, params).await,
+            Call::Create(params) => self.create(rpc, *params).await,
             Call::CatalogCancel(params) => {
                 if let Some(Some(cancel)) = self
                     .ids
@@ -1745,7 +1745,7 @@ impl Connection {
                                 })
                         })
                         .or_else(|| host.profile.model.clone()),
-                    Some(cwd.into()),
+                    Some(cwd.clone().into()),
                     preferences,
                 )
                 .await?;
@@ -1793,11 +1793,51 @@ impl Connection {
                 ));
             }
         };
-        let session = rpc
+        let managed = rpc.ctx.get::<crate::worktrees::ManagedWorktrees>();
+        let worktree = match (params.worktree, &managed) {
+            (Some(request), Some(managed)) => Some(
+                managed
+                    .create(
+                        std::path::Path::new(&cwd),
+                        request.base.as_deref(),
+                        request.branch.as_deref(),
+                        &self.closed,
+                    )
+                    .await
+                    .map_err(|error| error.rpc())?,
+            ),
+            (Some(_), None) => {
+                return Err(RpcError::app(
+                    -32000,
+                    "worktree_unavailable",
+                    "This daemon has no managed worktree root",
+                ));
+            }
+            (None, _) => None,
+        };
+        if let Some(created) = &worktree {
+            config.cwd = created.prepared.subtree.to_string_lossy().into_owned();
+        }
+        let session = match rpc
             .index
-            .create_session(&host, config, self.protocol_version(), None, origin)
+            .create_session(
+                &host,
+                config,
+                self.protocol_version(),
+                None,
+                origin,
+                worktree.as_ref().map(|created| created.prepared.clone()),
+            )
             .await
-            .map_err(RpcError::from)?;
+        {
+            Ok(session) => session,
+            Err(error) => {
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
+                return Err(RpcError::from(error));
+            }
+        };
         if startup_admission.is_some() || source.is_some() {
             let retained = rpc
                 .ctx
@@ -1813,6 +1853,9 @@ impl Connection {
                     .delete(session.id())
                     .await
                     .map_err(RpcError::from)?;
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
                 return Err(error);
             }
         }
@@ -1828,6 +1871,7 @@ impl Connection {
                 session.config().model.metadata.as_ref(),
             ),
             sequence: session.sequence("main").map_err(RpcError::from)?,
+            worktree: worktree.as_ref().map(|created| created.reply()),
         }))
     }
 

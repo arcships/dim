@@ -410,6 +410,7 @@ impl AgentIndex {
                     PROTOCOL_VERSION,
                     None,
                     SessionOrigin::Internal,
+                    None,
                 )
                 .await?;
             index.retain_versions();

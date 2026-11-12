@@ -9,6 +9,19 @@ use serde::Deserialize;
 pub struct Created {
     pub session_id: String,
     pub model: dim_agent_types::ModelId,
+    /// The managed worktree this creation made, when the request asked for
+    /// one (#1451); a daemon without `session.create.worktree` sends none.
+    #[serde(default)]
+    pub worktree: Option<CreatedWorktree>,
+}
+
+/// The managed worktree a creation made: the task id and its directory
+/// under the product home, from the `worktree` member of the reply.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedWorktree {
+    pub task_id: String,
+    pub root: String,
 }
 
 #[derive(Deserialize)]

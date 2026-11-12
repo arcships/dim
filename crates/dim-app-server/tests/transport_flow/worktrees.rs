@@ -251,10 +251,14 @@ async fn ordinary_exec_worktrees_admit_files_and_share_current_branch_policy() {
         repository: work.repo.join(".git"),
         root: tree.clone(),
     };
-    assert_eq!(
-        store.worktree_directories().await.unwrap(),
-        std::slice::from_ref(&directory)
-    );
+    let directories: Vec<_> = store
+        .worktree_directories()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.directory)
+        .collect();
+    assert_eq!(directories, std::slice::from_ref(&directory));
     assert_eq!(
         store
             .worktree_usages(directory.clone())
@@ -635,6 +639,82 @@ async fn invalid_git_metadata_cannot_block_discovery_or_publish_a_root() {
         verdict(&session, &tree.join("retry.txt"), true).await,
         Decision::Allow
     );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// `session.create {worktree}` records the managed directory in the Session's
+/// own transaction, `worktree.list` joins it with the association, a removal
+/// refuses while the Session exists, and after `session.delete` the removal
+/// deletes both the Git worktree and the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_worktree_creation_is_recorded_listed_and_removed() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("session.create", json!({"cwd": work.repo, "worktree": {}}))
+        .await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let task_id = created["result"]["worktree"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
+    let cwd = PathBuf::from(created["result"]["worktree"]["cwd"].as_str().unwrap());
+    assert!(root.starts_with(work.home.join("worktrees")));
+    assert_eq!(cwd, root);
+    assert!(cwd.join("packages/a").is_dir());
+
+    let listed = client.rpc("worktree.list", json!({})).await;
+    assert_ok(&listed);
+    let entries = listed["result"]["worktrees"].as_array().unwrap();
+    assert!(
+        entries.iter().any(|entry| {
+            entry["taskId"] == json!(task_id) && entry["sessions"] == json!([session_id])
+        }),
+        "{listed}"
+    );
+
+    let refused = client
+        .rpc("worktree.remove", json!({"taskId": task_id}))
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"],
+        json!("worktree_in_use")
+    );
+
+    assert_ok(
+        &client
+            .rpc("session.delete", json!({"sessionId": session_id}))
+            .await,
+    );
+    let removed = client
+        .rpc("worktree.remove", json!({"taskId": task_id}))
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"]["removed"], json!(true));
+    assert!(!root.exists());
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A home that never created a worktree has no root directory; listing and
+/// pruning there answer an empty set instead of a storage failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_worktree_listing_and_pruning_on_a_fresh_home_are_empty() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let listed = client.rpc("worktree.list", json!({})).await;
+    assert_ok(&listed);
+    assert_eq!(listed["result"]["worktrees"], json!([]));
+    let pruned = client
+        .rpc("worktree.prune", json!({"keep": 1, "apply": false}))
+        .await;
+    assert_ok(&pruned);
+    assert_eq!(pruned["result"]["candidates"], json!([]));
     server.shutdown();
     server.join().await.unwrap();
 }

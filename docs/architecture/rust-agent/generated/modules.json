@@ -3701,6 +3701,19 @@
       ]
     },
     {
+      "id": "dim_app_server::worktrees",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server",
+      "file": "crates/dim-app-server/src/worktrees.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "tokio::select",
+        "unreachable",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_cli",
       "crate": "dim_cli",
       "parent": null,
@@ -3755,6 +3768,18 @@
     },
     {
       "id": "dim_cli::args::workspace_tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::args",
+      "file": "crates/dim-cli/src/args.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "panic",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::args::worktree_tests",
       "crate": "dim_cli",
       "parent": "dim_cli::args",
       "file": "crates/dim-cli/src/args.rs",
@@ -6546,6 +6571,30 @@
       "file": "crates/dim-cli/src/wire.rs",
       "unexpandedMacros": [
         "matches"
+      ]
+    },
+    {
+      "id": "dim_cli::worktree_command",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/worktree_command.rs",
+      "unexpandedMacros": [
+        "eprint",
+        "eprintln",
+        "format",
+        "json",
+        "matches",
+        "println"
+      ]
+    },
+    {
+      "id": "dim_cli::worktree_command::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::worktree_command",
+      "file": "crates/dim-cli/src/worktree_command.rs",
+      "unexpandedMacros": [
+        "assert_eq",
+        "vec"
       ]
     },
     {
@@ -22626,6 +22675,15 @@
       ]
     },
     {
+      "from": "dim_app_server",
+      "to": "dim_app_server::worktrees",
+      "references": [
+        "mod worktrees",
+        "path worktrees::ManagedWorktrees",
+        "path worktrees::ManagedWorktreesPlugin::new"
+      ]
+    },
+    {
       "from": "dim_app_server::@bin:dim-app-server",
       "to": "dim_app_server::cli",
       "references": [
@@ -22950,7 +23008,9 @@
       "from": "dim_app_server::agents",
       "to": "dim_app_server::storage::timeline",
       "references": [
+        "path PreparedWorktree",
         "path SessionStore",
+        "use crate::storage::PreparedWorktree",
         "use crate::storage::SessionStore"
       ]
     },
@@ -25218,6 +25278,13 @@
       "references": [
         "path crate::web_entry::WebEntry",
         "path crate::web_entry::WebEntry::new"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection",
+      "to": "dim_app_server::worktrees",
+      "references": [
+        "path crate::worktrees::ManagedWorktrees"
       ]
     },
     {
@@ -28786,6 +28853,13 @@
       ]
     },
     {
+      "from": "dim_app_server::protocol",
+      "to": "dim_app_server::worktrees",
+      "references": [
+        "path crate::worktrees::CreatedWorktreeReply"
+      ]
+    },
+    {
       "from": "dim_app_server::provider",
       "to": "dim_agent_capabilities::auxiliary_model",
       "references": [
@@ -31079,10 +31153,12 @@
       "to": "dim_app_server::storage::timeline",
       "references": [
         "mod timeline",
+        "use timeline::PreparedWorktree",
         "use timeline::SessionStore",
         "use timeline::SessionStorePlugin",
         "use timeline::SqliteTimelineStore",
         "use timeline::TurnWindow",
+        "use timeline::WorktreeDirectoryRecord",
         "use timeline::WorktreeUsage"
       ]
     },
@@ -33209,6 +33285,77 @@
       ]
     },
     {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_agent_capabilities::file_access",
+      "references": [
+        "path WorktreeDirectory",
+        "use crate::storage::WorktreeDirectory"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_agent_capabilities::methods",
+      "references": [
+        "path MethodCall",
+        "path RpcError",
+        "path RpcError::app",
+        "path RpcError::invalid",
+        "path params",
+        "path reply",
+        "use dim_agent_capabilities::methods::Interruption",
+        "use dim_agent_capabilities::methods::MethodCall",
+        "use dim_agent_capabilities::methods::MethodDecl",
+        "use dim_agent_capabilities::methods::RpcError",
+        "use dim_agent_capabilities::methods::params",
+        "use dim_agent_capabilities::methods::reply"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path dim_agent_runtime::core::unix_millis"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path AgentError",
+        "path AgentError::InvalidInput",
+        "path AgentError::Storage",
+        "use dim_agent_runtime::AgentError"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_app_server::methods",
+      "references": [
+        "path ManagementMethods",
+        "use crate::methods::ManagementMethods"
+      ]
+    },
+    {
+      "from": "dim_app_server::worktrees",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path PreparedWorktree",
+        "path SessionStore",
+        "path WorktreeDirectoryRecord",
+        "use crate::storage::PreparedWorktree",
+        "use crate::storage::SessionStore",
+        "use crate::storage::WorktreeDirectoryRecord"
+      ]
+    },
+    {
       "from": "dim_cli",
       "to": "dim_acp",
       "references": [
@@ -33269,6 +33416,7 @@
         "path Action::Version",
         "path Action::Web",
         "path Action::WebInstall",
+        "path Action::Worktree",
         "path Options",
         "path Options::parse",
         "path args",
@@ -33696,6 +33844,14 @@
     },
     {
       "from": "dim_cli",
+      "to": "dim_cli::worktree_command",
+      "references": [
+        "mod worktree_command",
+        "path worktree_command::run"
+      ]
+    },
+    {
+      "from": "dim_cli",
       "to": "dim_client",
       "references": [
         "path client::Client"
@@ -33743,6 +33899,13 @@
       "to": "dim_cli::args::workspace_tests",
       "references": [
         "mod workspace_tests"
+      ]
+    },
+    {
+      "from": "dim_cli::args",
+      "to": "dim_cli::args::worktree_tests",
+      "references": [
+        "mod worktree_tests"
       ]
     },
     {
@@ -33839,6 +34002,17 @@
       ]
     },
     {
+      "from": "dim_cli::args",
+      "to": "dim_cli::worktree_command",
+      "references": [
+        "path crate::worktree_command::Command",
+        "path crate::worktree_command::Command::Prune",
+        "path crate::worktree_command::Command::Remove",
+        "path crate::worktree_command::SELECTOR_USAGE",
+        "path crate::worktree_command::USAGE"
+      ]
+    },
+    {
       "from": "dim_cli::args::prompt_tests",
       "to": "dim_cli::args",
       "references": [
@@ -33861,6 +34035,31 @@
         "path Action::Realtime",
         "path Options::parse",
         "path Workspace::resolve"
+      ]
+    },
+    {
+      "from": "dim_cli::args::worktree_tests",
+      "to": "dim_cli",
+      "references": [
+        "path Result"
+      ]
+    },
+    {
+      "from": "dim_cli::args::worktree_tests",
+      "to": "dim_cli::args",
+      "references": [
+        "path Action::Worktree",
+        "path Options",
+        "path Options::parse"
+      ]
+    },
+    {
+      "from": "dim_cli::args::worktree_tests",
+      "to": "dim_cli::worktree_command",
+      "references": [
+        "path crate::worktree_command::Command",
+        "path crate::worktree_command::Command::Prune",
+        "path crate::worktree_command::Command::Remove"
       ]
     },
     {
@@ -37942,6 +38141,7 @@
       "references": [
         "path crate::Error",
         "path crate::Result",
+        "path crate::add_creation_worktree",
         "path crate::limits_undeclared",
         "path crate::model_adoption_error",
         "path crate::plugin_error",
@@ -47406,6 +47606,52 @@
       ]
     },
     {
+      "from": "dim_cli::worktree_command",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::worktree_command",
+      "to": "dim_cli::sanitize",
+      "references": [
+        "path safe_line",
+        "use crate::sanitize::safe_line"
+      ]
+    },
+    {
+      "from": "dim_cli::worktree_command",
+      "to": "dim_cli::ui::sessions_panel",
+      "references": [
+        "path relative_time",
+        "use crate::ui::sessions_panel::relative_time"
+      ]
+    },
+    {
+      "from": "dim_cli::worktree_command",
+      "to": "dim_cli::worktree_command::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::worktree_command",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::worktree_command::tests",
+      "to": "dim_cli::worktree_command",
+      "references": [
+        "path Worktree"
+      ]
+    },
+    {
       "from": "dim_client",
       "to": "dim_client::callback",
       "references": [
@@ -51859,6 +52105,14 @@
     {
       "module": "dim_cli::args",
       "path": "Command::List"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::Prune"
+    },
+    {
+      "module": "dim_cli::args",
+      "path": "Command::Remove"
     },
     {
       "module": "dim_cli::args",

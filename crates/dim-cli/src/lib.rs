@@ -43,6 +43,7 @@ mod usage;
 mod version;
 mod web_install;
 mod wire;
+mod worktree_command;
 
 use args::{Action, Options};
 use rutis::host::CtxHost;
@@ -344,6 +345,7 @@ pub(crate) async fn session_create_from_options(
 ) -> Result<serde_json::Value> {
     let mut params = session_create_params(options);
     options.creation_startup(&mut params);
+    add_creation_worktree(client, options, &mut params)?;
     let saved = if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
         session_host::saved_model_preferences(client, provider, model).await?
     } else {
@@ -353,6 +355,29 @@ pub(crate) async fn session_create_from_options(
         params["modelPreferences"] = preferences;
     }
     Ok(params)
+}
+
+/// The daemon a `--worktree` creation needs: one without
+/// `session.create.worktree` refuses the member as an unknown field.
+const WORKTREE_UNSUPPORTED: &str = "This daemon cannot create a Session in a managed worktree; upgrade it or start the Session without --worktree";
+
+/// Adds the `worktree` member `--worktree` asks for. It is sent only when the
+/// request asks for one, and only to a daemon whose `hello.features` names
+/// `session.create.worktree`, because an older daemon rejects it as an
+/// unknown field (#1451).
+pub(crate) fn add_creation_worktree(
+    client: &client::Client,
+    options: &Options,
+    params: &mut serde_json::Value,
+) -> Result<()> {
+    let Some(worktree) = options.creation_worktree() else {
+        return Ok(());
+    };
+    if !client.offers("session.create.worktree") {
+        return Err(WORKTREE_UNSUPPORTED.into());
+    }
+    params["worktree"] = worktree;
+    Ok(())
 }
 
 /// The failure of adopting `target` into a Session. When the target's
@@ -912,6 +937,9 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         Action::Chat | Action::Tui | Action::Exec => {
             let blocks = images.images.iter().map(|image| image.block()).collect();
             session::chat(&mut client, &options, blocks, images.notes).await
+        }
+        Action::Worktree(command) => {
+            worktree_command::run(&mut client, command, options.json).await
         }
         Action::Acp { .. }
         | Action::Migration(_)

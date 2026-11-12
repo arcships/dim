@@ -1,5 +1,5 @@
 use super::*;
-use dim_app_server::storage::{SessionStore, WorktreeDirectory, WorktreeUsage};
+use dim_app_server::storage::{PreparedWorktree, SessionStore, WorktreeDirectory, WorktreeUsage};
 
 #[tokio::test]
 async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_sessions() {
@@ -59,10 +59,14 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
             subtree: worktree.root.join("packages/a"),
         },
     ];
-    assert_eq!(
-        sessions.worktree_directories().await.unwrap(),
-        std::slice::from_ref(&worktree)
-    );
+    let directories: Vec<_> = sessions
+        .worktree_directories()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.directory)
+        .collect();
+    assert_eq!(directories, std::slice::from_ref(&worktree));
     assert_eq!(
         sessions.worktree_usages(worktree.clone()).await.unwrap(),
         expected
@@ -92,7 +96,14 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
             .unwrap()
             .is_empty()
     );
-    assert_eq!(sessions.worktree_directories().await.unwrap(), [worktree]);
+    let directories: Vec<_> = sessions
+        .worktree_directories()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.directory)
+        .collect();
+    assert_eq!(directories, [worktree]);
     assert_eq!(
         std::fs::read_to_string(source_file).unwrap(),
         "user content"
@@ -267,7 +278,14 @@ async fn worktree_association_cannot_outlive_delete_or_creation_rollback() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(sessions.worktree_directories().await.unwrap(), [worktree]);
+    let directories: Vec<_> = sessions
+        .worktree_directories()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.directory)
+        .collect();
+    assert_eq!(directories, [worktree]);
     let connection = Connection::open(&database.0).unwrap();
     assert!(
         connection
@@ -354,4 +372,104 @@ async fn a_v32_store_upgrades_without_inventing_worktree_usage() {
     assert!(SqliteStorage::open_read_only(incompatible.0.clone()).is_err());
     assert!(SqliteStorage::open(incompatible.0.clone()).is_err());
     assert_eq!(std::fs::read(&incompatible.0).unwrap(), before);
+}
+
+/// A managed creation writes the directory, its association and the
+/// last-used time in the Session's own transaction; a removal refuses while
+/// the association remains and deletes the record only after the caller's
+/// Git removal succeeded.
+#[tokio::test]
+async fn managed_creation_records_use_and_removal_refuses_an_association() {
+    let database = Database::new();
+    let directory = database.0.parent().unwrap().canonicalize().unwrap();
+    let worktree = WorktreeDirectory {
+        repository: directory.join("repo/.git"),
+        root: directory.join("worktrees/abc234/repo"),
+    };
+    std::fs::create_dir_all(&worktree.root).unwrap();
+    let root = rutis::Ctx::root().unwrap();
+    (&root.plugin(FileStoragePlugin::new(vec![directory.clone()])))
+        .await
+        .unwrap();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    connection
+        .execute(
+            "INSERT INTO agents(agent_id, profile, is_default) VALUES ('agent', ?1, 1)",
+            [r#"{"name":"agent","description":"","systemPrompt":"","tools":[]}"#],
+        )
+        .unwrap();
+    drop(connection);
+    let sessions = SessionStore::new(db.clone(), root.clone(), 0);
+    sessions
+        .create_owned_session(
+            "managed",
+            &SessionConfig::default(),
+            "agent",
+            3,
+            None,
+            SessionOrigin::Client,
+            Some(PreparedWorktree {
+                directory: worktree.clone(),
+                subtree: worktree.root.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    let records = sessions.worktree_directories().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].directory, worktree);
+    assert!(records[0].last_used_at_ms.is_some());
+    assert_eq!(
+        sessions.worktree_usages(worktree.clone()).await.unwrap(),
+        [WorktreeUsage {
+            session_id: "managed".into(),
+            subtree: worktree.root.clone(),
+        }]
+    );
+
+    let refused = sessions
+        .remove_worktree(worktree.clone(), |_| Box::pin(async { Ok(()) }))
+        .await;
+    assert!(matches!(refused, Err(AgentError::InvalidInput(_))));
+    assert_eq!(
+        sessions.worktree_directories().await.unwrap()[0].directory,
+        worktree
+    );
+
+    assert!(sessions.delete_session("managed").await.unwrap());
+    let records = sessions.worktree_directories().await.unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(
+        records[0].last_used_at_ms >= Some(0),
+        "the delete records the moment the directory became a candidate"
+    );
+
+    // A stored Session whose cwd is under the root is as much a refusal as an
+    // association: a fork copies the configuration without the association.
+    let store = SqliteTimelineStore::new(db.clone());
+    let manual = SessionConfig {
+        cwd: worktree.root.join("manual").to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    store.create_session("manual", &manual).await.unwrap();
+    let refused = sessions
+        .remove_worktree(worktree.clone(), |_| Box::pin(async { Ok(()) }))
+        .await;
+    assert!(
+        matches!(&refused, Err(AgentError::InvalidInput(message)) if message.contains("manual")),
+        "{refused:?}"
+    );
+    assert!(sessions.delete_session("manual").await.unwrap());
+
+    assert!(
+        sessions
+            .remove_worktree(worktree.clone(), |_| Box::pin(async { Ok(()) }))
+            .await
+            .unwrap()
+    );
+    assert!(sessions.worktree_directories().await.unwrap().is_empty());
+    drop(sessions);
+    db.close().await.unwrap();
+    root.shutdown().await.unwrap();
 }

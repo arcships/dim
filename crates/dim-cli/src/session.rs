@@ -242,6 +242,16 @@ pub async fn chat(
                 crate::sanitize::safe(&created.model.model_id)
             );
         }
+        // A script reading `--json` gets the daemon's records alone.
+        if let Some(worktree) = &created.worktree
+            && !display.json
+        {
+            display.record(&format!(
+                "worktree: {}\t{}",
+                crate::sanitize::safe(&worktree.task_id),
+                crate::sanitize::safe(&worktree.root)
+            ))?;
+        }
         created.session_id
     };
     let selected = if let (Some(preset), Some(_)) = (options.permission, &options.resume) {

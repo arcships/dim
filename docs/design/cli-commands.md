@@ -1427,6 +1427,10 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session rename SESSION --clear` | Clear the manual title, so the Session is untitled again. |
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
+| `dimcode worktree list [--json]` | List the managed worktrees under `$DIMCODE_HOME/worktrees` ([managed worktrees](#managed-worktrees)): task id, repository, root, branch and HEAD, owning Sessions, last use, dirty and untracked counts, and whether the directory or its Git registration is gone. |
+| `dimcode worktree remove TASK_ID [--force] [--json]` | Remove one managed worktree whose Sessions are deleted; `--force` overrides only the uncommitted-content check. A root verified missing deletes the record and prunes the Git metadata. |
+| `dimcode worktree prune (--older-than DURATION\|--keep N) [--yes] [--force] [--json]` | Show the unassociated managed worktrees the selector matches with the kept rows and their reasons, then delete them after confirmation. |
+| `--worktree [--worktree-base REF] [--worktree-branch NAME]` | Create one managed worktree for a new `tui` or `exec` Session and start the Session in it ([managed worktrees](#managed-worktrees)). |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
 | `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
@@ -1746,6 +1750,46 @@ message's topic, and the placeholder `New session` counts as no title in both th
 title and the `/resume` row. `/new` returns the window title to `DIM`. The idle line
 client reads the same two forms and prints
 `Use /rename TITLE or /rename --clear` for a bare `/rename`.
+
+### Managed worktrees
+
+`--worktree` on `dimcode tui` and `dimcode exec` creates one worktree for the new Session
+under `$DIMCODE_HOME/worktrees/<task-id>/<repo-name>`: `--worktree-base REF` selects the
+commit (the source workspace's `HEAD` by default) and `--worktree-branch NAME` names a
+new branch. The branch is create-only — an existing one is refused — and without the flag
+it is `dim/<task-id>`. The Session starts in the source workspace's relative subtree of
+the new worktree, so its scope is the same relative directory. The member is sent only
+when `hello.features` carries `session.create.worktree`; the normal output names the task
+id and the root. A failed creation removes the directory and the branch this call made.
+
+`dimcode worktree list` reads Git and the SessionStore records and joins them: each
+recorded directory under the managed root with its owning Sessions, branch and HEAD, last
+use, dirty and untracked counts, or a directory that is missing or no longer registered.
+A directory a failed creation left behind is listed with its task id as unregistered, and
+`prune` never selects it.
+
+`dimcode worktree remove TASK_ID` removes one recorded worktree after its Sessions are
+deleted. A Session association, uncommitted or untracked content (ignored files
+included), or any stored Session's workspace at or under the root refuses it; `--force`
+overrides only the content check. The removal goes through `git worktree remove`, keeps
+the branch, and deletes the record in the same storage operation. An unregistered
+directory is removed by task id only when it has no `.git` entry and is empty, or has no
+`.git` entry and `--force` is given; one with a `.git` entry is never removed.
+
+`dimcode worktree prune` selects recorded directories with no remaining association and
+applies one selector: `--older-than DURATION` reads the directory's last use, and a record
+without one is never selected; `--keep N` keeps the N most recently used candidates.
+Uncommitted content stays in the kept rows unless `--force` is given. The preview lists
+the candidates and the kept rows with their reasons; only `y` or `yes` confirms on a
+terminal, and a script passes `--yes`. Because an association lasts until its Session is
+deleted, cleaning an idle Session's worktree is `session delete` followed by `worktree
+remove`. A candidate the delete refuses keeps its record and prints `Failed TASK_ID:
+reason` on stderr; the other candidates still go, and the run exits 1. `session delete`
+and `session cleanup` never delete a worktree and do not report them.
+
+These are host management methods on the `worktree` namespace: user commands, never agent
+tools, never through Permission approval, and never served to a paired device. The
+design is [managed worktrees](worktree-management.md).
 
 ### Session deletion and cleanup
 
