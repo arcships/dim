@@ -166,7 +166,7 @@ function createReasoningOffOverrideState(overrides) {
     for (const [modelId, modelConfig] of Object.entries(models)) {
       providerModels.set(modelId, validateReasoningOffOverride(providerId, modelId, modelConfig))
     }
-    pending.set(providerId, providerModels)
+    if (Object.hasOwn(remoteProviders, providerId)) pending.set(providerId, providerModels)
   }
   return pending
 }
