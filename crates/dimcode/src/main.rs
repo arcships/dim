@@ -65,19 +65,18 @@ fn main() {
         ));
     }
     if std::env::args().nth(1).as_deref() == Some("app-server") {
-        if let Err(error) = dim_cli::hold_installation() {
-            eprintln!("Error: {error}");
-            std::process::exit(1);
-        }
         let provider = CLIENT_IDS.map(|(cn, global)| {
             dim_oauth::row(dim_oauth::ClientIds {
                 cn: cn.into(),
                 global: global.into(),
             })
         });
-        if let Err(error) =
-            dim_app_server::cli::process_entry(std::env::args().skip(2), provider, install)
-        {
+        if let Err(error) = dim_app_server::cli::process_entry(
+            std::env::args().skip(2),
+            provider,
+            install,
+            dim_cli::hold_installation,
+        ) {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }

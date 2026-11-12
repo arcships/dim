@@ -669,6 +669,74 @@ echo 'Installed package'
         "a live consumer must block the install and the baseline"
     );
     drop(lease);
+    fs::set_permissions(
+        prefix.join(".dimcode-update.lock"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+    let output = Command::new(&executable)
+        .args(["--home", home.0.to_str().unwrap(), "--version"])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "version is answered before any registration: {output:?}"
+    );
+    let output = Command::new(&executable)
+        .args(["--home", home.0.to_str().unwrap(), "daemon", "stop"])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Cannot register with installation"),
+        "an unreadable lock must stop a recognised consumer: {output:?}"
+    );
+    fs::set_permissions(
+        prefix.join(".dimcode-update.lock"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let served = Home::new();
+    let daemon_home = served.0.join("rust");
+    daemon_cleanup::mark_test_server(&served.0);
+    let mut daemon = Command::new(&executable)
+        .arg("app-server")
+        .arg("--unix")
+        .arg(daemon_home.join("daemon.sock"))
+        .args(["--no-ws", "--home"])
+        .arg(&daemon_home)
+        .arg("--product-home")
+        .arg(&served.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let socket = daemon_home.join("daemon.sock");
+    let deadline = Instant::now() + HANG_GUARD;
+    while !socket.exists() {
+        if daemon.try_wait().unwrap().is_some() {
+            let mut stderr = String::new();
+            std::io::Read::read_to_string(daemon.stderr.as_mut().unwrap(), &mut stderr).unwrap();
+            panic!("the packaged App Server exited before it served: {stderr}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the packaged App Server never served"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("in use by a client, server or update"),
+        "a running packaged App Server must block the update: {output:?}"
+    );
+    assert!(!recorded.exists() && !prefix.join(".dimcode-consumers").exists());
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
     let output = refuse(&["--confirm-legacy-exited"]);
     assert!(output.status.success(), "{output:?}");
     assert!(prefix.join(".dimcode-consumers").exists());

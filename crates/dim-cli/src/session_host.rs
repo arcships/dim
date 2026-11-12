@@ -1750,16 +1750,6 @@ impl Worker {
             }
             Command::OauthStart(start) => self.login_start(start).await,
             Command::OauthCancel => self.login_cancel().await,
-            Command::UpgradeInstall(install) => {
-                let updates = self.updates.clone();
-                tokio::spawn(async move {
-                    let version = install.version.clone();
-                    let result =
-                        update::install(install, tokio_util::sync::CancellationToken::new(), false)
-                            .await;
-                    let _ = updates.send(Update::UpgradeInstalled { version, result });
-                });
-            }
             Command::OauthPaste(url) => self.login_complete(url, None).await,
             Command::RefreshAccountModels {
                 provider_id,

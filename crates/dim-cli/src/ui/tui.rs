@@ -174,28 +174,10 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// How the interface ended.
-pub enum Leave {
-    Exit(i32),
-    /// "Restart now" after an update: start the updated CLI on the session.
-    Restart(Restart),
-}
-
-/// What starts the updated CLI where this one leaves off.
-pub struct Restart {
-    pub relaunch: PathBuf,
-    pub session_id: Option<String>,
-    pub fullscreen: bool,
-}
-
-pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> Leave {
-    let mut restart = None;
-    let code = run_terminal(host, surroundings, &mut restart);
+pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
+    let code = run_terminal(host, surroundings);
     history::flush();
-    match restart {
-        Some(restart) => Leave::Restart(restart),
-        None => Leave::Exit(code),
-    }
+    code
 }
 
 /// Where the Web workspace is, as `dimcode web` reports it.
@@ -244,11 +226,7 @@ fn write_notifications(
     Ok(())
 }
 
-fn run_terminal(
-    host: Box<dyn SessionPort>,
-    surroundings: Env,
-    restart: &mut Option<Restart>,
-) -> i32 {
+fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
         Err(TerminalError::NotATerminal) => {
@@ -735,14 +713,6 @@ fn run_terminal(
                     app.host.send(Command::ToggleWeb);
                     dirty = true;
                 }
-                Outcome::Restart(relaunch) => {
-                    *restart = Some(Restart {
-                        relaunch,
-                        session_id: app.session_active().then(|| app.session_id.clone()),
-                        fullscreen: app.fullscreen,
-                    });
-                    break 0;
-                }
             },
         }
     };
@@ -754,11 +724,9 @@ fn run_terminal(
         }
         None => screen.leave(),
     };
-    if restart.is_none() {
-        let resume =
-            (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
-        bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
-    }
+    let resume =
+        (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
+    bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
     let _ = terminal.write(&bytes);
     terminal.leave();
     app.host.shutdown();
@@ -801,8 +769,6 @@ enum Outcome {
     },
     /// `/web`: flip the daemon-owned Web entry switch without leaving.
     Web,
-    /// Start the updated CLI from this path on the session.
-    Restart(PathBuf),
     Exit(i32),
 }
 
@@ -2801,14 +2767,6 @@ impl App {
                 self.upgrade = Some(UpgradeDialog::new(offer));
                 self.reopen_upgrade();
             }
-            Update::UpgradeInstalled { version, result } => {
-                match (&mut self.prompt, &mut self.upgrade) {
-                    (Some(Prompt::Upgrade(dialog)), _) | (_, Some(dialog)) => {
-                        dialog.installed(result)
-                    }
-                    _ => self.notices.push(UpgradeDialog::outcome(&version, &result)),
-                }
-            }
             Update::ApprovalPending {
                 branch_id,
                 request_id,
@@ -3629,19 +3587,6 @@ impl App {
                 }
             }
             Effect::Exit => return Outcome::Exit(130),
-            Effect::Restart { confirmed } => {
-                if let Some(Prompt::Upgrade(dialog)) = self.prompt.take() {
-                    self.upgrade = Some(dialog);
-                }
-                if !confirmed && let Some(reason) = self.busy_reason() {
-                    self.prompt = Some(Prompt::Exit(ExitConfirm::restart(reason)));
-                    return Outcome::Continue;
-                }
-                if let Some(install) = self.upgrade.take().and_then(|dialog| dialog.offer.install) {
-                    return Outcome::Restart(install.relaunch);
-                }
-            }
-            Effect::UpgradeInstall(install) => self.host.send(Command::UpgradeInstall(install)),
             Effect::UpgradeSkip(version) => {
                 self.prompt = None;
                 match crate::update::skip(&self.home, &version) {
@@ -8587,56 +8532,13 @@ mod tests {
                     let offer = crate::update::Offer {
                         current: "0.12.0-alpha.123".into(),
                         version: "0.12.0-alpha.124".into(),
-                        manual: "npm install -g --prefer-online dimcode-alpha@0.12.0-alpha.124"
-                            .into(),
-                        install: Some(crate::update::Install {
-                            version: "0.12.0-alpha.124".into(),
-                            program: "npm".into(),
-                            args: vec![
-                                "install".into(),
-                                "-g".into(),
-                                "dimcode-alpha@0.12.0-alpha.124".into(),
-                            ],
-                            directory: "/installation".into(),
-                            relaunch: "dima".into(),
-                        }),
+                        manual: "dima update".into(),
                     };
                     drawn.app.apply(Update::Upgrade(offer.clone()));
-                    for label in ["Update now", "Skip this version", "Later"] {
-                        assert!(shown(&mut drawn).contains(&format!("› {}", t(label))));
-                        drawn.key(KeyCode::Tab);
-                    }
-                    drawn.key(KeyCode::Enter);
-                    assert!(
-                        matches!(sent.borrow().last(), Some(Command::UpgradeInstall(install)) if Some(install) == offer.install.as_ref())
-                    );
-                    assert!(shown(&mut drawn).contains(t("Close")));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Err("npm EACCES: permission denied in /usr/local/lib/node_modules/dimcode-alpha\n请检查安装目录权限，然后重新尝试 END-OF-ERROR".into()),
-                    });
-                    assert!(
-                        shown(&mut drawn).contains(&tf("Update failed: {error}", &[("error", "")]))
-                    );
-                    for _ in 0..30 {
-                        drawn.key(KeyCode::Down);
-                        shown(&mut drawn);
-                    }
-                    assert!(shown(&mut drawn).contains("END-OF-ERROR"));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Ok(()),
-                    });
-                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Restart now"))));
-                    drawn.key(KeyCode::Right);
+                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Skip this version"))));
+                    drawn.key(KeyCode::Tab);
                     assert!(shown(&mut drawn).contains(&format!("› {}", t("Close"))));
-                    drawn.key(KeyCode::Enter);
-                    assert!(drawn.app.prompt.is_none());
-
-                    drawn.app.apply(Update::Upgrade(crate::update::Offer {
-                        install: None,
-                        ..offer.clone()
-                    }));
+                    drawn.key(KeyCode::Tab);
                     let mut details = String::new();
                     for _ in 0..30 {
                         details.push_str(&shown(&mut drawn));
@@ -8647,12 +8549,15 @@ mod tests {
                         .filter(|c| !c.is_whitespace() && *c != '│')
                         .collect();
                     assert!(details.contains(&offer.current));
-                    assert!(details.contains("dimcode-alpha@0.12.0-alpha.124"));
+                    assert!(details.contains("dimaupdate"));
                     drawn.size = (80, 24);
                     assert!(shown(&mut drawn).contains(&offer.current));
                     drawn.size = size;
                     drawn.key(KeyCode::Enter);
-                    assert_eq!(sent.borrow().len(), 1, "only the explicit install is sent");
+                    assert!(
+                        sent.borrow().is_empty(),
+                        "the dialog sends nothing to install"
+                    );
                     assert_eq!(
                         drawn.app.notice.as_ref().unwrap().0,
                         tf("Skipped {version}.", &[("version", &offer.version)])
@@ -8678,8 +8583,7 @@ mod tests {
                     drawn.app.apply(Update::Upgrade(crate::update::Offer {
                         current: "1.0.0".into(),
                         version: "2.0.0".into(),
-                        install: None,
-                        manual: "npm install -g dimcode@2.0.0".into(),
+                        manual: "dima update".into(),
                     }));
                     let frame = drawn.app.frame(size);
                     assert!(

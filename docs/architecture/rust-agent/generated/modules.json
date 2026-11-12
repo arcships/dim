@@ -33366,7 +33366,6 @@
         "path Action::WebInstall",
         "path Options",
         "path Options::parse",
-        "path args",
         "use args::Action",
         "use args::Options"
       ]
@@ -33395,7 +33394,6 @@
         "path client::DaemonNotice",
         "path client::StoreUpgrade",
         "path client::connect_inner",
-        "path client::shutdown",
         "path client::stop",
         "path client::web_assets"
       ]
@@ -33741,9 +33739,6 @@
       "from": "dim_cli",
       "to": "dim_cli::ui::tui",
       "references": [
-        "path ui::tui::Leave::Exit",
-        "path ui::tui::Leave::Restart",
-        "path ui::tui::Restart",
         "path ui::tui::is_interactive"
       ]
     },
@@ -36552,7 +36547,6 @@
       "from": "dim_cli::model::session",
       "to": "dim_cli::update",
       "references": [
-        "path crate::update::Install",
         "path crate::update::Offer"
       ]
     },
@@ -36930,11 +36924,9 @@
       "from": "dim_cli::plugins",
       "to": "dim_cli::ui::tui",
       "references": [
-        "path Leave",
         "path WebOpened",
         "path ui::tui::print_web_panel",
         "path ui::tui::run",
-        "use crate::ui::tui::Leave",
         "use crate::ui::tui::WebOpened"
       ]
     },
@@ -38259,7 +38251,6 @@
         "path Command::SuggestionRespond",
         "path Command::TaskHistory",
         "path Command::ToggleWeb",
-        "path Command::UpgradeInstall",
         "path Command::Usage",
         "path Command::WatchMember",
         "path Command::WatchTaskOutput",
@@ -38377,7 +38368,6 @@
         "path Update::Toast",
         "path Update::TurnCompleted",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::Usage",
         "path Update::UsageReport",
         "path Update::Web",
@@ -38592,7 +38582,6 @@
         "path update",
         "path update::available",
         "path update::enabled",
-        "path update::install",
         "use crate::update"
       ]
     },
@@ -42750,13 +42739,6 @@
     },
     {
       "from": "dim_cli::ui::prompts",
-      "to": "dim_cli::update",
-      "references": [
-        "path crate::update::Install"
-      ]
-    },
-    {
-      "from": "dim_cli::ui::prompts",
       "to": "dim_client::question",
       "references": [
         "path Answer",
@@ -45978,7 +45960,6 @@
         "path Command::SuggestionRespond",
         "path Command::TaskHistory",
         "path Command::ToggleWeb",
-        "path Command::UpgradeInstall",
         "path Command::Usage",
         "path Command::WatchMember",
         "path Command::WatchTaskOutput",
@@ -46075,7 +46056,6 @@
         "path Update::Toast",
         "path Update::TurnCompleted",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::Usage",
         "path Update::UsageReport",
         "path Update::Web",
@@ -46456,7 +46436,6 @@
         "path Effect::RefreshAccountModels",
         "path Effect::ResetIsolation",
         "path Effect::ResetPrompt",
-        "path Effect::Restart",
         "path Effect::Resume",
         "path Effect::RetryApproval",
         "path Effect::Runtime",
@@ -46474,13 +46453,11 @@
         "path Effect::ThemePreview",
         "path Effect::ThemeRestore",
         "path Effect::Timeline",
-        "path Effect::UpgradeInstall",
         "path Effect::UpgradeSkip",
         "path EffortPrompt",
         "path EffortPrompt::new",
         "path ExitConfirm",
         "path ExitConfirm::new",
-        "path ExitConfirm::restart",
         "path ExitReason",
         "path ExitReason::AgentRunning",
         "path ExitReason::AskUserPending",
@@ -46955,7 +46932,6 @@
       "references": [
         "path UpgradeDialog",
         "path UpgradeDialog::new",
-        "path UpgradeDialog::outcome",
         "use crate::ui::upgrade_dialog::UpgradeDialog"
       ]
     },
@@ -47114,7 +47090,6 @@
         "path Update::SuggestionSetting",
         "path Update::Switched",
         "path Update::Upgrade",
-        "path Update::UpgradeInstalled",
         "path Update::UsageReport",
         "path Update::Withdrawn",
         "path crate::model::session::Account",
@@ -47438,7 +47413,6 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::update",
       "references": [
-        "path crate::update::Install",
         "path crate::update::Offer"
       ]
     },
@@ -47469,7 +47443,6 @@
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
-        "path tf",
         "use crate::ui::i18n::t",
         "use crate::ui::i18n::tf"
       ]
@@ -47481,8 +47454,6 @@
         "path Effect",
         "path Effect::Close",
         "path Effect::None",
-        "path Effect::Restart",
-        "path Effect::UpgradeInstall",
         "path Effect::UpgradeSkip",
         "use crate::ui::prompts::Effect"
       ]

@@ -2128,7 +2128,7 @@ feature list are not implemented.
 
 `dimcode update` (also `dim update` and `dima update`) explicitly installs the
 current package's channel tag: alpha follows `alpha`, beta follows `beta`, and
-stable follows `latest`. It uses the same package-manager detection as the dialog,
+stable follows `latest`. It detects the package manager from where this executable lives,
 preserving the npm prefix and the alpha package's identity. It does not consult
 automatic-update preferences or skipped versions. Admission and activation follow
 the coordinated client/server upgrade contract below; the command creates no Session.
@@ -2154,14 +2154,22 @@ package manager's own registry configuration. The installer has no fixed time li
 elapsed time reports how long it has run, not proof that it is making progress. The
 operator can interrupt a stalled install; the command waits for process-tree cleanup.
 
-All built-in installation entries, including the dialog, take an exclusive OS file
-lock at the detected manager root before starting the installer. The lock is outside
-the replaced packages, is shared across homes and package identities in that root,
-and remains held through installer cleanup. A concurrent attempt fails without
-starting its package manager. The lock file remains in place after release; deleting
-it while an update runs would allow another inode to be locked independently.
-This serializes installers, not active clients or servers; their admission follows
-the coordinated upgrade contract below.
+Every `dimcode` process started from a recognised package installation (client, App
+Server or installer, in any home) holds an OS file lock on `.dimcode-update.lock` at the
+detected manager root: shared for a client or server until it exits, exclusive for the
+installer until its cleanup ends. The lock is outside the replaced packages and shared by
+all homes and package identities in that root. `update` refuses with a nonzero exit,
+before starting its package manager, while any other process holds the lock, and a client
+or server fails to start while an update holds it. A lock file that exists but cannot be
+opened also fails the starting process, so a recognised consumer never runs unregistered.
+The lock file is created readable by every user and remains in place after release;
+deleting it while an update runs would allow another inode to be locked independently.
+
+Older builds hold no lock, so `update` also refuses until `.dimcode-consumers` exists at
+the manager root. After exiting every client and stopping every old server, the operator
+runs `update --confirm-legacy-exited`, which creates the marker and installs. The flag
+vouches for older processes only and never overrides a live lock. Source builds and
+unrecognised layouts hold no lock and are not updated.
 
 ```text
 $ dima update
@@ -2178,18 +2186,21 @@ $ dima update
 Updated dimcode-alpha on the alpha channel.
 ```
 
-The existing update dialog uses the same actions in fullscreen and scrollback.
-It fits the available columns and rows: long version, command and error text
-wraps, with Up/Down scrolling when needed. The title and action row remain
-visible. If the actions do not fit on one row, show the focused action and its
-index; Left/Right and Tab/BackTab still cycle all actions, Enter confirms and
-Esc closes. Wide terminals retain the existing confirmation layout when it fits.
+The update dialog installs nothing. It names the new version and the command to run
+(`dima update` for a recognised installation, else the package manager's own command)
+once every client has exited and the server has stopped, and offers `Skip this version`
+and `Close`. It uses the same layout in fullscreen and scrollback. It fits the available
+columns and rows: long version and command text wraps, with Up/Down scrolling when
+needed. The title and action row remain visible. If the actions do not fit on one row,
+show the focused action and its index; Left/Right and Tab/BackTab still cycle all
+actions, Enter confirms and Esc closes. Wide terminals retain the confirmation layout
+when it fits.
 
 ```text
 +- Update available --------+
 | Version 0.12.0-alpha.124  |
 | is available (you have   |
-| > Later 3/3              |
+| > Close 2/2              |
 | Left/Right Tab Enter Esc |
 +----------- Up/Down 1-2/7-+
 ```
@@ -2229,10 +2240,10 @@ Installing a new release while old consumers remain active would instead require
 versioned payloads, including plugins and Web assets, and a separate activation decision.
 It is not achieved by leaving the old daemon's executable mapped while replacing its files.
 
-#### Proposed mechanism requirements
+#### Mechanism requirements
 
-The refusal policy above does not by itself define a lifecycle mechanism. These requirements
-need alignment with the lifecycle and launch owners before changing their contracts (#1457).
+The refusal policy above is enforced by the installation leases and the process admission
+below; the remaining items need alignment with the lifecycle and launch owners (#1457).
 
 - **Blocked requirement:** an idle decision must remain true until the old process releases
   its resources. `Session::in_use` is a query, not a freeze; `Session::unload_if_idle` requires

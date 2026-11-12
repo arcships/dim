@@ -781,10 +781,12 @@ impl Session {
         let handles = branches
             .iter()
             .map(|info| self.0.tree.get(&info.id))
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .filter(|branch| !branch.0.is_closed())
+            .collect::<Vec<_>>();
         let tails = handles
             .iter()
-            .filter(|branch| !branch.0.is_closed())
             .map(|branch| branch.0.lock_idle())
             .collect::<Option<Vec<_>>>()?;
         if !lifecycle.refuse_holds() {

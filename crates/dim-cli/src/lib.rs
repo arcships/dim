@@ -151,11 +151,11 @@ async fn open_tui(
         leaf_end: std::sync::Mutex::new(Some(leaf_end)),
     });
     (&tui).await.map_err(plugin_error)?;
-    let leave = tokio::select! {
-        leave = &mut left => leave,
+    let code = tokio::select! {
+        code = &mut left => code,
         ended = leaf_ended => {
             if ended.is_ok() {
-                Ok(ui::tui::Leave::Exit(0))
+                Ok(0)
             } else {
                 left.await
             }
@@ -164,70 +164,7 @@ async fn open_tui(
     .map_err(|_| "the terminal interface ended without a result")?;
     tui.dispose().await?;
     link.dispose().await?;
-    match leave {
-        ui::tui::Leave::Exit(code) => Ok(code),
-        ui::tui::Leave::Restart(restart) => relaunch(root, options, restart, locale).await,
-    }
-}
-
-/// Starts the updated CLI on the session the interface left. The daemon
-/// still runs the old executable, so it stops first and the new CLI starts
-/// its own. The original arguments carry over except the interface mode,
-/// which follows the one in use, the session, which is the one left, and
-/// the first message (`--prompt` with its `--image`), which was already
-/// sent; a resumed session keeps its model, so the model flags drop with it.
-async fn relaunch(
-    root: &rutis::Ctx,
-    options: &Options,
-    restart: ui::tui::Restart,
-    locale: locale::Locale,
-) -> Result<i32> {
-    let (link, connection) = daemon_link(root, options, false, locale).await?;
-    if let Some(client) = connection.take() {
-        client::shutdown(client).await?;
-    }
-    link.dispose().await?;
-    let mut args = Vec::new();
-    let mut original = std::env::args_os().skip(1);
-    while let Some(arg) = original.next() {
-        let resumed = restart.session_id.is_some();
-        match arg.to_str() {
-            Some("--fullscreen" | "--scrollback") => {}
-            Some("--resume" | "--prompt" | "-p" | "--image") => {
-                original.next();
-            }
-            Some("--provider" | "--model") if resumed => {
-                original.next();
-            }
-            _ => args.push(arg),
-        }
-    }
-    args.push(
-        (if restart.fullscreen {
-            "--fullscreen"
-        } else {
-            "--scrollback"
-        })
-        .into(),
-    );
-    if let Some(session_id) = restart.session_id {
-        args.extend(["--resume".into(), session_id.into()]);
-    }
-    let mut command = std::process::Command::new(&restart.relaunch);
-    command.args(args);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        Err(format!("Cannot start {}: {error}", restart.relaunch.display()).into())
-    }
-    #[cfg(not(unix))]
-    {
-        let status = command
-            .status()
-            .map_err(|error| format!("Cannot start {}: {error}", restart.relaunch.display()))?;
-        Ok(status.code().unwrap_or(1))
-    }
+    Ok(code)
 }
 
 /// Links the daemon and loads `WebHold`; returns when the hold ends.

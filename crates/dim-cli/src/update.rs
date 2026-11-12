@@ -25,10 +25,8 @@ const SKIP_FILE: &str = "upgrade-skip.json";
 pub struct Offer {
     pub current: String,
     pub version: String,
-    /// How to install it in place; `None` when the install source is not
-    /// one we can tell, and only `manual` is shown.
-    pub install: Option<Install>,
-    /// The command to run by hand.
+    /// The command to run: `update` for a recognised installation, else the
+    /// package manager's own command.
     pub manual: String,
 }
 
@@ -40,12 +38,10 @@ pub struct Install {
     pub args: Vec<String>,
     /// The manager's installation root, outside the packages it replaces.
     pub directory: PathBuf,
-    /// What starts the updated CLI: this executable when the install keeps
-    /// it in place, else the package's command on `PATH`.
-    pub relaunch: PathBuf,
 }
 
 impl Install {
+    #[cfg(test)]
     pub fn command_line(&self) -> String {
         let program = self.program.file_name().unwrap_or(self.program.as_os_str());
         std::iter::once(program.to_string_lossy().into_owned())
@@ -199,24 +195,7 @@ fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
         program,
         args: args.into_iter().map(str::to_owned).chain([spec]).collect(),
         directory,
-        relaunch: relaunch(exe, package),
     })
-}
-
-/// npm and bun reinstall a package in place, so this executable is the
-/// updated one afterwards; pnpm, yarn and volta move it, so the package's
-/// command on `PATH` starts it.
-fn relaunch(exe: &Path, package: &str) -> PathBuf {
-    let path = exe.to_string_lossy().replace('\\', "/");
-    if path.contains("/.pnpm/") || path.contains("/yarn/global/") || path.contains("/.volta/") {
-        PathBuf::from(if package == ALPHA_PACKAGE {
-            ALPHA_COMMAND
-        } else {
-            package
-        })
-    } else {
-        exe.to_path_buf()
-    }
 }
 
 /// The dist-tag a build upgrades along, `None` when it has none: only a build
@@ -247,11 +226,20 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
+    let manual = if installer(&exe, &package, version).is_some() {
+        let command = if package == ALPHA_PACKAGE {
+            ALPHA_COMMAND
+        } else {
+            PACKAGE
+        };
+        format!("{command} update")
+    } else {
+        manual(&package, current)
+    };
     Some(Offer {
         current: current.to_owned(),
         version: version.to_owned(),
-        install: installer(&exe, &package, version),
-        manual: manual(&package, current),
+        manual,
     })
 }
 
@@ -339,7 +327,7 @@ fn open_lock(directory: &Path, create: bool) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        options.mode(0o644).custom_flags(libc::O_NOFOLLOW);
     }
     let file = options.open(directory.join(LOCK_FILE))?;
     if !file.metadata()?.is_file() {
@@ -351,8 +339,16 @@ fn open_lock(directory: &Path, create: bool) -> std::io::Result<std::fs::File> {
 }
 
 fn shared(directory: &Path) -> Result<Option<std::fs::File>, String> {
-    let Ok(file) = open_lock(directory, true).or_else(|_| open_lock(directory, false)) else {
-        return Ok(None);
+    let path = directory.join(LOCK_FILE);
+    let file = match open_lock(directory, true).or_else(|_| open_lock(directory, false)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Cannot register with installation {}: {error}. Make {LOCK_FILE} readable to every user of this installation",
+                path.display()
+            ));
+        }
     };
     match file.try_lock_shared() {
         Ok(()) => Ok(Some(file)),
@@ -365,10 +361,10 @@ fn shared(directory: &Path) -> Result<Option<std::fs::File>, String> {
 
 /// Registers this process as a live consumer of the installation it runs
 /// from, in any home, until it exits. An update refuses while any consumer
-/// holds the lease. Does nothing for a source build or a layout the updater
-/// does not recognise, and when the installation's lock file cannot be
-/// opened (a root-owned prefix the user cannot write). Fails while an update
-/// is replacing the installation.
+/// holds the lease. Does nothing for a source build, a layout the updater
+/// does not recognise, or an installation no update has locked yet. Fails
+/// when the lock file exists but cannot be opened, and while an update is
+/// replacing the installation.
 pub fn hold_installation() -> Result<(), String> {
     let Ok(package) = package() else {
         return Ok(());
@@ -546,7 +542,6 @@ mod tests {
             npm.command_line(),
             "npm install -g --prefer-online --prefix /u/.nvm/versions/node/v24 dimcode@0.1.0-alpha.2"
         );
-        assert!(npm.relaunch.ends_with("bin/dimcode"));
         let prefix = tempfile::tempdir().unwrap();
         std::fs::create_dir(prefix.path().join("bin")).unwrap();
         std::fs::write(prefix.path().join("bin/npm"), "").unwrap();
@@ -571,7 +566,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pnpm.command_line(), "pnpm add -g dimcode@0.1.0-alpha.2");
-        assert_eq!(pnpm.relaunch, PathBuf::from("dimcode"));
         let alpha = installer(
             Path::new("/u/Library/pnpm/global/5/.pnpm/dimcode-darwin-arm64@0.1.0-alpha.2/node_modules/dimcode-darwin-arm64/bin/dimcode"),
             ALPHA_PACKAGE,
@@ -582,7 +576,6 @@ mod tests {
             alpha.command_line(),
             "pnpm add -g dimcode-alpha@0.1.0-alpha.2"
         );
-        assert_eq!(alpha.relaunch, PathBuf::from("dima"));
         assert!(installer(Path::new("/u/dim/target/debug/dimcode"), "dimcode", spec).is_none());
     }
 }
