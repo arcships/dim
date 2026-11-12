@@ -59,7 +59,7 @@ impl ThemePanel {
         let before = self.list.selected_id();
         match self.list.handle_key(key) {
             Event::Close => Effect::ThemeRestore(self.original.clone()),
-            Event::Pick(id) => Effect::ThemeApply(id),
+            Event::Pick { id, .. } => Effect::ThemeApply(id),
             Event::None | Event::Refresh => {
                 let now = self.list.selected_id();
                 match now {

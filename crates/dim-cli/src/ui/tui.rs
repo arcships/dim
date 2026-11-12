@@ -2763,6 +2763,16 @@ impl App {
                     self.shell_done(running, result);
                 }
             }
+            Update::ModelDefault { folder, model } => {
+                let notice = match folder {
+                    Some(folder) => tf(
+                        "Default for new sessions in {folder}: {model}",
+                        &[("folder", &crate::ui::tilde(&folder)), ("model", &model)],
+                    ),
+                    None => tf("Default for new sessions: {model}", &[("model", &model)]),
+                };
+                self.notices.push(notice);
+            }
             Update::Notice(text) => {
                 self.notices.push(t(&text).to_owned());
             }
@@ -2955,7 +2965,7 @@ impl App {
                     p.handle_key(key, self.snapshot.as_ref().expect("attached queue"))
                 }
                 Prompt::Export(p) => match p.handle_key(key) {
-                    ListEvent::Pick(format) => Effect::Export(if format == "markdown" {
+                    ListEvent::Pick { id: format, .. } => Effect::Export(if format == "markdown" {
                         crate::export::Format::Markdown
                     } else {
                         crate::export::Format::Json
@@ -3946,12 +3956,14 @@ impl App {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                label,
             } => {
                 self.prompt = None;
                 self.host.send(Command::SelectModel {
                     provider_id,
                     model_id,
                     reasoning_effort,
+                    label,
                 });
             }
             Effect::SetEffort { model, value } => {
@@ -8045,7 +8057,12 @@ mod tests {
                      notes: bool| {
             let mut drawn = Drawn::new((40, 8), None, true);
             drawn.app.fullscreen = fullscreen;
-            let mut natural = None;
+            let max_panel_rows = if fullscreen {
+                OVERLAY_MAX_ROWS
+            } else {
+                live_panel_rows(usize::MAX, 0, 0)
+            };
+            let mut expected_rows = None;
             let mut reached = false;
             let mut budgets = Vec::new();
             for height in 8..=40u16 {
@@ -8099,9 +8116,16 @@ mod tests {
                     "{title} {size:?} fullscreen={fullscreen}: a {budget}-row budget drew {} rows: {live:#?}",
                     panel.len()
                 );
-                if natural.is_none() && !panel.is_empty() {
-                    natural =
-                        Some(render(&open(), &drawn.app, visible_width(&panel[0]), 100).len());
+                if expected_rows.is_none() && !panel.is_empty() {
+                    expected_rows = Some(
+                        render(
+                            &open(),
+                            &drawn.app,
+                            visible_width(&panel[0]),
+                            max_panel_rows,
+                        )
+                        .len(),
+                    );
                 }
                 let text = panel.join("\n");
                 if !panel.is_empty() {
@@ -8198,7 +8222,7 @@ mod tests {
                         "{title} {size:?} fullscreen={fullscreen}: the keys: {screen}"
                     );
                 }
-                if natural.is_some_and(|natural| panel.len() >= natural) {
+                if expected_rows.is_some_and(|rows| panel.len() == rows) {
                     reached = true;
                     break;
                 }
@@ -8211,7 +8235,7 @@ mod tests {
             }
             assert!(
                 reached,
-                "{title} fullscreen={fullscreen}: never reached {natural:?}"
+                "{title} fullscreen={fullscreen}: never reached {expected_rows:?} rows"
             );
         };
 

@@ -535,7 +535,7 @@ Run a retention pass after startup recovery, each terminal transition and each r
 
 | Contract | Owner | Use |
 | --- | --- | --- |
-| `sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}}` → `{sessionId,policy}` | Existing [S2](../appserver/sessions-service.md) | Agents resolves model and policy; every stage is non-interactive; Workflow writes the first input |
+| `sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}}` → `{sessionId,policy}` | Existing [S2](../appserver/sessions-service.md) | Agents resolves model and policy; every stage is non-interactive; Workflow writes the first input. A stage declares no `origin`, so it stays `internal`: a run's Sessions keep their default hiding under `session.catalog`, and listing automation Sessions never lists them |
 | `sessions.withdraw {sessionId, branchId, inputId}` of an own input; `sessions.lookup` by `submissionId` | session-access (InputQueue) | Withdraw own unconsumed stage inputs on stop; reply `deleted` or `notHeld` |
 
 ### A.6 Timeline and capability mechanics

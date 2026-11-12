@@ -54,7 +54,13 @@ impl Item {
 pub enum Event {
     None,
     Close,
-    Pick(String),
+    /// The selected row: its id, and the label it was drawn with, so a caller
+    /// that needs the row's text takes it from the event instead of reading
+    /// the selection again.
+    Pick {
+        id: String,
+        label: String,
+    },
     Refresh,
 }
 
@@ -355,7 +361,10 @@ impl ListPanel {
                 .into_iter()
                 .filter(|i| !i.heading)
                 .nth(self.selected)
-                .map_or(Event::None, |item| Event::Pick(item.id.clone())),
+                .map_or(Event::None, |item| Event::Pick {
+                    id: item.id.clone(),
+                    label: item.label.clone(),
+                }),
             _ if self.filterable && self.filter.handle_key(key) => {
                 self.selected = 0;
                 Event::None

@@ -42,6 +42,8 @@ mod permission;
 mod prompt_suggestion;
 #[path = "cli_flow/prompts.rs"]
 mod prompts;
+#[path = "cli_flow/protocol_version.rs"]
+mod protocol_version;
 #[path = "cli_flow/question.rs"]
 mod question;
 #[path = "cli_flow/realtime.rs"]
@@ -11299,6 +11301,159 @@ fn tui_models_picker_cycles_reasoning_effort() {
         json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model",
             "modelPreferences":{"reasoningEffort":"none","serviceTier":"priority"}})
     );
+}
+
+/// `/models` Enter writes the default the next Session in the launch workspace
+/// reads: the folder's own row when it has one, else `global`, with each
+/// write's version read from `provider.selection` for the same scope. The
+/// notice names the scope. The attached Session reports a workspace of its
+/// own, which the write must ignore.
+#[test]
+fn tui_models_picker_writes_the_default_the_launch_workspace_reads() {
+    for workspace_default in [true, false] {
+        let home = Home::new();
+        // Short enough that the notice stays on one transcript row at the
+        // default width, so the assertion can name the whole line.
+        let project = std::path::PathBuf::from("/tmp").join(format!(
+            "d-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..6]
+        ));
+        fs::create_dir_all(&project).unwrap();
+        let launch = project.canonicalize().unwrap();
+        let (calls, observed) = std::sync::mpsc::channel::<Value>();
+        let folder = launch.to_str().unwrap().to_owned();
+        let served = folder.clone();
+        let daemon = home.daemon(move |wire| {
+            wire.2 = true;
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                if wire.2 && wire.empty_state(&request) { continue; }
+                calls.send(request.clone()).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,
+                        "daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods",
+                        "provider.list","provider.catalog","provider.selection","provider.select"]}),
+                    "session.create" => panic!("resuming must not create a Session"),
+                    "session.attach" => attach_record(&request),
+                    "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                    "session.idle" => json!({"sequence":8}),
+                    "provider.list" => json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
+                    "provider.catalog" => json!({"catalog":{"version":1,"disabledModelIds":[],"models":[
+                        {"id":"model","name":"Model","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
+                    // The folder answers only the launch workspace: the
+                    // attached Session's `/workspace` has no row either.
+                    "provider.selection" => match request["params"]["cwd"].as_str() {
+                        Some(cwd) if workspace_default && cwd == served => {
+                            json!({"selection":{"provider_id":"test","model_id":"other","version":7}})
+                        }
+                        Some(_) => json!({"selection":null}),
+                        None => json!({"selection":{"provider_id":"test","model_id":"other","version":3}}),
+                    },
+                    "session.model.update" => json!({"model":{"providerId":"test","modelId":"model"}}),
+                    "provider.select" => json!({}),
+                    "account.providers" => json!([]),
+                    _ => json!({}),
+                };
+                wire.reply(&request, result);
+            }
+        });
+        let mut command = home.command();
+        command.args(["--cwd", &folder]);
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        terminal.write(b"/models\r");
+        terminal.until("Test / model");
+        terminal.write(b"\r");
+        // The write itself, before the notice: a wrong scope fails here.
+        let written = loop {
+            let call = observed
+                .recv_timeout(PATIENCE)
+                .expect("the default was written");
+            if call["method"] == "provider.select" {
+                break call["params"].clone();
+            }
+        };
+        assert_eq!(
+            written,
+            if workspace_default {
+                json!({"cwd":folder,"providerId":"test","modelId":"model","expectedVersion":7})
+            } else {
+                json!({"providerId":"test","modelId":"model","expectedVersion":3})
+            },
+            "workspace default: {workspace_default}"
+        );
+        let expected = if workspace_default {
+            format!("Default for new sessions in {folder}: Test / model")
+        } else {
+            "Default for new sessions: Test / model".to_owned()
+        };
+        terminal.until(&expected);
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        let _ = fs::remove_dir_all(&project);
+        let calls: Vec<Value> = observed.try_iter().collect();
+        assert!(
+            calls.iter().all(|call| call["method"] != "provider.select"),
+            "one write only: {calls:?}"
+        );
+    }
+}
+
+/// In a non-English interface the picker draws the translated hint: `t` is
+/// applied where the hint is handed to the list, which does not translate it.
+#[test]
+fn tui_models_picker_draws_its_hint_in_the_interface_language() {
+    let home = Home::new();
+    fs::write(
+        home.0.join("config.json"),
+        json!({"locale":"zh-CN"}).to_string(),
+    )
+    .unwrap();
+    let daemon = home.daemon(|wire| {
+        wire.2 = true;
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            line.clear();
+            if wire.2 && wire.empty_state(&request) { continue; }
+            let result = match request["method"].as_str().unwrap() {
+                "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,
+                    "daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.methods",
+                    "provider.list","provider.catalog","provider.selection","provider.select"]}),
+                "session.create" => panic!("resuming must not create a Session"),
+                "session.attach" => attach_record(&request),
+                "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                "session.idle" => json!({"sequence":8}),
+                "provider.list" => json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
+                "provider.catalog" => json!({"catalog":{"version":1,"disabledModelIds":[],"models":[
+                    {"id":"model","name":"Model","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
+                "account.providers" => json!([]),
+                _ => json!({}),
+            };
+            wire.reply(&request, result);
+        }
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"/models\r");
+    // `key_hints` colours a key apart from its action, so only the action is
+    // contiguous in the drawn transcript.
+    terminal.until("选择并设为默认");
+    let shown = strip_ansi(&terminal.transcript);
+    assert!(
+        !shown.contains("Enter select + default"),
+        "the English hint was drawn: {shown}"
+    );
+    terminal.raw(b"\x1b");
+    thread::sleep(Duration::from_millis(200));
+    terminal.write(b"/exit\r");
+    terminal.until("再见！");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
 }
 
 /// `/models` sends `provider.refresh` for a usable provider whose catalog is

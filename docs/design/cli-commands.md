@@ -1113,11 +1113,14 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` removes without the panel's confirmation, and `dimcode
 models PROVIDER inspect MODEL` prints the lines the detail shows.
+
+Enter also writes the default a new Session in this folder reads ([provider management
+§4](appserver/provider-management.md#4-client-integration)).
 
 Bare `/effort` and `/reasoning` open the current model's inline effort picker in both TUI
 modes; explicit-value forms and the line client keep their command behavior. The selection
@@ -1814,9 +1817,12 @@ time and can become eligible for deletion:
 Cleanup selects across every workspace, not only the one `/resume` opens on: the
 classes it selects are the ones `/resume` lists by default
 ([classification](appserver/session-classification.md#35-catalog-visibility)): origin
-`client` or `unknown`. An `internal` Session is never selected: a member goes with
-its leader's delete and a launched Session belongs to its plugin. An `acp` Session is
-never selected either; `dimcode session delete ID` deletes one. A Session it does not
+`client` or `unknown`. The list is positive, so an origin it does not name is never
+selected. An `internal` Session is never selected: a member goes with its leader's
+delete and a launched Session belongs to its plugin. An `acp` Session is
+never selected either; `dimcode session delete ID` deletes one. An `automation` one is
+the same: a saved configuration launched it, and the plugin that launched it removes it
+with its own retention. A Session it does not
 select neither counts toward `--keep N` nor appears in the preview.
 
 A Session with a running turn or an attached client is kept: the preview lists the

@@ -263,6 +263,8 @@ pub enum Effect {
         model_id: String,
         /// Set when ←/→ cycled this model's reasoning effort.
         reasoning_effort: Option<String>,
+        /// The row's own text, which the default's confirmation names back.
+        label: String,
     },
     SetEffort {
         model: String,

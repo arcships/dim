@@ -203,7 +203,7 @@ sequenceDiagram
   participant ST as 进程存储
   participant AG as Agents
   T->>ST: 保存 delivering，含 deadline_at
-  T->>AG: sessions.launch(cwd, agent?, policy?)
+  T->>AG: sessions.launch(cwd, agent?, policy?, origin: "automation", title: job.name)
   AG-->>T: {sessionId, policy}
   T->>ST: 保存 sessionId、分支、policy
   T->>AG: sessions.input(sessionId, main, queue, 标记, 提示词)
@@ -213,6 +213,8 @@ sequenceDiagram
 ```
 
 这就是目标的全部：一次启动、一条输入与停止定时器。Scheduler 不读被启动 Session 的历史，也不订阅其广播，因此投递只由它自己的写入结算，启动之后不再跟随任何东西(A.6)。
+
+启动会声明这个 Session 是做什么用的，以及选择器如何标注它：`origin: "automation"` 给它"已保存的配置在无人在场时运行的工作"这一类，客户端用 `session.catalog` 的 `withAutomationSessions` 就能只列出它们，而不必连带列出所有 Collaboration 成员与 Workflow 阶段；`title: job.name` 是选择器在第一条输入之前显示的标签。标题由 SessionTitle 按其自身的文本规则写入（[SessionTitle](SessionTitle.md)）；任务名属于 Scheduler，App Server 不依赖 Scheduler。`session` 目标两者都不发送：它是用户自己的 Session，来源保持不变（[Session 分类](../appserver/session-classification.md#32-which-creation-entry-writes-which-value)）。
 
 窗口求值遵循 `settings/schedule`、墙钟分钟变化、当前分钟内最早剩余窗口与已接受投递的结算。自有定时器每秒检查这些截止时刻，空闲节拍既不读 Settings 也不读存储。
 
@@ -583,7 +585,7 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 | --- | --- |
 | 触发 | 定时器任务为每个启用任务计算下一个窗口；窗口到期时应用宽限与启用规则，并以新的 `run_id` 持久化 `delivering` |
 | Session 目标 | `sessions.input {sessionId, branchId, mode, submissionId:"scheduler:<run_id>", rawBlocks:[{text:"<dim-scheduler …>…</dim-scheduler>"}], content:[{type:"text",text:prompt}]}` → `{inputId,sequence}`。标记文本在 Scheduler 的外部输入边界构造/转义；S2 接受 `RawBlock {text,key?}`，而不是结构化的标记对象。 |
-| launch 目标 | `sessions.launch {agent?, cwd, policy?}` → `{sessionId,policy}`。Agents 选择 profile 的模型并按实时上限收拢策略；Scheduler 不解析这两者。在 `delivering` 记录上持久化 Session 身份与回复中的 `policy`，起它的停止定时器，然后向该 Session 的 `main` 分支写入同一形状的输入。除此之外什么都不调，之后也不跟随该 Session。 |
+| launch 目标 | `sessions.launch {agent?, cwd, policy?, origin, title}` → `{sessionId,policy}`，其中 `origin` 为 `"automation"`、`title` 为 `job.name`。Agents 选择 profile 的模型并按实时上限收拢策略；Scheduler 不解析这两者。在 `delivering` 记录上持久化 Session 身份与回复中的 `policy`，起它的停止定时器，然后向该 Session 的 `main` 分支写入同一形状的输入。除此之外什么都不调，之后也不跟随该 Session。 |
 | 结算 | `{inputId,sequence}` → `delivered` 并带 `input_event_id`。确定性拒绝 → `failed: <code>`；目标消失类代码同时禁用任务(A.3)。 |
 | 不确定回复 | `reloading`、`publication_unknown`、`ambiguous` 或传输失败 → `sessions.lookup {sessionId,branchId,submissionId}`(§A.6)。 |
 | 错过 | 超过宽限的窗口记为一条 `missed`；不启动、不写输入。 |

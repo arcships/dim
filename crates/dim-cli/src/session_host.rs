@@ -1915,9 +1915,10 @@ impl Worker {
                 provider_id,
                 model_id,
                 reasoning_effort,
+                label,
             } => {
                 if let Err(error) = self
-                    .select_model(provider_id, model_id, reasoning_effort)
+                    .select_model(provider_id, model_id, reasoning_effort, label)
                     .await
                 {
                     self.send(Update::Notice(format!("Model switch failed: {error}")));
@@ -3522,12 +3523,14 @@ impl Worker {
     /// Switches the session's model, or at home the one the first message
     /// starts a session on, then makes it the default for new ones.
     /// A cycled `reasoning_effort` is saved first, then sent with the model's
-    /// other saved preferences.
+    /// other saved preferences. `label` is the picker row's text, which the
+    /// default's confirmation names back.
     async fn select_model(
         &mut self,
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        label: String,
     ) -> crate::Result<()> {
         #[derive(Deserialize)]
         struct Updated {
@@ -3611,7 +3614,7 @@ impl Worker {
             self.context_stale = true;
             updated.model
         };
-        if let Err(error) = self.make_default(&model).await {
+        if let Err(error) = self.make_default(&model, &label).await {
             self.send(Update::Notice(format!(
                 "The model was not saved as the default: {error}"
             )));
@@ -3619,23 +3622,37 @@ impl Worker {
         Ok(())
     }
 
-    /// Saves the global default model over the selection read just before,
-    /// as `provider.select` requires its current version.
-    async fn make_default(&mut self, model: &ModelId) -> crate::Result<()> {
-        #[derive(Deserialize)]
-        struct Current {
-            selection: Option<Selection>,
-        }
-        #[derive(Deserialize)]
-        struct Selection {
-            version: u32,
-        }
-        let current: Current = self.client.typed("provider.selection", json!({})).await?;
+    /// Writes `model` as the default the next Session in the launch workspace
+    /// reads: the workspace's own row when the folder has one, else `global`.
+    /// Each scope is read for the version `provider.select` replaces, and the
+    /// interface names the scope it wrote.
+    async fn make_default(&mut self, model: &ModelId, label: &str) -> crate::Result<()> {
+        let workspace = self.options.workspace().as_str().to_owned();
+        let folder_request = self
+            .client
+            .send("provider.selection", json!({"cwd": workspace}))
+            .await?;
+        let global_request = self.client.send("provider.selection", json!({})).await?;
+        let folder = self.client.response(folder_request).await;
+        let global = self.client.response(global_request).await;
+        let folder = selection_version(folder?)?;
+        let global = selection_version(global?)?;
+        let (scope, expected) = match folder {
+            Some(version) => (Some(workspace), Some(version)),
+            None => (None, global),
+        };
         let mut params = json!({"providerId": model.provider_id, "modelId": model.model_id});
-        if let Some(selection) = current.selection {
-            params["expectedVersion"] = json!(selection.version);
+        if let Some(cwd) = &scope {
+            params["cwd"] = json!(cwd);
+        }
+        if let Some(expected) = expected {
+            params["expectedVersion"] = json!(expected);
         }
         self.client.rpc("provider.select", params).await?;
+        self.send(Update::ModelDefault {
+            folder: scope,
+            model: label.to_owned(),
+        });
         Ok(())
     }
 
@@ -4579,6 +4596,22 @@ pub(crate) async fn adopt_startup(
             format!("Cannot adopt startup configuration for resumed Session: {error}")
         })?;
     Ok(())
+}
+
+/// The version of a `provider.selection` reply's row, `None` when the scope
+/// holds none: the value `provider.select` replaces for that same scope.
+fn selection_version(reply: serde_json::Value) -> crate::Result<Option<u32>> {
+    #[derive(Deserialize)]
+    struct Selection {
+        version: u32,
+    }
+    #[derive(Deserialize)]
+    struct Current {
+        selection: Option<Selection>,
+    }
+    let current: Current =
+        serde_json::from_value(reply).map_err(|_| "Invalid provider.selection response")?;
+    Ok(current.selection.map(|selection| selection.version))
 }
 
 pub(crate) async fn saved_model_preferences(

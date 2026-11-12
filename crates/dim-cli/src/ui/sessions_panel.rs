@@ -277,7 +277,7 @@ impl SessionsPanel {
         match event {
             Event::None => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => Effect::Resume(id),
+            Event::Pick { id, .. } => Effect::Resume(id),
             Event::Refresh => Effect::Refresh,
         }
     }

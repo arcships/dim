@@ -23177,6 +23177,8 @@
         "path Empty",
         "path PROTOCOL_VERSION",
         "path SessionId",
+        "path SessionOrigin",
+        "path SessionOrigin::Automation",
         "path SessionOrigin::Internal",
         "path session_cwd",
         "use crate::protocol::Empty",
@@ -33884,6 +33886,7 @@
       "references": [
         "path Result",
         "path crate::Error",
+        "path crate::daemon_too_old",
         "use crate::Result"
       ]
     },
@@ -33892,6 +33895,7 @@
       "to": "dim_cli::args",
       "references": [
         "path Options",
+        "path crate::args::Action::DaemonStop",
         "use crate::args::Options",
         "use crate::args::SERVER_REQUIREMENT"
       ]
@@ -38234,6 +38238,7 @@
         "path Update::IsolationBackend",
         "path Update::Login",
         "path Update::Management",
+        "path Update::ModelDefault",
         "path Update::ModelFeatures",
         "path Update::ModelPolicy",
         "path Update::Models",
@@ -40673,6 +40678,8 @@
       "references": [
         "path crate::DAEMON_BUSY",
         "path crate::DAEMON_BUSY_COUNTS",
+        "path crate::DAEMON_TOO_OLD",
+        "path crate::DAEMON_TOO_OLD_COUNTS",
         "path crate::DAEMON_UPGRADING"
       ]
     },
@@ -45903,6 +45910,7 @@
         "path Update::Login",
         "path Update::Management",
         "path Update::MemberConversation",
+        "path Update::ModelDefault",
         "path Update::ModelFeatures",
         "path Update::ModelPolicy",
         "path Update::Models",

@@ -305,6 +305,22 @@ fn without_v38_protocol(database: &Path) {
         )
         .unwrap();
 }
+/// Every format before v42 has no `automation` origin: the table is rebuilt at
+/// its v41 text, which the format gate compares character by character.
+fn without_automation_origin(database: &Path) {
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             CREATE TEMP TABLE sessions_rows AS SELECT * FROM agent_sessions;
+             DROP TABLE agent_sessions;
+             CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')));
+             CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+             INSERT INTO agent_sessions(session_id, config, created_at_ms, leader_session_id, origin) SELECT session_id, config, created_at_ms, leader_session_id, origin FROM sessions_rows;
+             DROP TABLE sessions_rows;",
+        )
+        .unwrap();
+}
 fn marker(database: &Path) -> i64 {
     rusqlite::Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .unwrap()
@@ -498,6 +514,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (38, "", false),
             (39, "", false),
             (40, "", false),
+            (41, "", false),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             let catalog = if version < 23 {
@@ -575,6 +592,10 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             }
             if version < 30 {
                 without_origin_column(&older);
+            } else {
+                // Its text names the columns v26 adds, so it comes before the
+                // rebuild that removes them.
+                without_automation_origin(&older);
             }
             if version < 27 {
                 without_v26_columns(&older);

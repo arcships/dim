@@ -356,9 +356,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "終了",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 選択 · ←/→ 推論強度 · Ctrl+X 保存消去 · Esc 消去/閉じる"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 選択して既定に設定 · ←/→ 推論強度 · Ctrl+X 保存消去 · Esc 消去/閉じる"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "新規セッションの {folder} での既定モデル：{model}"
+        }
+        "Default for new sessions: {model}" => "新規セッションの既定モデル：{model}",
         "Enter select · Esc clear/close" => "Enter 選択 · Esc 消去/閉じる",
         "esc close" => "esc 閉じる",
         "Suggestions" => "候補",
@@ -578,6 +582,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server はまだ {server} です。他のクライアントが使用中のため、この {client} クライアントもそれを使います。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server はまだ {server} です。他のクライアントが使用中で、プロトコル v{protocol} を使用しており、この {client} クライアントはそれを使用できません。セッションは開始していません。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server はまだ {server} です。他のクライアントが使用中で（接続: {connections}、アタッチ中のセッション: {attached}、実行中のターン: {running}）、プロトコル v{protocol} を使用しており、この {client} クライアントはそれを使用できません。セッションは開始していません。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server はまだ {server} です。他のクライアントが使用中です（接続: {connections}、アタッチ中のセッション: {attached}、実行中のターン: {running}）。この {client} クライアントもそれを使います。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"

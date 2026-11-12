@@ -717,10 +717,12 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` 不经面板的确认直接移除；`dimcode models PROVIDER inspect MODEL` 打印详情显示的那些行。
+
+Enter 同时写入新 Session 在此文件夹读取的默认值（[Provider 管理 §4](appserver/provider-management.md#4-客户端集成)）。
 
 ### Workflow 领域
 
@@ -1149,9 +1151,10 @@ TITLE 视为缺失，也按同样方式拒绝。
 清理在所有工作区范围内选择，而不只是 `/resume` 打开时所在的那一个：它选的类别就是 `/resume`
 默认列出的那些
 （[分类](../../design/appserver/session-classification.md#35-catalog-visibility)）：来源为 `client` 或 `unknown`。
-`internal` 的 Session
+这是一份正向名单，没有列出的来源一律不会被选中。`internal` 的 Session
 永远不会被选中：成员随其 leader 的删除一起消失，启动的 Session 属于它的插件。`acp` 的 Session
-同样不会被选中；用 `dimcode session delete ID` 删除它。不被选中的 Session 既不占用 `--keep N`
+同样不会被选中；用 `dimcode session delete ID` 删除它。`automation` 的 Session 也一样：它由已保存的配置启动，
+由启动它的插件按自己的保留策略删除。不被选中的 Session 既不占用 `--keep N`
 的名额，也不出现在预览里。
 
 轮次正在运行或仍有客户端附着的 Session 会被保留：预览在选择结果之后以 `Kept (active):` 列出这些
