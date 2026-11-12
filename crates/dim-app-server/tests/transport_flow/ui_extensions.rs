@@ -1111,3 +1111,82 @@ async fn a_daemon_restart_ends_old_generations_and_session_resources() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// A Session created by an older protocol version serves its resources too:
+/// the entry used to refuse any Session not recorded at the daemon's own
+/// version (#1459).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_sessions_resource_is_served_to_the_web_entry() {
+    let home = super::plugin_manager::home();
+    let mut config = super::plugin_manager::config(&home);
+    config.product_home = None;
+    let home = home.canonicalize().unwrap();
+    config.target_home = Some(home.clone());
+    config.file_roots = vec![home.clone()];
+    config.web_assets = Some(frontend_fixture());
+    let media = home.join("media.txt");
+    std::fs::write(&media, "0123456789").unwrap();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+    let mut v3 = Client::new_version(&server, false, 3).await;
+    let created = v3.rpc("session.create", json!({"cwd":home})).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    // The web entry is a v4 connection; the Session is recorded at 3.
+    let opened = v3.rpc("web.open", json!({"port":0})).await;
+    assert!(opened.get("error").is_none(), "{opened}");
+    let opened = opened["result"].clone();
+    let address = opened["address"].as_str().unwrap().to_owned();
+    let bootstrap = opened["url"]
+        .as_str()
+        .unwrap()
+        .split_once("#bootstrap=")
+        .unwrap()
+        .1;
+    let (status, headers, _) = http(
+        &address,
+        post(
+            &address,
+            "/api/auth/exchange",
+            &format!("http://{address}"),
+            &json!({"token":bootstrap}).to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let cookie = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("set-cookie: "))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let resources = agent
+        .get_session(&id)
+        .unwrap()
+        .session_service::<UiResources>()
+        .unwrap();
+    let publisher = rutis::Ctx::root().unwrap();
+    let reference = resources
+        .publish_file(
+            &publisher,
+            PublishFile {
+                path: media.display().to_string(),
+                media_type: "text/plain".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let path = format!("/api/ui/sessions/{id}/resources/{}", reference.id);
+    let (status, _, body) = http(
+        &address,
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert_eq!((status, body.as_str()), (200, "0123456789"));
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

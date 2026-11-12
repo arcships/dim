@@ -218,6 +218,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "연결 끊김, 초안 보존됨. 종료 후 세션 재개"
         }
+        "Cannot open this Session; draft kept." => "이 세션을 열 수 없습니다, 초안 보존됨.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "연결 끊김, 초안 보존됨. 종료 후 실행: {command}"
         }

@@ -232,6 +232,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "切断。下書きは保持。終了してセッションを再開"
         }
+        "Cannot open this Session; draft kept." => "このセッションは開けません。下書きは保持。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "切断。下書きは保持。終了して実行：{command}"
         }

@@ -244,6 +244,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Terputus; draf disimpan. Keluar lalu lanjutkan Sesi ini."
         }
+        "Cannot open this Session; draft kept." => "Sesi ini tidak dapat dibuka; draf disimpan.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Terputus; draf disimpan. Keluar lalu jalankan: {command}"
         }

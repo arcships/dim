@@ -501,6 +501,18 @@ a shell command's outcome remains unknown. There is no automatic reconnect.
 +--------------------------------------------------------------+
 ```
 
+A Session the daemon refuses for its protocol version is refused again by every run of the
+client, so that refusal offers no command to run: the block states the failure and keeps the
+draft, and the Enter key's notice says `Cannot open this Session; draft kept.` rather than
+naming an exit and a resume. A Session recorded at an older version than the client's opens,
+so its failure block is the ordinary `${command}` one.
+
+```text
++-- Cannot open this Session; draft kept ----------------------+
+| > retained draft                                             |
++--------------------------------------------------------------+
+```
+
 Only one interactive `!` / `!!` command runs at once. A second command is refused with a
 notice and retains its draft; the first run keeps its progress, result and stop identity.
 Tool and shell text loses terminal escape/control sequences before layout; only the

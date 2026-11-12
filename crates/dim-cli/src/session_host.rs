@@ -409,7 +409,10 @@ async fn run(
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
-        let _ = updates.send(Update::StartupFailed(error.to_string()));
+        let _ = updates.send(Update::StartupFailed {
+            message: error.to_string(),
+            resumable: client::resume_can_succeed(&error),
+        });
         return;
     }
     loop {
@@ -443,7 +446,10 @@ async fn run(
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
-                        worker.send(Update::StartupFailed(error.to_string()));
+                        worker.send(Update::StartupFailed {
+                            message: error.to_string(),
+                            resumable: client::resume_can_succeed(&error),
+                        });
                         break;
                     }
                     let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
@@ -718,7 +724,9 @@ impl Worker {
                 }
                 permission::select(&mut self.client, &id, preset)
                     .await
-                    .map_err(|error| format!("Cannot set the permission preset: {error}"))?;
+                    .map_err(|error| {
+                        client::resume_failure("Cannot set the permission preset", error)
+                    })?;
             }
             adopt_startup(&mut self.client, &self.options, &id).await?;
             return self.attach(id, SwitchKind::Resumed).await;
@@ -4617,7 +4625,10 @@ pub(crate) async fn adopt_startup(
         .rpc("session.model.update", params)
         .await
         .map_err(|error| {
-            format!("Cannot adopt startup configuration for resumed Session: {error}")
+            client::resume_failure(
+                "Cannot adopt startup configuration for resumed Session",
+                error,
+            )
         })?;
     Ok(())
 }

@@ -248,6 +248,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Desligado; rascunho mantido. Saia e retome esta sessão."
         }
+        "Cannot open this Session; draft kept." => {
+            "Não é possível abrir esta sessão; rascunho mantido."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Desligado; rascunho mantido. Saia e execute: {command}"
         }

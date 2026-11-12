@@ -254,6 +254,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Getrennt; Entwurf behalten. Beenden und Session fortsetzen."
         }
+        "Cannot open this Session; draft kept." => {
+            "Diese Session lässt sich nicht öffnen; Entwurf behalten."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Getrennt; Entwurf behalten. Beenden und ausführen: {command}"
         }

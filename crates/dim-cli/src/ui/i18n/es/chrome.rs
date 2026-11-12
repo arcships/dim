@@ -248,6 +248,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Desconectado; borrador guardado. Sal y reanuda esta Sesión."
         }
+        "Cannot open this Session; draft kept." => {
+            "No se puede abrir esta Sesión; borrador guardado."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Desconectado; borrador guardado. Sal y ejecuta: {command}"
         }
