@@ -36,9 +36,9 @@ The CLI owns terminal and command interactions; the App Server owns host configu
 ### Sending, queuing and steering
 
 - Send: press Enter while idle to submit input and start the Agent; combine text, file references and images in one message.
-- Queue: press Enter during an Agent run to queue the draft without interrupting the current task.
+- Queue: hold the draft for the next run. Set the [default send mode](design/cli-commands.md#run-keys-and-queue) to choose the sending keys during a run.
 - Automatic sending: after the current run ends, send queued messages in submission order to start subsequent runs.
-- Steer: press Ctrl+S during an Agent run to add the draft to the current run's context at a subsequent Agent turn boundary, without stopping the task first. With an empty draft, Ctrl+S or Enter steers the oldest queued message; an empty queue has no effect.
+- Steer: send a draft or the oldest held message into the current run at a subsequent Agent turn boundary.
 - `/queue`: view messages awaiting submission and messages being incorporated into the current run; select an entry to steer or delete it.
 - Retrieve for editing: with an empty draft, press Shift+Left to move the newest queued message back into the input area. Messages with attachments or file references cannot be retrieved this way; use `/queue` to manage them.
 - Queue deletion: remove messages that have not been sent; a steering instruction already handed to the current run cannot be deleted as a queued message.

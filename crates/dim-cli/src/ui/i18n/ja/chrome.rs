@@ -18,8 +18,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "添付ファイル付きのメッセージはキューに残ります。/queue で steer または削除してください"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 最後を編集 · ctrl+s 今すぐ steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 管理 · Shift+← 最後を編集 · 下書きが空なら {key} で steer"
         }
         "+{count} more · {hint}" => "+{count} 件 · {hint}",
         "steer or delete queued messages" => "キューのメッセージを steer または削除",
@@ -391,6 +391,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "テーマ",
         "Language" => "言語",
         "Startup UI form" => "起動時の UI",
+        "Default send mode" => "既定の送信モード",
         "fullscreen" => "全画面",
         "scrollback" => "スクロールバック",
         "Tool details" => "ツール詳細",
@@ -528,11 +529,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "キーバインドを表示",
         "Application keys" => "アプリキー",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 送信またはキュー · 空の下書き: 最初のキューを steer · Shift+Enter/Ctrl+J 改行 · ↑↓ 履歴"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "待機中は Enter で送信 · Shift+Enter / Alt+Enter / Ctrl+J で改行 · ↑↓ 履歴"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P コマンド · Esc 中断、キューのメッセージは入力欄へ戻る · Ctrl+S 下書きまたは最初のキューを steer · Shift+← 最後のキューを編集"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "実行中の下書き: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "下書きが空なら {keys} でキューの先頭を steer",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P コマンド · Esc 中断、キューのメッセージは入力欄へ戻る · Shift+← 最後のキューを編集"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C クリア、2 回で終了 · 空なら Ctrl+D で終了"
