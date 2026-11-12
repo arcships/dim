@@ -2329,7 +2329,10 @@ It does not change
 `--permission` selects a preset, including its file scope and risk decisions; a call that still asks is denied
 the same way ([headless execution](#headless-execution)).
 Other exit codes retain the native CLI contract, including 2 for turn failure
-and 130 for interruption. A transport failure does not retry a submission.
+and 130 for interruption. The run's own outcome is the turn's: a failed model
+step that the turn recovered from, and a turn that completed at its output limit
+with reason `output_limit`, both exit 0 while still printing that step's failure
+line. A transport failure does not retry a submission.
 Repeated `--image` arguments follow the headless attachment contract: text first,
 then validated original image bytes in argument order, with paths relative to the
 invoking process. An image-only invocation is valid. A submission error on a live
