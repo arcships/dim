@@ -4255,7 +4255,7 @@ async fn a_live_reload_resolves_the_tool_that_started_before_hooks_mounted() {
         env.path("reloaded-post"),
     );
     env.sources.set(document(serde_json::json!({
-        "PostToolUse": [command(serde_json::json!({"type":"command", "command":format!("cat > {}",seen.display())}))]
+        "PostToolUse": [command(serde_json::json!({"type":"command", "command":format!("cat > {0}.tmp && mv {0}.tmp {0}",seen.display())}))]
     })));
     let session = env.session().await;
     let shell = format!(
