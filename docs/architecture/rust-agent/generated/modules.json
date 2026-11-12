@@ -47277,6 +47277,7 @@
         "path ImageRead",
         "path LOAD_MORE",
         "path ManagementDraft",
+        "path OVERLAY_MAX_ROWS",
         "path PendingPrompt",
         "path Prompt",
         "path Prompt::Ask",

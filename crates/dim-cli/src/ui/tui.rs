@@ -8198,7 +8198,9 @@ mod tests {
                         "{title} {size:?} fullscreen={fullscreen}: the keys: {screen}"
                     );
                 }
-                if natural.is_some_and(|natural| panel.len() >= natural) {
+                if natural.is_some_and(|natural| {
+                    panel.len() >= natural.min(if fullscreen { OVERLAY_MAX_ROWS } else { 18 })
+                }) {
                     reached = true;
                     break;
                 }
