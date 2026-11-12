@@ -4742,8 +4742,9 @@ struct EntryReferenceSeed {
 /// stays bounded, whichever page it is judging.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
-    // Enough refreshes to span more than one page of `prompt/changed` rows.
-    const REFRESHES: u32 = 200;
+    // More than a thousand refreshes after S: the suffix a long turn or an
+    // idle parent can leave, and far more than one page of `prompt/changed`.
+    const REFRESHES: u32 = 1_200;
 
     let store = Arc::new(CountContextReads::default());
     let mut profile = builder_with_context(
