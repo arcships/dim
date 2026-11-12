@@ -1062,7 +1062,24 @@ impl Worker {
             "mode": mode,
         });
         let result = self.client.rpc("session.submit", params).await;
+        self.report_value_warnings(&result);
         self.report_failure(result);
+    }
+
+    /// Shows the submit checks' warnings, which a successful reply carries
+    /// when a check did not do its own work (Hooks A.6.2): one warning row
+    /// per element, for a submit, a steer and a new line alike.
+    fn report_warnings(&mut self, warnings: &[dim_agent_types::SubmitWarning]) {
+        for warning in warnings {
+            self.report(warning.message.clone(), true);
+        }
+    }
+
+    /// The same for a reply the worker decoded as a bare value.
+    fn report_value_warnings(&mut self, result: &crate::Result<serde_json::Value>) {
+        if let Ok(reply) = result {
+            self.report_warnings(&crate::wire::warnings(reply));
+        }
     }
 
     /// Stores the draft's pastes as attachments, then submits its text
@@ -1122,6 +1139,7 @@ impl Worker {
             _ => params["user"] = json!(dim_agent_types::UserInput { content }),
         }
         let result = self.client.rpc("session.submit", params).await;
+        self.report_value_warnings(&result);
         self.report_failure(result);
     }
 
@@ -1168,6 +1186,8 @@ impl Worker {
                 #[derive(Deserialize)]
                 struct Opened {
                     branch: OpenedBranch,
+                    #[serde(default)]
+                    warnings: Vec<dim_agent_types::SubmitWarning>,
                 }
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase")]
@@ -1191,6 +1211,7 @@ impl Worker {
                     )
                     .await;
                 if let Ok(opened) = &opened {
+                    self.report_warnings(&opened.warnings);
                     self.discover_branch(&opened.branch.branch_id);
                     self.line_projection(&opened.branch.branch_id);
                     self.side = Some(opened.branch.branch_id.clone());
@@ -2078,12 +2099,15 @@ impl Worker {
                 #[derive(Deserialize)]
                 struct Withdrawn {
                     status: String,
+                    #[serde(default)]
+                    warnings: Vec<dim_agent_types::SubmitWarning>,
                 }
                 let result = self
                     .client
                     .typed::<Withdrawn>("session.input.withdraw", params)
                     .await;
                 if let Ok(withdrawn) = &result {
+                    self.report_warnings(&withdrawn.warnings);
                     self.retired_inputs
                         .insert(input_id, withdrawn.status == "notHeld");
                 }
@@ -5140,6 +5164,71 @@ mod tests {
         );
         worker.publish();
         assert!(snapshot().unread_lines.is_empty());
+    }
+
+    /// Hooks A.6.2: a successful submit reply that carries a check's warning
+    /// becomes a warning report, which the interface commits as a status row
+    /// in the warning colour.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_submit_replys_warning_becomes_a_warning_report() {
+        use rutis::host::CtxHost;
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let endpoint = home.path().join("daemon.sock");
+        let _listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let client = Client::open(
+            &dim_client::ConnectionConfig {
+                endpoint,
+                server: dim_client::Server {
+                    program: std::env::current_exe().unwrap(),
+                    embedded: false,
+                },
+                profile: None,
+                client_kind: "cli",
+                client_name: "dim-cli-test",
+                protocol_version: 4,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let options =
+            Options::parse(["--home".into(), home.path().to_str().unwrap().to_owned()].into_iter())
+                .unwrap();
+        let (updates, receiver) = mpsc::channel();
+        let mut worker = Worker::new(
+            options,
+            client,
+            updates,
+            rutis::Ctx::root().unwrap(),
+            tokio::sync::oneshot::channel().0,
+        );
+        let reply = json!({
+            "event": {"id": "in-1", "sequence": 1, "create_at": 1000, "type": "input",
+                "name": "message", "data": {}},
+            "warnings": [{
+                "check": "hooks",
+                "message": "Hook user did not finish: exited with exit status: 3",
+            }],
+        });
+        worker.report_value_warnings(&Ok(reply));
+        let reported = receiver
+            .try_iter()
+            .find_map(|update| match update {
+                Update::Report { text, warning } => Some((text, warning)),
+                _ => None,
+            })
+            .expect("the warning became a report");
+        assert_eq!(
+            reported,
+            (
+                "Hook user did not finish: exited with exit status: 3".to_owned(),
+                true
+            )
+        );
     }
 
     /// A `/runtime` change writes the configuration it carries and then

@@ -73,7 +73,8 @@ use crate::ui::transcript::commit::CommitState;
 use crate::ui::transcript::reveal::Reveal;
 use crate::ui::transcript::stream::{StreamPlanner, TextBlock, render_open};
 use crate::ui::transcript::tool_group::{
-    Detail, action_at, card_actions, card_rows, project_group, render_group,
+    Detail, ToolGroup, action_at, card_actions, card_rows, disclosure_at, disclosure_rows,
+    group_id, project_fullscreen_group, project_group, render_group,
 };
 use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
@@ -165,6 +166,7 @@ fn apply_jump(full: &mut FullScreen, app: &App, jump: Jump) {
 const NOTICE_TTL: Duration = Duration::from_millis(2500);
 /// The live region's pulse: one beat per 250 ms.
 const PULSE: Duration = Duration::from_millis(250);
+const PULSE_FRAMES: [&str; 4] = ["·", "•", "●", "•"];
 
 pub fn is_interactive() -> bool {
     use std::io::IsTerminal;
@@ -552,7 +554,7 @@ fn run_terminal(
                         dirty = true;
                     }
                     MouseOutcome::Click { block, row } => {
-                        if app.click(block, row) && block.is_some() {
+                        if app.click(block, row, full.layout_cols() as usize) {
                             full.hold();
                         }
                         dirty = true;
@@ -591,6 +593,14 @@ fn run_terminal(
                     KeyCode::BackTab | KeyCode::Down => full.focus_newer(&app),
                     KeyCode::Tab => full.focus_newer(&app),
                     KeyCode::Esc => full.clear_focus(),
+                    KeyCode::Enter | KeyCode::Char(' ')
+                        if key.mods.0 == 0 && full.focused_tool().is_some() =>
+                    {
+                        let (block, row) = full.focused_tool().expect("picked tool");
+                        if app.click(block, row, full.layout_cols() as usize) {
+                            full.hold();
+                        }
+                    }
                     KeyCode::Enter if key.mods.0 == 0 && full.focused_card().is_some() => {
                         let card = full.focused_card().expect("picked card").to_owned();
                         app.open_card(&card);
@@ -994,12 +1004,8 @@ struct App {
     /// committed group too).
     tool_detail: Detail,
     thinking_detail: Detail,
-    /// Groups the user opened or closed by a click, by their first call's
-    /// row id: a running group keeps its form when it commits.
-    group_details: HashMap<String, Detail>,
-    /// The live tail's group headers of the last frame: tail row, first
-    /// call's row id.
-    tail_groups: Vec<(usize, String)>,
+    tool_choices: HashMap<(String, String), HashMap<String, bool>>,
+    tail_groups: Vec<(usize, ToolGroup)>,
     notices: Vec<String>,
     reports: Vec<Block>,
     report_error: Option<crate::report::Captured>,
@@ -1426,7 +1432,7 @@ impl App {
             cwd_key,
             tool_detail: saved_tool_detail(&home),
             thinking_detail: saved_detail(&home, THINKING_DETAILS_KEY),
-            group_details: HashMap::new(),
+            tool_choices: HashMap::new(),
             tail_groups: Vec::new(),
             home,
             notices: Vec::new(),
@@ -2012,6 +2018,15 @@ impl App {
                 / PULSE.as_millis()) as u64;
             if beat != self.last_pulse {
                 self.last_pulse = beat;
+                if self.fullscreen {
+                    let running: Vec<_> = self.history.iter().enumerate().filter_map(|(at, block)| {
+                        matches!(block, Block::ToolGroup(group) if group.state == crate::ui::transcript::tool_group::State::Running)
+                            .then_some(self.dropped + at)
+                    }).collect();
+                    for id in running {
+                        self.mark_rewritten(id);
+                    }
+                }
                 changed = true;
             }
         }
@@ -4438,7 +4453,6 @@ impl App {
     fn toggle_tool_details(&mut self) {
         let detail = self.tool_detail.next();
         self.tool_detail = detail;
-        self.group_details.clear();
         for block in &mut self.history {
             match block {
                 Block::ToolGroup(group) => group.detail = detail,
@@ -4458,6 +4472,7 @@ impl App {
                 _ => {}
             }
         }
+        self.refresh_tool_choices();
         self.request_reflow();
         self.sync_compaction_details();
         if let Some(error) =
@@ -5474,7 +5489,6 @@ impl App {
             .max(1);
         live.push(String::new());
         let status = (self.prompt.is_none() && self.running()).then(|| {
-            const FRAMES: [&str; 4] = ["·", "•", "●", "•"];
             let started = self.run_started.unwrap_or_else(Instant::now);
             let elapsed = started.elapsed();
             let beat = (elapsed.as_millis() / PULSE.as_millis()) as usize;
@@ -5488,7 +5502,7 @@ impl App {
                 if seconds == 0 {
                     return format!(
                         "{} {}",
-                        FRAMES[beat % FRAMES.len()],
+                        PULSE_FRAMES[beat % PULSE_FRAMES.len()],
                         tf(
                             "Waiting for the provider · {reason} · Esc stops",
                             &[("reason", &reason)]
@@ -5497,7 +5511,7 @@ impl App {
                 }
                 return format!(
                     "{} {}",
-                    FRAMES[beat % FRAMES.len()],
+                    PULSE_FRAMES[beat % PULSE_FRAMES.len()],
                     tf(
                         "Retrying {attempt}/{max} in {seconds} s · {reason} · Esc stops",
                         &[
@@ -5521,7 +5535,7 @@ impl App {
             };
             format!(
                 "{} {}",
-                FRAMES[beat % FRAMES.len()],
+                PULSE_FRAMES[beat % PULSE_FRAMES.len()],
                 tf(label, &[("elapsed", &format_elapsed(elapsed))])
             )
         });
@@ -6084,15 +6098,13 @@ impl App {
         );
         let mut commits: Vec<String> = Vec::new();
         let mut sources: Vec<(Block, Placement)> = Vec::new();
-        let (overrides, global) = (&self.group_details, self.tool_detail);
+        let global = self.tool_detail;
+        let choices = self.tool_choices.get(&self.tool_scope());
         let detail_of = |index: usize| {
             if snapshot.rows[index].kind == RowKind::Thinking {
                 return self.thinking_detail;
             }
-            overrides
-                .get(&snapshot.rows[index].row_id)
-                .copied()
-                .unwrap_or(global)
+            global
         };
         let streamed = |batch: crate::ui::transcript::stream::Batch| {
             let placement = if batch.continues {
@@ -6131,6 +6143,13 @@ impl App {
                 (RowKind::AssistantMessage, Some(batch)) => streamed(batch),
                 _ => {
                     let mut block = project_row(&snapshot.rows, index, detail_of(index));
+                    if self.fullscreen && snapshot.rows[index].kind == RowKind::ToolCall {
+                        block = Block::ToolGroup(project_fullscreen_group(
+                            &group_rows(&snapshot.rows, index),
+                            global,
+                            choices,
+                        ));
+                    }
                     if forced.contains(&index)
                         && let Block::User { pending, .. } = &mut block
                     {
@@ -6255,13 +6274,20 @@ impl App {
                     }
                 }
                 LiveItem::Tool(index) => {
-                    tail_groups.push((tail.len() + 1, snapshot.rows[*index].row_id.clone()));
-                    render_group(
-                        &project_group(&group_rows(&snapshot.rows, *index), detail_of(*index)),
-                        width,
-                        p,
-                        RUNNING_MARK,
-                    )
+                    let rows = group_rows(&snapshot.rows, *index);
+                    let group = if self.fullscreen {
+                        project_fullscreen_group(&rows, global, choices)
+                    } else {
+                        project_group(&rows, global)
+                    };
+                    let activity = if self.fullscreen {
+                        PULSE_FRAMES[self.last_pulse as usize % PULSE_FRAMES.len()]
+                    } else {
+                        RUNNING_MARK
+                    };
+                    let rendered = render_group(&group, width, p, activity);
+                    tail_groups.push((tail.len() + 1, group));
+                    rendered
                 }
                 LiveItem::Row(index) => render_block(
                     &project_row(&snapshot.rows, *index, detail_of(*index)),
@@ -6541,25 +6567,21 @@ impl App {
     /// A click on transcript row `row` of committed block `block` (stable
     /// id), or of the live tail: on a tool group's header it opens or closes
     /// that group. Whether it did.
-    fn click(&mut self, block: Option<usize>, row: usize) -> bool {
-        let Some(id) = block else {
-            if let Some((_, first)) = self.tail_groups.iter().find(|(at, _)| *at == row) {
-                let current = self
-                    .group_details
-                    .get(first)
-                    .copied()
-                    .unwrap_or(self.tool_detail);
-                self.group_details.insert(first.clone(), current.next());
-                return true;
-            }
-            return false;
-        };
+    fn click(&mut self, block: Option<usize>, row: usize, cols: usize) -> bool {
+        if let Some((node, open)) = self.tool_disclosure(block, row, cols) {
+            self.tool_choices
+                .entry(self.tool_scope())
+                .or_default()
+                .insert(node, !open);
+            self.refresh_tool_choices();
+            return true;
+        }
+        let Some(id) = block else { return false };
         if row != 1 {
             return false;
         }
         let index = id.checked_sub(self.dropped);
         match index.and_then(|index| self.history.get_mut(index)) {
-            Some(Block::ToolGroup(group)) => group.detail = group.detail.next(),
             Some(Block::Compaction {
                 expanded,
                 text,
@@ -6583,6 +6605,75 @@ impl App {
         true
     }
 
+    fn tool_scope(&self) -> (String, String) {
+        (
+            self.session_id.clone(),
+            self.snapshot
+                .as_ref()
+                .map_or("main", |snapshot| snapshot.focus.as_str())
+                .to_owned(),
+        )
+    }
+
+    fn tool_disclosure(
+        &self,
+        block: Option<usize>,
+        row: usize,
+        cols: usize,
+    ) -> Option<(String, bool)> {
+        let width = cols.saturating_sub(2 + MARGIN).max(1);
+        let (group, row) = match block {
+            Some(id) => {
+                let Block::ToolGroup(group) = self.history.get(id.checked_sub(self.dropped)?)?
+                else {
+                    return None;
+                };
+                (group, row.checked_sub(1)?)
+            }
+            None => self
+                .tail_groups
+                .iter()
+                .rev()
+                .find_map(|(start, group)| row.checked_sub(*start).map(|row| (group, row)))?,
+        };
+        disclosure_at(group, width, &self.palette, row).map(|(id, open)| (id.to_owned(), open))
+    }
+
+    fn refresh_tool_choices(&mut self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let choices = self.tool_choices.get(&self.tool_scope());
+        let mut openings = HashMap::new();
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if opens_group(&snapshot.rows, index) {
+                openings.entry(group_id(row)).or_insert(index);
+            }
+        }
+        let mut changed = Vec::new();
+        for (at, block) in self.history.iter().enumerate() {
+            let Block::ToolGroup(group) = block else {
+                continue;
+            };
+            let Some(&index) = openings.get(&group.id) else {
+                continue;
+            };
+            let rows = group_rows(&snapshot.rows, index);
+            let fresh = if self.fullscreen {
+                project_fullscreen_group(&rows, self.tool_detail, choices)
+            } else {
+                project_group(&rows, self.tool_detail)
+            };
+            if fresh != *group {
+                changed.push((at, fresh))
+            }
+        }
+        for (at, group) in changed {
+            self.history[at] = Block::ToolGroup(group);
+            self.mark_rewritten(self.dropped + at);
+        }
+    }
+
     /// Block `id` changed in place: fullscreen lays it out again.
     fn mark_rewritten(&mut self, id: usize) {
         self.rewrites += 1;
@@ -6597,6 +6688,7 @@ impl App {
         if on {
             self.redraw_window();
         } else {
+            self.refresh_tool_choices();
             self.settle_committed_messages();
         }
         self.request_reflow();
@@ -6712,7 +6804,11 @@ impl App {
             {
                 open.push(*id);
             }
-            let fresh = project_group(&rows, group.detail);
+            let fresh = project_fullscreen_group(
+                &rows,
+                self.tool_detail,
+                self.tool_choices.get(&self.tool_scope()),
+            );
             if fresh != *group {
                 changed.push((*id, fresh));
             }
@@ -6787,6 +6883,12 @@ impl App {
                 &self.palette,
                 self.branch.as_deref().unwrap_or(t("Not available")),
             ),
+            Block::ToolGroup(group) if self.fullscreen => chunk(&render_group(
+                group,
+                width,
+                &self.palette,
+                PULSE_FRAMES[self.last_pulse as usize % PULSE_FRAMES.len()],
+            )),
             block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
         }
     }
@@ -7049,6 +7151,21 @@ impl App {
 }
 
 impl Document for App {
+    fn disclosure(&self, block: Option<usize>, cols: usize, row: usize) -> Option<String> {
+        let (node, _) = self.tool_disclosure(block, row, cols)?;
+        Some(serde_json::to_string(&(self.tool_scope(), node)).expect("tool identity is JSON"))
+    }
+
+    fn tool_rows(&self, index: usize, cols: usize) -> Vec<usize> {
+        let Block::ToolGroup(group) = &self.history[index] else {
+            return Vec::new();
+        };
+        disclosure_rows(group, cols.saturating_sub(2 + MARGIN).max(1), &self.palette)
+            .into_iter()
+            .map(|row| row + 1)
+            .collect()
+    }
+
     fn rewritten(&self, since: u64) -> (u64, Option<Vec<usize>>) {
         let count = (self.rewrites - since) as usize;
         let ids = (count <= self.rewrite_log.len())
@@ -12214,6 +12331,420 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_tools_keep_each_level_independent_across_live_settle_and_rebuild() {
+        use crate::ui::render::panel::strip_escapes;
+
+        let call = |request: &str, id: &str, parent: Option<&str>, name: &str, output: &str| {
+            let mut row = (*message(false)).clone();
+            row.row_id = serde_json::to_string(&(request, id)).unwrap();
+            row.kind = RowKind::ToolCall;
+            row.text.clear();
+            row.call_id = Some(id.into());
+            row.batch = Some(request.into());
+            row.parent_call_id = parent.map(str::to_owned);
+            row.tool_name = Some(name.into());
+            row.tool_input = Some(serde_json::json!({"command": format!("echo {id}")}));
+            row.result_text = Some(output.into());
+            std::sync::Arc::new(row)
+        };
+        let text = |app: &mut App, cols: usize| {
+            let frame = app.frame((cols as u16, 40));
+            let rows = (0..app.len()).flat_map(|index| app.rows(index, cols));
+            strip_escapes(&rows.chain(frame.live).collect::<Vec<_>>().join("\n"))
+        };
+        let toggle = |app: &mut App, label: &str, cols: usize| {
+            let frame = app.frame((cols as u16, 40));
+            let target = (0..app.len())
+                .find_map(|index| {
+                    app.rows(index, cols)
+                        .iter()
+                        .enumerate()
+                        .find_map(|(row, line)| {
+                            let block = Some(app.dropped() + index);
+                            (strip_escapes(line).contains(label)
+                                && app.disclosure(block, cols, row).is_some())
+                            .then_some((block, row))
+                        })
+                })
+                .or_else(|| {
+                    frame.live.iter().enumerate().find_map(|(row, line)| {
+                        (strip_escapes(line).contains(label)
+                            && app.disclosure(None, cols, row).is_some())
+                        .then_some((None, row))
+                    })
+                })
+                .unwrap_or_else(|| panic!("no header {label}: {}", text(app, cols)));
+            assert!(app.click(target.0, target.1, cols));
+        };
+        let mut drawn = attached();
+        drawn.app.set_fullscreen(true);
+        let mut rows = vec![
+            call("r1", "a", None, "exec", "alpha output"),
+            call("r1", "b", None, "exec", "beta output"),
+        ];
+        std::sync::Arc::make_mut(&mut rows[0]).pending = true;
+        std::sync::Arc::make_mut(&mut rows[0]).result_text = None;
+        show(&mut drawn, rows.clone());
+        let mut running = drawn.app.snapshot.as_ref().unwrap().clone();
+        running.running = true;
+        drawn.app.apply(Update::Snapshot(Box::new(running)));
+        let before = text(&mut drawn.app, 80);
+        assert!(drawn.app.tick_at(drawn.app.run_started.unwrap() + PULSE));
+        let pulsing = text(&mut drawn.app, 80);
+        assert_ne!(before, pulsing);
+        assert!(pulsing.contains("• Running 2 commands"), "{pulsing}");
+        toggle(&mut drawn.app, "Running 2 commands", 80);
+        assert!(!text(&mut drawn.app, 80).contains("beta output"));
+        toggle(&mut drawn.app, "echo a", 80);
+        assert!(text(&mut drawn.app, 80).contains("Waiting for result"));
+        assert!(!text(&mut drawn.app, 80).contains("beta output"));
+        toggle(&mut drawn.app, "echo b", 80);
+        toggle(&mut drawn.app, "echo b", 80);
+        toggle(&mut drawn.app, "Running 2 commands", 80);
+        toggle(&mut drawn.app, "Running 2 commands", 80);
+        assert!(text(&mut drawn.app, 80).contains("Waiting for result"));
+        assert!(text(&mut drawn.app, 80).contains("Running…"));
+        std::sync::Arc::make_mut(&mut rows[0]).result_text = Some("partial output".into());
+        show(&mut drawn, rows.clone());
+        assert!(text(&mut drawn.app, 80).contains("partial output"));
+        assert!(!text(&mut drawn.app, 80).contains("Waiting for result"));
+        std::sync::Arc::make_mut(&mut rows[0]).pending = false;
+        std::sync::Arc::make_mut(&mut rows[0]).result_text = Some("alpha output".into());
+        show(&mut drawn, rows.clone());
+        assert!(text(&mut drawn.app, 80).contains("alpha output"));
+        assert!(!text(&mut drawn.app, 80).contains("beta output"));
+        drawn.app.run_command("tools", "");
+        drawn.app.run_command("tools", "");
+        assert!(text(&mut drawn.app, 35).contains("alpha output"));
+        assert!(!text(&mut drawn.app, 35).contains("beta output"));
+        drawn.app.redraw_window();
+        assert!(text(&mut drawn.app, 35).contains("alpha output"));
+        assert!(!text(&mut drawn.app, 35).contains("beta output"));
+
+        rows.extend([
+            call("r2", "a", None, "exec", "another request"),
+            call("r2", "b", None, "exec", "second request sibling"),
+        ]);
+        show(&mut drawn, rows.clone());
+        assert!(text(&mut drawn.app, 80).contains("second request sibling"));
+        let snapshot = drawn.app.snapshot.as_ref().unwrap().clone();
+        for (session, branch) in [("s1", "line"), ("s2", "main")] {
+            let mut other = snapshot.clone();
+            other.session_id = session.into();
+            other.focus = branch.into();
+            if drawn.app.session_id != session {
+                drawn
+                    .app
+                    .switch_session(session.into(), SwitchKind::Resumed);
+            }
+            drawn.app.apply(Update::Snapshot(Box::new(other)));
+            assert!(text(&mut drawn.app, 80).contains("beta output"));
+        }
+        drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
+        drawn.app.apply(Update::Snapshot(Box::new(snapshot)));
+        assert!(!text(&mut drawn.app, 80).contains("beta output"));
+
+        drawn.app.tool_detail = Detail::Summary;
+        let tree = vec![
+            call("tree", "parent-a", None, "codemode", ""),
+            call("tree", "parent-b", None, "codemode", ""),
+            call("tree", "one", Some("parent-a"), "exec", "first child"),
+            call("tree", "nested", Some("parent-a"), "codemode", ""),
+            call("tree", "deep", Some("nested"), "exec", "deep output"),
+            call("tree", "two", Some("parent-b"), "exec", "second child"),
+        ];
+        show(&mut drawn, tree);
+        let visible = text(&mut drawn.app, 80);
+        assert!(visible.contains("echo deep"), "{visible}");
+        assert!(!visible.contains("deep output"), "{visible}");
+        toggle(&mut drawn.app, "echo deep", 80);
+        toggle(&mut drawn.app, "Ran code · 2 tool calls", 80);
+        let visible = text(&mut drawn.app, 80);
+        assert!(!visible.contains("echo one"), "{visible}");
+        assert!(visible.contains("echo two"), "{visible}");
+        toggle(&mut drawn.app, "Ran code · 2 tool calls", 80);
+        assert!(text(&mut drawn.app, 80).contains("deep output"));
+        assert!(!text(&mut drawn.app, 80).contains("second child"));
+    }
+
+    #[test]
+    fn fullscreen_command_previews_preserve_background_handoff_status() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for background in [false, true] {
+            for command in ["server --listen", "server --listen\necho ready"] {
+                let mut drawn = attached();
+                drawn.app.set_fullscreen(true);
+                drawn.app.tool_detail = Detail::Expanded;
+                let mut row = (*message(false)).clone();
+                row.kind = RowKind::ToolCall;
+                row.row_id = "command".into();
+                row.call_id = Some("exec-call".into());
+                row.batch = Some("exec-request".into());
+                row.tool_name = Some("exec".into());
+                row.tool_input = Some(serde_json::json!({
+                    "command": command,
+                    "runInBackground": background,
+                }));
+                row.result_text = Some("Execution completed".into());
+                show(&mut drawn, vec![row.into()]);
+                let frame = drawn.app.frame((96, 40));
+                let rows: Vec<_> = (0..drawn.app.len())
+                    .flat_map(|index| drawn.app.rows(index, 96))
+                    .chain(frame.live)
+                    .collect();
+                let rendered = strip_escapes(&rows.join("\n"));
+                let header = rendered
+                    .lines()
+                    .find(|line| line.contains("$ server"))
+                    .unwrap();
+                assert_eq!(header.contains("(detached)"), background, "{rendered}");
+                assert!(!header.contains("echo ready"), "{rendered}");
+                assert!(rendered.contains("Ran 1 command"), "{rendered}");
+                assert_eq!(
+                    rendered.contains("Execution completed"),
+                    !background,
+                    "{rendered}"
+                );
+                if command.contains('\n') {
+                    assert!(rendered.contains("echo ready"), "{rendered}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_file_tools_show_recorded_comparisons_not_proposed_or_current_content() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for (name, diff, expected) in [
+            (
+                "edit",
+                Some(
+                    "@@ -41,2 +41,2 @@\n-old value\n+new value\n context\n@@ -50 +50 @@\n-before\n+after\n",
+                ),
+                "Edit",
+            ),
+            (
+                "write",
+                Some("--- /dev/null\n+++ new.rs\n@@ -0,0 +1,2 @@\n+first line\n+second line\n"),
+                "Create",
+            ),
+            (
+                "write",
+                Some("--- existing.rs\n+++ existing.rs\n@@ -1 +1 @@\n-old value\n+new value\n"),
+                "Write",
+            ),
+            (
+                "write",
+                Some("--- existing.rs\n+++ existing.rs\n@@ -0,0 +1 @@\n+first line\n"),
+                "Write",
+            ),
+            (
+                "write",
+                Some("--- existing.rs\n+++ existing.rs\n"),
+                "No content changes.",
+            ),
+            (
+                "write",
+                None,
+                "Before/after comparison is unavailable for this record.",
+            ),
+        ] {
+            for state in ["done", "running", "failed"] {
+                let mut drawn = attached();
+                drawn.app.set_fullscreen(true);
+                drawn.app.tool_detail = Detail::Expanded;
+                let mut row = (*message(false)).clone();
+                row.kind = RowKind::ToolCall;
+                row.row_id = "file-operation".into();
+                row.call_id = Some("file-call".into());
+                row.batch = Some("file-request".into());
+                row.tool_name = Some(name.into());
+                row.tool_input = Some(
+                    serde_json::json!({"path":"src/file.rs", "content":"do not fabricate this input", "oldText":"not recorded old", "newText":"not recorded new"}),
+                );
+                row.result_text = Some(
+                    if state == "failed" {
+                        "revision conflict"
+                    } else {
+                        "completed"
+                    }
+                    .into(),
+                );
+                row.result_is_error = state == "failed";
+                row.pending = state == "running";
+                row.diff = diff.map(str::to_owned);
+                show(&mut drawn, vec![row.into()]);
+                let frame = drawn.app.frame((96, 40));
+                let rows: Vec<_> = (0..drawn.app.len())
+                    .flat_map(|index| drawn.app.rows(index, 96))
+                    .chain(frame.live)
+                    .collect();
+                let rendered = strip_escapes(&rows.join("\n"));
+                assert!(!rendered.contains("fabricate"), "{rendered}");
+                assert!(!rendered.contains("not recorded"), "{rendered}");
+                if state == "done" {
+                    assert!(rendered.contains(expected), "{rendered}");
+                    if name == "edit" {
+                        assert!(rendered.contains("41     −  old value"), "{rendered}");
+                        assert!(rendered.contains("    41 +  new value"), "{rendered}");
+                        assert!(rendered.contains("7 unchanged lines"), "{rendered}");
+                    }
+                } else {
+                    assert!(!rendered.contains("Changes"), "{rendered}");
+                    assert!(!rendered.contains("old value"), "{rendered}");
+                    assert!(
+                        rendered.contains(if state == "failed" {
+                            "revision conflict"
+                        } else {
+                            "Waiting for result"
+                        }),
+                        "{rendered}"
+                    );
+                }
+                for (index, lines) in rows.iter().enumerate() {
+                    if strip_escapes(lines).contains("old value") {
+                        assert!(
+                            drawn
+                                .app
+                                .disclosure(Some(drawn.app.dropped()), 96, index)
+                                .is_none()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_codemode_headers_match_state_children_and_available_details() {
+        use crate::ui::render::panel::strip_escapes;
+
+        let call = |id: &str, parent: Option<&str>, name: &str, state: &str| {
+            let mut row = (*message(false)).clone();
+            row.kind = RowKind::ToolCall;
+            row.row_id = id.into();
+            row.call_id = Some(id.into());
+            row.batch = Some("code-request".into());
+            row.parent_call_id = parent.map(str::to_owned);
+            row.tool_name = Some(name.into());
+            row.tool_input = Some(serde_json::json!({"command":"echo child"}));
+            row.pending = state == "running";
+            row.result_is_error = state == "failed";
+            row.result_text = (state != "running").then(|| "code result".into());
+            std::sync::Arc::new(row)
+        };
+        let visible_rows = |app: &mut App| {
+            let frame = app.frame((96, 40));
+            let mut rows = Vec::new();
+            for index in 0..app.len() {
+                for (row, line) in app.rows(index, 96).into_iter().enumerate() {
+                    rows.push((Some(app.dropped() + index), row, line));
+                }
+            }
+            rows.extend(
+                frame
+                    .live
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, line)| (None, row, line)),
+            );
+            rows
+        };
+        for state in ["done", "running", "failed"] {
+            let mut drawn = attached();
+            drawn.app.set_fullscreen(true);
+            show(&mut drawn, vec![call("program-a", None, "codemode", state)]);
+            let rows = visible_rows(&mut drawn.app);
+            let (block, row) = rows
+                .iter()
+                .find_map(|(block, row, line)| {
+                    strip_escapes(line)
+                        .contains("code")
+                        .then_some((*block, *row))
+                })
+                .unwrap();
+            assert_eq!(
+                drawn.app.disclosure(block, 96, row).is_some(),
+                state != "done"
+            );
+            assert_eq!(drawn.app.click(block, row, 96), state != "done");
+            if state != "done" {
+                let rendered = strip_escapes(
+                    &visible_rows(&mut drawn.app)
+                        .into_iter()
+                        .map(|(_, _, line)| line)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                assert!(
+                    rendered.contains(if state == "running" {
+                        "Waiting for result"
+                    } else {
+                        "code result"
+                    }),
+                    "{rendered}"
+                );
+            }
+        }
+        for state in ["done", "running"] {
+            for children in [0, 1, 2] {
+                let mut drawn = attached();
+                drawn.app.set_fullscreen(true);
+                drawn.app.tool_detail = Detail::Expanded;
+                let mut rows = vec![
+                    call("program-a", None, "codemode", state),
+                    call("program-b", None, "codemode", "done"),
+                ];
+                for child in 0..children {
+                    rows.push(call(
+                        &format!("child-{child}"),
+                        Some("program-a"),
+                        "exec",
+                        "done",
+                    ));
+                }
+                show(&mut drawn, rows);
+                let rows = visible_rows(&mut drawn.app);
+                let header = rows.iter().find_map(|(block, row, line)| {
+                    drawn
+                        .app
+                        .disclosure(*block, 96, *row)
+                        .filter(|key| key.contains("call:program-a"))
+                        .map(|_| strip_escapes(line))
+                });
+                if children == 0 && state == "done" {
+                    assert!(header.is_none());
+                } else {
+                    let header = header.unwrap();
+                    assert!(
+                        header.contains(if state == "running" {
+                            "Running code"
+                        } else {
+                            "Ran code"
+                        }),
+                        "{header}"
+                    );
+                    if children > 0 {
+                        assert!(
+                            header.contains(if children == 1 {
+                                "1 tool call"
+                            } else {
+                                "2 tool calls"
+                            }),
+                            "{header}"
+                        );
+                        assert!(!header.contains("1 tool calls"), "{header}");
+                    } else {
+                        assert!(!header.contains("tool calls"), "{header}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn expanded_thinking_streams_into_native_history_without_repeating_on_completion() {
         let paragraphs = (1..=45)
             .map(|n| format!("Step{n:02}: inspect the lock before waiting."))
@@ -12281,6 +12812,50 @@ mod tests {
                 assert!(drawn.transcript().contains("Step45:"));
                 assert_eq!(drawn.anchor(), anchor);
             }
+        }
+    }
+
+    #[test]
+    fn fullscreen_file_totals_require_all_completed_comparisons() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for complete in [false, true] {
+            let mut drawn = attached();
+            drawn.app.set_fullscreen(true);
+            drawn.app.tool_detail = Detail::Expanded;
+            let rows = ["first.rs", "second.rs"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let mut row = (*message(false)).clone();
+                    row.kind = RowKind::ToolCall;
+                    row.row_id = path.into();
+                    row.call_id = Some(path.into());
+                    row.batch = Some("write-request".into());
+                    row.tool_name = Some("write".into());
+                    row.tool_input = Some(serde_json::json!({"path":path}));
+                    row.result_text = Some("Wrote file".into());
+                    row.diff = (complete || index == 0)
+                        .then(|| "@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
+                    std::sync::Arc::new(row)
+                })
+                .collect();
+            show(&mut drawn, rows);
+            let _ = drawn.app.frame((96, 40));
+            let rows = drawn.app.reflow_history(96);
+            let rendered = strip_escapes(&rows.join("\n"));
+            let header = rendered
+                .lines()
+                .find(|line| line.contains("Changed 2 files"))
+                .unwrap();
+            assert_eq!(header.contains("(+4 -2)"), complete, "{rendered}");
+            assert_eq!(header.contains('('), complete, "{rendered}");
+            assert!(rendered.contains("Write first.rs +2 −1"), "{rendered}");
+            assert_eq!(
+                rendered.contains("comparison is unavailable"),
+                !complete,
+                "{rendered}"
+            );
         }
     }
 
@@ -12590,7 +13165,7 @@ mod tests {
                 tool.text.clear();
                 tool.tool_name = Some("exec".into());
                 tool.tool_input = Some(serde_json::json!({"command": "cargo check"}));
-                tool.result_text = Some("Build succeeded".into());
+                tool.result_text = (!streaming).then(|| "Build succeeded".into());
                 tool.pending = streaming;
                 let rows = vec![message(false), thought.into(), tool.into()];
                 let snapshot = ViewSnapshot {
@@ -15382,7 +15957,7 @@ mod tests {
                     .iter()
                     .position(|block| matches!(block, Block::Compaction { .. }))
                     .unwrap();
-            assert!(drawn.app.click(Some(block), 1));
+            assert!(drawn.app.click(Some(block), 1, 100));
             assert!(
                 matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.len() == 1 && targets.first().unwrap().session_id == "source")
             );
@@ -15400,7 +15975,7 @@ mod tests {
             assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
             assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
             drop(body);
-            assert!(drawn.app.click(Some(block), 1));
+            assert!(drawn.app.click(Some(block), 1, 100));
             assert!(
                 matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
             );
@@ -15412,7 +15987,7 @@ mod tests {
                 weak.upgrade().is_none(),
                 "closed detail has no retained shared body"
             );
-            assert!(drawn.app.click(Some(block), 1));
+            assert!(drawn.app.click(Some(block), 1, 100));
             drawn.app.switch_session("fork".into(), SwitchKind::Resumed);
             snapshot.session_id = "fork".into();
             snapshot.projection_id = 1;

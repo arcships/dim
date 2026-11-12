@@ -178,7 +178,7 @@ impl HooksRuntime {
             let handler = handler.clone();
             waiting.push(async move {
                 HookRun {
-                    result: self.run_one(&handler, stdin, cancel).await,
+                    result: self.run_one(&handler, stdin, cancel, None).await,
                     on_failure: handler.on_failure,
                     source: handler.source,
                 }
@@ -200,7 +200,7 @@ impl HooksRuntime {
                 biased;
                 _ = cancel.cancelled() => {}
                 _ = generation.cancelled() => {}
-                _ = owner.run_one(&handler, stdin, &generation) => {}
+                _ = owner.run_one(&handler, stdin, &generation, None) => {}
             }
         });
     }
@@ -218,11 +218,17 @@ impl HooksRuntime {
             return Err(interrupted());
         }
         let Some(snapshot) = self.snapshot().await else {
-            return Ok(SubmitCheckReply::Proceed { blocks: Vec::new() });
+            return Ok(SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            });
         };
         let matching = handlers(&snapshot, HookEvent::UserPromptSubmit, None, None);
         if matching.is_empty() {
-            return Ok(SubmitCheckReply::Proceed { blocks: Vec::new() });
+            return Ok(SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            });
         }
         let mut payload = self.payload(HookEvent::UserPromptSubmit, &request.branch_id);
         payload.insert(
@@ -233,18 +239,18 @@ impl HooksRuntime {
         if cancel.is_cancelled() {
             return Err(interrupted());
         }
-        // An unload settles the pending check before the part goes: the
-        // running commands are terminated and every handler answers by its
-        // `onFailure` (§1, A.5).
-        let decisions = tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => return Ok(unfinished_prompt(&matching)),
-            decisions = self.run_prompt_handlers(&matching, &payload, cancel) => decisions,
-        };
+        // An unload settles the pending check before the part goes: a handler
+        // that already finished keeps its own result, and only the ones still
+        // running answer by `onFailure` with `Hooks was unloaded` (§1, §3.3,
+        // A.5).
+        let decisions = self
+            .run_prompt_handlers(&matching, &payload, cancel, Some(&self.cancel))
+            .await;
         if cancel.is_cancelled() {
             return Err(interrupted());
         }
         let mut blocks = Vec::new();
+        let mut warnings = Vec::new();
         for decision in decisions {
             match decision {
                 PromptDecision::Blocked { message } => {
@@ -255,21 +261,28 @@ impl HooksRuntime {
                     &[("kind", "prompt-submit")],
                     &escaped(&[context]),
                 )),
+                PromptDecision::Unfinished(warning) => warnings.push(warning),
                 PromptDecision::None => {}
             }
         }
-        Ok(SubmitCheckReply::Proceed { blocks })
+        Ok(SubmitCheckReply::Proceed { blocks, warnings })
     }
 
     /// Runs the handlers concurrently and returns their decisions in catalog
     /// order up to and including the first one that stops the point; the
     /// handlers after it are terminated (A.5). An `async` handler starts and
     /// is not waited for.
+    ///
+    /// With `unload`, a part that unloads before the point settles it: a
+    /// handler that already finished keeps its own run, only the ones still
+    /// running are answered as [`UNLOADED`] (Hooks §1, §3.3, A.5), and one
+    /// whose process has not started does not start it.
     async fn run_ordered<T>(
         self: &Arc<Self>,
         handlers: &[HookHandler],
         payload: &JsonObject,
         cancel: &CancellationToken,
+        unload: Option<&CancellationToken>,
         decide: impl Fn(&HookHandler, &HookRun) -> (bool, T),
     ) -> Vec<T> {
         let mut running: Vec<HookHandler> = Vec::new();
@@ -295,8 +308,11 @@ impl HooksRuntime {
             let owner = self.clone();
             let owned = handler.clone();
             let future_handler = owned.clone();
+            let gate = unload.cloned();
             pending.push(Box::pin(async move {
-                let result = owner.run_one(&future_handler, stdin, &token).await;
+                let result = owner
+                    .run_one(&future_handler, stdin, &token, gate.as_ref())
+                    .await;
                 (position, result)
             }));
             running.push(owned);
@@ -309,8 +325,14 @@ impl HooksRuntime {
             // arrived. Every slot from `next` on is either filled or owned by
             // one of them, so the loop never selects on an empty list.
             while slots[next].is_none() {
-                let ((position, result), _, rest) = futures_util::future::select_all(pending).await;
-                pending = rest;
+                let Some((position, result)) = next_run(&mut pending, unload).await else {
+                    for (position, slot) in slots.iter_mut().enumerate().skip(next) {
+                        if slot.is_none() {
+                            *slot = Some(unloaded_run(&running[position]));
+                        }
+                    }
+                    break;
+                };
                 slots[position] = Some(HookRun {
                     result,
                     on_failure: running[position].on_failure,
@@ -335,14 +357,16 @@ impl HooksRuntime {
     }
 
     /// `UserPromptSubmit`'s decisions in catalog order, up to and including
-    /// the first block (A.5).
+    /// the first block (A.5). `unload` settles the point early; see
+    /// [`Self::run_ordered`].
     async fn run_prompt_handlers(
         self: &Arc<Self>,
         handlers: &[HookHandler],
         payload: &JsonObject,
         cancel: &CancellationToken,
+        unload: Option<&CancellationToken>,
     ) -> Vec<PromptDecision> {
-        self.run_ordered(handlers, payload, cancel, |handler, run| {
+        self.run_ordered(handlers, payload, cancel, unload, |handler, run| {
             let decision = prompt_decision(handler, run);
             let stops = matches!(decision, PromptDecision::Blocked { .. });
             (stops, decision)
@@ -350,11 +374,16 @@ impl HooksRuntime {
         .await
     }
 
+    /// Runs one handler. `gate` is the point's unload, when the point settles
+    /// an unload by `onFailure` (A.5's reload row): a gate cancelled once the
+    /// spec is built ends the run without starting its process, with
+    /// [`unloaded_run`]'s result and no diagnostic.
     async fn run_one(
         &self,
         handler: &HookHandler,
         stdin: Vec<u8>,
         cancel: &CancellationToken,
+        gate: Option<&CancellationToken>,
     ) -> HookResult {
         let command = handler.command(self.platform.os == Os::Windows);
         let started = Instant::now();
@@ -371,6 +400,12 @@ impl HooksRuntime {
             }
         };
         spec.env = hook_env(spec.env, &self.environment(handler));
+        if gate.is_some_and(|gate| gate.is_cancelled()) {
+            return HookResult::Failed {
+                reason: UNLOADED.into(),
+                stderr: String::new(),
+            };
+        }
         let mut tree = match self.platform.spawn_with_stdin(spec, stdin) {
             Ok(tree) => tree,
             Err(error) => {
@@ -689,23 +724,62 @@ fn mode_name(mode: InputMode) -> &'static str {
     }
 }
 
-/// What an unload answers for the handlers that were running (A.5): each one
-/// did not finish, so the first `onFailure: block` in catalog order blocks.
-fn unfinished_prompt(handlers: &[HookHandler]) -> SubmitCheckReply {
-    for handler in handlers.iter().filter(|handler| !handler.asynchronous) {
-        if handler.on_failure == OnFailure::Block {
-            return SubmitCheckReply::Block {
-                message: format!("Hook {} did not finish", handler.source),
-            };
-        }
+/// The reason an unload gives for the handlers it terminated (§1, A.5).
+const UNLOADED: &str = "Hooks was unloaded";
+
+/// The run an unload answers with for a handler still running when the part
+/// went: it did not finish, so its `onFailure` decides as for a failed run.
+fn unloaded_run(handler: &HookHandler) -> HookRun {
+    HookRun {
+        result: HookResult::Failed {
+            reason: UNLOADED.into(),
+            stderr: String::new(),
+        },
+        on_failure: handler.on_failure,
+        source: handler.source.clone(),
     }
-    SubmitCheckReply::Proceed { blocks: Vec::new() }
+}
+
+/// The next run to finish, or `None` when `unload` fires first. A run that
+/// already finished is taken before the unload, so its own result settles it;
+/// the caller reports only the handlers still pending at that moment.
+/// `pending` keeps the runs that have not arrived.
+async fn next_run(
+    pending: &mut Vec<PendingRun>,
+    unload: Option<&CancellationToken>,
+) -> Option<(usize, HookResult)> {
+    let batch = std::mem::take(pending);
+    let mut waiting = std::pin::pin!(futures_util::future::select_all(batch));
+    let mut unloading = std::pin::pin!(async {
+        match unload {
+            Some(unload) => unload.cancelled().await,
+            None => std::future::pending().await,
+        }
+    });
+    tokio::select! {
+        biased;
+        ((position, result), _, rest) = &mut waiting => {
+            *pending = rest;
+            Some((position, result))
+        }
+        _ = &mut unloading => None,
+    }
+}
+
+/// The sentence a caller shows for one run that did not finish (A.6.2).
+fn unfinished(source: &HookSourceId, reason: &str) -> String {
+    format!("Hook {source} did not finish: {reason}")
 }
 
 /// What one `UserPromptSubmit` run does to the entry's input (A.4, A.5).
 enum PromptDecision {
-    Blocked { message: String },
+    Blocked {
+        message: String,
+    },
     Context(String),
+    /// The run failed and its `onFailure` is `continue`: the input proceeds
+    /// without it, and the caller is told why.
+    Unfinished(String),
     None,
 }
 
@@ -722,7 +796,9 @@ fn prompt_decision(handler: &HookHandler, run: &HookRun) -> PromptDecision {
                 message: format!("Hook {} did not finish", handler.source),
             }
         }
-        HookResult::Failed { .. } => PromptDecision::None,
+        HookResult::Failed { reason, .. } => {
+            PromptDecision::Unfinished(unfinished(&handler.source, reason))
+        }
         HookResult::Success { stdout } => {
             let trimmed = stdout.trim();
             if trimmed.is_empty() {
@@ -1992,13 +2068,16 @@ impl Branch {
             }
         };
         let token = cancel.child_token();
-        let mut run = Box::pin(
-            self.runtime
-                .run_ordered(&matching, &payload, &token, |_, run| {
-                    let advice = advice_of(run);
-                    (matches!(advice, ToolAdviceReply::Deny { .. }), advice)
-                }),
-        );
+        // A.6.1's reload row: a `PreToolUse` advice withdrawn mid-call is
+        // dropped and counts as `none`, so this point settles nothing.
+        let mut run =
+            Box::pin(
+                self.runtime
+                    .run_ordered(&matching, &payload, &token, None, |_, run| {
+                        let advice = advice_of(run);
+                        (matches!(advice, ToolAdviceReply::Deny { .. }), advice)
+                    }),
+            );
         let replies = tokio::select! {
             biased;
             _ = unload => None,
@@ -2346,7 +2425,7 @@ mod tests {
             assert_eq!(matching.len(), 1, "{} matched no handler", event.name());
             let run = HookRun {
                 result: runtime
-                    .run_one(&matching[0], Vec::new(), &runtime.cancel)
+                    .run_one(&matching[0], Vec::new(), &runtime.cancel, None)
                     .await,
                 on_failure: matching[0].on_failure,
                 source: matching[0].source.clone(),
@@ -2365,6 +2444,52 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    /// Hooks §1 and A.5's reload row, at the process-start boundary: a gate
+    /// cancelled once the spec is built ends the run instead of starting its
+    /// command. The run is awaited to its end, so unlike a run the point
+    /// drops, a started command would finish and leave its marker; the
+    /// marker decides whether one started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unloaded_prompt_run_starts_no_command() {
+        let dir = std::env::temp_dir().join(format!("dim-hooks-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("marker");
+        let runtime = test_runtime(
+            &dir,
+            Arc::new(DocumentSources {
+                document: prompt_document(&marker),
+            }),
+        );
+        let snapshot = runtime.snapshot().await.expect("the sources");
+        let matching = handlers(&snapshot, HookEvent::UserPromptSubmit, None, None);
+        assert_eq!(matching.len(), 1, "the prompt handler did not match");
+        let handler = &matching[0];
+        // The entry's own token stays live, as it does when only Hooks
+        // unloads: the unload alone has to stop the command.
+        let cancel = CancellationToken::new();
+        let unload = CancellationToken::new();
+        unload.cancel();
+        let run = HookRun {
+            result: runtime
+                .run_one(handler, Vec::new(), &cancel, Some(&unload))
+                .await,
+            on_failure: handler.on_failure,
+            source: handler.source.clone(),
+        };
+        assert!(
+            matches!(
+                prompt_decision(handler, &run),
+                PromptDecision::Unfinished(message)
+                    if message == "Hook user did not finish: Hooks was unloaded"
+            ),
+            "the unloaded run answered as its `onFailure` decides: {:?}",
+            run.result
+        );
+        assert!(!marker.exists(), "an unloaded run started its command");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A.4: a `Stop` block with no reason, exit 2 with an empty stderr or
@@ -2615,6 +2740,23 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "hooks": {
                 "PermissionRequest": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("printf ran > {}", marker.display()),
+                    }],
+                }],
+            },
+        }))
+        .unwrap()
+    }
+
+    /// A document with one `UserPromptSubmit` handler whose command writes
+    /// `ran` to `marker`.
+    #[cfg(unix)]
+    fn prompt_document(marker: &Path) -> HooksDocument {
+        serde_json::from_value(serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
                     "hooks": [{
                         "type": "command",
                         "command": format!("printf ran > {}", marker.display()),

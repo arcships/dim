@@ -32,6 +32,18 @@ impl Publication {
     }
 }
 
+/// What one input call did, from the append that decided it: an input with a
+/// submission id the branch already holds is committed once, and only the
+/// call that wrote it gets [`Self::Written`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputCommit {
+    /// This call committed the event.
+    Written,
+    /// The branch already held an input with this submission id; this call
+    /// wrote nothing and returned that one.
+    Existing,
+}
+
 /// The facade of one published branch for callers outside its subtree:
 /// validated input, stop, idle, configuration, read-only history and
 /// capability state. It cannot write arbitrary events; the branch tree owns
@@ -65,6 +77,15 @@ impl Branch {
     /// writes nothing and returns that input.
     pub async fn input(&self, data: InputMessageData) -> Result<Arc<AgentEvent>> {
         self.0.input(data).await
+    }
+    /// [`Self::input`], also saying whether this call wrote the input. The
+    /// append under the commit lock decides, so concurrent duplicates cannot
+    /// both answer [`InputCommit::Written`].
+    pub(crate) async fn input_commit(
+        &self,
+        data: InputMessageData,
+    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
+        self.0.input_commit(data).await
     }
     /// Appends validated inputs as one atomic batch, in the given order: the
     /// events commit at contiguous sequences and publish together. Every
