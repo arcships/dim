@@ -6469,8 +6469,12 @@
       "file": "crates/dim-cli/src/update.rs",
       "unexpandedMacros": [
         "cfg",
+        "crossterm::execute",
         "env",
         "format",
+        "println",
+        "tokio::pin",
+        "tokio::select",
         "vec"
       ]
     },
@@ -33266,6 +33270,7 @@
         "path Action::SessionRename",
         "path Action::Timeline",
         "path Action::Tui",
+        "path Action::Update",
         "path Action::Version",
         "path Action::Web",
         "path Action::WebInstall",
@@ -33657,7 +33662,8 @@
       "to": "dim_cli::update",
       "references": [
         "mod update",
-        "path update::registry"
+        "path update::registry",
+        "path update::run"
       ]
     },
     {
@@ -47319,6 +47325,13 @@
     },
     {
       "from": "dim_cli::update",
+      "to": "dim_cli",
+      "references": [
+        "path crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
       "to": "dim_cli::update::tests",
       "references": [
         "mod tests"
@@ -47328,7 +47341,8 @@
       "from": "dim_cli::update",
       "to": "dim_cli::version",
       "references": [
-        "path crate::version::RELEASE"
+        "path crate::version::RELEASE",
+        "path crate::version::VERSION"
       ]
     },
     {

@@ -4,6 +4,7 @@
 //! ever upgrades within itself, as the publish scripts guarantee from the
 //! other side.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -232,28 +233,42 @@ pub async fn run() -> crate::Result<i32> {
             manual(&package, current)
         )
     })?;
-    println!("Updating {package} on the {tag} channel...");
-    println!("{}", installation.command_line());
-    let mut child = tokio::process::Command::new(&installation.program)
-        .args(&installation.args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()?;
+    let mut stderr = std::io::stderr();
+    let interactive = stderr.is_terminal();
+    if !interactive {
+        println!("Updating {package} on the {tag} channel...");
+    }
+    let installation = install(installation);
+    tokio::pin!(installation);
     let started = tokio::time::Instant::now();
-    let period = Duration::from_secs(5);
-    let mut progress = tokio::time::interval_at(started + period, period);
-    let status = loop {
+    let mut progress = tokio::time::interval(Duration::from_millis(120));
+    let result = loop {
         tokio::select! {
-            status = child.wait() => break status?,
-            _ = progress.tick() => {
-                eprintln!("Still updating {package}... {}s elapsed.", started.elapsed().as_secs());
+            result = &mut installation => break result,
+            _ = progress.tick(), if interactive => {
+                let elapsed = started.elapsed();
+                let frame = ['|', '/', '-', '\\'][(elapsed.as_millis() / 120 % 4) as usize];
+                let text = crate::sanitize::safe_line(&format!(
+                    "{frame} Updating {package} ({tag}) · {}s", elapsed.as_secs()
+                ));
+                let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+                let text = crate::ui::text::truncate_cells(&text, width.saturating_sub(1).into());
+                crossterm::execute!(stderr,
+                    crossterm::cursor::MoveToColumn(0),
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+                    crossterm::style::Print(text),
+                )?;
             }
         }
     };
-    if !status.success() {
-        return Err(format!("{} failed: {status}", installation.program.display()).into());
+    if interactive {
+        crossterm::execute!(
+            stderr,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+        )?;
     }
+    result?;
     println!("Updated {package} on the {tag} channel.");
     Ok(0)
 }

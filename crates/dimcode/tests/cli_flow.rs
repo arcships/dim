@@ -638,39 +638,63 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
             assert!(
                 String::from_utf8_lossy(&output.stdout).contains(&format!("Updated {package}"))
             );
-            assert!(String::from_utf8_lossy(&output.stdout).contains("Installed package"));
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("Installed package"));
         }
+        assert!(!output.stdout.contains(&0x1b));
+        assert!(!output.stderr.contains(&0x1b));
     }
     let resume = home.0.join("continue-install");
-    let mut child = Command::new(&executable)
-        .args(["--home", home.0.to_str().unwrap(), "update"])
-        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
-        .env("UPDATE_ARGS", &recorded)
-        .env("UPDATE_CONTINUE", &resume)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let (send, receive) = std::sync::mpsc::channel();
-    let reader = thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            send.send(line.unwrap()).unwrap();
+    for (width, fail) in [(80, false), (24, false), (80, true)] {
+        let mut command = Command::new(&executable);
+        command
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_FAIL", if fail { "1" } else { "0" });
+        let mut terminal = Terminal::launch(command);
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: width,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    terminal.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+        if !fail {
+            terminal.until("Updating dimcode");
+            terminal.until("Updating dimcode");
+            assert!(
+                !terminal.transcript.contains('\n'),
+                "progress must stay on one row"
+            );
+            assert!(!terminal.transcript.contains("Downloading package"));
+            fs::write(&resume, "continue").unwrap();
         }
-    });
-    let download = receive.recv_timeout(PATIENCE);
-    let waiting = receive.recv_timeout(PATIENCE);
-    fs::write(resume, "continue").unwrap();
-    let output = child.wait_with_output().unwrap();
-    reader.join().unwrap();
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(download.unwrap(), "Downloading package");
-    assert!(
-        waiting
-            .unwrap()
-            .starts_with("Still updating dimcode-alpha... ")
-    );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Installed package"));
+        assert_eq!(terminal.wait().success(), !fail);
+        let outcome = if fail {
+            "Error: fixture install failed"
+        } else {
+            "Updated dimcode-alpha"
+        };
+        assert!(
+            terminal.transcript.contains(outcome),
+            "{}",
+            terminal.transcript
+        );
+        assert_eq!(terminal.transcript.matches('\n').count(), 1);
+        if !fail {
+            fs::remove_file(&resume).unwrap();
+        }
+    }
     let output = home.command().arg("update").output().unwrap();
     assert!(!output.status.success());
     assert!(

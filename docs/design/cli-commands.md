@@ -2010,17 +2010,23 @@ stable follows `latest`. It uses the same package-manager detection as the dialo
 preserving the npm prefix and the alpha package's identity. It does not consult
 automatic-update preferences or skipped versions, start or stop a daemon, or
 relaunch the client. The package manager resolves the tag and performs the install;
-its stdout and stderr stream directly to the terminal, and a waiting notice reports
-elapsed seconds every five seconds until it exits. Elapsed time is not a completion
-percentage. A failure exits nonzero with its error. An unknown installation layout,
-including a source checkout, fails with manual installation or rebuild instructions.
+its output is captured so installation logs do not scroll the screen. On a terminal,
+one progress row redraws in place with a spinner, the package and channel, and elapsed
+seconds. It fits the terminal width without wrapping and clears before success or
+an error is printed. Redirected output has one start message and the final result,
+without animation or terminal control sequences. Elapsed time is not a completion
+percentage. A failure exits nonzero with the installer's error. An unknown installation
+layout, including a source checkout, fails with manual installation or rebuild instructions.
 
 ```text
 $ dima update
-Updating dimcode-alpha on the alpha channel...
-npm install -g --prefer-online --prefix /path/to/node dimcode-alpha@alpha
-Still updating dimcode-alpha... 5s elapsed.
-<package manager output appears as it is produced>
+| Updating dimcode-alpha (alpha) · 5s
+```
+
+The same row becomes the result when installation finishes:
+
+```text
+$ dima update
 Updated dimcode-alpha on the alpha channel.
 ```
 
