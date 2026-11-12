@@ -1094,7 +1094,7 @@ struct App {
     settings_return: Option<Setting>,
     /// A surface was opened from the Permissions page: closing it goes back
     /// to the page, as Process isolation and Command rules do.
-    permissions_return: bool,
+    permissions_return: Option<ApprovalsPanel>,
     /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
     /// and the wheel to the terminal.
     pub mouse: bool,
@@ -1467,7 +1467,7 @@ impl App {
             service_tiers: false,
             jump: None,
             settings_return: None,
-            permissions_return: false,
+            permissions_return: None,
             mouse,
             notify,
             notifications: Vec::new(),
@@ -3662,9 +3662,13 @@ impl App {
                 )));
             }
             Effect::OpenArea { area, note } => {
-                // A surface opened from the Permissions page returns there on
-                // Esc; any other caller opens with no return.
-                self.permissions_return = matches!(self.prompt, Some(Prompt::Approvals(_)));
+                self.permissions_return = match self.prompt.take() {
+                    Some(Prompt::Approvals(panel)) => Some(panel),
+                    prompt => {
+                        self.prompt = prompt;
+                        None
+                    }
+                };
                 self.open_management(area, note);
             }
             Effect::StopTask {
@@ -3732,11 +3736,13 @@ impl App {
             Effect::Setting(setting) => {
                 let from_permissions = setting == Setting::Isolation
                     && matches!(self.prompt, Some(Prompt::Approvals(_)));
+                if from_permissions && let Some(Prompt::Approvals(panel)) = self.prompt.take() {
+                    self.permissions_return = Some(panel);
+                }
                 let settings_return = self.settings_return;
                 self.setting(setting);
                 if from_permissions {
                     self.settings_return = settings_return;
-                    self.permissions_return = true;
                 }
             }
             Effect::EditPrompt(field) => {
@@ -3927,10 +3933,11 @@ impl App {
                 policy,
             }),
         }
-        if self.prompt.is_none() && std::mem::take(&mut self.permissions_return) {
-            self.open_prompt(Prompt::Approvals(ApprovalsPanel::new(
-                &self.permission_policy,
-            )));
+        if self.prompt.is_none()
+            && let Some(mut panel) = self.permissions_return.take()
+        {
+            panel.set_policy(&self.permission_policy);
+            self.open_prompt(Prompt::Approvals(panel));
         }
         if self.prompt.is_none()
             && let Some(setting) = self.settings_return.take()
@@ -10349,6 +10356,159 @@ mod tests {
     }
 
     #[test]
+    fn permissions_focus_tracks_hints_and_survives_policy_updates_and_submenus() {
+        use dim_agent_types::{PermissionPolicy, PermissionPreset};
+
+        for fullscreen in [false, true] {
+            for size in [(100, 32), (40, 24), (32, 12)] {
+                let action_hint = |text: &str, action: &str| {
+                    let hint = if size.1 >= 24 { action } else { "Esc close" };
+                    assert!(text.contains(hint), "{hint} is missing: {text}");
+                };
+                for from_settings in [false, true] {
+                    let mut drawn = Drawn::new(size, None, true);
+                    drawn.app.fullscreen = fullscreen;
+                    let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    drawn.app.host = Box::new(Recorder(sent.clone()));
+                    if from_settings {
+                        drawn.app.open_settings(Setting::Permission);
+                        drawn.key(KeyCode::Enter);
+                    } else {
+                        typed(&mut drawn.app, "/permissions");
+                        drawn.key(KeyCode::Enter);
+                    }
+                    let render = |drawn: &mut Drawn| {
+                        let frame = drawn.app.frame(size);
+                        let bytes = if fullscreen {
+                            FullScreen::new(size, true).render(
+                                &frame,
+                                size,
+                                &drawn.app.palette,
+                                &drawn.app,
+                            )
+                        } else {
+                            Screen::new(size, true).render(&frame, size)
+                        };
+                        let mut emu =
+                            crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+                        emu.feed(&bytes);
+                        emu.rows_text()
+                            .join("\n")
+                            .replace('│', " ")
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    };
+                    let initial = render(&mut drawn);
+                    assert!(initial.contains("(*) Workspace write"), "{initial}");
+                    action_hint(&initial, "Enter keep mode");
+                    if size.0 == 100 {
+                        assert!(initial.contains("Permission mode"));
+                        assert!(initial.contains("Related settings"));
+                    }
+                    assert!(!initial.contains("This session"));
+                    assert!(!initial.contains("All sessions"));
+                    if size.1 >= 24 {
+                        assert!(initial.contains("Current session; remembered for new sessions."));
+                    }
+                    drawn.key(KeyCode::Home);
+                    drawn.key(KeyCode::Up);
+                    let read_only = render(&mut drawn);
+                    action_hint(&read_only, "Enter use mode");
+                    if size.1 >= 24 {
+                        assert!(read_only.contains("Writes and commands"));
+                        assert!(read_only.contains("denied;"));
+                        assert!(read_only.contains("external reads may"));
+                        assert!(!read_only.contains("Workspace writes allowed;"));
+                        assert_eq!(read_only.matches("Hint:").count(), 1);
+                    }
+                    drawn.key(KeyCode::Tab);
+                    action_hint(&render(&mut drawn), "Enter keep mode");
+                    drawn.key(KeyCode::Down);
+                    let full = render(&mut drawn);
+                    action_hint(&full, "Enter use mode");
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::FullAccess,
+                        ..Default::default()
+                    })));
+                    let refreshed = render(&mut drawn);
+                    assert!(refreshed.contains("(*) Full access"), "{refreshed}");
+                    action_hint(&refreshed, "Enter keep mode");
+                    if size.1 >= 24 {
+                        assert!(refreshed.contains("Skips preset approval;"));
+                        assert!(!refreshed.contains("Writes and commands denied;"));
+                    }
+                    drawn.key(KeyCode::Down);
+                    let rules = render(&mut drawn);
+                    assert!(rules.contains("Command rules"), "{rules}");
+                    action_hint(&rules, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(rules.contains("User-wide command rules."));
+                        assert!(!rules.contains("Skips preset approval;"));
+                    }
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::WorkspaceWrite,
+                        ..Default::default()
+                    })));
+                    let refreshed = render(&mut drawn);
+                    action_hint(&refreshed, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(refreshed.contains("(*) Workspace write"));
+                        assert!(refreshed.contains("User-wide command rules."));
+                    }
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(
+                        sent.borrow().last(),
+                        Some(Command::Management(ManagementRequest {
+                            area: Area::Permissions,
+                            action: ManagementAction::List,
+                        }))
+                    ));
+                    drawn.app.apply(Update::Permissions(Ok(PermissionPolicy {
+                        preset: PermissionPreset::ReadOnly,
+                        ..Default::default()
+                    })));
+                    drawn.key(KeyCode::Esc);
+                    let returned = render(&mut drawn);
+                    action_hint(&returned, "Enter open");
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(drawn.app.prompt, Some(Prompt::Management(_))));
+                    drawn.key(KeyCode::Esc);
+                    drawn.key(KeyCode::End);
+                    drawn.key(KeyCode::BackTab);
+                    drawn.key(KeyCode::Tab);
+                    let isolation = render(&mut drawn);
+                    assert!(isolation.contains("Process isolation"), "{isolation}");
+                    action_hint(&isolation, "Enter open");
+                    if size.1 >= 24 {
+                        assert!(isolation.contains("Opens Settings;"));
+                        assert!(isolation.contains("user-wide,"));
+                        assert!(!isolation.contains("User-wide command rules."));
+                    }
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(sent.borrow().last(), Some(Command::ReadIsolation)));
+                    drawn.key(KeyCode::Esc);
+                    let returned = render(&mut drawn);
+                    action_hint(&returned, "Enter open");
+                    drawn.key(KeyCode::Enter);
+                    assert!(matches!(drawn.app.prompt, Some(Prompt::Isolation(_))));
+                    drawn.key(KeyCode::Esc);
+                    drawn.key(KeyCode::Esc);
+                    if from_settings {
+                        assert!(matches!(drawn.app.prompt, Some(Prompt::Settings(_))));
+                    } else {
+                        assert!(drawn.app.prompt.is_none());
+                    }
+                    assert!(!sent.borrow().iter().any(|command| matches!(
+                        command,
+                        Command::SetPermission(_) | Command::SaveIsolation { .. }
+                    )));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_permission_choice_applies_the_preset_and_keeps_it_for_new_sessions() {
         use dim_agent_types::{PermissionPolicy, PermissionPreset};
         let home = tempfile::tempdir().unwrap();
@@ -10369,16 +10529,20 @@ mod tests {
         })));
         app.run_command("permissions", "");
         let rendered = app.frame((112, 40));
-        let frame = rendered
-            .overlay
-            .as_ref()
-            .map_or(&rendered.live, |overlay| &overlay.rows)
-            .join("\n");
+        let frame = crate::ui::render::panel::strip_escapes(
+            &rendered
+                .overlay
+                .as_ref()
+                .map_or(&rendered.live, |overlay| &overlay.rows)
+                .join("\n"),
+        );
         for line in [
             "Read only",
             "Workspace write",
             "Full access",
-            "The preset fixes the path boundary",
+            "Permission mode",
+            "Related settings",
+            "Writes and commands denied; external reads may ask.",
         ] {
             assert!(frame.contains(line), "{line} is missing: {frame}");
         }

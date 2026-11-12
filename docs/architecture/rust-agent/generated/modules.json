@@ -4744,7 +4744,8 @@
       "parent": "dim_cli::ui",
       "file": "crates/dim-cli/src/ui/approvals_panel.rs",
       "unexpandedMacros": [
-        "format"
+        "format",
+        "vec"
       ]
     },
     {
@@ -9635,8 +9636,10 @@
         "path Decision::Ask",
         "path Decision::Deny",
         "path Permission",
+        "path PermissionState",
         "use crate::permission::Decision",
-        "use crate::permission::Permission"
+        "use crate::permission::Permission",
+        "use crate::permission::PermissionState"
       ]
     },
     {
@@ -9680,6 +9683,14 @@
       "references": [
         "path Names",
         "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::approval",
+      "to": "dim_agent_runtime::state",
+      "references": [
+        "path StateCell",
+        "use dim_agent_runtime::StateCell"
       ]
     },
     {
@@ -39407,6 +39418,7 @@
         "path Event::None",
         "path Event::Pick",
         "path Event::Refresh",
+        "path Item::heading",
         "path Item::new",
         "path ListPanel",
         "path ListPanel::new",
@@ -47067,6 +47079,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::settings_panel",
       "references": [
+        "path Setting::Permission",
         "path Setting::ThinkingDetails",
         "path Setting::ToolDetails"
       ]
@@ -52416,6 +52429,10 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "Operation::SessionRead"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "PermissionPreset::FullAccess"
     },
     {
       "module": "dim_cli::ui::tui::tests",

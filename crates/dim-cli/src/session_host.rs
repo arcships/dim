@@ -438,20 +438,22 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 if worker.session_id.is_empty()
-                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
+                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..) | Command::ShellRun { .. })
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
                         worker.send(Update::StartupFailed(error.to_string()));
                         break;
                     }
-                    worker.send(Update::SubmitNotSent(
-                        if worker.options.startup.is_some() || worker.model_session.is_some() {
-                            error.to_string()
-                        } else {
-                            no_session(&error)
-                        },
-                    ));
+                    let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
+                        error.to_string()
+                    } else {
+                        no_session(&error)
+                    };
+                    worker.send(match command {
+                        Command::ShellRun { run_id, .. } => Update::ShellDone { run_id, result: Err(error) },
+                        _ => Update::SubmitNotSent(error),
+                    });
                     continue;
                 }
                 if matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
@@ -1784,13 +1786,6 @@ impl Worker {
                 command,
                 private,
             } => {
-                if self.session_id.is_empty() {
-                    self.send(Update::ShellDone {
-                        run_id,
-                        result: Err(NO_SESSION.to_owned()),
-                    });
-                    return Ok(());
-                }
                 if self.shell.is_some() {
                     self.send(Update::ShellDone {
                         run_id,

@@ -5700,15 +5700,23 @@ fn tui_effort_without_a_session_answers_the_no_session_notice_and_sends_nothing(
 }
 
 #[test]
-fn tui_shell_without_a_session_settles_with_the_no_session_notice() {
+fn tui_shell_session_creation_failure_settles_with_the_no_session_notice() {
     let home = Home::new();
     let (quieted, quiet_done) = std::sync::mpsc::channel();
-    let daemon = no_session_daemon(&home, quieted);
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let create = wire.read("session.create");
+        wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{
+            "code":-32000,"message":"no model configured","data":{"appError":"provider_failed"}}}));
+        wire.quiet(Duration::from_millis(1200));
+        let _ = quieted.send(());
+        assert_eq!(wire.trailing_request(), None);
+    });
     let mut terminal = Terminal::launch_tui(home.command());
     terminal.until("Ask anything...");
     terminal.write(b"!echo hi\r");
-    // The settled shell block carries the notice as its status, and the
-    // status line repeats it; neither the block nor the row stays running.
     terminal.until("failed: Sign in with /login");
     terminal.until("Shell: Sign in with");
     quiet_done.recv_timeout(PATIENCE).unwrap();
