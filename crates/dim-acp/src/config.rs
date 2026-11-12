@@ -219,10 +219,7 @@ impl Config {
             .reasoning
             .as_ref()
             .filter(|reasoning| reasoning.supported && snapshot.capabilities.reasoning)?;
-        let mut choices = reasoning.effort_options.clone().unwrap_or_default();
-        if reasoning.off.is_some() && !choices.iter().any(|effort| effort == "none") {
-            choices.push("none".into());
-        }
+        let choices = reasoning.offered_efforts();
         if choices.is_empty() {
             return None;
         }
