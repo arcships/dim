@@ -251,6 +251,7 @@ async fn large_prompt_arrays_seek_paired_elements_and_preserve_trace_search_and_
                 previous: None,
                 reason: PromptChangeReason::Refresh,
                 changes,
+                inputs: Vec::new(),
             })
         };
         let mut first = record(size + 1, kind("a", a.clone()));

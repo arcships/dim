@@ -182,14 +182,42 @@ fn prompt_and_context_contract_uses_the_shared_wire_shape() {
         changes: vec![PromptChange::Set {
             entry: entry.clone(),
         }],
+        inputs: Vec::new(),
     }));
     let value = serde_json::to_value(&changed).unwrap();
     assert_eq!(value["type"], "prompt");
     assert_eq!(value["name"], "changed");
     assert_eq!(value["data"]["changes"][0]["entry"]["delivery"], "system");
+    assert!(
+        value["data"].get("inputs").is_none(),
+        "a change that delivers no input omits the list"
+    );
     assert_eq!(
         serde_json::from_value::<EventDraft>(value).unwrap(),
         changed
+    );
+    let delivered = json!({
+        "timeline": "main",
+        "revision": "prompt-3",
+        "reason": "refresh",
+        "changes": [],
+        "inputs": ["input-1", "input-2"]
+    });
+    let decoded: PromptChangedData = serde_json::from_value(delivered.clone()).unwrap();
+    assert_eq!(decoded.inputs, ["input-1", "input-2"]);
+    assert_eq!(serde_json::to_value(decoded).unwrap(), delivered);
+    let older = json!({
+        "timeline": "main",
+        "revision": "prompt-4",
+        "reason": "refresh",
+        "changes": []
+    });
+    assert!(
+        serde_json::from_value::<PromptChangedData>(older)
+            .unwrap()
+            .inputs
+            .is_empty(),
+        "a fact written before the field reads as no inputs"
     );
 
     let input: InputMessageData = serde_json::from_value(json!({
@@ -238,6 +266,7 @@ fn v1_boundary_rejects_new_fields_and_hides_new_events() {
             previous: None,
             reason: PromptChangeReason::Initialize,
             changes: Vec::new(),
+            inputs: Vec::new(),
         }),
     };
     assert!(v1::EventRef::new(&event).is_none());
