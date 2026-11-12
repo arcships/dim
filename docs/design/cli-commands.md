@@ -31,13 +31,22 @@ Collapsed tool groups retain their existing header and member cards. The header
 appends the first program name of each shell call, without arguments, executable
 paths, script bodies or output. Names stay in first-call order, with repetitions
 counted (`python ×2, rg`), including shell calls classified as reads or searches.
-The header remains one terminal row and keeps its disclosure when truncated.
+The header remains one terminal row. Scrollback tool headers and their child
+rows show no disclosure arrows in any detail mode; compaction rows follow the
+same rule. Their details remain controlled by `/tools` and Settings, not by
+clicking individual rows. Fullscreen retains its interactive disclosures.
 Other tools retain their existing header summaries. Summary
 adds one row per call, in call order, naming its tool and input target or command,
 without output, diffs or script bodies. Each row truncates to one terminal row;
 a multiline command shows its first nonblank line followed by `…`. Expanded
 retains the full tool details. These are the scrollback forms; fullscreen uses
 the same preference as a default for independently expandable nodes.
+
+```text
+Scrollback                         Fullscreen
+✓ Ran 1 command · du                ▸ ✓ Ran 1 command
+✓ Context compacted                ✓ Context compacted ▸
+```
 
 In fullscreen, collapsed closes the batch; summary opens its call list with
 call details closed; expanded opens both containers and details. A click toggles

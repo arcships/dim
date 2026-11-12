@@ -5128,7 +5128,13 @@ impl App {
             });
             if hidden > 0 {
                 let block = Block::LoadMore(hidden);
-                let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+                let text = chunk(&render_block(
+                    &block,
+                    width,
+                    &self.palette,
+                    &self.markdown,
+                    self.fullscreen,
+                ));
                 self.record(block);
                 frame.commits.push(text);
             }
@@ -5208,13 +5214,25 @@ impl App {
             frame.commits.push(text);
         }
         for block in std::mem::take(&mut self.reports) {
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
         for run in std::mem::take(&mut self.shell_runs) {
             let block = Block::Shell(run);
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
@@ -5245,6 +5263,7 @@ impl App {
                 width,
                 &self.palette,
                 &self.markdown,
+                self.fullscreen,
             )));
             self.record(block);
         }
@@ -5970,7 +5989,7 @@ impl App {
                     {
                         *pending = false;
                     }
-                    let lines = render_block(&block, width, p, markdown);
+                    let lines = render_block(&block, width, p, markdown, self.fullscreen);
                     if lines.is_empty() {
                         return (String::new(), None);
                     }
@@ -6084,6 +6103,7 @@ impl App {
                     width,
                     p,
                     markdown,
+                    self.fullscreen,
                 ),
             };
             if rows.is_empty() {
@@ -6676,7 +6696,13 @@ impl App {
                 &self.palette,
                 PULSE_FRAMES[self.last_pulse as usize % PULSE_FRAMES.len()],
             )),
-            block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
+            block => chunk(&render_block(
+                block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            )),
         }
     }
 
@@ -7214,7 +7240,7 @@ fn side_reply(
             RowKind::Thinking => project_row(&side.rows, index, thinking_detail),
             _ => project_row(&side.rows, index, detail),
         };
-        let rendered = render_block(&block, inner, p, markdown);
+        let rendered = render_block(&block, inner, p, markdown, false);
         rows += rendered.len() + 1;
         blocks.push(rendered);
     }
@@ -12400,7 +12426,22 @@ mod tests {
                 tool.tool_input = Some(serde_json::json!({"command": "cargo check"}));
                 tool.result_text = (!streaming).then(|| "Build succeeded".into());
                 tool.pending = streaming;
-                let rows = vec![message(false), thought.into(), tool.into()];
+                let mut compacted = (*message(false)).clone();
+                compacted.row_id = "compacted".into();
+                compacted.kind = RowKind::Compaction;
+                compacted.text.clear();
+                compacted.compaction = Some(crate::model::view::CompactionView {
+                    state: CompactionState::Completed,
+                    text: "The build configuration was checked.".into(),
+                    detail: None,
+                    insufficient: Vec::new(),
+                });
+                let rows = vec![
+                    message(false),
+                    compacted.into(),
+                    thought.into(),
+                    tool.into(),
+                ];
                 let snapshot = ViewSnapshot {
                     session_id: "s1".into(),
                     rows: rows.clone(),
@@ -12506,6 +12547,31 @@ mod tests {
                     + &strip_escapes(&reopened.frame(drawn.size).live.join("\n"));
                 assert!(!folded.contains("cargo check"), "{folded}");
                 assert!(!folded.contains("Inspect the lock lifetime."), "{folded}");
+                assert!(
+                    full.contains("The build configuration was checked."),
+                    "{full}"
+                );
+                for text in [&expanded, &collapsed, &folded] {
+                    assert!(
+                        !text.contains("The build configuration was checked."),
+                        "{text}"
+                    );
+                    assert!(text.contains("Context compacted"), "{text}");
+                    assert_eq!(text.contains("Context compacted ▸"), fullscreen, "{text}");
+                }
+                assert_eq!(full.contains("Context compacted ▾"), fullscreen, "{full}");
+                for text in [&expanded, &collapsed, &full, &folded] {
+                    assert_eq!(text.contains(['▸', '▾']), fullscreen, "{text}");
+                }
+                reopened.set_fullscreen(!fullscreen);
+                let frame = reopened.frame((44, 40));
+                let switched = strip_escapes(&reopened.reflow_history(44).join("\n"))
+                    + &strip_escapes(&frame.live.join("\n"));
+                assert_eq!(
+                    switched.contains("Context compacted ▸"),
+                    !fullscreen,
+                    "{switched}"
+                );
             }
         }
     }
@@ -13283,6 +13349,7 @@ mod tests {
             60,
             p,
             &markdown,
+            false,
         );
         assert_eq!(settled.len(), live.len());
     }

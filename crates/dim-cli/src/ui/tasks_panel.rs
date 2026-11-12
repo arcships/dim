@@ -616,7 +616,7 @@ impl TasksPanel {
                     }
                     let block = project_row(&snapshot.rows, index, ToolDetail::Expanded);
                     lines.extend(crate::ui::transcript::blocks::render_block(
-                        &block, inner, p, markdown,
+                        &block, inner, p, markdown, false,
                     ));
                     lines.push(String::new());
                 }
