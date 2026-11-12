@@ -1,7 +1,8 @@
 //! The `/resume` picker: a filterable list of stored sessions (port of
 //! `sessionsPanelItems` / `SessionsPanel`).
 
-use crate::model::session::{Command, SessionItem, SessionsScope, stored_title};
+use crate::model::session::{Command, DeleteOutcome, SessionItem, SessionsScope, stored_title};
+use crate::sanitize::safe_line;
 use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
@@ -10,7 +11,8 @@ use crate::ui::theme::Palette;
 use crate::ui::tilde;
 use std::time::{Duration, Instant};
 
-const HINT: &str = "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close";
+pub(crate) const HINT: &str =
+    "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close";
 const TITLE_WORKSPACE: &str = "Sessions · This workspace";
 const TITLE_REPOSITORY: &str = "Sessions · This repository";
 const TITLE_ALL: &str = "Sessions · All workspaces";
@@ -18,6 +20,14 @@ const TITLE_ALL: &str = "Sessions · All workspaces";
 /// git set, which lists the same.
 const EMPTY_WORKSPACE: &str = "No saved sessions in this workspace. Ctrl+S shows more.";
 const EMPTY_OTHER: &str = "No saved sessions yet.";
+
+/// The row a pending confirmation names: its id and its name as the picker
+/// drew it, both captured when the key was pressed, so a page, a scope answer
+/// or a refresh cannot retarget the question.
+struct DeleteTarget {
+    id: String,
+    name: String,
+}
 
 pub struct SessionsPanel {
     list: ListPanel,
@@ -33,6 +43,14 @@ pub struct SessionsPanel {
     /// leaves it `None`, and the local scope stays the exact launch
     /// workspace.
     repository: Option<Vec<String>>,
+    /// The rows' names by id, without the origin tag beside them: the
+    /// question and the notices name a row the list may no longer hold.
+    names: std::collections::HashMap<String, String>,
+    /// The row the pending question deletes; `None` while no question is up.
+    confirming: Option<DeleteTarget>,
+    /// A delete is in flight: the rows stay drawn, and only Esc acts until
+    /// the reply arrives.
+    busy: bool,
 }
 
 impl SessionsPanel {
@@ -46,9 +64,12 @@ impl SessionsPanel {
             show_acp,
             scope: SessionsScope::Local(None),
             repository: None,
+            names: std::collections::HashMap::new(),
+            confirming: None,
+            busy: false,
             list: ListPanel::new(
                 TITLE_WORKSPACE,
-                HINT,
+                t(HINT),
                 "Loading sessions...",
                 EMPTY_WORKSPACE,
                 "No matching sessions.",
@@ -62,8 +83,14 @@ impl SessionsPanel {
             self.paged = Some(false);
         }
         let workspaces = self.names_workspaces();
-        self.list
-            .set_items(items.map(|items| session_rows(items, workspaces)), None);
+        let rows = match items {
+            Ok(items) => {
+                self.names = item_names(&items);
+                Ok(session_rows(items, workspaces))
+            }
+            Err(error) => Err(error),
+        };
+        self.list.set_items(rows, None);
     }
 
     pub fn page(
@@ -81,11 +108,14 @@ impl SessionsPanel {
         match result {
             Ok((items, next_cursor)) => {
                 self.next_cursor = next_cursor;
+                let names = item_names(&items);
+                let rows = session_rows(items, self.names_workspaces());
                 if self.append {
-                    self.list
-                        .append_items(session_rows(items, self.names_workspaces()));
+                    self.names.extend(names);
+                    self.list.append_items(rows);
                 } else {
-                    self.set_items(Ok(items));
+                    self.names = names;
+                    self.list.set_items(Ok(rows), None);
                 }
             }
             Err(error) => self.set_items(Err(error)),
@@ -198,6 +228,43 @@ impl SessionsPanel {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
+        // The question takes every key: Enter deletes the row it names,
+        // anything else cancels and changes nothing.
+        if let Some(target) = self.confirming.take() {
+            self.restore_hint();
+            if key.code != KeyCode::Enter {
+                return Effect::None;
+            }
+            self.busy = true;
+            return Effect::DeleteSession {
+                session_id: target.id,
+                name: target.name,
+            };
+        }
+        // A delete is in flight: Esc still leaves, so a slow or wedged close
+        // cannot hold the operator in the picker; any other key waits for the
+        // reply, so no second delete or navigation starts.
+        if self.busy {
+            return match key.code {
+                KeyCode::Esc => Effect::Close,
+                _ => Effect::None,
+            };
+        }
+        if key.code == KeyCode::Char('x') && key.mods.contains(Modifiers::CTRL) {
+            return match self.list.selected_id() {
+                Some(id) => {
+                    let name = self.names.get(&id).cloned().unwrap_or_else(|| id.clone());
+                    self.list.set_confirmation(
+                        tf("Delete \"{name}\"?", &[("name", &safe_line(&name))]),
+                        t("Enter confirm").to_owned(),
+                        t("Esc cancel").to_owned(),
+                    );
+                    self.confirming = Some(DeleteTarget { id, name });
+                    Effect::None
+                }
+                None => Effect::None,
+            };
+        }
         if key.code == KeyCode::Char('s') && key.mods.contains(Modifiers::CTRL) {
             self.cycle_scope();
             return Effect::Refresh;
@@ -215,6 +282,27 @@ impl SessionsPanel {
         }
     }
 
+    /// Gives the panel its key hint back, translated as it was drawn.
+    fn restore_hint(&mut self) {
+        self.list.set_hint(t(HINT).to_owned());
+    }
+
+    /// What the delete of `session_id` came to: the row leaves the list, or
+    /// the list reads its first page again because nothing was removed. A
+    /// failure keeps the row. The panel takes keys again either way.
+    pub fn settled(&mut self, session_id: &str, outcome: &DeleteOutcome) {
+        self.busy = false;
+        self.confirming = None;
+        self.restore_hint();
+        match outcome {
+            DeleteOutcome::Deleted => self.list.remove(session_id),
+            DeleteOutcome::NothingRemoved => self.refresh(),
+            DeleteOutcome::Unsupported
+            | DeleteOutcome::ClosedNotRemoved(_)
+            | DeleteOutcome::Failed(_) => {}
+        }
+    }
+
     pub fn cursor(&self, width: usize) -> Option<(usize, usize)> {
         self.list.cursor(width)
     }
@@ -222,6 +310,17 @@ impl SessionsPanel {
     pub fn render(&self, width: usize, rows: usize, p: &Palette) -> Vec<String> {
         self.list.render(width, rows, p)
     }
+}
+
+/// The rows' names by id: the label without the origin tag the picker draws
+/// beside it, cleaned to one printable line. It is kept beside the list
+/// because `session_rows` consumes the items, and a question or a notice may
+/// name a row the list no longer holds.
+fn item_names(items: &[SessionItem]) -> std::collections::HashMap<String, String> {
+    items
+        .iter()
+        .map(|item| (item.id.clone(), safe_line(&label(item))))
+        .collect()
 }
 
 fn session_rows(items: Vec<SessionItem>, workspaces: bool) -> Vec<Item> {
@@ -385,7 +484,7 @@ mod tests {
         let key = |code| KeyEvent::new(code, Modifiers::NONE);
         let shown = |panel: &SessionsPanel| -> Vec<String> {
             panel
-                .render(60, 10, &p)
+                .render(60, 12, &p)
                 .iter()
                 .map(|r| {
                     let plain = crate::ui::render::panel::strip_escapes(r);
@@ -577,5 +676,177 @@ mod tests {
         ctrl_s(&mut all);
         all.set_items(Ok(rows()));
         assert!(shown(&all).contains(workspace));
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, Modifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, Modifiers::CTRL)
+    }
+
+    fn two_rows() -> SessionsPanel {
+        let mut panel = SessionsPanel::new(false);
+        panel.set_items(Ok(vec![
+            item("a", Some("Fix bug"), None),
+            item("b", Some("Update cache"), None),
+        ]));
+        panel
+    }
+
+    /// The question takes every key: Enter deletes the row it names, and
+    /// anything else cancels it, Esc included, which neither clears the
+    /// filter nor closes the picker.
+    #[test]
+    fn the_delete_confirmation_cancels_on_any_key_but_enter() {
+        let mut panel = two_rows();
+        panel.handle_key(key(KeyCode::Down)); // select "Update cache"
+        assert_eq!(panel.handle_key(ctrl(KeyCode::Char('x'))), Effect::None);
+        if !shown(&panel).contains("Delete \"Update cache\"? Enter confirm · Esc cancel") {
+            panic!("confirmation not shown: {:?}", shown(&panel));
+        }
+
+        // A typed character cancels the question and changes nothing else,
+        // the filter included.
+        assert_eq!(panel.handle_key(key(KeyCode::Char('u'))), Effect::None);
+        assert!(!shown(&panel).contains("Delete \"Update cache\"?"));
+        assert!(shown(&panel).contains("Ctrl+X delete"));
+        assert!(panel.list.query().is_empty());
+
+        // Esc cancels, and the picker stays open: the second Esc closes it.
+        assert_eq!(panel.handle_key(ctrl(KeyCode::Char('x'))), Effect::None);
+        assert_eq!(panel.handle_key(key(KeyCode::Esc)), Effect::None);
+        assert!(shown(&panel).contains("Ctrl+X delete"));
+        assert_eq!(panel.handle_key(key(KeyCode::Esc)), Effect::Close);
+
+        // Enter takes the pinned row and nothing else.
+        let mut plain = two_rows();
+        plain.handle_key(ctrl(KeyCode::Char('x')));
+        assert_eq!(
+            plain.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+    }
+
+    /// The target is pinned when the key is pressed: a page or a scope answer
+    /// arriving while the question waits never retargets it, and Enter sends
+    /// the id captured at the key press.
+    #[test]
+    fn a_list_update_while_the_question_is_open_does_not_retarget_it() {
+        let mut panel = two_rows();
+        panel.handle_key(ctrl(KeyCode::Char('x')));
+        let id = match panel.request() {
+            Some(Command::ListSessions { id, .. }) => id,
+            _ => panic!("a page is read"),
+        };
+        panel.page(
+            &id,
+            true,
+            Ok((
+                vec![item("b", Some("Update cache"), None), item("c", None, None)],
+                None,
+            )),
+        );
+        assert!(shown(&panel).contains("Delete \"Fix bug\"?"));
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+
+        // A whole list arrives too, as a scope's answer does.
+        let mut replaced = two_rows();
+        replaced.handle_key(ctrl(KeyCode::Char('x')));
+        replaced.set_items(Ok(vec![item("b", Some("Update cache"), None)]));
+        assert_eq!(
+            replaced.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+
+        // The scope's asynchronous answer retargets nothing either: the
+        // repository set arrives while the question waits.
+        let mut scoped = two_rows();
+        scoped.handle_key(ctrl(KeyCode::Char('x')));
+        scoped.repository(vec!["/work/alpha".to_owned(), "/work/beta".to_owned()]);
+        assert!(shown(&scoped).contains("Delete \"Fix bug\"?"));
+        assert_eq!(
+            scoped.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+    }
+
+    /// The reply settles the panel: the deleted row leaves with the selection
+    /// still on a row, nothing-removed reads the list again, and a failure
+    /// keeps its row. The keys work again either way.
+    #[test]
+    fn the_reply_drops_the_row_or_keeps_it() {
+        let mut panel = two_rows();
+        panel.handle_key(ctrl(KeyCode::Char('x')));
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+        // The rows stay drawn until the reply, and only Esc acts meanwhile.
+        assert!(shown(&panel).contains("Fix bug"));
+        assert_eq!(panel.handle_key(ctrl(KeyCode::Char('s'))), Effect::None);
+
+        panel.settled("a", &DeleteOutcome::Deleted);
+        assert!(!shown(&panel).contains("Fix bug"));
+        assert!(shown(&panel).contains("Update cache"));
+        assert!(shown(&panel).contains("Ctrl+X delete"));
+
+        panel.handle_key(ctrl(KeyCode::Char('x')));
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "b".into(),
+                name: "Update cache".into(),
+            }
+        );
+        panel.settled("b", &DeleteOutcome::Failed("storage_failed".into()));
+        assert!(shown(&panel).contains("Update cache"));
+        assert_eq!(panel.handle_key(ctrl(KeyCode::Char('s'))), Effect::Refresh);
+    }
+
+    /// A delete in flight ends in the daemon's own time, so Esc leaves and
+    /// nothing else does: a slow close cannot hold the operator in the picker,
+    /// and no second delete or navigation starts while it waits.
+    #[test]
+    fn esc_leaves_the_picker_while_a_delete_is_in_flight() {
+        let mut panel = two_rows();
+        panel.handle_key(ctrl(KeyCode::Char('x')));
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::DeleteSession {
+                session_id: "a".into(),
+                name: "Fix bug".into(),
+            }
+        );
+        for pressed in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Enter,
+            KeyCode::Char('s'),
+        ] {
+            assert_eq!(panel.handle_key(key(pressed)), Effect::None, "{pressed:?}");
+        }
+        assert_eq!(panel.handle_key(ctrl(KeyCode::Char('x'))), Effect::None);
+        assert!(shown(&panel).contains("Fix bug"));
+        assert_eq!(panel.handle_key(key(KeyCode::Esc)), Effect::Close);
     }
 }

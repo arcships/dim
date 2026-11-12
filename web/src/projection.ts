@@ -25,6 +25,7 @@ export type TimelineRow =
   | { kind: "source-message"; key: string; from: string; steer: boolean; final: boolean; body: string }
   | { kind: "source-idle"; key: string; branch: string; status: string }
   | { kind: "source-ended"; key: string; branch: string }
+  | { kind: "hook-follow-up"; key: string; body: string; lines: number }
   | { kind: "error"; key: string; text: string; details?: ModelFailure }
   | { kind: "stopped"; key: string }
 
@@ -321,6 +322,7 @@ type BranchNotice =
   | { kind: "source-message"; from: string; steer: boolean; final: boolean; body: string }
   | { kind: "source-idle"; branch: string; status: string }
   | { kind: "source-ended"; branch: string }
+  | { kind: "hook-follow-up"; body: string; lines: number }
 
 function branchNotice(text: string, mode: string | undefined): BranchNotice | undefined {
   if (text.startsWith("<dim-branch-message")) {
@@ -343,7 +345,28 @@ function branchNotice(text: string, mode: string | undefined): BranchNotice | un
     const branch = attr(text, "branch")
     return branch === undefined ? undefined : { kind: "source-ended", branch }
   }
+  // One follow-up input carries one block: Hooks writes it in `Branch::stop`
+  // (hooks/runner.rs), one Queue input per round. Taking the first match is
+  // safe while that holds, so a second writer has to keep the shape or change
+  // this reader.
+  if (opensElement(text, "dim-hooks") && hookKind(text) === "follow-up") {
+    const body = unescape(elementBody(text, "</dim-hooks>")).trim()
+    return { kind: "hook-follow-up", body, lines: Math.max(1, body.split("\n").length) }
+  }
   return undefined
+}
+
+/** Whether `text` opens the element `name` itself, and not a longer name that starts with it. */
+function opensElement(text: string, name: string): boolean {
+  if (!text.startsWith(`<${name}`)) return false
+  const after = text.charAt(name.length + 1)
+  return after === ">" || /\s/u.test(after)
+}
+
+/** The `kind` attribute of a `dim-hooks` block, read from its opening tag alone. */
+function hookKind(text: string): string | undefined {
+  const open = text.slice(0, text.indexOf(">") + 1)
+  return attr(open, "kind")
 }
 
 /** The provider's own wording, as the CLI words it: message unless absent, then the action. */

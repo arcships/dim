@@ -93,9 +93,9 @@ root.plugin(DaemonLink{options})
   ── DaemonLink Active
   Tui: raw mode, Home (no Session and no UI registration)
     --resume ID: attach the requested Session immediately
-    otherwise: wait for the first user message
+    otherwise: wait for the first user message or shell command
       Home settings, model selection, /web, exit: no Session creation
-      first message: session.create {cwd, permissionPolicy, model?, startup?}
+      first message or shell command: session.create {cwd, permissionPolicy, model?, startup?}
   session.attach
   LeafNode (sibling of Tui at the client root): private socket, LocalId ui-<id>, accepting
   ui.open {sessionId, kind: "tui", peer: ui-<id>, address}
@@ -122,8 +122,8 @@ keeps the terminal it was started on, stays in the shell's foreground job,
 and returns the TUI's exit code. `ui.open` is an internal daemon RPC used by
 this attachment, not a separate user command. A daemon without `ui.leaf.2`
 keeps the direct TUI. Both paths defer ordinary Session creation until the
-first message; startup overrides are retained in this invocation until then.
-Closing Home without sending a message leaves no Session in the catalog.
+first message or shell command; startup overrides are retained in this invocation
+until then. Closing Home without either leaves no Session in the catalog.
 
 `dimcode tui -p TEXT` carries the first message: the client reads it once
 from the parsed options, together with the images already read and scaled at
@@ -402,8 +402,9 @@ counted viewers.
 **Home before a Session.** Ordinary startup does not call `session.create`,
 whether a usable model is configured or not. `/connect`, `/login`, `/models`,
 settings and `/web` remain available without a Session. Only submitting the
-first message creates one, using the launch options unless the user selected
-a model at Home. A failed creation is reported at that submission and leaves
+first message or shell command creates one, using the launch options unless the
+user selected a model at Home. Shell commands follow the [CLI shell contract](../cli-commands.md).
+A failed creation is reported at that submission and leaves
 Home available for configuration and retry. No UI leaf exists until a Session
 has been attached; the same `Tui` then opens its leaf with the existing
 `ui.open` contract. `--resume` still attaches immediately and adopts startup

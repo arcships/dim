@@ -20,22 +20,24 @@ use crate::{
     tool_registry::ToolRegistry,
 };
 use dim_agent_runtime::{
-    BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison, QueryFilter,
-    QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec, QueryValue, SessionConfig,
-    SessionIdentity, Timeline, TimelineIdentity, TimelineQuery, TimelineQueryScope,
+    AgentError, BranchLifecycle, CollaborationRole, Dispatcher, Names, QueryComparison,
+    QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
+    QueryValue, SessionConfig, SessionIdentity, Timeline, TimelineIdentity, TimelineQuery,
+    TimelineQueryScope,
 };
 use dim_agent_types::{
-    AgentEvent, ApprovalCancelledData, ApprovalDecision, ApprovalRequestData, ApprovalRespondData,
-    BranchSource, ContentBlock, EventKind, InputBlock, InputMessageData, InputMode, JsonObject,
-    PermissionPreset, ToolCallResult, ToolContent, TurnOutcome, UserInput,
+    AgentEvent, ApprovalDecision, ApprovalRequestData, BranchSource, ContentBlock, EventKind,
+    InputBlock, InputMessageData, InputMode, JsonObject, PermissionPreset, TimelinePosition,
+    ToolCall, ToolResultData, TurnOutcome, UserInput,
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::OsString,
     future::Future,
+    num::NonZeroU64,
     path::Path,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -55,6 +57,7 @@ const STDERR_LIMIT: usize = 2 * 1024;
 const CONTEXT_LIMIT: usize = 16 * 1024;
 /// Consecutive `Stop` follow-ups (A8).
 const STOP_FOLLOW_UP_LIMIT: u32 = 3;
+const FOLLOW_UP_TAG: &str = "hooks:stop-follow-up:";
 /// The root branch, where `SessionStart` is derived.
 const MAIN_BRANCH: &str = "main";
 /// The key prefix of a `SessionStart` block, which tells a started Session
@@ -826,7 +829,7 @@ impl AdviseTool for HookAdvice {
         request: ToolAdviceRequest,
         cancel: CancellationToken,
     ) -> HostFuture<'_, ToolAdviceReply> {
-        Box::pin(async move { Ok(self.branch.advise(&request, &cancel).await) })
+        Box::pin(async move { self.branch.advise(&request, &cancel).await })
     }
 }
 
@@ -970,194 +973,24 @@ impl DynPlugin for HooksSessionPlugin {
     }
 }
 
-/// One call of a `step/tool-result` batch, with what decides it.
-struct ToolRun {
-    event: HookEvent,
-    call_id: String,
-    turn_id: String,
-    name: String,
-    input: JsonObject,
-    /// The alias of the declaration in force where the result batch folded,
-    /// so a reconfiguration queued before the drain does not change it.
-    alias: Option<String>,
-    content: ToolContent,
-    is_error: bool,
-}
-
 enum Job {
-    ToolResults { trigger: u64, calls: Vec<ToolRun> },
-    Stop { trigger: u64, from_follow_up: bool },
+    ToolResults { trigger: u64, data: ToolResultData },
+    Stop { trigger: u64, start: Option<u64> },
 }
 
-/// What a written output must still hold after its commands ran (§3.4).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Validity {
-    /// Any point but `SessionStart`: no interrupt or newer operator input.
     Branch,
-    /// `SessionStart`: the Session has not started either.
     Unstarted,
 }
 
-/// What a branch consumed, folded from its events.
 #[derive(Default)]
 struct View {
-    /// The sequence of the last consumed event.
     last: u64,
-    /// The last consumed `stop/interrupt`.
     interrupted: u64,
-    /// The last consumed input that was the operator's own (§3.4).
-    spoken: u64,
-    /// The ids of written operator inputs the branch has not consumed yet.
-    operator_inputs: HashSet<String>,
-    /// Tool calls by `call_id`, from `step/tool-call`.
-    calls: HashMap<String, (String, JsonObject, String)>,
-    /// The matcher aliases of the tool part the last consumed
-    /// `context/configured` carried, by tool name; `None` when it carried
-    /// none, and the registry answers for the aliases.
-    tool_aliases: Option<HashMap<String, String>>,
-    /// The id of the follow-up input Hooks wrote and no turn has consumed yet.
-    follow_up_input: Option<String>,
-    /// A follow-up input was consumed since the last `turn/end`.
-    consuming: bool,
-    /// Consecutive follow-ups that drove turns.
-    follow_ups: u32,
-    /// A `turn/start` or a Session-start block was seen, so SessionStart is
-    /// decided.
+    consumed: u64,
+    turn_start: Option<u64>,
     started: bool,
-}
-
-impl View {
-    fn input(&mut self, id: &str, operator: bool, started: bool, follow_up: bool) {
-        if operator {
-            self.operator_inputs.insert(id.to_owned());
-        }
-        self.started |= started;
-        if follow_up {
-            self.follow_up_input = Some(id.to_owned());
-            self.follow_ups += 1;
-        }
-    }
-    fn consumed(&mut self, id: &str, sequence: u64) {
-        if self.operator_inputs.remove(id) {
-            self.spoken = sequence;
-        }
-        if self.follow_up_input.as_deref() == Some(id) {
-            self.consuming = true;
-            self.follow_up_input = None;
-        }
-    }
-    fn turn_ended(&mut self) -> bool {
-        let from_follow_up = self.consuming;
-        self.consuming = false;
-        if !from_follow_up {
-            self.follow_ups = 0;
-        }
-        from_follow_up
-    }
-
-    fn fold(&mut self, event: &AgentEvent) -> Option<Job> {
-        self.last = event.sequence;
-        match &event.kind {
-            EventKind::StopInterrupt(_) => {
-                self.interrupted = event.sequence;
-            }
-            EventKind::InputMessage(data) => {
-                self.input(
-                    &event.id,
-                    operator_input(data),
-                    session_started(event),
-                    follow_up_input(event),
-                );
-            }
-            EventKind::InputConsumed(data) => {
-                self.consumed(&data.input_id, event.sequence);
-            }
-            EventKind::InputDeleted(data) => {
-                // A withdrawn input ends without being consumed: the queue
-                // writes input/deleted for an input it still holds
-                // (input_queue.rs). It must not stay an operator input.
-                self.operator_inputs.remove(&data.input_id);
-            }
-            EventKind::TurnStart(_) => {
-                self.started = true;
-            }
-            EventKind::TurnEnd(data) => {
-                let from_follow_up = self.turn_ended();
-                if matches!(data.outcome, TurnOutcome::Completed { .. }) {
-                    return Some(Job::Stop {
-                        trigger: event.sequence,
-                        from_follow_up,
-                    });
-                }
-            }
-            EventKind::ToolCall(data) => {
-                for call in &data.calls {
-                    self.calls.insert(
-                        call.id.clone(),
-                        (call.name.clone(), call.input.clone(), data.turn_id.clone()),
-                    );
-                }
-            }
-            EventKind::ToolResult(data) => {
-                let calls = data
-                    .results
-                    .iter()
-                    .filter_map(|result| self.tool_run(result))
-                    .collect();
-                // A result settles its call; nothing keeps the call's input.
-                for result in &data.results {
-                    self.calls.remove(&result.call_id);
-                }
-                return Some(Job::ToolResults {
-                    trigger: event.sequence,
-                    calls,
-                });
-            }
-            EventKind::ContextConfigured(data) => {
-                self.tool_aliases = data.settings.tools.as_ref().map(|tools| {
-                    tools
-                        .iter()
-                        .filter_map(|tool| {
-                            Some((
-                                tool.name.clone(),
-                                alias(
-                                    &tool.name,
-                                    tool.risk.as_deref(),
-                                    tool.metadata
-                                        .as_ref()
-                                        .and_then(|metadata| metadata.mcp_server_id.as_deref()),
-                                    tool.metadata.as_ref().and_then(|metadata| {
-                                        metadata.mcp_original_tool_name.as_deref()
-                                    }),
-                                )?,
-                            ))
-                        })
-                        .collect()
-                });
-            }
-            _ => {}
-        }
-        None
-    }
-
-    fn tool_run(&self, result: &ToolCallResult) -> Option<ToolRun> {
-        let (name, input, turn_id) = self.calls.get(&result.call_id)?.clone();
-        let is_error = result.result.is_error == Some(true);
-        Some(ToolRun {
-            event: if is_error {
-                HookEvent::PostToolUseFailure
-            } else {
-                HookEvent::PostToolUse
-            },
-            alias: None,
-            call_id: result.call_id.clone(),
-            turn_id,
-            name,
-            input,
-            content: result.result.content.clone(),
-            is_error,
-        })
-    }
 }
 
 /// The migration alias a pasted Claude or Codex matcher selects (G.2).
@@ -1218,11 +1051,8 @@ struct Branch {
     timeline: Arc<Timeline>,
     approval: Arc<Approval>,
     registry: Arc<ToolRegistry>,
-    /// The plugin's own context, which a rebuilt page reports progress under.
-    ctx: Ctx,
-    /// The Session whose rebuilt pages a test can slow (feature `testing`).
-    #[cfg(feature = "testing")]
-    session_id: String,
+    dispatcher: Arc<Dispatcher>,
+    lifecycle: Arc<BranchLifecycle>,
     branch_id: String,
     view: Mutex<View>,
     jobs: mpsc::UnboundedSender<Job>,
@@ -1234,265 +1064,96 @@ struct Branch {
 }
 
 impl Branch {
-    async fn rebuild(&self) -> dim_agent_runtime::Result<u64> {
-        let through = self.timeline.committed();
-        let mut after = None;
-        let mut view = View::default();
-        loop {
-            #[cfg(feature = "testing")]
-            slow_rebuild_page(&self.session_id).await;
-            let reply = self
-                .timeline
-                .query(TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    from: None,
-                    through: Some(through),
-                    include_publishing: true,
-                    query: QuerySpec {
-                        filter: Some(QueryFilter::And {
-                            conditions: vec![
-                                QueryFilter::In {
-                                    value: QueryOperand::Field {
-                                        path: "kind".into(),
-                                    },
-                                    values: FOLLOWED_EVENTS.map(Into::into).to_vec(),
-                                },
-                                QueryFilter::Not {
-                                    condition: Box::new(QueryFilter::And {
-                                        conditions: vec![
-                                            QueryFilter::In {
-                                                value: QueryOperand::Field {
-                                                    path: "kind".into(),
-                                                },
-                                                values: vec!["step/tool-call".into()],
-                                            },
-                                            QueryFilter::Exists {
-                                                condition: Box::new(QueryFilter::And {
-                                                    conditions: vec![
-                                                        QueryFilter::In {
-                                                            value: QueryOperand::Field {
-                                                                path: "kind".into(),
-                                                            },
-                                                            values: vec!["step/tool-result".into()],
-                                                        },
-                                                        QueryFilter::Compare {
-                                                            left: QueryOperand::Field {
-                                                                path: "data.call_event_id".into(),
-                                                            },
-                                                            comparison: QueryComparison::Eq,
-                                                            right: QueryOperand::Outer {
-                                                                path: "id".into(),
-                                                            },
-                                                        },
-                                                    ],
-                                                }),
-                                            },
-                                        ],
-                                    }),
-                                },
-                            ],
-                        }),
-                        select: QuerySelect::Fields {
-                            fields: [
-                                "kind",
-                                "id",
-                                "position.sequence",
-                                "data.user.content[].type",
-                                "data.blocks[].text",
-                                "data.blocks[].key",
-                                "data.input_id",
-                                "data.calls",
-                                "data.turn_id",
-                                "data.results[].call_id",
-                                "data.settings.tools[].name",
-                                "data.settings.tools[].risk",
-                                "data.settings.tools[].metadata.mcpServerId",
-                                "data.settings.tools[].metadata.mcpOriginalToolName",
-                            ]
-                            .map(String::from)
-                            .to_vec(),
+    async fn aliases(
+        &self,
+        through: u64,
+    ) -> dim_agent_runtime::Result<Option<HashMap<String, String>>> {
+        let reply = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(through),
+                include_publishing: true,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
                         },
-                        group_by: vec![],
-                        pick: None,
-                        order_by: vec![],
-                    },
-                    page: Some(QueryPage {
-                        limit: std::num::NonZeroU64::new(256).unwrap(),
-                        after,
+                        values: vec!["context/configured".into()],
                     }),
-                })
-                .await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("field selection returns rows")
+                    select: QuerySelect::Fields {
+                        fields: [
+                            "data.settings.tools[].name",
+                            "data.settings.tools[].risk",
+                            "data.settings.tools[].metadata.mcpServerId",
+                            "data.settings.tools[].metadata.mcpOriginalToolName",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    },
+                    group_by: vec![],
+                    pick: Some(QueryPick::Last),
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let QueryOutput::Rows { rows } = reply.result else {
+            unreachable!("tool alias fields")
+        };
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let [names, risks, servers, originals] =
+            <[_; 4]>::try_from(row.values).expect("four tool alias fields");
+        let names = match names {
+            QueryValue::Missing => return Ok(None),
+            QueryValue::Elements { values } => values,
+            _ => unreachable!("optional adopted tool array"),
+        };
+        let (
+            QueryValue::Elements { values: risks },
+            QueryValue::Elements { values: servers },
+            QueryValue::Elements { values: originals },
+        ) = (risks, servers, originals)
+        else {
+            unreachable!("tool arrays retain their shape")
+        };
+        let text = |value: QueryValue| match value {
+            QueryValue::Missing => None,
+            QueryValue::Value {
+                value: Value::String(value),
+            } => Some(value),
+            _ => unreachable!("optional tool alias string"),
+        };
+        let mut aliases = HashMap::new();
+        for (((name, risk), server), original) in
+            names.into_iter().zip(risks).zip(servers).zip(originals)
+        {
+            let QueryValue::Value {
+                value: Value::String(name),
+            } = name
+            else {
+                unreachable!("tool name")
             };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: Value::String(kind),
-                    },
-                    QueryValue::Value {
-                        value: Value::String(id),
-                    },
-                    QueryValue::Value { value: sequence },
-                    user,
-                    texts,
-                    keys,
-                    input_id,
-                    calls,
-                    turn_id,
-                    results,
-                    names,
-                    risks,
-                    servers,
-                    originals,
-                ] = row.values.as_slice()
-                else {
-                    unreachable!("event has kind, id and sequence")
-                };
-                let sequence = sequence
-                    .as_u64()
-                    .expect("position sequence is an unsigned integer");
-                view.last = sequence;
-                match kind.as_str() {
-                    "stop/interrupt" => view.interrupted = sequence,
-                    "input/message" => {
-                        let texts = match texts {
-                            QueryValue::Elements { values } => values.as_slice(),
-                            QueryValue::Missing => &[],
-                            _ => unreachable!("block text projection is an array"),
-                        };
-                        let keys = match keys {
-                            QueryValue::Elements { values } => values.as_slice(),
-                            QueryValue::Missing => &[],
-                            _ => unreachable!("block key projection is an array"),
-                        };
-                        let operator = !matches!(user, QueryValue::Missing)
-                            && !matches!(texts.first(), Some(QueryValue::Value { value: Value::String(text) }) if text.starts_with("<dim-"));
-                        let started = keys.iter().any(|key| matches!(key, QueryValue::Value { value: Value::String(key) } if key.starts_with(SESSION_START_KEY)));
-                        let follow_up = texts.iter().any(|text| matches!(text, QueryValue::Value { value: Value::String(text) } if text.starts_with("<dim-hooks kind=\"follow-up\">")));
-                        view.input(id, operator, started, follow_up);
-                    }
-                    "input/consumed" | "input/deleted" => {
-                        let QueryValue::Value {
-                            value: Value::String(input),
-                        } = input_id
-                        else {
-                            unreachable!("input decision has an input id")
-                        };
-                        if kind == "input/consumed" {
-                            view.consumed(input, sequence);
-                        } else {
-                            view.operator_inputs.remove(input);
-                        }
-                    }
-                    "turn/start" => view.started = true,
-                    "turn/end" => {
-                        view.turn_ended();
-                    }
-                    "step/tool-call" => {
-                        let (
-                            QueryValue::Value { value: calls },
-                            QueryValue::Value {
-                                value: Value::String(turn),
-                            },
-                        ) = (calls, turn_id)
-                        else {
-                            unreachable!("tool call has calls and turn id")
-                        };
-                        let calls: Vec<dim_agent_types::ToolCall> =
-                            serde_json::from_value(calls.clone())
-                                .expect("calls follow the event contract");
-                        for call in calls {
-                            view.calls
-                                .insert(call.id, (call.name, call.input, turn.clone()));
-                        }
-                    }
-                    "step/tool-result" => {
-                        let QueryValue::Elements { values } = results else {
-                            unreachable!("tool results have call ids")
-                        };
-                        for value in values {
-                            let QueryValue::Value {
-                                value: Value::String(id),
-                            } = value
-                            else {
-                                unreachable!("tool result has call id")
-                            };
-                            view.calls.remove(id);
-                        }
-                    }
-                    "context/configured" => {
-                        view.tool_aliases = match names {
-                            QueryValue::Missing => None,
-                            QueryValue::Elements { values: names } => {
-                                let (
-                                    QueryValue::Elements { values: risks },
-                                    QueryValue::Elements { values: servers },
-                                    QueryValue::Elements { values: originals },
-                                ) = (risks, servers, originals)
-                                else {
-                                    unreachable!("tool property arrays retain the same shape")
-                                };
-                                let mut aliases = HashMap::new();
-                                for (index, name) in names.iter().enumerate() {
-                                    let QueryValue::Value {
-                                        value: Value::String(name),
-                                    } = name
-                                    else {
-                                        unreachable!("tool has a name")
-                                    };
-                                    let risk = match &risks[index] {
-                                        QueryValue::Missing => None,
-                                        QueryValue::Value {
-                                            value: Value::String(value),
-                                        } => Some(value.as_str()),
-                                        _ => unreachable!("risk is an optional string"),
-                                    };
-                                    let server = match &servers[index] {
-                                        QueryValue::Missing => None,
-                                        QueryValue::Value {
-                                            value: Value::String(value),
-                                        } => Some(value.as_str()),
-                                        _ => unreachable!("MCP server id is an optional string"),
-                                    };
-                                    let original = match &originals[index] {
-                                        QueryValue::Missing => None,
-                                        QueryValue::Value {
-                                            value: Value::String(value),
-                                        } => Some(value.as_str()),
-                                        _ => unreachable!("MCP tool name is an optional string"),
-                                    };
-                                    if let Some(value) = alias(name, risk, server, original) {
-                                        aliases.insert(name.clone(), value);
-                                    }
-                                }
-                                Some(aliases)
-                            }
-                            _ => unreachable!("tool name projection is an optional array"),
-                        };
-                    }
-                    _ => {}
-                }
-            }
-            // A completed page is real progress: report it, so a rebuild that
-            // outlasts the opening's inactivity interval still opens while a
-            // page that never returns still times out.
-            dim_agent_runtime::opening_advanced(&self.ctx);
-            after = reply.next;
-            if after.is_none() {
-                break;
+            if let Some(value) = alias(
+                &name,
+                text(risk).as_deref(),
+                text(server).as_deref(),
+                text(original).as_deref(),
+            ) {
+                aliases.insert(name, value);
             }
         }
-        *self.view.lock().unwrap() = view;
-        Ok(through)
+        Ok(Some(aliases))
     }
 
-    /// The alias a matcher of a tool event is tested against (G.2): a
-    /// property of the declaration the branch uses. A branch that adopted a
-    /// tool part uses that part, and a name it does not declare has no alias.
-    /// Without one, the registry answers for the alias.
-    fn alias(&self, view: &View, name: &str) -> Option<String> {
-        if let Some(aliases) = &view.tool_aliases {
+    fn alias(&self, aliases: &Option<HashMap<String, String>>, name: &str) -> Option<String> {
+        if let Some(aliases) = aliases {
             return aliases.get(name).cloned();
         }
         self.registry
@@ -1505,70 +1166,452 @@ impl Branch {
                     tool.definition
                         .metadata
                         .as_ref()
-                        .and_then(|metadata| metadata.mcp_server_id.as_deref()),
+                        .and_then(|m| m.mcp_server_id.as_deref()),
                     tool.definition
                         .metadata
                         .as_ref()
-                        .and_then(|metadata| metadata.mcp_original_tool_name.as_deref()),
+                        .and_then(|m| m.mcp_original_tool_name.as_deref()),
                 )
             })
     }
 
-    /// Fills a settled batch's aliases from the view it folded under.
-    fn with_aliases(&self, view: &View, job: Job) -> Job {
-        match job {
-            Job::ToolResults { trigger, calls } => Job::ToolResults {
-                trigger,
-                calls: calls
-                    .into_iter()
-                    .map(|call| ToolRun {
-                        alias: self.alias(view, &call.name),
-                        ..call
-                    })
-                    .collect(),
+    async fn session_started(&self, through: u64) -> dim_agent_runtime::Result<bool> {
+        let mut request = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["turn/start".into()],
+                }),
+                select: QuerySelect::Exists,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
             },
-            job => job,
+            page: None,
+        };
+        let QueryOutput::Exists { exists } = self.timeline.query(request.clone()).await?.result
+        else {
+            unreachable!("turn existence")
+        };
+        if exists {
+            return Ok(true);
+        }
+        request.query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["input/message".into()],
+                },
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Present {
+                        value: QueryOperand::Field {
+                            path: "data.handover".into(),
+                        },
+                    }),
+                },
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Exists {
+                        condition: Box::new(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["input/consumed".into(), "input/deleted".into()],
+                                },
+                                QueryFilter::Compare {
+                                    left: QueryOperand::Field {
+                                        path: "data.input_id".into(),
+                                    },
+                                    comparison: QueryComparison::Eq,
+                                    right: QueryOperand::Outer { path: "id".into() },
+                                },
+                            ],
+                        }),
+                    }),
+                },
+                QueryFilter::Any {
+                    field: "data.blocks".into(),
+                    condition: Box::new(QueryFilter::Prefix {
+                        value: QueryOperand::Element { path: "key".into() },
+                        prefix: SESSION_START_KEY.into(),
+                    }),
+                },
+            ],
+        });
+        request.query.select = QuerySelect::Fields {
+            fields: vec!["id".into()],
+        };
+        request.query.pick = Some(QueryPick::First);
+        request.page = Some(QueryPage {
+            limit: NonZeroU64::MIN,
+            after: None,
+        });
+        let QueryOutput::Rows { rows } = self.timeline.query(request).await?.result else {
+            unreachable!("startup input identity")
+        };
+        Ok(!rows.is_empty())
+    }
+
+    async fn operator_consumed(&self, after: u64, through: u64) -> dim_agent_runtime::Result<bool> {
+        if after >= through {
+            return Ok(false);
+        }
+        let mut request = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: Some(TimelinePosition {
+                branch_id: self.branch_id.clone(),
+                sequence: after + 1,
+            }),
+            through: Some(through),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["input/consumed".into()],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data.input_id".into()],
+                },
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::new(128).unwrap(),
+                after: None,
+            }),
+        };
+        loop {
+            let reply = self.timeline.query(request.clone()).await?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("consumed input identities")
+            };
+            let ids: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    let QueryValue::Value { value } =
+                        row.values.into_iter().next().expect("input_id")
+                    else {
+                        unreachable!("consumed input id")
+                    };
+                    value
+                })
+                .collect();
+            if !ids.is_empty() {
+                let found = self
+                    .timeline
+                    .query(TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from: None,
+                        through: Some(through),
+                        include_publishing: true,
+                        query: QuerySpec {
+                            filter: Some(QueryFilter::And {
+                                conditions: vec![
+                                    QueryFilter::In {
+                                        value: QueryOperand::Field {
+                                            path: "kind".into(),
+                                        },
+                                        values: vec!["input/message".into()],
+                                    },
+                                    QueryFilter::In {
+                                        value: QueryOperand::Field { path: "id".into() },
+                                        values: ids,
+                                    },
+                                    QueryFilter::Present {
+                                        value: QueryOperand::Field {
+                                            path: "data.user".into(),
+                                        },
+                                    },
+                                    QueryFilter::Not {
+                                        condition: Box::new(QueryFilter::Prefix {
+                                            value: QueryOperand::Field {
+                                                path: "data.blocks[0].text".into(),
+                                            },
+                                            prefix: "<dim-".into(),
+                                        }),
+                                    },
+                                ],
+                            }),
+                            select: QuerySelect::Fields {
+                                fields: vec!["id".into()],
+                            },
+                            group_by: vec![],
+                            pick: Some(QueryPick::First),
+                            order_by: vec![],
+                        },
+                        page: Some(QueryPage {
+                            limit: NonZeroU64::MIN,
+                            after: None,
+                        }),
+                    })
+                    .await?;
+                let QueryOutput::Rows { rows } = found.result else {
+                    unreachable!("operator input identity")
+                };
+                if !rows.is_empty() {
+                    return Ok(true);
+                }
+            }
+            let Some(next) = reply.next else {
+                return Ok(false);
+            };
+            request.page.as_mut().unwrap().after = Some(next);
         }
     }
 
-    /// Advances the consumed view; a live event that needs work is spawned or
-    /// enqueued, and the handler returns.
-    fn fold(self: &Arc<Self>, event: &AgentEvent, live: bool) {
-        // The live subscription delivers only `FOLLOWED_EVENTS`, while a
-        // replay hands over every branch event: skipping the rest here keeps
-        // both paths folding the same set (AGENTS rule 4).
-        if !FOLLOWED_EVENTS.contains(&event.kind.key()) {
-            return;
-        }
-        let job = {
-            let mut view = self.view.lock().unwrap();
-            view.fold(event).map(|job| self.with_aliases(&view, job))
+    async fn follow_up_round(
+        &self,
+        trigger: u64,
+        start: Option<u64>,
+    ) -> dim_agent_runtime::Result<u32> {
+        let mut request = TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(trigger),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["turn/start".into()],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["position.sequence".into()],
+                },
+                group_by: vec![],
+                pick: Some(QueryPick::Last),
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: NonZeroU64::MIN,
+                after: None,
+            }),
         };
-        match &event.kind {
-            EventKind::ApprovalRespond(ApprovalRespondData { approval_id, .. })
-            | EventKind::ApprovalCancelled(ApprovalCancelledData { approval_id, .. }) => {
-                // Cancelling never blocks, so the handler may do it.
-                self.pending.cancel(approval_id);
+        let start = match start {
+            Some(start) => start,
+            None => {
+                let QueryOutput::Rows { rows } = self.timeline.query(request.clone()).await?.result
+                else {
+                    unreachable!("turn position")
+                };
+                let row = rows.into_iter().next().ok_or_else(|| {
+                    AgentError::fault("HooksBranch", "completed turn has no start")
+                })?;
+                let QueryValue::Value { value } = &row.values[0] else {
+                    unreachable!("turn position")
+                };
+                value.as_u64().expect("turn sequence")
             }
-            _ => {}
+        };
+        request.from = Some(TimelinePosition {
+            branch_id: self.branch_id.clone(),
+            sequence: start,
+        });
+        request.query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec!["step/model-start".into()],
+        });
+        request.query.pick = Some(QueryPick::First);
+        let QueryOutput::Rows { rows } = self.timeline.query(request.clone()).await?.result else {
+            unreachable!("first request position")
+        };
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(0);
+        };
+        let QueryValue::Value { value } = &row.values[0] else {
+            unreachable!("first request position")
+        };
+        let first = value.as_u64().expect("request sequence");
+        request.from.as_mut().unwrap().sequence = start + 1;
+        request.through = Some(first - 1);
+        request.query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec!["input/consumed".into()],
+        });
+        request.query.select = QuerySelect::Fields {
+            fields: vec!["data.input_id".into()],
+        };
+        request.query.pick = None;
+        request.page.as_mut().unwrap().limit = NonZeroU64::new(128).unwrap();
+        let mut round = 0;
+        loop {
+            let reply = self.timeline.query(request.clone()).await?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("first request input identities")
+            };
+            let ids: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    let QueryValue::Value { value } =
+                        row.values.into_iter().next().expect("input_id")
+                    else {
+                        unreachable!("consumed input id")
+                    };
+                    value
+                })
+                .collect();
+            if !ids.is_empty() {
+                let inputs = self
+                    .timeline
+                    .query(TimelineQuery {
+                        scope: TimelineQueryScope::Branch,
+                        from: None,
+                        through: Some(first),
+                        include_publishing: true,
+                        query: QuerySpec {
+                            filter: Some(QueryFilter::And {
+                                conditions: vec![
+                                    QueryFilter::In {
+                                        value: QueryOperand::Field {
+                                            path: "kind".into(),
+                                        },
+                                        values: vec!["input/message".into()],
+                                    },
+                                    QueryFilter::In {
+                                        value: QueryOperand::Field { path: "id".into() },
+                                        values: ids,
+                                    },
+                                    QueryFilter::Prefix {
+                                        value: QueryOperand::Field {
+                                            path: "data.blocks[0].text".into(),
+                                        },
+                                        prefix: "<dim-hooks kind=\"follow-up\">".into(),
+                                    },
+                                ],
+                            }),
+                            select: QuerySelect::Fields {
+                                fields: vec!["tags".into()],
+                            },
+                            group_by: vec![],
+                            pick: None,
+                            order_by: vec![],
+                        },
+                        page: Some(QueryPage {
+                            limit: NonZeroU64::new(128).unwrap(),
+                            after: None,
+                        }),
+                    })
+                    .await?;
+                let QueryOutput::Rows { rows } = inputs.result else {
+                    unreachable!("follow-up tags")
+                };
+                for row in rows {
+                    let tags = match &row.values[0] {
+                        QueryValue::Missing => return Ok(STOP_FOLLOW_UP_LIMIT),
+                        QueryValue::Value {
+                            value: Value::Array(tags),
+                        } => tags,
+                        _ => unreachable!("input envelope tags"),
+                    };
+                    let mut stored_round = None;
+                    for tag in tags {
+                        let Some(value) = tag
+                            .as_str()
+                            .expect("tag string")
+                            .strip_prefix(FOLLOW_UP_TAG)
+                        else {
+                            continue;
+                        };
+                        stored_round = Some(match value {
+                            "1" => 1,
+                            "2" => 2,
+                            "3" => 3,
+                            _ => {
+                                return Err(AgentError::fault(
+                                    "HooksBranch",
+                                    "invalid Stop continuation round",
+                                ));
+                            }
+                        });
+                    }
+                    round = round.max(stored_round.unwrap_or(STOP_FOLLOW_UP_LIMIT));
+                }
+            }
+            let Some(next) = reply.next else {
+                return Ok(round);
+            };
+            request.page.as_mut().unwrap().after = Some(next);
         }
-        if !live {
-            return;
-        }
+    }
+
+    fn fold(self: &Arc<Self>, event: AgentEvent) {
+        let mut view = self.view.lock().unwrap();
+        view.last = event.sequence;
+        let job = match event.kind {
+            EventKind::StopInterrupt(_) => {
+                view.interrupted = event.sequence;
+                None
+            }
+            EventKind::InputConsumed(_) => {
+                view.consumed = event.sequence;
+                None
+            }
+            EventKind::TurnStart(_) => {
+                view.started = true;
+                view.turn_start = Some(event.sequence);
+                None
+            }
+            EventKind::TurnEnd(data) => {
+                let start = view.turn_start.take();
+                matches!(data.outcome, TurnOutcome::Completed { .. }).then_some(Job::Stop {
+                    trigger: event.sequence,
+                    start,
+                })
+            }
+            EventKind::ToolResult(data) => Some(Job::ToolResults {
+                trigger: event.sequence,
+                data,
+            }),
+            EventKind::ApprovalRespond(data) => {
+                self.pending.cancel(&data.approval_id);
+                None
+            }
+            EventKind::ApprovalCancelled(data) => {
+                self.pending.cancel(&data.approval_id);
+                None
+            }
+            EventKind::ApprovalRequest(data) => {
+                let cancel = self.pending.register(&data.approval_id, &self.cancel);
+                let owner = self.clone();
+                let trigger = event.sequence;
+                self.tasks.spawn(async move {
+                    let id = data.approval_id.clone();
+                    if !owner.lifecycle.activated().await {
+                        owner.pending.finish(&id);
+                        return;
+                    }
+                    let result = owner.approval(data, trigger, cancel).await;
+                    owner.pending.finish(&id);
+                    if let Err(error) = result
+                        && !owner.cancel.is_cancelled()
+                    {
+                        owner.dispatcher.fail(error);
+                    }
+                });
+                None
+            }
+            _ => None,
+        };
+        drop(view);
         if let Some(job) = job {
             let _ = self.jobs.send(job);
-        }
-        if let EventKind::ApprovalRequest(data) = &event.kind {
-            // An approval writes no input, so it needs no place in the queue:
-            // its run is a task of its own, which starts at once instead of
-            // behind a running `PostToolUse` or `Stop` point. The token is
-            // registered before the task starts, so an answer or cancellation
-            // folded first has already cancelled the run it would start.
-            let cancel = self.pending.register(&data.approval_id, &self.cancel);
-            let owner = self.clone();
-            let data = data.clone();
-            self.tasks
-                .spawn(async move { owner.approval(data, cancel).await });
         }
     }
 
@@ -1582,37 +1625,36 @@ impl Branch {
                     None => return,
                 },
             };
-            match job {
-                Job::ToolResults { trigger, calls } => self.post_tools(trigger, calls).await,
-                Job::Stop {
-                    trigger,
-                    from_follow_up,
-                } => self.stop(trigger, from_follow_up).await,
+            let result = match job {
+                Job::ToolResults { trigger, data } => self.post_tools(trigger, data).await,
+                Job::Stop { trigger, start } => self.stop(trigger, start).await,
+            };
+            if let Err(error) = result
+                && !self.cancel.is_cancelled()
+            {
+                self.dispatcher.fail(error);
+                return;
             }
         }
     }
 
-    /// `SessionStart`, derived on `main` from a fold with no turn and no
-    /// Session-start block (§3.4).
-    async fn start_session(self: &Arc<Self>) {
+    async fn start_session(self: &Arc<Self>) -> dim_agent_runtime::Result<()> {
         if self.branch_id != MAIN_BRANCH {
-            return;
+            return Ok(());
         }
-        // The branch as it stood when the point was decided; anything the
-        // branch consumes later invalidates the output (§3.4).
         let trigger = {
             let view = self.view.lock().unwrap();
             if view.started {
-                return;
+                return Ok(());
             }
             view.last
         };
         let Some(snapshot) = self.runtime.snapshot().await else {
-            return;
+            return Ok(());
         };
         let matching = handlers(&snapshot, HookEvent::SessionStart, None, None);
-        if matching.is_empty() {
-            return;
+        if matching.is_empty() || self.session_started(trigger).await? {
+            return Ok(());
         }
         let mut payload = self
             .runtime
@@ -1634,43 +1676,126 @@ impl Branch {
                 ))
             })
             .collect();
-        if blocks.is_empty() {
-            return;
+        if !blocks.is_empty() {
+            self.write(
+                trigger,
+                InputMode::Append,
+                blocks,
+                Validity::Unstarted,
+                Vec::new(),
+            )
+            .await?;
         }
-        self.write(trigger, InputMode::Append, blocks, Validity::Unstarted);
+        Ok(())
     }
 
-    async fn post_tools(self: &Arc<Self>, trigger: u64, calls: Vec<ToolRun>) {
-        if calls.is_empty() {
-            return;
+    async fn post_tools(
+        self: &Arc<Self>,
+        trigger: u64,
+        data: ToolResultData,
+    ) -> dim_agent_runtime::Result<()> {
+        let Some(call_event_id) = data.call_event_id else {
+            return Ok(());
+        };
+        let results: Vec<_> = data
+            .results
+            .into_iter()
+            .filter(|item| !crate::tool_executor::is_reload_settled(&item.result))
+            .collect();
+        if results.is_empty() {
+            return Ok(());
         }
         let Some(snapshot) = self.runtime.snapshot().await else {
-            return;
+            return Ok(());
         };
+        let success = !handlers(&snapshot, HookEvent::PostToolUse, None, None).is_empty();
+        let failure = !handlers(&snapshot, HookEvent::PostToolUseFailure, None, None).is_empty();
+        if !results.iter().any(|item| {
+            if item.result.is_error == Some(true) {
+                failure
+            } else {
+                success
+            }
+        }) {
+            return Ok(());
+        }
+        let batch = self
+            .timeline
+            .query(TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: None,
+                through: Some(trigger),
+                include_publishing: true,
+                query: QuerySpec {
+                    filter: Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: vec!["step/tool-call".into()],
+                            },
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: "id".into() },
+                                values: vec![call_event_id.into()],
+                            },
+                        ],
+                    }),
+                    select: QuerySelect::Fields {
+                        fields: vec!["data.calls".into()],
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: NonZeroU64::MIN,
+                    after: None,
+                }),
+            })
+            .await?;
+        let QueryOutput::Rows { rows } = batch.result else {
+            unreachable!("tool calls")
+        };
+        let row = rows
+            .into_iter()
+            .next()
+            .ok_or_else(|| AgentError::fault("HooksBranch", "tool result has no call batch"))?;
+        let QueryValue::Value { value } = row.values.into_iter().next().expect("call field") else {
+            unreachable!("tool calls")
+        };
+        let calls: Vec<ToolCall> =
+            serde_json::from_value(value).map_err(|e| AgentError::Storage(e.to_string()))?;
+        let mut calls: HashMap<_, _> = calls
+            .into_iter()
+            .map(|call| (call.id, (call.name, call.input)))
+            .collect();
+        let aliases = self.aliases(trigger).await?;
         let mut blocks = Vec::new();
-        for call in calls {
-            let matching = handlers(
-                &snapshot,
-                call.event,
-                Some(&call.name),
-                call.alias.as_deref(),
-            );
+        for item in results {
+            let Some((name, input)) = calls.remove(&item.call_id) else {
+                continue;
+            };
+            let event = if item.result.is_error == Some(true) {
+                HookEvent::PostToolUseFailure
+            } else {
+                HookEvent::PostToolUse
+            };
+            let alias = self.alias(&aliases, &name);
+            let matching = handlers(&snapshot, event, Some(&name), alias.as_deref());
             if matching.is_empty() {
                 continue;
             }
-            let mut payload = self.runtime.payload(call.event, &self.branch_id);
-            payload.insert("tool_name".into(), Value::String(call.name.clone()));
-            payload.insert("tool_input".into(), Value::Object(call.input.clone()));
-            payload.insert("tool_use_id".into(), Value::String(call.call_id.clone()));
-            payload.insert("turn_id".into(), Value::String(call.turn_id.clone()));
-            payload.insert(
-                "tool_response".into(),
-                json!({"content": call.content, "is_error": call.is_error}),
-            );
+            let mut payload = self.runtime.payload(event, &self.branch_id);
+            payload.insert("tool_name".into(), Value::String(name.clone()));
+            payload.insert("tool_input".into(), Value::Object(input));
+            payload.insert("tool_use_id".into(), Value::String(item.call_id.clone()));
+            payload.insert("turn_id".into(), Value::String(data.turn_id.clone()));
+            payload.insert("tool_response".into(), json!({"content":item.result.content,"is_error":item.result.is_error == Some(true)}));
             let runs = self.runtime.run(&matching, &payload, &self.cancel).await;
             let context: Vec<String> = runs
                 .iter()
-                .filter_map(|run| contribution_of(call.event, run))
+                .filter_map(|run| contribution_of(event, run))
                 .collect();
             if context.is_empty() {
                 continue;
@@ -1680,46 +1805,51 @@ impl Branch {
                     "dim-hooks",
                     &[
                         ("kind", "post-tool"),
-                        ("call_id", &call.call_id),
-                        ("tool", &call.name),
+                        ("call_id", &item.call_id),
+                        ("tool", &name),
                     ],
                     &escaped(&context),
                 ),
                 None,
             ));
         }
-        if blocks.is_empty() {
-            return;
+        if !blocks.is_empty() {
+            self.write(
+                trigger,
+                InputMode::Append,
+                blocks,
+                Validity::Branch,
+                Vec::new(),
+            )
+            .await?;
         }
-        self.write(trigger, InputMode::Append, blocks, Validity::Branch);
+        Ok(())
     }
 
-    async fn stop(self: &Arc<Self>, trigger: u64, from_follow_up: bool) {
-        if self.view.lock().unwrap().follow_ups >= STOP_FOLLOW_UP_LIMIT {
-            tracing::warn!("Stop follow-up limit reached; no further follow-up");
-            return;
-        }
+    async fn stop(
+        self: &Arc<Self>,
+        trigger: u64,
+        start: Option<u64>,
+    ) -> dim_agent_runtime::Result<()> {
         let Some(snapshot) = self.runtime.snapshot().await else {
-            return;
+            return Ok(());
         };
         let matching = handlers(&snapshot, HookEvent::Stop, None, None);
         if matching.is_empty() {
-            return;
+            return Ok(());
+        }
+        let round = self.follow_up_round(trigger, start).await?;
+        if round >= STOP_FOLLOW_UP_LIMIT {
+            tracing::warn!("Stop follow-up limit reached; no further follow-up");
+            return Ok(());
         }
         let mut payload = self.runtime.payload(HookEvent::Stop, &self.branch_id);
-        payload.insert("stop_hook_active".into(), Value::Bool(from_follow_up));
+        payload.insert("stop_hook_active".into(), Value::Bool(round > 0));
         let runs = self.runtime.run(&matching, &payload, &self.cancel).await;
         let outputs: Vec<StopOutput> = runs.iter().map(stop_output).collect();
-        // A Stop block with an empty reason writes no follow-up (A.4); name
-        // the handler and the event, in the fields `report` uses, so the
-        // dropped block leaves a trace.
         for (run, output) in runs.iter().zip(&outputs) {
             if output.blocked && output.reason.is_none() {
-                tracing::warn!(
-                    source = %run.source,
-                    event = HookEvent::Stop.name(),
-                    "Stop block carried no reason; it writes no follow-up"
-                );
+                tracing::warn!(source = %run.source, event = HookEvent::Stop.name(), "Stop block carried no reason; it writes no follow-up");
             }
         }
         let mut parts: Vec<String> = outputs
@@ -1727,47 +1857,60 @@ impl Branch {
             .filter_map(|out| out.reason.clone())
             .collect();
         if parts.is_empty() {
-            // A Stop context alone does not drive a turn (§3.4, §5).
             if !outputs.iter().any(|out| out.blocked)
                 && outputs.iter().any(|out| out.context.is_some())
             {
                 tracing::info!("Stop context ignored: no handler blocked");
             }
-            return;
+            return Ok(());
         }
         parts.extend(outputs.iter().filter_map(|out| out.context.clone()));
-        // The follow-up is read back by its opening marker (`follow_up_input`),
-        // which the escape leaves alone: it covers the body only.
         let follow_up = element("dim-hooks", &[("kind", "follow-up")], &escaped(&parts));
         self.write(
             trigger,
             InputMode::Queue,
             vec![raw(follow_up, None)],
             Validity::Branch,
-        );
+            vec![format!("{FOLLOW_UP_TAG}{}", round + 1)],
+        )
+        .await?;
+        Ok(())
     }
 
-    async fn approval(self: &Arc<Self>, data: ApprovalRequestData, cancel: CancellationToken) {
-        let alias = {
-            let view = self.view.lock().unwrap();
-            self.alias(&view, &data.call.name)
+    async fn approval(
+        self: &Arc<Self>,
+        data: ApprovalRequestData,
+        trigger: u64,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<()> {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        let Some(snapshot) = self.runtime.snapshot().await else {
+            return Ok(());
         };
+        if cancel.is_cancelled()
+            || (handlers(&snapshot, HookEvent::PermissionRequest, None, None).is_empty()
+                && handlers(&snapshot, HookEvent::Notification, None, None).is_empty())
+        {
+            return Ok(());
+        }
+        let aliases = self.aliases(trigger).await?;
+        let alias = self.alias(&aliases, &data.call.name);
         let runs = approval_point(
             &self.runtime,
             &self.branch_id,
             alias.as_deref(),
             &data,
             &cancel,
+            &snapshot,
         )
         .await;
-        self.pending.finish(&data.approval_id);
-        let Some(runs) = runs else {
-            return;
-        };
+        let Some(runs) = runs else { return Ok(()) };
         // A cancelled point responds nothing: the request was answered or
         // `approval/cancelled` was consumed while its commands ran (A.5).
         if cancel.is_cancelled() {
-            return;
+            return Ok(());
         }
         let decision = runs.iter().filter_map(permission_decision).fold(
             None,
@@ -1783,6 +1926,7 @@ impl Branch {
         if let Some(decision) = decision {
             let _ = self.approval.respond(&data.approval_id, decision).await;
         }
+        Ok(())
     }
 
     /// `PreToolUse` for one admission (§3.1): the matching handlers run
@@ -1792,17 +1936,19 @@ impl Branch {
         self: &Arc<Self>,
         request: &ToolAdviceRequest,
         cancel: &CancellationToken,
-    ) -> ToolAdviceReply {
-        // The alias comes from the declaration in force, never from the risk
-        // this admission carries, so the same matcher selects the call on
-        // every tool event (G.2).
-        let alias = {
-            let view = self.view.lock().unwrap();
-            self.alias(&view, &request.call.name)
-        };
+    ) -> Result<ToolAdviceReply, HostError> {
+        let trigger = self.view.lock().unwrap().last;
         let Some(snapshot) = self.runtime.snapshot().await else {
-            return ToolAdviceReply::None;
+            return Ok(ToolAdviceReply::None);
         };
+        if handlers(&snapshot, HookEvent::PreToolUse, None, None).is_empty() {
+            return Ok(ToolAdviceReply::None);
+        }
+        let aliases = self
+            .aliases(trigger)
+            .await
+            .map_err(|error| HostError::failed(error.to_string()))?;
+        let alias = self.alias(&aliases, &request.call.name);
         let matching = handlers(
             &snapshot,
             HookEvent::PreToolUse,
@@ -1810,7 +1956,7 @@ impl Branch {
             alias.as_deref(),
         );
         if matching.is_empty() {
-            return ToolAdviceReply::None;
+            return Ok(ToolAdviceReply::None);
         }
         let mut payload = self.runtime.payload(HookEvent::PreToolUse, &self.branch_id);
         payload.insert("tool_name".into(), Value::String(request.call.name.clone()));
@@ -1861,12 +2007,12 @@ impl Branch {
         let Some(replies) = replies else {
             token.cancel();
             let _ = run.await;
-            return ToolAdviceReply::None;
+            return Ok(ToolAdviceReply::None);
         };
         let (mut ask, mut allow) = (None, false);
         for reply in replies {
             match reply {
-                ToolAdviceReply::Deny { reason } => return ToolAdviceReply::Deny { reason },
+                ToolAdviceReply::Deny { reason } => return Ok(ToolAdviceReply::Deny { reason }),
                 ToolAdviceReply::Ask { reason } => {
                     ask.get_or_insert(reason);
                 }
@@ -1874,46 +2020,57 @@ impl Branch {
                 ToolAdviceReply::None => {}
             }
         }
-        match ask {
+        Ok(match ask {
             Some(reason) => ToolAdviceReply::Ask { reason },
             None if allow => ToolAdviceReply::Allow,
             None => ToolAdviceReply::None,
-        }
+        })
     }
 
-    /// Writes an input unless the branch moved on after the triggering fact:
-    /// an interrupt or a newer operator input was consumed, or, for
-    /// `SessionStart`, the Session started (§3.4).
-    fn write(
+    async fn write(
         &self,
         trigger: u64,
         mode: InputMode,
         blocks: Vec<InputBlock>,
         validity: Validity,
-    ) -> Option<Arc<AgentEvent>> {
-        let view = self.view.lock().unwrap();
-        let moved_on = view.interrupted > trigger || view.spoken > trigger;
-        let started = validity == Validity::Unstarted && view.started;
-        if moved_on || started {
-            tracing::warn!("hook output dropped: the branch moved on");
-            return None;
-        }
-        let event = match append_own(
-            &self.timeline,
-            InputMessageData {
-                blocks,
-                mode: Some(mode),
-                ..InputMessageData::default()
-            },
-            Vec::new(),
-        ) {
-            Ok(event) => event,
-            Err(error) => {
-                tracing::warn!(%error, "hook output could not be written");
-                return None;
+        tags: Vec<String>,
+    ) -> dim_agent_runtime::Result<()> {
+        let mut checked = trigger;
+        loop {
+            let consumed = {
+                let view = self.view.lock().unwrap();
+                if view.interrupted > trigger || (validity == Validity::Unstarted && view.started) {
+                    tracing::warn!("hook output dropped: the branch moved on");
+                    return Ok(());
+                }
+                view.consumed
+            };
+            if consumed > checked && self.operator_consumed(checked, consumed).await? {
+                tracing::warn!("hook output dropped: a newer operator input was consumed");
+                return Ok(());
             }
-        };
-        Some(event)
+            checked = checked.max(consumed);
+            let view = self.view.lock().unwrap();
+            if view.interrupted > trigger || (validity == Validity::Unstarted && view.started) {
+                tracing::warn!("hook output dropped: the branch moved on");
+                return Ok(());
+            }
+            if view.consumed > checked {
+                continue;
+            }
+            if let Err(error) = append_own(
+                &self.timeline,
+                InputMessageData {
+                    blocks,
+                    mode: Some(mode),
+                    ..InputMessageData::default()
+                },
+                tags,
+            ) {
+                tracing::warn!(%error, "hook output could not be written");
+            }
+            return Ok(());
+        }
     }
 }
 
@@ -1927,13 +2084,8 @@ async fn approval_point(
     alias: Option<&str>,
     data: &ApprovalRequestData,
     cancel: &CancellationToken,
+    snapshot: &HookSourcesSnapshot,
 ) -> Option<Vec<HookRun>> {
-    if cancel.is_cancelled() {
-        return None;
-    }
-    let snapshot = runtime.snapshot().await?;
-    // The answer or cancellation can also land during the read, before the
-    // process would start.
     if cancel.is_cancelled() {
         return None;
     }
@@ -1958,7 +2110,7 @@ async fn approval_point(
         fields.push(("turn_id".to_owned(), Value::String(turn_id.clone())));
     }
 
-    let noticed = handlers(&snapshot, HookEvent::Notification, Some(&name), alias);
+    let noticed = handlers(snapshot, HookEvent::Notification, Some(&name), alias);
     if !noticed.is_empty() {
         let mut payload = runtime.payload(HookEvent::Notification, branch_id);
         for (key, value) in &fields {
@@ -1976,7 +2128,7 @@ async fn approval_point(
         });
     }
 
-    let asking = handlers(&snapshot, HookEvent::PermissionRequest, Some(&name), alias);
+    let asking = handlers(snapshot, HookEvent::PermissionRequest, Some(&name), alias);
     if asking.is_empty() {
         return None;
     }
@@ -1987,92 +2139,17 @@ async fn approval_point(
     Some(runtime.run(&asking, &payload, cancel).await)
 }
 
-/// Whether `data` is the operator's own submission rather than a source
-/// input. Every source input starts with a `<dim-…>` marker block (session
-/// access A.1, A.2) and the operator's words arrive without one (the prompt
-/// guide); only the first block decides, and nothing reads its content.
-fn operator_input(data: &InputMessageData) -> bool {
-    data.user.is_some()
-        && !matches!(
-            data.blocks.first(),
-            Some(InputBlock::Raw { text, .. }) if text.starts_with("<dim-")
-        )
-}
-
-/// Whether `event` is a follow-up input Hooks wrote: its block carries the
-/// `follow-up` marker (§3.4). Only Hooks writes `dim-hooks` markers.
-fn follow_up_input(event: &AgentEvent) -> bool {
-    let EventKind::InputMessage(data) = &event.kind else {
-        return false;
-    };
-    data.blocks.iter().any(|block| {
-        matches!(
-            block,
-            InputBlock::Raw { text, .. } if text.starts_with("<dim-hooks kind=\"follow-up\">")
-        )
-    })
-}
-
-fn session_started(event: &AgentEvent) -> bool {
-    let EventKind::InputMessage(data) = &event.kind else {
-        return false;
-    };
-    data.blocks.iter().any(|block| {
-        matches!(
-            block,
-            InputBlock::Raw { key: Some(key), .. } if key.starts_with(SESSION_START_KEY)
-        )
-    })
-}
-
-/// The kinds this branch folds and its live subscription delivers. The
-/// dispatcher filters live events by this list, and [`Branch::fold`] skips a
-/// replay event outside it, so both paths fold the same set (AGENTS rule 4):
-/// a key an arm names but this list misses folds on neither path.
-const FOLLOWED_EVENTS: [&str; 12] = [
+const FOLLOWED_EVENTS: [&str; 9] = [
     "stop/interrupt",
-    "input/message",
     "input/consumed",
-    "input/deleted",
     "turn/start",
     "turn/end",
-    "step/tool-call",
     "step/tool-result",
     "context/configured",
     "approval/request",
     "approval/respond",
     "approval/cancelled",
 ];
-
-/// Slows the rebuilt pages of one Session by this delay, so a flow test can
-/// make a rebuild outlast a short `startup_timeout`. Feature `testing` only.
-#[cfg(feature = "testing")]
-static REBUILD_PAGE_DELAY: Mutex<Option<(String, Duration)>> = Mutex::new(None);
-
-/// Sets the Session whose rebuilt pages wait before each query, and by how
-/// much; `None` clears it. Feature `testing` only.
-#[cfg(feature = "testing")]
-pub fn set_rebuild_page_delay(delay: Option<(String, Duration)>) {
-    *REBUILD_PAGE_DELAY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = delay;
-}
-
-/// A page that never returns for the chosen Session: the delay runs before
-/// the query, so no page completes and no progress is reported within the
-/// interval.
-#[cfg(feature = "testing")]
-async fn slow_rebuild_page(session_id: &str) {
-    let delay = REBUILD_PAGE_DELAY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .as_ref()
-        .filter(|(id, _)| id == session_id)
-        .map(|(_, delay)| *delay);
-    if let Some(delay) = delay {
-        tokio::time::sleep(delay).await;
-    }
-}
 
 pub struct HooksBranchPlugin {
     runtime: Key<HooksRuntime>,
@@ -2131,9 +2208,8 @@ impl DynPlugin for HooksBranchPlugin {
                 timeline,
                 approval,
                 registry,
-                ctx: ctx.clone(),
-                #[cfg(feature = "testing")]
-                session_id: identity.session_id.clone(),
+                dispatcher: dispatcher.clone(),
+                lifecycle: lifecycle.clone(),
                 branch_id: identity.branch_id.clone(),
                 view: Mutex::new(View::default()),
                 jobs: sender,
@@ -2150,12 +2226,16 @@ impl DynPlugin for HooksBranchPlugin {
                     FOLLOWED_EVENTS.map(String::from).to_vec(),
                     Arc::new(move || {
                         let read = read.clone();
-                        Box::pin(async move { read.rebuild().await })
+                        Box::pin(async move {
+                            let through = read.timeline.committed();
+                            read.view.lock().unwrap().last = through;
+                            Ok(through)
+                        })
                     }),
                     Arc::new(move |event| {
                         let owner = owner.clone();
                         Box::pin(async move {
-                            owner.fold(&event, true);
+                            owner.fold(event);
                             Ok(())
                         })
                     }),
@@ -2179,7 +2259,12 @@ impl DynPlugin for HooksBranchPlugin {
                 if !lifecycle.activated().await {
                     return;
                 }
-                owner.start_session().await;
+                if let Err(error) = owner.start_session().await {
+                    if !owner.cancel.is_cancelled() {
+                        owner.dispatcher.fail(error);
+                    }
+                    return;
+                }
                 Branch::drain(owner, receiver).await;
             });
             Ok(Effect::Done)
@@ -2194,23 +2279,8 @@ mod tests {
         HookSourceId, HookSourceSnapshot, HookSourceState, HooksDocument, ReadHookSources,
     };
     use crate::host::HostFuture;
-    use dim_agent_types::{
-        ApprovalCallData, ContentBlock, ContextConfiguredData, InputConsumedData, InputDeletedData,
-        InterruptScope, ModelConfiguration, StopInterruptData, ToolCall, ToolCallData, ToolResult,
-        ToolResultData, TurnEndData, TurnStartData, UserInput,
-    };
+    use dim_agent_types::ApprovalCallData;
     use std::path::PathBuf;
-
-    fn event(sequence: u64, kind: EventKind) -> AgentEvent {
-        AgentEvent {
-            id: format!("event-{sequence}"),
-            sequence,
-            create_at: 0,
-            tags: None,
-            parent_call_id: None,
-            kind,
-        }
-    }
 
     /// §7: a failed run's diagnostic carries a bounded standard-error
     /// excerpt and nothing of the standard output or the payload.
@@ -2506,259 +2576,6 @@ mod tests {
         assert!(both.contains("start context"), "{both}");
     }
 
-    /// A result settles its call, and the call's input (whole file
-    /// contents for `write`/`edit`) does not stay in the folded view.
-    #[test]
-    fn a_settled_tool_call_leaves_nothing_behind_in_the_view() {
-        let mut view = View::default();
-        view.fold(&event(
-            1,
-            EventKind::ToolCall(ToolCallData {
-                turn_id: "turn".into(),
-                request_id: "request".into(),
-                calls: vec![ToolCall {
-                    id: "call".into(),
-                    name: "read".into(),
-                    input: JsonObject::new(),
-                }],
-            }),
-        ));
-        assert!(view.calls.contains_key("call"));
-        view.fold(&event(
-            2,
-            EventKind::ToolResult(ToolResultData {
-                turn_id: "turn".into(),
-                request_id: "request".into(),
-                call_event_id: None,
-                results: vec![ToolCallResult {
-                    call_id: "call".into(),
-                    result: ToolResult {
-                        content: ToolContent::Text("done".into()),
-                        structured_content: None,
-                        is_error: Some(false),
-                        blob_refs: None,
-                        background_task: None,
-                        context_messages: None,
-                        effects: None,
-                    },
-                }],
-            }),
-        ));
-        assert!(
-            view.calls.is_empty(),
-            "a settled call stayed in the folded view"
-        );
-    }
-
-    /// AGENTS rule 4: the live subscription and a replay fold the same set.
-    /// `Branch::fold` skips a replay event outside `FOLLOWED_EVENTS`, and the
-    /// dispatcher delivers live events by the same list, so a kind the list
-    /// misses is folded on neither path.
-    ///
-    /// One event per current arm: the test pins that every kind these arms
-    /// name has its key in the list, so a typo or a missing key in the
-    /// constant fails it, and that the list holds no key no arm names. It
-    /// cannot discover an arm nobody added here; that arm folds nothing
-    /// through the branch and its flow test fails instead.
-    #[test]
-    fn every_kind_the_folds_name_is_followed() {
-        let folded = [
-            // The nine arms of `View::fold`.
-            event(
-                1,
-                EventKind::StopInterrupt(StopInterruptData {
-                    reason: "stop".into(),
-                    scope: InterruptScope::Branch,
-                }),
-            ),
-            event(2, EventKind::InputMessage(InputMessageData::default())),
-            event(
-                3,
-                EventKind::InputConsumed(InputConsumedData {
-                    input_id: "input".into(),
-                }),
-            ),
-            event(
-                4,
-                EventKind::InputDeleted(InputDeletedData {
-                    input_id: "input".into(),
-                }),
-            ),
-            event(
-                5,
-                EventKind::TurnStart(TurnStartData {
-                    turn_id: "turn".into(),
-                }),
-            ),
-            event(
-                6,
-                EventKind::TurnEnd(TurnEndData {
-                    turn_id: "turn".into(),
-                    outcome: TurnOutcome::Completed {
-                        reason: "stop".into(),
-                    },
-                }),
-            ),
-            event(
-                7,
-                EventKind::ToolCall(ToolCallData {
-                    turn_id: "turn".into(),
-                    request_id: "request".into(),
-                    calls: Vec::new(),
-                }),
-            ),
-            event(
-                8,
-                EventKind::ToolResult(ToolResultData {
-                    turn_id: "turn".into(),
-                    request_id: "request".into(),
-                    call_event_id: None,
-                    results: Vec::new(),
-                }),
-            ),
-            event(
-                9,
-                EventKind::ContextConfigured(ContextConfiguredData {
-                    timeline: "main".into(),
-                    revision: "configuration".into(),
-                    previous: None,
-                    prompt: None,
-                    settings: Box::new(ModelConfiguration {
-                        provider_id: "provider".into(),
-                        model_id: "model".into(),
-                        capability_snapshot: None,
-                        tools: None,
-                        tool_sources: Vec::new(),
-                        config: None,
-                        metadata: None,
-                    }),
-                    system: None,
-                    system_source: None,
-                }),
-            ),
-            // The three arms of `Branch::fold`.
-            event(
-                10,
-                EventKind::ApprovalRequest(ApprovalRequestData {
-                    approval_id: "approval".into(),
-                    source: BranchSource::Host {
-                        operation_id: "operation".into(),
-                    },
-                    call: ApprovalCallData {
-                        name: "exec".into(),
-                        input: JsonObject::new(),
-                    },
-                    reason: "needs permission".into(),
-                }),
-            ),
-            event(
-                11,
-                EventKind::ApprovalRespond(ApprovalRespondData {
-                    approval_id: "approval".into(),
-                    decision: ApprovalDecision::Allow,
-                }),
-            ),
-            event(
-                12,
-                EventKind::ApprovalCancelled(ApprovalCancelledData {
-                    approval_id: "approval".into(),
-                    reason: "cancelled".into(),
-                }),
-            ),
-        ];
-        let mut matched: Vec<&str> = folded.iter().map(|event| event.kind.key()).collect();
-        matched.sort_unstable();
-        let mut followed = FOLLOWED_EVENTS.to_vec();
-        followed.sort_unstable();
-        assert_eq!(
-            followed, matched,
-            "the live fold and the rebuilt fold disagree"
-        );
-    }
-
-    /// §3.4 and AGENTS rule 4: a withdrawn operator input ends without being
-    /// consumed, so it leaves the set, and a later consumption of that id
-    /// does not move `spoken`.
-    #[test]
-    fn a_deleted_operator_input_is_forgotten() {
-        let input = event(
-            1,
-            EventKind::InputMessage(InputMessageData {
-                user: Some(UserInput {
-                    content: vec![ContentBlock::Text {
-                        text: "hello".into(),
-                    }],
-                }),
-                mode: Some(InputMode::Queue),
-                ..InputMessageData::default()
-            }),
-        );
-        let mut view = View::default();
-        view.fold(&input);
-        assert!(view.operator_inputs.contains(&input.id));
-        view.fold(&event(
-            2,
-            EventKind::InputDeleted(InputDeletedData {
-                input_id: input.id.clone(),
-            }),
-        ));
-        assert!(
-            view.operator_inputs.is_empty(),
-            "a deleted input stayed in the set"
-        );
-        view.fold(&event(
-            3,
-            EventKind::InputConsumed(InputConsumedData {
-                input_id: input.id.clone(),
-            }),
-        ));
-        assert_eq!(view.spoken, 0, "a deleted input moved spoken");
-    }
-
-    /// AGENTS rule 4: the follow-up identity and count are read from the
-    /// branch, so a replay folds the same state a live fold held. A turn the
-    /// follow-up drove keeps the count; an operator turn resets it.
-    #[test]
-    fn the_follow_up_state_is_rebuilt_from_the_branch() {
-        let follow_up = event(
-            1,
-            EventKind::InputMessage(InputMessageData {
-                blocks: vec![raw(
-                    element("dim-hooks", &[("kind", "follow-up")], "reason"),
-                    None,
-                )],
-                mode: Some(InputMode::Queue),
-                ..InputMessageData::default()
-            }),
-        );
-        let turn_end = |sequence| {
-            event(
-                sequence,
-                EventKind::TurnEnd(TurnEndData {
-                    turn_id: "turn".into(),
-                    outcome: TurnOutcome::Completed {
-                        reason: "stop".into(),
-                    },
-                }),
-            )
-        };
-        let mut view = View::default();
-        view.fold(&follow_up);
-        assert_eq!(view.follow_ups, 1, "the follow-up was not counted");
-        assert_eq!(view.follow_up_input.as_deref(), Some(follow_up.id.as_str()));
-        view.fold(&event(
-            2,
-            EventKind::InputConsumed(InputConsumedData {
-                input_id: follow_up.id.clone(),
-            }),
-        ));
-        assert!(view.consuming, "the follow-up turn was not recognized");
-        view.fold(&turn_end(3));
-        assert_eq!(view.follow_ups, 1, "a follow-up turn reset the count");
-        view.fold(&turn_end(4));
-        assert_eq!(view.follow_ups, 0, "an operator turn did not reset it");
-    }
-
     /// `fold` registers the run's token before its task starts, so the
     /// answer that folds first cancels the registered one.
     #[test]
@@ -2929,9 +2746,16 @@ mod tests {
         let cancel = runtime.cancel.child_token();
         cancel.cancel();
         assert!(
-            approval_point(&runtime, "main", None, &approval_request(), &cancel)
-                .await
-                .is_none(),
+            approval_point(
+                &runtime,
+                "main",
+                None,
+                &approval_request(),
+                &cancel,
+                &runtime.snapshot().await.unwrap()
+            )
+            .await
+            .is_none(),
             "a cancelled request ran its commands"
         );
         assert!(!marker.exists(), "a cancelled request started its command");
@@ -2961,9 +2785,10 @@ mod tests {
             let runtime = runtime.clone();
             let cancel = cancel.clone();
             let data = approval_request();
-            tokio::spawn(
-                async move { approval_point(&runtime, "main", None, &data, &cancel).await },
-            )
+            tokio::spawn(async move {
+                let snapshot = runtime.snapshot().await.unwrap();
+                approval_point(&runtime, "main", None, &data, &cancel, &snapshot).await
+            })
         };
         entered_rx.await.unwrap();
         cancel.cancel();

@@ -237,6 +237,7 @@ mod tests {
             failure: None,
             reportable: false,
             row_id: id.into(),
+            provisional_id: None,
             kind,
             text: text.into(),
             display: None,

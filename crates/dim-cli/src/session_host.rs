@@ -22,11 +22,12 @@ use crate::args::Options;
 use crate::client::{self, Client, Message};
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
-    DIM_OAUTH_ID, DraftPart, EmptyProvider, EmptyReason, ExecutionSnapshot, ManagementReply,
-    ModelItem, ModelList, ModelPolicyUpdate, NeedsLimitsProvider, OauthEvent, OauthStart,
-    PluginItem, PluginReply, PromptField, PromptSetting, ProviderAction, ProviderEntry,
-    RuntimeAction, RuntimeItem, RuntimesError, SandboxBackend, SessionItem, SessionPort,
-    SessionsScope, SubagentModelPolicy, SuggestionSetting, SwitchKind, Update, Usage, stored_title,
+    DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider, EmptyReason,
+    ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelPolicyUpdate,
+    NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply, PromptField,
+    PromptSetting, ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, RuntimesError,
+    SandboxBackend, SessionItem, SessionPort, SessionsScope, SubagentModelPolicy,
+    SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
     LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
@@ -438,20 +439,22 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 if worker.session_id.is_empty()
-                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
+                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..) | Command::ShellRun { .. })
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
                         worker.send(Update::StartupFailed(error.to_string()));
                         break;
                     }
-                    worker.send(Update::SubmitNotSent(
-                        if worker.options.startup.is_some() || worker.model_session.is_some() {
-                            error.to_string()
-                        } else {
-                            no_session(&error)
-                        },
-                    ));
+                    let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
+                        error.to_string()
+                    } else {
+                        no_session(&error)
+                    };
+                    worker.send(match command {
+                        Command::ShellRun { run_id, .. } => Update::ShellDone { run_id, result: Err(error) },
+                        _ => Update::SubmitNotSent(error),
+                    });
                     continue;
                 }
                 if matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
@@ -1303,23 +1306,21 @@ impl Worker {
                 }
             }
             // Home, not a Session: the first message creates one.
-            Command::NewSession => {
-                if !self.session_id.is_empty() {
-                    self.parked = self.invalidate_projection();
-                    self.send(Update::Permissions(Ok(dim_agent_types::PermissionPolicy {
-                        preset: self
-                            .options
-                            .permission
-                            .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
-                        ..Default::default()
-                    })));
-                    self.send(Update::Context(None));
-                    self.send(Update::Switched {
-                        session_id: String::new(),
-                        kind: SwitchKind::New,
-                        cwd: None,
-                    });
+            Command::NewSession => self.home(),
+            Command::DeleteSession { session_id, name } => {
+                let outcome = self.delete_session(&session_id).await;
+                let shown = session_id == self.session_id;
+                // The shown Session leaves with the close: the notices queued
+                // behind the reply then match no Session and are ignored, so
+                // they raise no disconnect report.
+                if shown && outcome.ends_session() {
+                    self.home();
                 }
+                self.send(Update::Deleted(DeleteReply {
+                    session_id,
+                    name,
+                    outcome,
+                }));
             }
             Command::Resume(session_id) => {
                 if let Some(preset) = self.options.permission
@@ -1784,13 +1785,6 @@ impl Worker {
                 command,
                 private,
             } => {
-                if self.session_id.is_empty() {
-                    self.send(Update::ShellDone {
-                        run_id,
-                        result: Err(NO_SESSION.to_owned()),
-                    });
-                    return Ok(());
-                }
                 if self.shell.is_some() {
                     self.send(Update::ShellDone {
                         run_id,
@@ -2150,6 +2144,64 @@ impl Worker {
             crate::session_command::set_title(&mut self.client, &self.session_id, title.as_deref())
                 .await;
         self.send(Update::Renamed(reply));
+    }
+
+    /// Home, not a Session: the first message creates one. `/new`, and a
+    /// delete of the shown Session, leave to it the same way, so the composer
+    /// and the `─ new session ─` boundary are what `/new` leaves.
+    fn home(&mut self) {
+        if self.session_id.is_empty() {
+            return;
+        }
+        self.parked = self.invalidate_projection();
+        self.send(Update::Permissions(Ok(dim_agent_types::PermissionPolicy {
+            preset: self
+                .options
+                .permission
+                .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
+            ..Default::default()
+        })));
+        self.send(Update::Context(None));
+        self.send(Update::Switched {
+            session_id: String::new(),
+            kind: SwitchKind::New,
+            cwd: None,
+        });
+    }
+
+    /// `session.delete {sessionId}` for one row of `/resume`, without
+    /// `requireInactive`: the issue asks the picker to delete a Session a
+    /// turn is running in, which the close in the delete settles.
+    ///
+    /// The reply alone decides, because an attached Session is loaded and
+    /// so a `-32603` can only follow a close: every other error comes before
+    /// it and changes nothing.
+    async fn delete_session(&mut self, session_id: &str) -> DeleteOutcome {
+        if !self.client.supports(&["session.delete"]) {
+            return DeleteOutcome::Unsupported;
+        }
+        match self
+            .client
+            .typed::<crate::session_command::Deleted>(
+                "session.delete",
+                json!({"sessionId": session_id}),
+            )
+            .await
+        {
+            Ok(reply) if reply.deleted == Some(false) => DeleteOutcome::NothingRemoved,
+            Ok(_) => DeleteOutcome::Deleted,
+            Err(error) => {
+                let close_ran = error
+                    .downcast_ref::<client::RpcError>()
+                    .is_some_and(|rpc| rpc.code == -32603);
+                let reason = crate::session_command::reason(&error);
+                if close_ran {
+                    DeleteOutcome::ClosedNotRemoved(reason)
+                } else {
+                    DeleteOutcome::Failed(reason)
+                }
+            }
+        }
     }
 
     async fn goal(&mut self, request: crate::goal::Request) {
