@@ -54,7 +54,13 @@ impl Item {
 pub enum Event {
     None,
     Close,
-    Pick(String),
+    /// The selected row: its id, and the label it was drawn with, so a caller
+    /// that needs the row's text takes it from the event instead of reading
+    /// the selection again.
+    Pick {
+        id: String,
+        label: String,
+    },
     Refresh,
 }
 
@@ -273,6 +279,18 @@ impl ListPanel {
         }
     }
 
+    /// Drops the row `id`, keeping the selection on a row that is still
+    /// shown: the row at the same place takes over, and the last one keeps
+    /// the selection on the row before it.
+    pub fn remove(&mut self, id: &str) {
+        let Some(at) = self.items.iter().position(|item| item.id == id) else {
+            return;
+        };
+        self.items.remove(at);
+        let count = self.shown().iter().filter(|item| !item.heading).count();
+        self.selected = self.selected.min(count.saturating_sub(1));
+    }
+
     /// Rows for the current filter: headings only while nothing is typed.
     fn shown(&self) -> Vec<&Item> {
         let query = self.filter.text().trim().to_lowercase();
@@ -343,7 +361,10 @@ impl ListPanel {
                 .into_iter()
                 .filter(|i| !i.heading)
                 .nth(self.selected)
-                .map_or(Event::None, |item| Event::Pick(item.id.clone())),
+                .map_or(Event::None, |item| Event::Pick {
+                    id: item.id.clone(),
+                    label: item.label.clone(),
+                }),
             _ if self.filterable && self.filter.handle_key(key) => {
                 self.selected = 0;
                 Event::None

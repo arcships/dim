@@ -510,7 +510,7 @@ Stage { id, step, state: waiting | launching | running | completed | failed | st
 
 | 契约 | 所有者 | 用途 |
 | --- | --- | --- |
-| sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}} → {sessionId,policy} | 既有 [S2](../appserver/sessions-service.md) | Agents 解析模型/权限，每个阶段非交互，Workflow 写首条输入 |
+| sessions.launch {agent?,cwd,model?:{providerId,modelId},policy?,starter?:{sessionId,branchId}} → {sessionId,policy} | 既有 [S2](../appserver/sessions-service.md) | Agents 解析模型/权限，每个阶段非交互，Workflow 写首条输入。阶段不声明 `origin`，因此保持 `internal`：一次运行的 Session 在 `session.catalog` 下维持默认隐藏，列出 automation Session 时也不会列出它们 |
 | 对自己的输入执行 `sessions.withdraw {sessionId, branchId, inputId}`；按 `submissionId` 执行 `sessions.lookup` | session-access（InputQueue） | 停止时撤回自己未消费的阶段输入；回复 `deleted` 或 `notHeld` |
 
 ### A.6 Timeline 与 Capability 机制

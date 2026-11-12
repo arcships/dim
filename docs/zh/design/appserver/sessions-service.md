@@ -118,7 +118,9 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
   "cwd": "string",                                     // 绝对路径
   "model?": { "providerId": "string", "modelId": "string" },
   "policy?": { /* PermissionPolicy */ },
-  "starter?": { "sessionId": "string", "branchId": "string" } }
+  "starter?": { "sessionId": "string", "branchId": "string" },
+  "origin?": "automation",                             // 缺省：调用方自己的工作，`internal`
+  "title?": "string" }                                  // 缺省：无；由 SessionTitle 写入
 // 回复
 { "sessionId": "string", "policy": { /* 生效的 PermissionPolicy */ } }
 ```
@@ -156,12 +158,14 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 | `permissionPolicy` | 生效策略 |
 | `interactive` | `false` |
 | `collaborationRole` | 默认值（leader） |
+| `origin` | `internal`；请求声明时取 `automation`。启动为调用方的工作创建 Session，因此选择器默认不列出它；`automation` 是无人在场、由已保存配置启动的 Session，客户端要求这一类时才会列出（[Session 分类](session-classification.md#32-which-creation-entry-writes-which-value)） |
+| `initialTitle` | 请求的 `title`，保存在 Session 固定配置中。SessionTitle 是标题的唯一写入者：在 `apply` 时，若标题 revision 仍为 0，它按 `session.rename` 的文本规则和操作者的 `maxLength` 处理后，作为第一个 manual 标题写入。`Conflict` 或规则拒绝的文本不写入 |
 | 协议版本 | `PROTOCOL_VERSION`（3）：写入记录，并在创建后用 `insert_version` 登记，与 `session.create` 和 Collaboration 相同。Rpc 只在版本已登记后才服务已装载的 Session，当前客户端也才能列出它。创建与登记在同一个任务中进行，即使调用方不再等待，两者也一起完成 |
 | 记录 | 预备创建（`AgentIndex::create_session`）：先项目授权，再写拥有者记录，与 `session.create` 相同 |
 
-错误：`rejected`（结构、`cwd`、`policy` 中的空工具名）、`agent_unknown`、`session_closed` 或 `branch_missing`（启动方）、`reloading`（启动方的 Permission 重载期间也是）、`failed`（模型解析、项目授权、存储、已存储但不可用的 Agent、无法恢复的启动方、Session 构建）。
+错误：`rejected`（结构、`cwd`、`policy` 中的空工具名、`automation` 以外的 `origin`、不是字符串的 `title`）、`agent_unknown`、`session_closed` 或 `branch_missing`（启动方）、`reloading`（启动方的 Permission 重载期间也是）、`failed`（模型解析、项目授权、存储、已存储但不可用的 Agent、无法恢复的启动方、Session 构建）。
 
-启动不是幂等的。回复丢失时，可能留下一个没有调用方知道的空 Session。它是非交互的，并像其他 Session 一样被列出。不为这种无害情况增加启动查找。
+启动不是幂等的。回复丢失时，可能留下一个没有调用方知道的空 Session。它是非交互的，并像其他 Session 一样被列出：`session.summaries` 列出它，`session.catalog` 在它创建时所属类别的过滤器下也列出它。不为这种无害情况增加启动查找。
 
 ### 6.2 input
 

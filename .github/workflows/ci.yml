@@ -67,7 +67,7 @@ jobs:
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    runs-on: [self-hosted, windows, x64]
+    runs-on: windows-2022
     timeout-minutes: 15
     env:
       CARGO_INCREMENTAL: "0"

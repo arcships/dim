@@ -378,7 +378,10 @@ impl CheckSubmission for SkillSubmitCheck {
             if cancel.is_cancelled() {
                 return Err(interrupted());
             }
-            let nothing = SubmitCheckReply::Proceed { blocks: Vec::new() };
+            let nothing = SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            };
             // A branch's first input is built from its prompt alone.
             if request.entry == SubmitEntry::Branch {
                 return Ok(nothing);
@@ -425,7 +428,10 @@ impl CheckSubmission for SkillSubmitCheck {
                     &skill_text(skill),
                 ));
             }
-            Ok(SubmitCheckReply::Proceed { blocks })
+            Ok(SubmitCheckReply::Proceed {
+                blocks,
+                warnings: Vec::new(),
+            })
         })
     }
 }

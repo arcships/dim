@@ -36,14 +36,81 @@ Other tools retain their existing header summaries. Summary
 adds one row per call, in call order, naming its tool and input target or command,
 without output, diffs or script bodies. Each row truncates to one terminal row;
 a multiline command shows its first nonblank line followed by `…`. Expanded
-retains the full tool details. Clicking a tool header cycles the same three forms
-for that group only. A member's summary row still opens its conversation.
+retains the full tool details. These are the scrollback forms; fullscreen uses
+the same preference as a default for independently expandable nodes.
 
-`/tools` cycles the three tool forms, retaining its control of compaction details:
+In fullscreen, collapsed closes the batch; summary opens its call list with
+call details closed; expanded opens both containers and details. A click toggles
+only its actual batch, codemode or call header between open and closed. Closing
+a parent hides its descendants without changing their choices. Siblings and
+other batches never change. Children belong to their actual parent call, not a
+category inferred from indentation; category labels add no disclosure layer.
+A single codemode may use the batch header without a duplicate container.
+
+```text
+▾ ✓ Edited 2 files
+  ▾ ✓ Edit src/a.rs +2 −1
+        Old New   Changes
+         12     − old
+             12 + new
+  ▸ ✓ Edit src/b.rs +1 −1
+```
+
+Only headers with details have disclosures. Completed calls show bounded,
+type-appropriate results: command output, file/skill content, search matches,
+directory/glob entries, web results, task results or generic input/results.
+Edit and Write share a single-column compare with old/new line numbers,
+explicit deletion/addition signs, unchanged context and hunk gaps. Diff body
+text takes removal/addition background colors where the terminal palette
+supports them; line-number gutters stay neutral and wrapped code continues in
+its content column. New files compare empty to their recorded contents;
+overwrites compare the operation's actual before/after, never a later disk
+read. Missing historical diffs say comparison is unavailable. Running or failed
+calls do not present proposed changes as applied. Existing output budgets remain.
+In both modes, file results and change counts use only recorded comparisons,
+never a reconstruction from tool input, including while a call is running.
+Write is labeled Create only when the recorded comparison identifies a new file;
+an additions-only overwrite remains Write. Batch change totals are shown only
+when every completed file operation has a recorded comparison; an omitted
+comparison must not make a partial total look complete.
+
+Pending calls retain an animated activity mark and a `Running…` title status even
+when their details are closed. Open command details show available output, or
+`Waiting for result…` until output exists. Completion or failure changes the
+status and body without changing any node's expansion. Spinner-only title
+updates do not invalidate a press on the same stable header.
+
+Hover highlights only the actionable title, pressed feedback is stronger without
+moving its text, and a successful click retains a subtle position indication.
+Neither feedback nor new output changes expansion. A click requires release on
+the same still-valid target without a drag. Text selection, safe links and the
+explicit member-conversation entry keep separate actions; the member's tool
+header toggles its details instead of navigating. Existing Tab/Shift+Tab
+transcript traversal includes committed tool headers; Enter/Space toggles only
+the focused tool. Mouse-off retains native
+terminal selection. Free-motion reports are enabled and restored with fullscreen
+mouse mode; unsupported terminals retain click and keyboard operation.
+
+`/tools` cycles the three tool defaults, retaining its control of compaction details:
 only expanded shows a compaction's summary body. Thinking details controls both streaming and completed thoughts,
 including the line side panel. Changing either setting updates its retained
-history and live content without changing the other setting. Scrollback already
-written to the terminal remains append-only; fullscreen redraws retained history. A hook context's body follows the same rule: collapsed and summary keep it closed, only expanded opens it, and a click on the row toggles that row alone.
+history and live content without changing the other setting. In fullscreen,
+explicit per-node choices override the preset and survive live-to-settled,
+resize, history reconstruction and line changes in the same client. Choices
+are isolated by Session, line, request and call identity, remain in client
+memory only, and are not Timeline facts. The preset affects unchosen and future
+nodes without clearing manual choices. Scrollback already
+written to the terminal remains append-only; fullscreen redraws retained history.
+A runtime block a hook wrote follows the same rule: collapsed and summary keep
+a hook context's or a `Stop` follow-up's body closed, only expanded opens it,
+and a click on the row toggles that row alone.
+
+In scrollback, expanded thinking streams its complete body into native terminal
+history, without a preview line limit or an omitted-prefix marker. Only the
+unfinished wrapping tail remains live. A streamed thought has a fixed `Thought`
+heading and appends its duration below the body on completion; it never prints
+the body again to replace the heading. Collapsed thinking remains a single-row
+summary. Fullscreen and the line side panel retain their existing previews.
 
 ## Command menu
 
@@ -1106,11 +1173,14 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` removes without the panel's confirmation, and `dimcode
 models PROVIDER inspect MODEL` prints the lines the detail shows.
+
+Enter also writes the default a new Session in this folder reads ([provider management
+§4](appserver/provider-management.md#4-client-integration)).
 
 Bare `/effort` and `/reasoning` open the current model's inline effort picker in both TUI
 modes; explicit-value forms and the line client keep their command behavior. The selection
@@ -1428,7 +1498,7 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
-| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace. |
+| `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace, and `Ctrl+X` deletes one row after a confirmation. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/export` in either terminal UI | Choose Markdown or JSON in a dialog for an opened Session; save a uniquely named file in the CLI current directory. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
@@ -1657,7 +1727,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1667,7 +1737,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1677,7 +1747,7 @@ the selection down.
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - A scope change works like a new query: it cancels the pending read, drops the
@@ -1710,6 +1780,27 @@ the selection down.
   workspace, membership in the git set, or no filter.
 - `dimcode --resume ID` resumes a Session of any workspace, and cleanup selects
   across every workspace.
+- `Ctrl+X` removes the selected row after `Delete "{name}"? Enter confirm ·
+  Esc cancel`, where `{name}` is the row's label without its origin tag,
+  captured when the key was pressed — a page, a scope answer or a refresh
+  never retargets the question, and Enter never looks the row up again. The
+  question takes every key: Enter sends `session.delete {sessionId}` (no
+  `requireInactive`, so a Session a turn is running in is deleted too, its
+  close settling the run), every other key cancels it, and Esc does not close
+  the picker. While the daemon answers, the rows stay drawn and no key acts
+  but Esc, which closes the picker: the delete may wait on a slow close, and
+  the outcome is reported in the transcript wherever the operator is.
+  The row leaves on `{deleted:true}` with `Deleted {name}.`, a
+  `{deleted:false}` reply re-reads the first page and says `Nothing was
+  removed: no stored Session {name}.`, an error keeps the row and shows
+  `Delete failed · <daemon's sentence>`, and a daemon without `session.delete`
+  keeps the row and says it cannot delete Sessions. A Session another caller
+  removed before this reply is that `{deleted:false}`: there was nothing left
+  to remove. Deleting the shown Session returns to Home as `/new` does and
+  reports no disconnect, whether the delete succeeded or the close ran and
+  the removal failed (`-32603`): its queued `session.state` and
+  `session.closed` match no Session and are ignored. One row at a time;
+  `dimcode session cleanup` keeps the bulk selector.
 
 ### Session titles
 
@@ -1757,7 +1848,9 @@ and on `false` the command prints `Nothing was removed: no stored Session ID.` o
 and exits 1. An id the daemon holds no rows of is a successful delete that removed
 nothing; that is not a usage error, a malformed command line is. A reply without the
 field, from an App Server before it, reads as a delete: the rows are gone either way,
-which is the state asked for.
+which is the state asked for. The TUI's `/resume` calls the same method on one row
+with the same reply meanings ([the `/resume` picker](#the-resume-picker)) and never
+deletes in bulk.
 
 `dimcode session cleanup` composes deletion from the same two methods, as
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) requires. It
@@ -1784,9 +1877,12 @@ time and can become eligible for deletion:
 Cleanup selects across every workspace, not only the one `/resume` opens on: the
 classes it selects are the ones `/resume` lists by default
 ([classification](appserver/session-classification.md#35-catalog-visibility)): origin
-`client` or `unknown`. An `internal` Session is never selected: a member goes with
-its leader's delete and a launched Session belongs to its plugin. An `acp` Session is
-never selected either; `dimcode session delete ID` deletes one. A Session it does not
+`client` or `unknown`. The list is positive, so an origin it does not name is never
+selected. An `internal` Session is never selected: a member goes with its leader's
+delete and a launched Session belongs to its plugin. An `acp` Session is
+never selected either; `dimcode session delete ID` deletes one. An `automation` one is
+the same: a saved configuration launched it, and the plugin that launched it removes it
+with its own retention. A Session it does not
 select neither counts toward `--keep N` nor appears in the preview.
 
 A Session with a running turn or an attached client is kept: the preview lists the
@@ -2278,6 +2374,27 @@ permission preset, the goal marker, the context use against
 its window, and one slot for the state in force — a notice, a required answer or permission,
 `esc interrupt`, or the background task count. The model, with its effort when both fit, is
 right-aligned on the same line; the line is clipped to the terminal width.
+
+### Submit check warnings
+
+A successful `session.submit`, `session.input.withdraw {steer}` or `session.branch_create` reply may
+carry `warnings: [{check, message}]`: work a submit check did not do, such as a `UserPromptSubmit`
+hook that failed with `onFailure: continue` ([Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)).
+The line client and both terminal UI modes print one line per warning, as the check sent it:
+
+```text
+◦ Hook user did not finish: exited with exit status: 3
+◦ Hook project did not finish: timed out after 30s
+```
+
+In the terminal UI each line is a status row in the warning colour, committed to the transcript
+beside the message it belongs to (`Update::Report { warning: true }`). In the line client it is one
+record: `stdout` when interactive, `stderr` otherwise. `exec` writes it to `stderr`, so `exec --json`
+stdout stays one JSON-RPC notification per line. The row is not an error: the input was written. A steer's
+warnings belong to the replacement that call wrote, and a call that wrote none shows none; whether a withdrawal
+whose old message has left the queue writes one is A.4's decision
+([session access A.4](contracts/session-access.md#a4-withdrawal)), and the notice that the message left is shown
+either way.
 
 ### Headless execution
 

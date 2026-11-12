@@ -80,6 +80,7 @@ pub enum InputEvent {
 pub enum MouseKind {
     Press,
     Drag,
+    Move,
     Release,
     WheelUp,
     WheelDown,
@@ -493,6 +494,7 @@ fn mouse(params: &str, final_byte: u8) -> Outcome {
         (65, b'M') => MouseKind::WheelDown,
         (0, b'M') => MouseKind::Press,
         (32, b'M') => MouseKind::Drag,
+        (35, b'M') => MouseKind::Move,
         (0, b'm') => MouseKind::Release,
         _ => return Outcome::Ignored,
     };
@@ -622,6 +624,24 @@ mod tests {
         assert!(d.feed(b"\x1b[1;").is_empty());
         assert!(d.has_pending());
         assert_eq!(keys(d.feed(b"5A")), vec![(KeyCode::Up, Modifiers::CTRL.0)]);
+    }
+
+    #[test]
+    fn free_mouse_motion_is_reassembled_and_modifiers_do_not_change_it() {
+        let mut d = Decoder::new();
+        assert!(d.feed(b"\x1b[<35;10;").is_empty());
+        assert_eq!(
+            d.feed(b"2M\x1b[<63;10;2M"),
+            vec![
+                InputEvent::Mouse(MouseEvent {
+                    kind: MouseKind::Move,
+                    column: 9,
+                    row: 1,
+                });
+                2
+            ]
+        );
+        assert!(d.feed(b"\x1b[<33;10;2M\x1b[<34;10;2M").is_empty());
     }
 
     #[test]
