@@ -195,10 +195,15 @@ fn prompt_outcome(
     if cancelled {
         return Ok(json!({"stopReason":"cancelled"}));
     }
+    // An output-limit stop ends its turn Completed, so the stop reason is read
+    // from the turn's own output-limit fact rather than from its outcome: a
+    // client that asked for a stop reason still gets the one it must act on.
+    if max_tokens {
+        return Ok(json!({"stopReason":"max_tokens"}));
+    }
     match outcome {
         TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
         TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
-        TurnOutcome::Failed { .. } if max_tokens => Ok(json!({"stopReason":"max_tokens"})),
         TurnOutcome::Failed { error } => {
             Err(Error::new(-32001, error.clone()).data(json!({"code":"turn_failed"})))
         }
