@@ -4587,10 +4587,7 @@ fn effort_choices(
     if !reasoning.supported || !capabilities.reasoning {
         return (Vec::new(), None);
     }
-    let mut efforts = reasoning.effort_options.clone().unwrap_or_default();
-    if reasoning.off.is_some() && !efforts.iter().any(|effort| effort == "none") {
-        efforts.push("none".into());
-    }
+    let efforts = reasoning.offered_efforts();
     let default = reasoning
         .effort
         .clone()

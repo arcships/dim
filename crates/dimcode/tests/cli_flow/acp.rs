@@ -1352,6 +1352,150 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
     }
 }
 
+/// The `effort` option of an ACP response.
+fn effort(value: &Value) -> &Value {
+    value["result"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap_or_else(|| panic!("no effort option: {value}"))
+}
+
+/// A `context/configured` fact carrying this flow's model, declaration and
+/// adopted preferences, as the public view gives them.
+fn configured(id: &str, sequence: u64, preferences: Value) -> Value {
+    let mut event = configured_event(sequence, "model", preferences);
+    event["id"] = json!(id);
+    event["data"]["capability_snapshot"] =
+        declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+    event
+}
+
+/// An adopted capability snapshot whose reasoning declaration is `reasoning`,
+/// or none when it is null.
+fn declaration(reasoning: Value) -> Value {
+    let mut capabilities = dim_agent_types::ModelCapabilities::with_limits(64_000, 2_048);
+    capabilities.reasoning = !reasoning.is_null();
+    let mut snapshot =
+        json!({"target":{"providerId":"test","modelId":"model"},"capabilities":capabilities});
+    if !reasoning.is_null() {
+        snapshot["reasoning"] = reasoning;
+    }
+    snapshot
+}
+
+#[test]
+fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
+    // A model whose declaration names a default effort adopts it, a model with
+    // efforts but no adopted one says so, and a model without reasoning gets no
+    // option at all.
+    for (reasoning, preferences, expected) in [
+        (
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"medium"}),
+            Some(("medium", 4)),
+        ),
+        // A declaration that names an effort its own options do not list, as
+        // 325 bundled entries do, so the adopted configuration carries none.
+        (
+            json!({"supported":true,"effort":"xhigh","effortOptions":["low","medium","high"]}),
+            json!({}),
+            Some(("provider-default", 4)),
+        ),
+        // The adopted configuration carries an effort its own declaration
+        // does not list, so the option shows it rather than denying it.
+        (
+            json!({"supported":true,"effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"minimal"}),
+            Some(("minimal", 5)),
+        ),
+        (json!(null), json!({}), None),
+    ] {
+        let home = Home::new();
+        let declaration = declaration(reasoning);
+        let daemon = home.daemon(move |wire| {
+            let mut methods = METHODS.to_vec();
+            methods.extend([
+                "session.methods",
+                "provider.catalog",
+                "session.model.update",
+            ]);
+            wire.hello(&methods);
+            wire.created();
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["capabilitySnapshot"] = declaration;
+            if !preferences
+                .as_object()
+                .is_some_and(|value| value.is_empty())
+            {
+                record["modelPreferences"] = preferences;
+            }
+            wire.reply(&attach, record);
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            let methods = wire.read("session.methods");
+            wire.reply(
+                &methods,
+                json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+            );
+            let list = wire.read("provider.list");
+            wire.reply(
+                &list,
+                json!({"providers":[{"providerId":"test","enabled":true}]}),
+            );
+            let catalog = wire.read("provider.catalog");
+            wire.reply(
+                &catalog,
+                json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            );
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        let created = peer.response(2);
+        let option = created["result"]["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["id"] == "effort");
+        let Some((current, count)) = expected else {
+            assert!(option.is_none(), "{created}");
+            peer.close();
+            daemon.join().unwrap();
+            continue;
+        };
+        let option = option.unwrap_or_else(|| panic!("no effort option: {created}"));
+        assert_eq!(option["category"], "thought_level", "{option}");
+        assert_eq!(option["currentValue"], current, "{option}");
+        let values: Vec<&str> = option["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values.len(), count, "{option}");
+        assert_eq!(values[0], "provider-default", "{option}");
+        if current == "minimal" {
+            assert!(values.contains(&"minimal"), "{option}");
+            peer.send(
+                3,
+                "session/set_config_option",
+                json!({"sessionId":"session","configId":"effort","value":"minimal"}),
+            );
+            let refused = peer.response(3);
+            assert_eq!(refused["error"]["code"], -32602, "{refused}");
+        }
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
 #[test]
 fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
     let home = Home::new();
@@ -1393,6 +1537,346 @@ fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
         peer.response(3)["result"]["configOptions"][0]["currentValue"],
         "next/model"
     );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The App Server publishes the adopted fact before it replies, so the
+        // reply can only report a value the owner has already committed.
+        let update = wire.read("session.model.update");
+        assert_eq!(
+            update["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":"high"}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"high"}))}),
+        );
+        wire.reply(
+            &update,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        let cleared = wire.read("session.model.update");
+        assert_eq!(
+            cleared["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-10", 10, json!({}))}),
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"high"}),
+    );
+    let set = peer.response(3);
+    assert_eq!(effort(&set)["currentValue"], "high", "{set}");
+    peer.send(
+        4,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(4);
+    assert_eq!(
+        effort(&cleared)["currentValue"],
+        "provider-default",
+        "{cleared}"
+    );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_keeps_the_adopted_effort_when_a_clear_changes_nothing() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] = declaration(
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+        );
+        record["modelPreferences"] = json!({"reasoningEffort":"medium"});
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear restores the declaration the Session already sends, so the
+        // owner reports `unchanged` and publishes no fact.
+        let cleared = wire.read("session.model.update");
+        assert_eq!(
+            cleared["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"unchanged","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
+    // The reply precedes the update this write publishes.
+    let update = peer.frame();
+    assert_eq!(update["method"], "session/update", "{update}");
+    let option = update["params"]["update"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap();
+    assert_eq!(option["currentValue"], "medium", "{option}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_reports_an_adopted_clear_from_the_fact_that_precedes_the_reply() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","medium","high"]}));
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear changes the configuration, so the fact is published
+        // before the reply.
+        let cleared = wire.read("session.model.update");
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"medium"}))}),
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_model_switch_replaces_effort_choices_and_refuses_a_missing_value() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend(["session.methods", "provider.catalog", "session.model.update"]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+        record["modelPreferences"] = json!({"reasoningEffort":"high"});
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+        let update = wire.read("session.model.update");
+        assert_eq!(update["params"]["modelId"], "other");
+        wire.reply(
+            &update,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"other"}}),
+        );
+        let mut event = configured_event(9, "other", json!({}));
+        event["data"]["capability_snapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["minimal","max"]}));
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main","event":event}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"model","value":"other"}),
+    );
+    peer.response(3);
+    // The new model's declaration arrives as its own configuration event, and
+    // that update is where a client learns the new choices.
+    let update = peer
+        .updates
+        .iter()
+        .find(|frame| {
+            frame["params"]["update"]["configOptions"]
+                .as_array()
+                .is_some_and(|options| options.iter().any(|option| option["id"] == "effort"))
+        })
+        .unwrap_or_else(|| panic!("no effort option update: {}", peer.updates.len()));
+    let option = update["params"]["update"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap();
+    assert_eq!(option["currentValue"], "provider-default", "{option}");
+    let choices: Vec<&str> = option["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|choice| choice["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(choices, ["provider-default", "minimal", "max"], "{option}");
+    peer.send(
+        4,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"high"}),
+    );
+    let refused = peer.response(4);
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
     peer.close();
     daemon.join().unwrap();
 }
