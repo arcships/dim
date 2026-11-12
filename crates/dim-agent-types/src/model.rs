@@ -207,6 +207,20 @@ pub struct ModelReasoning {
     pub off: Option<ReasoningOff>,
 }
 
+impl ModelReasoning {
+    /// The efforts this declaration offers: its `effortOptions`, plus `none`
+    /// when it carries a reasoning-off mapping and does not already list that
+    /// value. A caller that also requires reasoning to be supported reads
+    /// [`Self::supported`] beside it.
+    pub fn offered_efforts(&self) -> Vec<String> {
+        let mut efforts = self.effort_options.clone().unwrap_or_default();
+        if self.off.is_some() && !efforts.iter().any(|effort| effort == "none") {
+            efforts.push("none".into());
+        }
+        efforts
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningBudget {
     pub min: Option<f64>,

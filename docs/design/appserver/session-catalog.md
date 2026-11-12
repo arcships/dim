@@ -198,7 +198,7 @@ Timeline: the catalog is display data for a picker, which
 | Stored Session record (`agent_sessions`) | The creation origin and the leader link of every listed Session, read from the row the query joins, and the filter of §3.5 ([Session classification](session-classification.md#31-the-origin)) |
 | [Title metadata](session-title-metadata.md) | The stored title of a Session, joined for display and for `query`, never read from a Session |
 | `hello.features` (App Server) | The method list a client discovers the catalog through: the catalog is listed under the conditions that list `session.summaries`, plus the native-store condition `session.fork` also requires |
-| Agents' catalog read | The protocol-version and agent filtering the catalog applies, as `session.summaries` applies it |
+| Agents' catalog read | The agent filtering, and the protocol-version bound: a Session is listed when its recorded version does not exceed the connection's, as `session.summaries` applies it |
 | Agents' index and the connection hub | The live `running` and `attachedClients` of the listed Sessions, read from the process's state without a lease, as `session.summaries` reads them |
 
 No Session facade call, no lease and no other plugin service is used.
@@ -327,4 +327,4 @@ page boundary. The CLI's `/resume` owns its scopes and the key that cycles them
   event.
 - A listing taken while the Session is idle unloaded replies the same stored fields as while it is loaded, reads it
   as not running, and starts no model, tool or MCP server.
-- `session.summaries` keeps its reply shape and contents for protocol v3.
+- `session.summaries` keeps its reply shape for protocol v3; its contents widen to the Sessions of every recorded version at or below the connection's.

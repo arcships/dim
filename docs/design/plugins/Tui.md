@@ -195,7 +195,7 @@ work running apart from the turn is named without opening `/tasks`:
 ```text
  ◐ 2 · cargo build 1m12s · cargo test 34s
  ╭─ · working…  3s ──────────────── provider / model ─╮
- │ › Ask anything...                                   │
+ │ › Ask anything... · Ctrl+J newline                  │
  ╰─────────────────────────────────────────────────────╯
 ```
 
@@ -497,6 +497,18 @@ a shell command's outcome remains unknown. There is no automatic reconnect.
 ```text
 +-- Disconnected · draft kept ---------------------------------+
 | Exit and run: dimcode --resume <session-id>                  |
+| > retained draft                                             |
++--------------------------------------------------------------+
+```
+
+A Session the daemon refuses for its protocol version is refused again by every run of the
+client, so that refusal offers no command to run: the block states the failure and keeps the
+draft, and the Enter key's notice says `Cannot open this Session; draft kept.` rather than
+naming an exit and a resume. A Session recorded at an older version than the client's opens,
+so its failure block is the ordinary `${command}` one.
+
+```text
++-- Cannot open this Session; draft kept ----------------------+
 | > retained draft                                             |
 +--------------------------------------------------------------+
 ```

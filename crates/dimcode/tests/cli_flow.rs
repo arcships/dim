@@ -10251,8 +10251,6 @@ fn tui_composer_shows_context_use_and_refreshes_it_when_a_run_ends() {
     }
 }
 
-/// The compaction events (§4): one row that runs until its result, then the
-/// summary behind the same disclosure a tool group uses.
 #[test]
 fn tui_compaction_row_runs_then_shows_the_summary_it_recorded() {
     let home = Home::new();
@@ -10338,9 +10336,9 @@ fn tui_compaction_row_runs_then_shows_the_summary_it_recorded() {
     shown.send(()).unwrap();
     terminal.until("Compacting context…");
     started.send(()).unwrap();
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.write(b"/tools\r");
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.until("test / model");
     assert!(
         !terminal.transcript.contains("The parser is half done."),
@@ -10349,9 +10347,9 @@ fn tui_compaction_row_runs_then_shows_the_summary_it_recorded() {
     terminal.write(b"/tools\r");
     terminal.until("The parser is half done.");
     terminal.write(b"/tools\r");
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.write(b"/tools\r");
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.write(b"/tools\r");
     terminal.until("The parser is half done.");
     more.send(()).unwrap();
@@ -10376,6 +10374,8 @@ fn tui_compaction_row_runs_then_shows_the_summary_it_recorded() {
     );
     daemon.join().unwrap();
     for hidden in [
+        "Context compacted ▸",
+        "Context compacted ▾",
         "<dim-summary>",
         "</dim-summary>",
         "Background from earlier parts",
@@ -10666,10 +10666,10 @@ fn tui_rebuilds_compaction_rows_from_history_on_resume() {
     let mut command = home.command();
     command.args(["--resume", "session"]);
     let mut terminal = Terminal::launch_tui(command);
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.until("test / model");
     terminal.write(b"/tools\r");
-    terminal.until("Context compacted ▸");
+    terminal.until("Context compacted");
     terminal.until("test / model");
     assert!(
         !terminal.transcript.contains("Restored summary text."),
@@ -10681,6 +10681,8 @@ fn tui_rebuilds_compaction_rows_from_history_on_resume() {
     terminal.until("Bye!");
     assert!(terminal.wait().success());
     daemon.join().unwrap();
+    assert!(!terminal.transcript.contains("Context compacted ▸"));
+    assert!(!terminal.transcript.contains("Context compacted ▾"));
     assert!(!terminal.transcript.contains("<dim-summary>"));
     assert!(!terminal.transcript.contains("</dim-summary>"));
     assert!(

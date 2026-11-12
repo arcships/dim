@@ -452,10 +452,13 @@ async fn contributed_session_methods_dispatch_through_the_session_they_name() {
         let reply = v2.rpc(method, json!({"sessionId": sid})).await;
         assert_eq!(app_error(&reply), "unknown_method", "{method}");
     }
+    // A Session recorded at an older version passes the version check from a
+    // newer connection, so the method dispatches through it. That is the
+    // direction a v2 connection could not reach before.
     let created = v2.rpc("session.create", create(json!([]))).await;
     let other = created["result"]["sessionId"].as_str().unwrap();
     let reply = client.rpc("notes.echo", json!({"sessionId": other})).await;
-    assert_eq!(app_error(&reply), "session_protocol_version");
+    assert_ok(&reply);
 
     assert_ok(&client.rpc("session.close", json!({"sessionId": sid})).await);
     let closed = client.rpc("notes.echo", json!({"sessionId": sid})).await;

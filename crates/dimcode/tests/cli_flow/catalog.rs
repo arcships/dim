@@ -1307,7 +1307,8 @@ fn the_resume_hint_is_drawn_translated() {
     terminal.wait_for(hint, |tail| {
         strip_ansi(tail).contains(hint).then_some(tail.len())
     });
-    assert!(!strip_ansi(&terminal.transcript).contains("Enter open · Ctrl+S scope"));
+    let plain = strip_ansi(&terminal.transcript);
+    assert!(!plain.contains("Enter open · Ctrl+S scope"));
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();

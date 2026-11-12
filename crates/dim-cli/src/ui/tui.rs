@@ -80,12 +80,13 @@ use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
 use crate::wire::Configuration;
 
-const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+const COMPOSER_PLACEHOLDER: &str = "Ask anything... · Ctrl+J newline";
 const SHELL_PLACEHOLDER: &str = "Run a shell command · Esc to exit";
 /// `config.json` key of the three tool display forms.
 const TOOL_DETAILS_KEY: &str = "tuiToolDetails";
 const LEGACY_TOOL_DETAILS_KEY: &str = "tuiToolDetailsExpanded";
 const THINKING_DETAILS_KEY: &str = "tuiThinkingDetailsExpanded";
+const DEFAULT_SEND_MODE_KEY: &str = "tuiDefaultSendMode";
 /// Share of the compaction threshold the context reading warns at. Set by
 /// the interface; the threshold itself is the one `session.context.usage`
 /// returns (compaction requirements §4).
@@ -1004,6 +1005,7 @@ struct App {
     /// committed group too).
     tool_detail: Detail,
     thinking_detail: Detail,
+    default_send_mode: SubmitMode,
     tool_choices: HashMap<(String, String), HashMap<String, bool>>,
     tail_groups: Vec<(usize, ToolGroup)>,
     notices: Vec<String>,
@@ -1015,6 +1017,10 @@ struct App {
     /// The adopted model and its reasoning effort, once the session exists.
     label: Option<ModelLabel>,
     failure: Option<String>,
+    /// Whether running the same command again could open the Session this
+    /// failure left; false only for a Session the daemon refuses for its
+    /// protocol version, which no run of this client opens.
+    failure_resumable: bool,
     exit_code: Option<i32>,
     failure_committed: bool,
     planner: StreamPlanner,
@@ -1432,6 +1438,13 @@ impl App {
             cwd_key,
             tool_detail: saved_tool_detail(&home),
             thinking_detail: saved_detail(&home, THINKING_DETAILS_KEY),
+            default_send_mode: if crate::ui::config::read(&home, DEFAULT_SEND_MODE_KEY)
+                .is_some_and(|value| value == SubmitMode::Steer.as_str())
+            {
+                SubmitMode::Steer
+            } else {
+                SubmitMode::Queue
+            },
             tool_choices: HashMap::new(),
             tail_groups: Vec::new(),
             home,
@@ -1443,6 +1456,7 @@ impl App {
             snapshot: None,
             label: None,
             failure: None,
+            failure_resumable: true,
             exit_code: None,
             failure_committed: false,
             planner: StreamPlanner::new(),
@@ -1740,8 +1754,7 @@ impl App {
         }
     }
 
-    /// Sends the oldest queued message in as steering (Ctrl+S, and Enter on an
-    /// empty draft).
+    /// Steers the oldest held message into the current run.
     fn steer(&mut self) {
         if let Some(id) = self.queued().into_iter().next() {
             self.host.send(Command::InputControl {
@@ -1751,9 +1764,7 @@ impl App {
         }
     }
 
-    /// Whether a key steers the draft: Ctrl+S during a run with a draft.
-    /// Without a draft, Ctrl+S steers the oldest queued message.
-    fn steers_draft(&self, key: &KeyEvent) -> bool {
+    fn submits_in_alternate_mode(&self, key: &KeyEvent) -> bool {
         key.code == KeyCode::Char('s')
             && key.mods.contains(Modifiers::CTRL)
             && self.running()
@@ -2822,8 +2833,9 @@ impl App {
                 self.notices.push(message);
                 self.restore_unsent();
             }
-            Update::StartupFailed(message) => {
+            Update::StartupFailed { message, resumable } => {
                 self.failure = Some(message);
+                self.failure_resumable = resumable;
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
@@ -2936,7 +2948,11 @@ impl App {
                 return Outcome::Exit(0);
             }
             if key.code == KeyCode::Enter {
-                self.set_notice(t("Disconnected; draft kept. Exit and resume this Session."));
+                self.set_notice(if self.failure_resumable {
+                    t("Disconnected; draft kept. Exit and resume this Session.")
+                } else {
+                    t("Cannot open this Session; draft kept.")
+                });
             } else if key.code == KeyCode::Esc {
                 self.prompt = None;
             } else if self.prompt.is_none() {
@@ -3024,11 +3040,13 @@ impl App {
     /// A key for the composer: the palette, the shortcuts around it and the
     /// draft editor, with what a submit, a command or a shell line does.
     fn composer_key(&mut self, key: KeyEvent) -> Outcome {
-        let (key, mode) = if self.steers_draft(&key) {
+        let (key, mode) = if self.submits_in_alternate_mode(&key) {
             (
                 KeyEvent::new(KeyCode::Enter, Modifiers::NONE),
-                SubmitMode::Steer,
+                self.default_send_mode.opposite(),
             )
+        } else if self.running() {
+            (key, self.default_send_mode)
         } else {
             (key, SubmitMode::Queue)
         };
@@ -3078,7 +3096,9 @@ impl App {
                 return Outcome::Continue;
             }
             KeyCode::Char('s') if ctrl => {
-                self.steer();
+                if self.default_send_mode == SubmitMode::Queue {
+                    self.steer();
+                }
                 return Outcome::Continue;
             }
             KeyCode::Esc if !self.composer.palette_open() && !self.composer.mention_open() => {
@@ -4324,6 +4344,7 @@ impl App {
             theme: theme.to_owned(),
             language,
             fullscreen_default: crate::ui::config::saved_fullscreen(&self.home),
+            default_send_mode: self.default_send_mode,
             tool_detail: self.tool_detail,
             thinking_expanded: self.thinking_detail == Detail::Expanded,
             mouse: self.mouse,
@@ -4379,6 +4400,20 @@ impl App {
                 let fullscreen = !crate::ui::config::saved_fullscreen(&self.home);
                 if let Some(error) = crate::ui::config::save_fullscreen(&self.home, fullscreen) {
                     self.set_notice(error);
+                }
+                self.settings_return = None;
+                self.open_settings(setting);
+            }
+            Setting::DefaultSendMode => {
+                let mode = self.default_send_mode.opposite();
+                if let Some(error) = crate::ui::config::write(
+                    &self.home,
+                    DEFAULT_SEND_MODE_KEY,
+                    mode.as_str().into(),
+                ) {
+                    self.set_notice(error);
+                } else {
+                    self.default_send_mode = mode;
                 }
                 self.settings_return = None;
                 self.open_settings(setting);
@@ -5096,7 +5131,8 @@ impl App {
                 Outcome::Continue
             }
             "keys" => {
-                let rows = crate::ui::keys::report(self.fullscreen, self.mouse);
+                let rows =
+                    crate::ui::keys::report(self.fullscreen, self.mouse, self.default_send_mode);
                 self.reports.push(Block::Status {
                     text: rows.join("\n"),
                     tone: Tone::Muted,
@@ -5203,7 +5239,13 @@ impl App {
             });
             if hidden > 0 {
                 let block = Block::LoadMore(hidden);
-                let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+                let text = chunk(&render_block(
+                    &block,
+                    width,
+                    &self.palette,
+                    &self.markdown,
+                    self.fullscreen,
+                ));
                 self.record(block);
                 frame.commits.push(text);
             }
@@ -5302,13 +5344,25 @@ impl App {
             frame.commits.push(text);
         }
         for block in std::mem::take(&mut self.reports) {
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
         for run in std::mem::take(&mut self.shell_runs) {
             let block = Block::Shell(run);
-            let text = chunk(&render_block(&block, width, &self.palette, &self.markdown));
+            let text = chunk(&render_block(
+                &block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            ));
             self.record(block);
             frame.commits.push(text);
         }
@@ -5322,25 +5376,35 @@ impl App {
             ]);
             self.record(Block::Failure(message));
             frame.commits.push(text);
-            let resume = if self.session_id.is_empty() {
-                "dimcode".to_owned()
+            // A Session the daemon refuses for its protocol version is refused
+            // again by every run of this client, so no command is offered.
+            let status = if self.failure_resumable {
+                let resume = if self.session_id.is_empty() {
+                    "dimcode".to_owned()
+                } else {
+                    format!("dimcode --resume {}", self.session_id)
+                };
+                Block::Status {
+                    text: tf(
+                        "Disconnected; draft kept. Exit and run: {command}",
+                        &[("command", &resume)],
+                    ),
+                    tone: Tone::Muted,
+                }
             } else {
-                format!("dimcode --resume {}", self.session_id)
-            };
-            let block = Block::Status {
-                text: tf(
-                    "Disconnected; draft kept. Exit and run: {command}",
-                    &[("command", &resume)],
-                ),
-                tone: Tone::Muted,
+                Block::Status {
+                    text: t("Cannot open this Session; draft kept.").to_owned(),
+                    tone: Tone::Muted,
+                }
             };
             frame.commits.push(chunk(&render_block(
-                &block,
+                &status,
                 width,
                 &self.palette,
                 &self.markdown,
+                self.fullscreen,
             )));
-            self.record(block);
+            self.record(status);
         }
 
         let mut live = tail;
@@ -5402,18 +5466,22 @@ impl App {
             };
             if self.queue_rows > 0 {
                 let hint = if !self.queued().is_empty() {
-                    QUEUE_HINT
+                    let key = match self.default_send_mode {
+                        SubmitMode::Queue => "Ctrl+S",
+                        SubmitMode::Steer => "Enter",
+                    };
+                    tf(QUEUE_HINT, &[("key", key)])
                 } else if self.running() {
-                    "/queue view · awaiting model consumption"
+                    t("/queue view · awaiting model consumption").to_owned()
                 } else {
-                    "/queue view · waiting for your next message"
+                    t("/queue view · waiting for your next message").to_owned()
                 };
                 live.extend(queue_strip(
                     &queued,
                     self.queue_rows,
                     cols,
                     &self.palette,
-                    hint,
+                    &hint,
                 ));
             }
         }
@@ -5578,7 +5646,6 @@ impl App {
             let placeholder = match offer {
                 Some(text) => text,
                 None if shell.is_some() => t(SHELL_PLACEHOLDER).to_owned(),
-                None if self.fullscreen => String::new(),
                 None => t(COMPOSER_PLACEHOLDER).to_owned(),
             };
             rows.push(format!(
@@ -5914,12 +5981,12 @@ impl App {
             let rows = if expanded {
                 streamed_thinking(&text, elapsed_ms, width, &self.palette)
             } else {
-                render_block(&source, width, &self.palette, &self.markdown)
+                render_block(&source, width, &self.palette, &self.markdown, false)
             };
             let stable = if row.streaming && source_text.is_empty() {
                 0
             } else {
-                render_block(&source, width, &self.palette, &self.markdown).len()
+                render_block(&source, width, &self.palette, &self.markdown, false).len()
             };
             let continues = stream.written > 0;
             let new = &rows[stream.written.min(stable)..stable];
@@ -6155,7 +6222,7 @@ impl App {
                     {
                         *pending = false;
                     }
-                    let lines = render_block(&block, width, p, markdown);
+                    let lines = render_block(&block, width, p, markdown, self.fullscreen);
                     if lines.is_empty() {
                         return (String::new(), None);
                     }
@@ -6294,6 +6361,7 @@ impl App {
                     width,
                     p,
                     markdown,
+                    self.fullscreen,
                 ),
             };
             if rows.is_empty() {
@@ -6689,6 +6757,21 @@ impl App {
             self.redraw_window();
         } else {
             self.refresh_tool_choices();
+            for block in &mut self.history {
+                if let Block::Compaction {
+                    expanded,
+                    text,
+                    detail,
+                    ..
+                } = block
+                {
+                    *expanded = self.tool_detail == Detail::Expanded;
+                    if !*expanded && detail.is_some() {
+                        *text = "".into();
+                    }
+                }
+            }
+            self.sync_compaction_details();
             self.settle_committed_messages();
         }
         self.request_reflow();
@@ -6889,7 +6972,13 @@ impl App {
                 &self.palette,
                 PULSE_FRAMES[self.last_pulse as usize % PULSE_FRAMES.len()],
             )),
-            block => chunk(&render_block(block, width, &self.palette, &self.markdown)),
+            block => chunk(&render_block(
+                block,
+                width,
+                &self.palette,
+                &self.markdown,
+                self.fullscreen,
+            )),
         }
     }
 
@@ -7263,7 +7352,7 @@ const QUEUE_ROWS: usize = 5;
 
 /// The queue strip's hint, and its form when messages are not shown. Every
 /// `/name` it can draw is a command in the table.
-const QUEUE_HINT: &str = "/queue manage · shift+← edit last · ctrl+s steer now";
+const QUEUE_HINT: &str = "/queue manage · Shift+← edit last · empty draft: {key} steer";
 const QUEUE_HINT_MORE: &str = "+{count} more · {hint}";
 
 /// The queue, drawn in a titled border above the composer: the next message
@@ -7292,15 +7381,17 @@ fn queue_strip(
         })
         .collect();
     rows.resize_with(height, String::new);
-    let hint = if hidden == 0 {
-        t(hint).to_owned()
-    } else {
-        tf(
+    let more;
+    let hint = if hidden > 0 {
+        more = tf(
             QUEUE_HINT_MORE,
-            &[("count", &hidden.to_string()), ("hint", t(hint))],
-        )
+            &[("count", &hidden.to_string()), ("hint", hint)],
+        );
+        &more
+    } else {
+        hint
     };
-    rows.push(fg(&truncate_cells(&hint, inner), &p.muted));
+    rows.push(fg(&truncate_cells(hint, inner), &p.muted));
     let title = paint(
         &tf("Queue ({count})", &[("count", &items.len().to_string())]),
         Paint {
@@ -7449,7 +7540,7 @@ fn side_reply(
             RowKind::Thinking => project_row(&side.rows, index, thinking_detail),
             _ => project_row(&side.rows, index, detail),
         };
-        let rendered = render_block(&block, inner, p, markdown);
+        let rendered = render_block(&block, inner, p, markdown, false);
         rows += rendered.len() + 1;
         blocks.push(rendered);
     }
@@ -8650,6 +8741,51 @@ mod tests {
             drawn.app.fullscreen = fullscreen;
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             drawn.app.host = Box::new(Recorder(sent.clone()));
+            for (locale, hint) in [
+                (i18n::Locale::En, "Ask anything... · Ctrl+J newline"),
+                (i18n::Locale::ZhCn, "输入你的问题… · Ctrl+J 换行"),
+            ] {
+                i18n::set(locale);
+                let frame = drawn.app.frame(drawn.size);
+                let bytes = if fullscreen {
+                    FullScreen::new(drawn.size, true).render(
+                        &frame,
+                        drawn.size,
+                        &drawn.app.palette,
+                        &drawn.app,
+                    )
+                } else {
+                    Screen::new(drawn.size, true).render(&frame, drawn.size)
+                };
+                let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                emu.feed(&bytes);
+                assert!(
+                    emu.row(emu.cy).replace('\0', "").contains(hint),
+                    "fullscreen={fullscreen}: {:?}",
+                    emu.rows_text()
+                );
+            }
+            i18n::set(i18n::Locale::En);
+            typed(&mut drawn.app, "first line");
+            drawn.app.handle(InputEvent::Key(KeyEvent::new(
+                KeyCode::Char('j'),
+                Modifiers::CTRL,
+            )));
+            typed(&mut drawn.app, "second line");
+            assert_eq!(drawn.app.composer.text(), "first line\nsecond line");
+            assert!(
+                sent.borrow().is_empty(),
+                "newline must not submit the draft"
+            );
+            assert!(
+                !drawn
+                    .app
+                    .frame(drawn.size)
+                    .live
+                    .join("\n")
+                    .contains("Ctrl+J"),
+                "typing replaces the placeholder"
+            );
             let draft = (0..12)
                 .map(|n| format!("line {n:02}"))
                 .collect::<Vec<_>>()
@@ -10270,12 +10406,15 @@ mod tests {
             drawn.key(KeyCode::Enter);
             let settings = screen(&mut drawn);
             assert!(settings.contains("Settings"), "{settings}");
-            assert!(settings.contains("Process isolation"), "{settings}");
-            assert!(settings.contains("Permission"), "{settings}");
+            assert!(settings.contains("Default send mode"), "{settings}");
             assert!(!settings.contains("File access"), "{settings}");
             assert!(!settings.contains("Tool approval"), "{settings}");
             assert!(!settings.contains("Execution"), "{settings}");
             assert!(!settings.contains("Model"), "{settings}");
+            drawn.key(KeyCode::End);
+            let settings = screen(&mut drawn);
+            assert!(settings.contains("Process isolation"), "{settings}");
+            assert!(settings.contains("Permission"), "{settings}");
             drawn.key(KeyCode::Esc);
             typed(&mut drawn.app, "/model");
             drawn.key(KeyCode::Enter);
@@ -10431,7 +10570,7 @@ mod tests {
                 .to_owned()
         };
         assert!(row(&mut app).starts_with("off"));
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_input(key(KeyCode::Down));
         }
         app.handle_input(key(KeyCode::Enter));
@@ -10484,7 +10623,7 @@ mod tests {
             assert!(live.contains(row), "{row} is missing: {live}");
         }
         assert!(live.contains("custom"), "{live}");
-        for _ in 0..8 {
+        for _ in 0..9 {
             app.handle_input(key(KeyCode::Down));
         }
         assert!(matches!(
@@ -10600,7 +10739,7 @@ mod tests {
             request: None,
         });
         drawn.app.run_command("settings", "");
-        for _ in 0..10 {
+        for _ in 0..11 {
             drawn.app.handle_input(key(KeyCode::Down));
         }
         let live = strip_escapes(&drawn.app.frame((100, 40)).live.join("\n"));
@@ -10640,10 +10779,10 @@ mod tests {
     #[test]
     fn process_isolation_select_and_save() {
         use crate::model::session::ExecutionSnapshot;
-        for (command, steps, via_permissions) in [
-            ("settings", 12, false),
-            ("permissions", 4, false),
-            ("settings", 11, true),
+        for (command, via_permissions) in [
+            ("settings", false),
+            ("permissions", false),
+            ("settings", true),
         ] {
             let home = tempfile::tempdir().unwrap();
             let theme = test_theme();
@@ -10658,8 +10797,15 @@ mod tests {
             let key =
                 |code| InputEvent::Key(crate::ui::terminal::KeyEvent::new(code, Modifiers::NONE));
             app.run_command(command, "");
-            for _ in 0..steps {
-                app.handle_input(key(KeyCode::Down));
+            if command == "settings" {
+                app.handle_input(key(KeyCode::End));
+                if via_permissions {
+                    app.handle_input(key(KeyCode::Up));
+                }
+            } else {
+                for _ in 0..4 {
+                    app.handle_input(key(KeyCode::Down));
+                }
             }
             app.handle_input(key(KeyCode::Enter));
             if via_permissions {
@@ -13167,7 +13313,22 @@ mod tests {
                 tool.tool_input = Some(serde_json::json!({"command": "cargo check"}));
                 tool.result_text = (!streaming).then(|| "Build succeeded".into());
                 tool.pending = streaming;
-                let rows = vec![message(false), thought.into(), tool.into()];
+                let mut compacted = (*message(false)).clone();
+                compacted.row_id = "compacted".into();
+                compacted.kind = RowKind::Compaction;
+                compacted.text.clear();
+                compacted.compaction = Some(crate::model::view::CompactionView {
+                    state: CompactionState::Completed,
+                    text: "The build configuration was checked.".into(),
+                    detail: None,
+                    insufficient: Vec::new(),
+                });
+                let rows = vec![
+                    message(false),
+                    compacted.into(),
+                    thought.into(),
+                    tool.into(),
+                ];
                 let snapshot = ViewSnapshot {
                     session_id: "s1".into(),
                     rows: rows.clone(),
@@ -13273,6 +13434,64 @@ mod tests {
                     + &strip_escapes(&reopened.frame(drawn.size).live.join("\n"));
                 assert!(!folded.contains("cargo check"), "{folded}");
                 assert!(!folded.contains("Inspect the lock lifetime."), "{folded}");
+                assert!(
+                    full.contains("The build configuration was checked."),
+                    "{full}"
+                );
+                for text in [&expanded, &collapsed, &folded] {
+                    assert!(
+                        !text.contains("The build configuration was checked."),
+                        "{text}"
+                    );
+                    assert!(text.contains("Context compacted"), "{text}");
+                    assert_eq!(text.contains("Context compacted ▸"), fullscreen, "{text}");
+                }
+                assert_eq!(full.contains("Context compacted ▾"), fullscreen, "{full}");
+                for text in [&expanded, &collapsed, &full, &folded] {
+                    assert_eq!(text.contains(['▸', '▾']), fullscreen, "{text}");
+                }
+                reopened.set_fullscreen(!fullscreen);
+                let frame = reopened.frame((44, 40));
+                let switched = strip_escapes(&reopened.reflow_history(44).join("\n"))
+                    + &strip_escapes(&frame.live.join("\n"));
+                assert!(
+                    !switched.contains("The build configuration was checked."),
+                    "switching modes restores the collapsed compaction preset: {switched}"
+                );
+                assert_eq!(
+                    switched.contains("Context compacted ▸"),
+                    !fullscreen,
+                    "{switched}"
+                );
+                if fullscreen {
+                    for detail in [Detail::Collapsed, Detail::Summary, Detail::Expanded] {
+                        reopened.set_fullscreen(true);
+                        let _ = reopened.frame((44, 40));
+                        let block = reopened.dropped
+                            + reopened
+                                .history
+                                .iter()
+                                .position(|block| matches!(block, Block::Compaction { .. }))
+                                .unwrap();
+                        assert!(reopened.click(Some(block), 1, 44));
+                        let toggled = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            toggled.contains("The build configuration was checked."),
+                            detail != Detail::Expanded,
+                            "{toggled}"
+                        );
+                        reopened.set_fullscreen(false);
+                        let _ = reopened.frame((44, 40));
+                        let restored = strip_escapes(&reopened.reflow_history(44).join("\n"));
+                        assert_eq!(
+                            restored.contains("The build configuration was checked."),
+                            detail == Detail::Expanded,
+                            "{restored}"
+                        );
+                        assert!(!restored.contains(['▸', '▾']), "{restored}");
+                        reopened.run_command("tools", "");
+                    }
+                }
             }
         }
     }
@@ -13997,11 +14216,9 @@ mod tests {
         let p = &test_theme().palette;
         let item = |n: usize| (format!("id{n}"), format!("message {n}"));
         let three: Vec<_> = (1..=3).map(item).collect();
-        let full = queue_strip(&three, 3, 80, p, QUEUE_HINT);
-        assert_eq!(
-            queue_strip(&three[..1], 3, 80, p, QUEUE_HINT).len(),
-            full.len()
-        );
+        let hint = tf(QUEUE_HINT, &[("key", "Ctrl+S")]);
+        let full = queue_strip(&three, 3, 80, p, &hint);
+        assert_eq!(queue_strip(&three[..1], 3, 80, p, &hint).len(), full.len());
     }
 
     /// The queue strip names only commands the table has, in every locale.
@@ -14050,6 +14267,7 @@ mod tests {
             60,
             p,
             &markdown,
+            false,
         );
         assert_eq!(settled.len(), live.len());
     }
@@ -14342,22 +14560,79 @@ mod tests {
         }
     }
 
-    /// During a run Enter queues the draft, and Ctrl+S steers a draft that is
-    /// not empty.
     #[test]
-    fn enter_queues_a_draft_and_ctrl_s_steers_it_during_a_run() {
-        let (mut app, sent, _home) = session_with_queue(true, &[]);
-        typed(&mut app, "queue me");
-        press(&mut app, KeyCode::Enter);
-        typed(&mut app, "steer me");
-        let _ = app.handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
-            KeyCode::Char('s'),
-            Modifiers::CTRL,
-        )));
-        assert_eq!(
-            describe(&sent.borrow()),
-            ["submit:queue:queue me", "submit:steer:steer me"]
-        );
+    fn default_send_mode_switches_draft_keys_and_survives_reopen() {
+        let ctrl_s = InputEvent::Key(KeyEvent::new(KeyCode::Char('s'), Modifiers::CTRL));
+        for fullscreen in [false, true] {
+            let (mut app, sent, home) = session_with_queue(true, &[("a", "held")]);
+            app.fullscreen = fullscreen;
+            typed(&mut app, "queue");
+            app.handle(InputEvent::Key(KeyEvent::new(
+                KeyCode::Enter,
+                Modifiers::ALT,
+            )));
+            typed(&mut app, "me");
+            assert!(sent.borrow().is_empty(), "Alt+Enter must insert a newline");
+            press(&mut app, KeyCode::Enter);
+            typed(&mut app, "steer me");
+            app.handle(ctrl_s.clone());
+            assert_eq!(
+                describe(&sent.take()),
+                ["submit:queue:queue\nme", "submit:steer:steer me"]
+            );
+
+            app.open_settings(Setting::DefaultSendMode);
+            press(&mut app, KeyCode::Char(' '));
+            press(&mut app, KeyCode::Esc);
+            assert!(
+                app.frame((110, 30))
+                    .live
+                    .join("\n")
+                    .contains("empty draft: Enter steer")
+            );
+            app.run_command("keys", "");
+            assert!(matches!(
+                app.reports.last(),
+                Some(Block::Status { text, .. }) if text.contains("Enter steer · Ctrl+S queue")
+            ));
+            app.handle(ctrl_s.clone());
+            assert!(
+                sent.borrow().is_empty(),
+                "Ctrl+S needs a draft in steer mode"
+            );
+            press(&mut app, KeyCode::Enter);
+            typed(&mut app, "steer by default");
+            press(&mut app, KeyCode::Enter);
+            typed(&mut app, "queue this one");
+            app.handle(ctrl_s.clone());
+            assert_eq!(
+                describe(&sent.take()),
+                [
+                    "steer:a",
+                    "submit:steer:steer by default",
+                    "submit:queue:queue this one"
+                ]
+            );
+
+            let theme = test_theme();
+            let mut reopened = App::new(
+                Box::new(Recorder(sent.clone())),
+                MarkdownRenderer::new(&theme),
+                theme.palette,
+                home.path().to_path_buf(),
+                "/work".into(),
+            );
+            reopened.fullscreen = fullscreen;
+            typed(&mut reopened, "idle");
+            press(&mut reopened, KeyCode::Enter);
+            reopened.apply(Update::Snapshot(Box::new(app.snapshot.take().unwrap())));
+            typed(&mut reopened, "running");
+            press(&mut reopened, KeyCode::Enter);
+            assert_eq!(
+                describe(&sent.take()),
+                ["submit:queue:idle", "submit:steer:running"]
+            );
+        }
     }
 
     #[test]
@@ -15975,7 +16250,11 @@ mod tests {
             assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
             assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
             drop(body);
-            assert!(drawn.app.click(Some(block), 1, 100));
+            if fullscreen {
+                drawn.app.set_fullscreen(false);
+            } else {
+                assert!(drawn.app.click(Some(block), 1, 100));
+            }
             assert!(
                 matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
             );
@@ -16140,6 +16419,36 @@ mod tests {
             "upstream 503",
         ] {
             assert!(expanded.contains(line), "{line:?} missing: {expanded}");
+        }
+    }
+
+    /// A Session the daemon refuses for its protocol version is refused again
+    /// by every run of this client, so the failure block and the Enter notice
+    /// offer no command to run it.
+    #[test]
+    fn a_refused_protocol_version_offers_no_resume_command() {
+        for (resumable, offered) in [(true, true), (false, false)] {
+            let mut drawn = Drawn::new((100, 40), None, true);
+            drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
+            drawn.app.apply(Update::StartupFailed {
+                message: "Session was created by protocol version 5; this connection speaks 4"
+                    .into(),
+                resumable,
+            });
+            drawn.draw();
+            let shown = drawn_text(&mut drawn);
+            assert_eq!(shown.contains("Exit and run:"), offered, "{shown}");
+            assert_eq!(shown.contains("dimcode --resume s1"), offered, "{shown}");
+            drawn.key(KeyCode::Enter);
+            let notice = drawn_text(&mut drawn);
+            assert_eq!(
+                notice.contains("Exit and resume this Session."),
+                offered,
+                "{notice}"
+            );
+            if !offered {
+                assert!(notice.contains("Cannot open this Session"), "{notice}");
+            }
         }
     }
 }

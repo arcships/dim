@@ -26,8 +26,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Pesan dengan lampiran tetap dalam antrean; gunakan /queue untuk steer atau menghapusnya"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue kelola · shift+← edit terakhir · ctrl+s steer kini"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue kelola · Shift+← edit terakhir · draf kosong: {key} untuk steer"
         }
         "+{count} more · {hint}" => "+{count} lagi · {hint}",
         "steer or delete queued messages" => "steer atau hapus pesan dalam antrean",
@@ -244,6 +244,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Terputus; draf disimpan. Keluar lalu lanjutkan Sesi ini."
         }
+        "Cannot open this Session; draft kept." => "Sesi ini tidak dapat dibuka; draf disimpan.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Terputus; draf disimpan. Keluar lalu jalankan: {command}"
         }
@@ -318,7 +319,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Error: {message}",
         "working…  {elapsed}" => "bekerja…  {elapsed}",
         "thinking…  {elapsed}" => "berpikir…  {elapsed}",
-        "Ask anything..." => "Tanya apa saja…",
+        "Ask anything... · Ctrl+J newline" => "Tanya apa saja… · Ctrl+J baris baru",
         "Earlier history · {id} · {count} messages" => "Riwayat lama · {id} · {count} pesan",
         "No active session" => "Tak ada sesi aktif",
         "answer required" => "perlu jawaban",
@@ -415,6 +416,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Tema",
         "Language" => "Bahasa",
         "Startup UI form" => "Bentuk UI awal",
+        "Default send mode" => "Mode pengiriman bawaan",
         "fullscreen" => "layar penuh",
         "scrollback" => "scrollback",
         "Tool details" => "Detail tool",
@@ -554,11 +556,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "lihat pintasan tombol",
         "Application keys" => "Tombol aplikasi",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter kirim atau antrekan · draf kosong: steer antrean pertama · Shift+Enter/Ctrl+J baris baru · ↑↓ riwayat"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter kirim saat idle · Shift+Enter / Alt+Enter / Ctrl+J baris baru · ↑↓ riwayat"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P perintah · Esc interupsi, pesan antrean kembali · Ctrl+S steer draf atau antrean pertama · Shift+← edit antrean terakhir"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Sedang berjalan dengan draf: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Draf kosong: {keys} mengirim antrean pertama ke proses yang sedang berjalan"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P perintah · Esc interupsi, pesan antrean kembali · Shift+← edit antrean terakhir"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C hapus, 2x untuk keluar · Ctrl+D keluar jika draf kosong"

@@ -26,8 +26,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Les messages avec pièces jointes restent en file ; utilisez /queue pour orienter ou les supprimer"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue gérer · shift+← modifier le dernier · ctrl+s orienter maintenant"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue gérer · Shift+← modifier le dernier · brouillon vide : {key} pour orienter"
         }
         "+{count} more · {hint}" => "+{count} de plus · {hint}",
         "steer or delete queued messages" => "orienter avec les messages en file ou les supprimer",
@@ -244,6 +244,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Déconnecté; brouillon conservé. Quitter et reprendre la session."
         }
+        "Cannot open this Session; draft kept." => {
+            "Impossible d'ouvrir cette session; brouillon conservé."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Déconnecté; brouillon conservé. Quitter et lancer: {command}"
         }
@@ -316,7 +319,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Erreur: {message}",
         "working…  {elapsed}" => "travail…  {elapsed}",
         "thinking…  {elapsed}" => "réflexion…  {elapsed}",
-        "Ask anything..." => "Posez une question…",
+        "Ask anything... · Ctrl+J newline" => "Posez une question… · Ctrl+J nouvelle ligne",
         "Earlier history · {id} · {count} messages" => {
             "Historique antérieur · {id} · {count} messages"
         }
@@ -419,6 +422,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Thème",
         "Language" => "Langue",
         "Startup UI form" => "Mode au démarrage",
+        "Default send mode" => "Mode d’envoi par défaut",
         "fullscreen" => "plein écran",
         "scrollback" => "défilement",
         "Tool details" => "Détails d'outils",
@@ -558,11 +562,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "afficher les raccourcis",
         "Application keys" => "Raccourcis de l'app",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Entrée envoyer ou mettre en file · brouillon vide : orienter la première en file · Shift+Entrée ou Ctrl+J nouvelle ligne · ↑↓ historique"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter envoie au repos · Shift+Enter / Alt+Enter / Ctrl+J nouvelle ligne · ↑↓ historique"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O ou Ctrl+P commandes · Esc interrompre, les messages en file reviennent · Ctrl+S orienter le brouillon ou la première en file · Shift+← modifier la dernière en file"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Exécution en cours avec brouillon : Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Brouillon vide : {keys} transmet le premier message en attente à l’exécution"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O ou Ctrl+P commandes · Esc interrompre, les messages en file reviennent · Shift+← modifier la dernière en file"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C effacer, deux fois pour quitter · Ctrl+D quitter si brouillon vide"

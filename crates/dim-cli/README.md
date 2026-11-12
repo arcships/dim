@@ -1005,13 +1005,19 @@ The interactive terminal UI has two modes over the same session. Scrollback (the
  ◆ Thinking… · text
  ◐ 1 · cargo build 1m12s  the tasks running apart from the turn
  ╭─ · thinking… ─────────────────────────────╮
- │ › Ask anything...                        │   composer stays anchored
+ │ › Ask anything... · Ctrl+J newline        │   composer stays anchored
  ╰──────────────────────────────────────────╯
 ```
 
 The task row sits above the composer here as it does above the dock in fullscreen,
 so the released space of a closing menu still returns below it and the composer
 keeps its place.
+
+Both modes show `Ask anything... · Ctrl+J newline` in an empty composer,
+translated into the interface language. Typing replaces the placeholder;
+prompt suggestions and shell mode keep their own text. `Ctrl+J` inserts a
+newline without submitting and does not require the terminal to distinguish
+`Shift+Enter` from `Enter`.
 
 While a terminal resize is pending, scrollback pauses frame painting until the existing resize debounce settles; model and input processing continue. The settled resize rebuilds native scrollback from the recorded blocks at the new width and overwrites visible rows in place, without clearing the screen first. No full row above the final live region is cleared: shorter rewritten rows erase their stale suffix in place, and unused rows below the final live region are erased. This keeps the normal one-row message separators and removes old composer and thinking rows without a blank-screen flash, including in tmux without synchronized output.
 
@@ -1023,7 +1029,7 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  answer row (streaming tail scrolls with the transcript)        █   thumb in eighths of a row
                                                                 █
  ╭─────────────────────────────── provider / model · effort ─╮      dock: queue, composer
- │                                                            │      and panels stay pinned
+ │ Ask anything... · Ctrl+J newline                           │      and panels stay pinned
  │                                                            │      to the bottom; the box
  │                                                            │      borders carry the model,
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
@@ -1056,16 +1062,16 @@ the path list, in first-call order. Repeated edits of one path count as one file
 successful edits contribute to the line totals. Mixed tool groups carry the same edit summary.
 Paths retain the tool input's spelling, including directory components to distinguish namesakes.
 On narrow terminals, the path list gives way to a localized remaining-file count; an individual
-path may shorten on grapheme boundaries to keep the totals and disclosure visible. If even
+path may shorten on grapheme boundaries to keep the totals and, in fullscreen, disclosure visible. If even
 those fixed fields exceed the width, the header uses the ordinary one-row truncation.
-Opening the group still shows each tool's full path and diff.
+Expanded details still show each tool's full path and diff. Scrollback examples:
 
 ```text
-✓ Edited src/main.rs (+12 -3) ▸
-✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs ▸
-✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more ▸
-✓ Ran 1 command, edited src/main.rs (+12 -3) · python ▸
-✓ Ran 2 commands, ran 1 search · python ×2, rg ▸
+✓ Edited src/main.rs (+12 -3)
+✓ Edited 2 files (+18 -5) · src/main.rs, src/config.rs
+✓ Edited 5 files (+42 -16) · src/main.rs, … 4 more
+✓ Ran 1 command, edited src/main.rs (+12 -3) · python
+✓ Ran 2 commands, ran 1 search · python ×2, rg
 ```
 
 Collapsed headers also show shell program names, as defined by the
@@ -1078,7 +1084,7 @@ nonblank line followed by `…`; output, diff bodies and script bodies stay hidd
 until expanded. Member summary rows still open their conversations.
 
 ```text
-✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3) ▾
+✓ Ran 1 command, read 1 file, edited src/main.rs (+12 -3)
   ✓ Exec · cargo check -p dim-cli
   ✓ Read · docs/INDEX.md
   ✓ Edited src/main.rs (+12 -3)
@@ -1092,7 +1098,7 @@ answer text (including its retained streaming tail)
 · stopped
 ```
 
-The composer box: no prompt mark or placeholder, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
+The composer box: no prompt mark, the adopted model and, when its configuration carries one, the reasoning effort it sends (`provider / model · effort`) at the right of its top border, and in its bottom border the run status, the status slot (a notice, `esc interrupt`, `permission required`), the main branch's context reading (`1.8K / 256K`) and a non-default approvals mode at the left, the attached Session's workspace and its git branch at the right, with Home naming the launch directory. When that workspace differs from the CLI's `--cwd`, the `@` picker names the `--cwd` in its title, so local file completion still says which directory it lists. A box too narrow for the whole label drops the effort first, then the label. Fullscreen has no status row under it; scrollback keeps its status row and `›` prompt.
 
 The Git branch label follows branch switches in both modes, including switches made by tools or another terminal. At startup the client resolves the workspace's own Git `HEAD` path (including linked worktrees); the existing UI timer reads that file at most once every 10 seconds, without spawning more Git processes, and requests a repaint only when the name changes. Detached HEAD displays `HEAD`; a transient read failure keeps the last known name until the next check.
 
@@ -1127,23 +1133,23 @@ An explicit provider error presentation keeps its message and suggested action.
  ■ turn failed: <reason>
 ```
 
-The expanded row shows only the summary body:
+The expanded row shows only the summary body (scrollback):
 
 ```text
  › try the RwLock for the cache lock
  … reply …
  · Compacting context…
- ✓ Context compacted ▾
+ ✓ Context compacted
  ▎ The cache lock moved into a RwLock; the parser race is next.
  ▎ …
  › carry on
  ✗ Context compaction failed · the summarizer returned nothing
  ◦ Context compaction skipped · nothing to cut
  ◦ Context compaction cancelled · the capability was reloading
- ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K ▸
+ ✓ Context compacted · insufficient space: summary 3.2K, pinned inputs 1.1K
 ```
 
-`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: a click on the row toggles it (`▸` closed, `▾` open). `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
+`✓` is a completed compaction, `✗` a failed one, `◦` one that did not apply, and the skipped, failed and cancelled rows carry the reason or error of their record. A completed compaction's summary is the row's detail: in fullscreen, a click on the row toggles it (`▸` closed, `▾` open). Scrollback draws no disclosure arrow. `/tools` cycles the global tool form; only expanded opens compaction bodies, while collapsed and summary keep them closed. From the default collapsed form, the first `/tools` selects summary and the second selects expanded. With `replacement_parts`, the strategy's messages supply the summary; a record without the field uses the whole replacement. A summary wrapped in `<dim-summary>` … `</dim-summary>` displays only its body, without the runtime's fixed opening background notice and closing sentence. Unwrapped text and such wording quoted within the summary are preserved. The markers, digest and pinned inputs are not shown; the stored record and model context are unchanged. A record whose parts cannot meet the bound carries `insufficientSpace`, and the completed row's header names its parts largest first, with the token counts the gauge's formatter gives them — `insufficient space: summary 3.2K, pinned inputs 1.1K`. The part names are localized labels and the mark is read from the record; the client never decides it. The transcript keeps every earlier row and the compaction adds no boundary of its own; a resume rebuilds the rows from history as they were drawn live. [Compaction requirements](../../docs/design/compaction-quality.md#4-what-users-see-and-control) say what a compaction row must show.
 
 
 A user message's row carries the operator's words. Context a hook appended for the model is not theirs, so each `dim-hooks` block draws as its own muted status row directly under the message: `Hook context · N lines` (`Hook context · 1 line` for one stored line), `▸` closed and `▾` open. `/tools` opens and closes it exactly as it opens a compaction's body, and a click on the row does the same; the body is the hook's own words, drawn as text, not Markdown. The stored Session and the model's request keep the block verbatim. A message that itself opens a marker keeps it as the operator's text, because the first block is always theirs.
@@ -1167,13 +1173,13 @@ Pickers (`/resume`, `/models`, `/connect`, `/login`, `/approvals`, `/theme`, `/l
                       ╰────────────────────────────────────╯
 ```
 
-Both scrollback and fullscreen palettes list slash commands in the fixed, curated order defined by the [command menu design](../../docs/design/cli-commands.md#command-menu): `/new` is first and `/exit` is last in the unfiltered command list, and the menu draws no category column. Each row shows its `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists `Enter` queue and `Ctrl+S` steer while a run is in progress (`Enter` on an empty draft steers too), `Esc` interrupt, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
+Both scrollback and fullscreen palettes list slash commands in the fixed, curated order defined by the [command menu design](../../docs/design/cli-commands.md#command-menu): `/new` is first and `/exit` is last in the unfiltered command list, and the menu draws no category column. Each row shows its `/command`, description and any command shortcut. Commands requiring a session are faint and marked `(unavailable)` until one exists. Keyboard-only actions are omitted from both menus; `/keys` lists the active [send keys](../../docs/design/cli-commands.md#run-keys-and-queue), `Esc` interrupt, and the fullscreen `Home` / `End` scroll and `Tab` message picker bindings.
 
 Opening `/` selects `/new`; pressing Enter starts a new session. `/permissions` is the single visible permission entry; `/approvals` and `/approval` are compatibility aliases for the same unified flow. Selecting an incomplete `exit` match only fills the command name; its exact name or alias is required before dispatch. Thus `/ex` + Enter completes `/exit` without quitting, and another Enter executes the completed command. `Tab` only completes the selected row and never runs or sends: a command fills its name, a command with an argument also fills the space after it, a Skill row fills its `$skill: <name> ` marker, and an empty match changes nothing.
 
 Typing ranks the matches: the exact name, a name prefix, an alias prefix, a prefix of a name part (`reload-skills` for `sk`), a name containing the query, a description word starting with it, then three or more letters in order through the name (`stg` for `settings`); a match inside a description word does not count. Equally ranked matches keep the fixed order.
 
-`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. In scrollback, collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. In fullscreen these are defaults for independent nodes: collapsed closes batches, summary opens containers with call details closed, and expanded opens both; explicit per-node choices take precedence. Edit and Write details show recorded old/new unified comparisons, including new-file additions; records without a diff explicitly say comparison is unavailable. Compaction bodies show only in expanded, and so does a hook's context (below). `/tools` cycles the defaults without changing thinking or clearing fullscreen manual choices. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
+`/settings` gathers the interface settings: theme and language (each opens its picker and comes back), the startup form (`tuiMode`), the default send mode (`tuiDefaultSendMode`), tool details (`tuiToolDetails`: `collapsed`, `summary`, `expanded`), thinking details (`tuiThinkingDetailsExpanded`), the fullscreen mouse (`tuiMouseMode`: off hands selection and the wheel to the terminal), notifications (`tuiNotifyOnComplete`, on by default), ACP Sessions in `/resume` (`showAcpSessions`, off by default), the permission preset and execution settings. Tool and thinking details are independent and both default to collapsed in both modes. The old `tuiToolDetailsExpanded` boolean is read when no valid three-state preference exists; new changes save to `tuiToolDetails` without replacing the legacy key's format. In scrollback, collapsed tool groups retain their header and member cards; summary shows one row per call; expanded shows full details. In fullscreen these are defaults for independent nodes: collapsed closes batches, summary opens containers with call details closed, and expanded opens both; explicit per-node choices take precedence. Edit and Write details show recorded old/new unified comparisons, including new-file additions; records without a diff explicitly say comparison is unavailable. Compaction bodies show only in expanded, and so does a hook's context (below). `/tools` cycles the defaults without changing thinking or clearing fullscreen manual choices. Model selection stays in `/model` (`/models`). Settings change with `Enter`, `←`/`→` or `Space` and save to `config.json` at once. See the [transcript detail settings contract](../../docs/design/cli-commands.md#transcript-detail-settings).
 
 Notifications reach a user who switched windows when the run finishes or waits on a permission or a question (each request once): iTerm2 gets `OSC 9`, kitty `OSC 99`, Ghostty, WezTerm and foot `OSC 777`; any other terminal gets a bell, which it turns into a Dock bounce, a taskbar flash or a tab badge. Inside a multiplexer the bytes differ, because neither carries the form upward by itself and a notification asserts nothing after it is delivered, so the record's reasons for staying inside a multiplexer (`ui::status`, `ui::progress`) do not apply to it. tmux gets the form in its passthrough wrapper (`ESC P tmux;`, the sequence's `ESC`s doubled, `ESC \`) followed by a bare `BEL`: tmux 3.3 and later default `allow-passthrough` to off, so a tmux that forwards the wrapper draws the notification and one that drops it still rings. GNU screen follows the same rule for the same reason: it doubles no `ESC` (`ESC P` opens a passthrough it ends differently from tmux, which a notification does not need), and some builds forward an `OSC` closed by `BEL` while others drop every `OSC` a pane writes — so a `BEL`-terminated form (`OSC 9`, `OSC 777`) goes through unwrapped as it is and a bare `BEL` follows it, which draws the notification where the form is forwarded and rings where it is dropped. kitty's `ST`-terminated `OSC 99` has no shape screen carries whole, so it becomes the bell alone. herdr gets a bell whatever its `TERM_PROGRAM` says: it reads a pane's `OSC`s for itself and notifies from its own list of terminals, so a form the pane's variables name is not known to reach the user, while a `BEL` is not an `OSC` it takes.
 
@@ -1268,6 +1274,8 @@ When only the transcript scrolls, blank cached rows are inserted at the old tail
 The transcript is a virtual list. The CLI keeps each committed block once, as its source (Markdown text, tool records), up to 5,000 blocks; fullscreen keeps only every block's height for the current width and renders the rows of the blocks within about a screen of the viewport, dropping them as it moves away. Heights start as estimates (Markdown by its wrapped source lines) and become exact when the viewport first reaches a block, so a settled resize or theme change lays out only the blocks around the view. A scrolled view is held by its top block, so it stays put while heights above it settle and across a resize. The scrollback interface lays out the newest 10,000 rows of the same history when it rewrites the terminal's scrollback.
 
 `/tui` switches modes inside a running session, including during a run. Entering fullscreen erases the scrollback composer and lays the history out on the alternate screen; leaving rewrites the history into the terminal's scrollback. Exiting fullscreen returns to the shell's screen and prints the resume panel there.
+
+When Kitty keyboard negotiation succeeds, Dim keeps its flags on the active screen: it pops them before switching screens and pushes them on the destination. The main and alternate screens have independent keyboard stacks; this preserves modified keys such as Shift+Enter in fullscreen and restores the caller's flags on exit or while an external editor runs.
 
 ```bash
 dimcode --fullscreen            # this run only

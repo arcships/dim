@@ -24,8 +24,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Los mensajes con archivos adjuntos permanecen en cola; usa /queue para hacer steer o eliminarlos"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue gestionar · shift+← editar el último · ctrl+s steer ahora"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue gestionar · Shift+← editar última · borrador vacío: {key} para steer"
         }
         "+{count} more · {hint}" => "+{count} más · {hint}",
         "steer or delete queued messages" => "hacer steer con mensajes en cola o eliminarlos",
@@ -248,6 +248,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Desconectado; borrador guardado. Sal y reanuda esta Sesión."
         }
+        "Cannot open this Session; draft kept." => {
+            "No se puede abrir esta Sesión; borrador guardado."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Desconectado; borrador guardado. Sal y ejecuta: {command}"
         }
@@ -324,7 +327,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Error: {message}",
         "working…  {elapsed}" => "trabajando…  {elapsed}",
         "thinking…  {elapsed}" => "pensando…  {elapsed}",
-        "Ask anything..." => "Pregunta algo…",
+        "Ask anything... · Ctrl+J newline" => "Pregunta algo… · Ctrl+J nueva línea",
         "Earlier history · {id} · {count} messages" => {
             "Historial anterior · {id} · {count} mensajes"
         }
@@ -431,6 +434,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Tema",
         "Language" => "Idioma",
         "Startup UI form" => "Interfaz al iniciar",
+        "Default send mode" => "Modo de envío predeterminado",
         "fullscreen" => "pantalla completa",
         "scrollback" => "desplazamiento",
         "Tool details" => "Detalles de herramientas",
@@ -568,11 +572,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "ver atajos de teclado",
         "Application keys" => "Atajos de la app",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter enviar o encolar · borrador vacío: steer la primera en cola · Shift+Enter o Ctrl+J nueva línea · ↑↓ historial"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter envía sin ejecución activa · Shift+Enter / Alt+Enter / Ctrl+J nueva línea · ↑↓ historial"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O o Ctrl+P comandos · Esc interrumpir, los mensajes en cola vuelven · Ctrl+S steer el borrador o la primera en cola · Shift+← editar la última en cola"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "En ejecución con borrador: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Borrador vacío: {keys} dirige la primera de la cola a la ejecución"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O o Ctrl+P comandos · Esc interrumpir, los mensajes en cola vuelven · Shift+← editar la última en cola"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C borrar, dos veces salir · Ctrl+D salir con borrador vacío"
