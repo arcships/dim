@@ -3068,13 +3068,10 @@ async fn a_failed_prompt_hook_reports_a_warning_on_a_steer() {
 
 /// A.6.2 and session-access A.4: a withdrawal's warnings ride with the `steer`
 /// receipt of the replacement this call wrote, so a reply that carries no
-/// receipt carries none either. A withdrawal with no `steer` runs no check at
-/// all. Whether a `notHeld` decision writes the replacement is InputQueue's
-/// format decision (#1413): while the write happens, the receipt and the
-/// warnings describe it together, and a reply without the receipt never names
-/// work.
+/// receipt carries none either, whichever `status` A.4 gives the call. A
+/// withdrawal with no `steer` runs no check at all, so its reply names no work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_withdrawal_without_a_replacement_carries_no_warnings() {
+async fn a_withdrawal_carries_warnings_only_with_the_replacement_it_wrote() {
     let env = Env::new().await;
     env.sources.set(document(serde_json::json!({
         "UserPromptSubmit": [command(serde_json::json!({
@@ -3089,7 +3086,6 @@ async fn a_withdrawal_without_a_replacement_carries_no_warnings() {
     )
     .await
     .unwrap();
-    assert_eq!(steered["status"], "notHeld", "{steered}");
     assert_eq!(
         steered.get("steer").is_some(),
         steered.get("warnings").is_some(),
@@ -3111,7 +3107,8 @@ async fn a_withdrawal_without_a_replacement_carries_no_warnings() {
 }
 
 /// A.5 and A.6.2: the same for a timeout, bounded by the handler's own short
-/// `timeout` rather than the 30 s default.
+/// `timeout` rather than the 30 s default. The steer's old input is still
+/// held, so its reply is `deleted` under A.4's rule either way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_timed_out_prompt_hook_proceeds_and_is_reported() {
     let env = Env::new().await;
@@ -3120,20 +3117,14 @@ async fn a_timed_out_prompt_hook_proceeds_and_is_reported() {
             "type": "command", "command": "sleep 5", "timeout": 1,
         }))],
     })));
-    let session = env.session().await;
+    let (session, release, _old_id, call) = steer_into_a_pending_prompt(&env).await;
     let started = std::time::Instant::now();
-    let reply = withdraw(
-        &session,
-        serde_json::json!({"sessionId": session.id(), "branchId": "main",
-            "inputId": "unknown", "steer": {"content": [{"type": "text", "text": "new"}]}}),
-    )
-    .await
-    .unwrap();
+    let reply = call.await.unwrap().expect("the timed-out check proceeds");
     assert!(
         started.elapsed() < Duration::from_secs(4),
         "the check waited past its timeout"
     );
-    assert_eq!(reply["status"], "notHeld", "{reply}");
+    assert_eq!(reply["status"], "deleted", "{reply}");
     assert_eq!(
         reply["warnings"],
         serde_json::json!([{
@@ -3157,6 +3148,7 @@ async fn a_timed_out_prompt_hook_proceeds_and_is_reported() {
         vec![ContentBlock::Text { text: "new".into() }],
         "the timeout is not model context"
     );
+    let _ = release.send(());
     env.close().await;
 }
 
