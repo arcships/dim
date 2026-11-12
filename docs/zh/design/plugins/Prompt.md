@@ -17,7 +17,7 @@ Prompt 拥有：
 
 - 条目的措辞归写该标记的能力（§4）；
 - 请求形状归 Loop，采用的配置归 ContextPreparation，摘要路径归 ContextPolicy；
-- 状态与规则的来源、以及模型在其中读到的文字归 PromptSources；这两个标记是 Prompt 的，由它写出（§4）。
+- 状态与规则的来源、以及模型在其中读到的文字归各来源所有者；共用标记的指南条目归 `PromptGuide`（§4）。
 
 本文不含：各能力自己的模型可见文字清单与其协议/策略标记，以及该写入者自己流程里的断言（[#551](../model-prompts.md#92-每个写入面向模型文字的能力)、[#552](../model-prompts.md#94-timelinetree)、[#553](../model-prompts.md#95-goal)、[#554](../model-prompts.md#96-contextcompaction)）；移除 Prompt 的两个调用点（[#555](../model-prompts.md#97-loop-与-contextpreparation)）。
 
@@ -122,7 +122,7 @@ Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布
 | 120 | `dim-workflow` | Workflow 的 Session 部件 | Session | 运行的报告与阶段标记 |
 | 130 | `dim-event`、`dim-event-guide` | EventHub 的 Session 部件 | Session | 被投递的事件，以及投递它的来源的指南 |
 
-登记者是写该标记的部件，不是撰写该来源措辞的部件。Prompt 把任何 `Context` 或 `State` 来源写成 `<dim-rule>` 或 `<dim-state>` 输入，所以即使措辞是 PromptSources 的，这两个标记也是 Prompt 的。只装 Prompt 不装 PromptSources 的 profile 仍可能被宿主塞入上下文来源，它写出的标记需要自己的条目。
+插件专有标记的登记者是写该标记的部件，不是撰写来源措辞的部件。`PromptGuide` 拥有共用的 `dim-rule` 和 `dim-state` 条目：Prompt 为注册的来源写出这些标记，运行时部件也可以通过输入路径追加不带 key 的 `dim-state` 快照。提供任一种形式的 profile 都包含 `PromptGuide`；快照写入者复用它的条目，不重复注册。状态条目解释某来源最近观察到的值，不表示请求或授权，也不承诺保留；压缩重放由输入 key 决定（[面向模型的提示词 §3](../model-prompts.md#3-通道)）。
 
 压缩产生的替换内容属于任何策略都要经由的 ContextPolicy，而不属于某一个策略：无论哪个策略返回，清单都由 ContextPolicy 组合（[ContextCompaction §5.10](ContextCompaction.md#510-第-3a-类清单)）。因此该条目由绑定 ContextPolicy 的部件登记，且只在有策略绑定时登记——没有策略的 Session 不做压缩，也就不写清单。绑定了产品策略之外策略的 Session 仍然会发送 `<dim-digest>`，它的指南会解释它。
 

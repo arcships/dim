@@ -61,7 +61,7 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 | --- | --- | --- | --- | --- |
 | `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
 | `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令 | false | `Drain` |
-| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立 | false | `Drain` |
+| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立。带 `cwd` 时只读该作用域的行，该文件夹没有行时返回 `null`；工作区优先于全局是一条 `configuration` 规则，不属于此读取 | false | `Drain` |
 | `provider.catalog` | `{providerId}` | 既有 `{catalog}` 和 `ProviderModel`，**不修改** | false | `Drain` |
 
 省略 ID 返回全部已知条目，包含未登录账号；指定 ID 返回该项或明确错误。
@@ -593,7 +593,10 @@ credential clear 和 enabled:false，修复只 clear 导致已启用记录缺凭
 刷新后的列表先于操作结果提示送达选择器，用户看到提示后重试时使用刷新后的目录版本。
 非交互入口为 `dimcode models PROVIDER --clear-preferences MODEL`，先重读版本再同样更新。
 两者都不改当前 Session 已采用的模型；发现和采用失败不会自动删除历史偏好。
-`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型；若强度被切换过，
+`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型，并写入该文件夹中
+下一个 Session 读取的默认值：该文件夹已有工作区选择时写工作区作用域，否则写全局作用域，
+`expectedVersion` 取自同一作用域。写工作区时确认行写明该文件夹，写全局时确认行不提文件夹。
+若强度被切换过，
 先把它存成该模型的 `reasoningEffort`，再连同其余已保存偏好一起发送。编辑提供方的模型列表属于
 Models 管理领域（[CLI 命令 § Models 领域](../cli-commands.md#models-领域)）：`/models` 的
 `Edit models` 与 `dimcode models PROVIDER add|edit|set|remove|inspect` 读取
@@ -623,7 +626,7 @@ catalog 条目带 `zdr: true` 的模型在推理强度前显示 `ZDR` 标签，�
 ```text
 Select a model
 > Provider / model          ZDR  ‹ high ›
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 ```text

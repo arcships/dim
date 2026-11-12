@@ -1033,6 +1033,7 @@ impl Connection {
                                 Catalog {
                                     with_internal: true,
                                     with_acp_sessions: true,
+                                    with_automation_sessions: true,
                                     include_closed,
                                     ..Catalog::default()
                                 },

@@ -1017,7 +1017,9 @@ async fn launch_target(
             "a launch delivery names a non-launch target",
         ));
     };
-    let mut args = json!({"cwd": cwd, "policy": requested_policy(policy)});
+    // The launch declares what the Session is for and the label a picker
+    // shows: the job's own name (#1421).
+    let mut args = json!({"cwd": cwd, "policy": requested_policy(policy), "origin": "automation", "title": job.name});
     if let Some(agent) = agent_id.as_ref() {
         args["agent"] = json!(agent);
     }

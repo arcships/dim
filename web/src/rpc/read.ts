@@ -215,7 +215,7 @@ export function readSummaries(value: unknown): SessionSummary[] {
     const source = obj(item, at)
     const preview = optStr(source, "preview", at)
     const origin = optStr(source, "origin", at)
-    if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown") fail(`${at}.origin`, "client, acp, internal or unknown")
+    if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown" && origin !== "automation") fail(`${at}.origin`, "client, acp, internal, unknown or automation")
     const parentSessionId = optStr(source, "parentSessionId", at)
     return {
       ...readSessionTitle(source, at),

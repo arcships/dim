@@ -1,15 +1,4 @@
-//! The permission preset, sharing the Settings pickers.
-//!
-//! ```text
-//! Permissions
-//! > Read only        reads only; writes and commands are refused
-//!   Workspace write  writes inside the workspace; asks outside it
-//!   Full access      no path limits; tools run without asking
-//!   Command rules    ›
-//!   Process isolation  Settings ›
-//! ```
-//!
-//! Permission is the preset (ADR 018). Process isolation stays in Settings.
+//! Session permission presets and links to user-wide settings.
 
 use dim_agent_types::{PermissionPolicy, PermissionPreset};
 
@@ -20,61 +9,95 @@ use crate::ui::prompts::Effect;
 use crate::ui::terminal::KeyEvent;
 use crate::ui::theme::Palette;
 
-const HINT: &str = "↑↓/Tab move · Enter apply · Esc close";
-
 pub struct ApprovalsPanel {
     list: ListPanel,
-    policy: PermissionPolicy,
+    preset: PermissionPreset,
 }
 
 impl ApprovalsPanel {
     pub fn new(policy: &PermissionPolicy) -> Self {
         let mut panel = Self {
-            list: ListPanel::new("Permissions", HINT, "", "", "", false).without_filter(),
-            policy: policy.clone(),
+            list: ListPanel::new("Permissions", "", "", "", "", false)
+                .without_filter()
+                .with_inline_rows()
+                .with_section_headings(),
+            preset: policy.preset,
         };
         panel.refresh();
         panel
     }
 
     pub fn set_policy(&mut self, policy: &PermissionPolicy) {
-        self.policy = policy.clone();
+        self.preset = policy.preset;
         self.refresh();
     }
 
     fn refresh(&mut self) {
-        let current = self.policy.preset;
-        let items = PRESETS
-            .into_iter()
-            .map(|preset| {
+        let current = self.preset;
+        let selected = self.list.selected_id();
+        let items = std::iter::once(Item::heading("Permission mode"))
+            .chain(PRESETS.into_iter().map(|preset| {
+                let marker = if preset == current { "(*)" } else { "( )" };
                 Item::new(
                     preset_name(preset),
-                    preset_label(preset),
-                    if preset == current { "current" } else { "" },
+                    format!("{marker} {}", preset_label(preset)),
+                    "",
                 )
-            })
+            }))
             .chain([
+                Item::heading("Related settings"),
                 Item::new("rules", "Command rules", "›"),
-                Item::new("isolation", "Process isolation", "Settings ›"),
+                Item::new("isolation", "Process isolation", "›"),
             ])
             .collect::<Vec<_>>();
-        let notes = PRESETS
-            .into_iter()
-            .map(|preset| format!("{}: {}", preset_label(preset), consequence(preset)))
-            .chain(std::iter::once(
-                "The preset fixes the path boundary.".to_owned(),
-            ))
-            .collect();
-        self.list = ListPanel::new("Permissions", HINT, "", "", "", false)
-            .without_filter()
-            .with_notes(notes);
-        self.list.set_items(Ok(items), Some(preset_name(current)));
+        self.list.set_items(
+            Ok(items),
+            Some(selected.as_deref().unwrap_or(preset_name(current))),
+        );
+        self.focus_hint();
+    }
+
+    fn focus_hint(&mut self) {
+        let selected = self.list.selected_id();
+        let (action, note) = match selected.as_deref() {
+            Some("rules") => (
+                "open",
+                "User-wide command rules. Allow skips asks, never denials.".to_owned(),
+            ),
+            Some("isolation") => (
+                "open",
+                "Opens Settings; user-wide, for new processes; independent of permission mode."
+                    .to_owned(),
+            ),
+            name => {
+                let preset = PRESETS
+                    .into_iter()
+                    .find(|preset| Some(preset_name(*preset)) == name)
+                    .expect("permission rows name a preset");
+                (
+                    if preset == self.preset {
+                        "keep mode"
+                    } else {
+                        "use mode"
+                    },
+                    format!(
+                        "Current session; remembered for new sessions. {}",
+                        consequence(preset)
+                    ),
+                )
+            }
+        };
+        self.list
+            .set_hint(format!("↑↓/Tab move · Enter {action} · Esc close"));
+        self.list.set_notes(vec![note]);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        match self.list.handle_key(key) {
+        let event = self.list.handle_key(key);
+        self.focus_hint();
+        match event {
             Event::Close => Effect::Close,
-            Event::Pick(id) => match id.as_str() {
+            Event::Pick { id, .. } => match id.as_str() {
                 "rules" => Effect::OpenArea {
                     area: Area::Permissions,
                     note: None,
@@ -111,8 +134,12 @@ fn preset_label(preset: PermissionPreset) -> &'static str {
 
 fn consequence(preset: PermissionPreset) -> &'static str {
     match preset {
-        PermissionPreset::ReadOnly => "reads only; writes and commands are refused",
-        PermissionPreset::WorkspaceWrite => "writes inside the workspace; asks outside it",
-        PermissionPreset::FullAccess => "no path limits; tools run without asking",
+        PermissionPreset::ReadOnly => "Writes and commands denied; external reads may ask.",
+        PermissionPreset::WorkspaceWrite => {
+            "Workspace writes allowed; commands, network and ungranted outside access usually ask."
+        }
+        PermissionPreset::FullAccess => {
+            "Skips preset approval; pending calls on this branch are reevaluated. Explicit denies and isolation remain."
+        }
     }
 }
