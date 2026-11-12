@@ -22,7 +22,7 @@ export const useSessionsStore = defineStore("sessions", () => {
   const workspaces = computed<Workspace[]>(() => {
     const groups = new Map<string, SessionSummary[]>()
     for (const session of summaries.value) {
-      if (session.origin === "internal") continue
+      if (session.origin === "internal" || session.origin === "automation") continue
       const group = groups.get(session.cwd)
       if (group === undefined) groups.set(session.cwd, [session])
       else group.push(session)

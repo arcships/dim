@@ -580,6 +580,7 @@ async fn v40_output_identity_upgrade_is_atomic_and_directory_reads_do_not_audit_
         ] {
             connection.execute(&format!("DELETE FROM {table} WHERE index_id NOT IN ('input/v1','tool/v1','exec/v1','collaboration/v1')"),[]).unwrap();
         }
+        without_automation_origin(&connection);
         connection.execute_batch("DROP TABLE agent_store_format;CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 39));INSERT INTO agent_store_format VALUES(39)").unwrap();
         let body: String = connection
             .query_row(

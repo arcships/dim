@@ -35,7 +35,7 @@ export type SessionSummary = SessionTitle & {
   running: boolean
   sequence: number
   preview?: string
-  origin?: "client" | "acp" | "internal" | "unknown"
+  origin?: "client" | "acp" | "internal" | "unknown" | "automation"
   parentSessionId?: string
   /** Unix milliseconds of the last main-branch event. */
   updatedAt: number

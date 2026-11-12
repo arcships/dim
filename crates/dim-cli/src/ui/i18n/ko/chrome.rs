@@ -563,6 +563,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이라 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이고, 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이며(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}), 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중입니다(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}). 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
         }
