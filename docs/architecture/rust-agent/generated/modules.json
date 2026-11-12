@@ -37646,6 +37646,13 @@
     },
     {
       "from": "dim_cli::session",
+      "to": "dim_cli::client",
+      "references": [
+        "path crate::client::resume_failure"
+      ]
+    },
+    {
+      "from": "dim_cli::session",
       "to": "dim_cli::composer",
       "references": [
         "path Draft",
@@ -38028,6 +38035,8 @@
       "to": "dim_cli::client",
       "references": [
         "path client",
+        "path client::resume_can_succeed",
+        "path client::resume_failure",
         "path client::web_hint",
         "use crate::client"
       ]
@@ -47034,6 +47043,7 @@
         "path Update::Runtimes",
         "path Update::Skills",
         "path Update::Snapshot",
+        "path Update::StartupFailed",
         "path Update::SuggestionMethods",
         "path Update::SuggestionOffer",
         "path Update::SuggestionSetting",

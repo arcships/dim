@@ -244,6 +244,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Déconnecté; brouillon conservé. Quitter et reprendre la session."
         }
+        "Cannot open this Session; draft kept." => {
+            "Impossible d'ouvrir cette session; brouillon conservé."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Déconnecté; brouillon conservé. Quitter et lancer: {command}"
         }

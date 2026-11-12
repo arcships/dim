@@ -204,6 +204,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "連線已中斷，草稿已保留。請離開後繼續此工作階段。"
         }
+        "Cannot open this Session; draft kept." => "無法開啟此工作階段，草稿已保留。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "連線已中斷，草稿已保留。請離開後執行：{command}"
         }

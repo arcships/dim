@@ -1387,8 +1387,12 @@ pub enum Update {
     Failed(String),
     /// Startup failed; show the error and exit nonzero, except that an
     /// invocation's first message stays in the draft and the interface
-    /// continues.
-    StartupFailed(String),
+    /// continues. `resumable` is false when running the command again cannot
+    /// open the Session, so the interface offers no retry.
+    StartupFailed {
+        message: String,
+        resumable: bool,
+    },
     /// The App Server asked this interface to leave (`ui.shutdown`); the
     /// Session goes on without it.
     Shutdown {

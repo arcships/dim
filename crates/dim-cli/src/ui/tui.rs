@@ -1015,6 +1015,10 @@ struct App {
     /// The adopted model and its reasoning effort, once the session exists.
     label: Option<ModelLabel>,
     failure: Option<String>,
+    /// Whether running the same command again could open the Session this
+    /// failure left; false only for a Session the daemon refuses for its
+    /// protocol version, which no run of this client opens.
+    failure_resumable: bool,
     exit_code: Option<i32>,
     failure_committed: bool,
     planner: StreamPlanner,
@@ -1443,6 +1447,7 @@ impl App {
             snapshot: None,
             label: None,
             failure: None,
+            failure_resumable: true,
             exit_code: None,
             failure_committed: false,
             planner: StreamPlanner::new(),
@@ -2822,8 +2827,9 @@ impl App {
                 self.notices.push(message);
                 self.restore_unsent();
             }
-            Update::StartupFailed(message) => {
+            Update::StartupFailed { message, resumable } => {
                 self.failure = Some(message);
+                self.failure_resumable = resumable;
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
@@ -2936,7 +2942,11 @@ impl App {
                 return Outcome::Exit(0);
             }
             if key.code == KeyCode::Enter {
-                self.set_notice(t("Disconnected; draft kept. Exit and resume this Session."));
+                self.set_notice(if self.failure_resumable {
+                    t("Disconnected; draft kept. Exit and resume this Session.")
+                } else {
+                    t("Cannot open this Session; draft kept.")
+                });
             } else if key.code == KeyCode::Esc {
                 self.prompt = None;
             } else if self.prompt.is_none() {
@@ -5322,25 +5332,34 @@ impl App {
             ]);
             self.record(Block::Failure(message));
             frame.commits.push(text);
-            let resume = if self.session_id.is_empty() {
-                "dimcode".to_owned()
+            // A Session the daemon refuses for its protocol version is refused
+            // again by every run of this client, so no command is offered.
+            let status = if self.failure_resumable {
+                let resume = if self.session_id.is_empty() {
+                    "dimcode".to_owned()
+                } else {
+                    format!("dimcode --resume {}", self.session_id)
+                };
+                Block::Status {
+                    text: tf(
+                        "Disconnected; draft kept. Exit and run: {command}",
+                        &[("command", &resume)],
+                    ),
+                    tone: Tone::Muted,
+                }
             } else {
-                format!("dimcode --resume {}", self.session_id)
-            };
-            let block = Block::Status {
-                text: tf(
-                    "Disconnected; draft kept. Exit and run: {command}",
-                    &[("command", &resume)],
-                ),
-                tone: Tone::Muted,
+                Block::Status {
+                    text: t("Cannot open this Session; draft kept.").to_owned(),
+                    tone: Tone::Muted,
+                }
             };
             frame.commits.push(chunk(&render_block(
-                &block,
+                &status,
                 width,
                 &self.palette,
                 &self.markdown,
             )));
-            self.record(block);
+            self.record(status);
         }
 
         let mut live = tail;
@@ -16140,6 +16159,36 @@ mod tests {
             "upstream 503",
         ] {
             assert!(expanded.contains(line), "{line:?} missing: {expanded}");
+        }
+    }
+
+    /// A Session the daemon refuses for its protocol version is refused again
+    /// by every run of this client, so the failure block and the Enter notice
+    /// offer no command to run it.
+    #[test]
+    fn a_refused_protocol_version_offers_no_resume_command() {
+        for (resumable, offered) in [(true, true), (false, false)] {
+            let mut drawn = Drawn::new((100, 40), None, true);
+            drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
+            drawn.app.apply(Update::StartupFailed {
+                message: "Session was created by protocol version 5; this connection speaks 4"
+                    .into(),
+                resumable,
+            });
+            drawn.draw();
+            let shown = drawn_text(&mut drawn);
+            assert_eq!(shown.contains("Exit and run:"), offered, "{shown}");
+            assert_eq!(shown.contains("dimcode --resume s1"), offered, "{shown}");
+            drawn.key(KeyCode::Enter);
+            let notice = drawn_text(&mut drawn);
+            assert_eq!(
+                notice.contains("Exit and resume this Session."),
+                offered,
+                "{notice}"
+            );
+            if !offered {
+                assert!(notice.contains("Cannot open this Session"), "{notice}");
+            }
         }
     }
 }
