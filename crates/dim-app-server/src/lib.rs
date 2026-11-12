@@ -50,6 +50,7 @@ use agents::{AgentIndex, AgentsPlugin};
 pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
 use collaboration::CollaborationPlugin;
 use connection::{ConnectionHub, ConnectionPlugin, RpcPlugin};
+pub use control::{ProcessActivity, ProcessHold};
 use control::{ServerControl, ServerControlPlugin};
 use dim_agent_runtime::{
     Agent, AgentBuilder, AgentError, Modules, SessionConfig, StartupProgress, register_part,
@@ -1329,6 +1330,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     };
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
+    register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
     register::<storage::SessionStore>(catalog, None);
     register::<worktrees::ManagedWorktrees>(catalog, None);
@@ -1369,6 +1371,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     for name in [
         "callChannel",
         "pluginFiles",
+        "processActivity",
         "sessions",
         "sessionMetadata",
         "auxiliaryModel",

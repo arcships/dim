@@ -500,6 +500,24 @@ async fn unknown_keeps_the_delivery_unsettled_and_the_count_persists() {
         scheduled_inputs(&mut client, &session).await.is_empty(),
         "the delivery wrote nothing"
     );
+    client
+        .rpc("plugin.disable", json!({"name": "Scheduler"}))
+        .await
+        .unwrap();
+    let refused = client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        dim_client::app_error(&refused),
+        Some("daemon_busy"),
+        "{refused}"
+    );
+    client
+        .rpc("plugin.enable", json!({"name": "Scheduler"}))
+        .await
+        .unwrap();
+    wait_attempts(home.path(), run_id, 2).await;
 
     // The answer carried no fact, so the record stays unsettled and a new
     // pass counts the next attempt.
@@ -508,9 +526,9 @@ async fn unknown_keeps_the_delivery_unsettled_and_the_count_persists() {
     server.join().await.unwrap();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let client = support::connect(&server).await;
-    let after_second = wait_attempts(home.path(), run_id, 2).await;
+    let after_second = wait_attempts(home.path(), run_id, 3).await;
     assert_eq!(after_second["state"], "delivering", "{after_second}");
-    assert_eq!(after_second["attempts"], 2, "{after_second}");
+    assert_eq!(after_second["attempts"], 3, "{after_second}");
 
     drop(client);
     server.shutdown();
@@ -594,8 +612,10 @@ async fn the_fifth_answer_settles_lost_and_an_exhausted_budget_needs_no_lookup()
         "no window wrote an input"
     );
 
-    drop(client);
-    server.shutdown();
+    client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap();
     server.join().await.unwrap();
 }
 
@@ -1188,6 +1208,18 @@ async fn legacy_non_terminal_deliveries_survive_retention_as_written() {
     assert_eq!(runs.len(), 103, "{runs:?}");
     drop(client);
     server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    client
+        .rpc("plugin.disable", json!({"name": "Scheduler"}))
+        .await
+        .unwrap();
+    client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap();
     server.join().await.unwrap();
 }
 

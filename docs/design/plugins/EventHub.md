@@ -6,6 +6,12 @@ EventHub hands events from plugins and other producers to the Sessions that shou
 
 **Routing principle.** Inputs whose purpose is delivery, not immediate interaction, go through EventHub. The operator's own input (`session.submit` from the TUI, web or ACP) stays the direct path it is today: it needs structured, immediate feedback, and a delivered event does not expect an answer in the conversation.
 
+The process part declares the data service
+[`processActivity`](../../../crates/dim-app-server/README.md#process-activity).
+Publish acceptance retains admission through the owned publish-to-completion task,
+including when its caller leaves. Subscription mutations retain admission through
+their writes. The event and subscription formats are unchanged.
+
 ## 1. Structure
 
 ```mermaid
@@ -218,7 +224,7 @@ A deleted Session answers `session_closed`, and a closed but restorable Session 
 
 - EventHub listens to the process notice `agent/session-deleted {agentId, sessionId}` and removes every subscription whose target is that Session, under that Session's lock (3.3). The notice requirement is §9.1. It stays the prompt path.
 - The authoritative state is Agents' own: whether the id has an owner or SessionStore records, which is what `acquire` reads (`crates/dim-app-server/src/agents.rs:832-843`). §9.2 asks Agents for `sessions.exists {sessionId} → {exists}`, a read that never acquires or restores: `false` means the Session was deleted, and a closed, restorable Session is `true`.
-- EventHub reads it in two places: once its service is provided, in the generation, for each Session its stored subscriptions target, at most eight reads at a time, and a reload ends that task; and once after a delivery fails `session_closed`. A `false` removes that Session's subscriptions in one transaction, under its lock; any error keeps them.
+- EventHub reads it in two places: once its service is provided, in the generation, for each Session its stored subscriptions target, at most eight reads at a time; and once after a delivery fails `session_closed`. Reload stops admitting further reconciliation reads and awaits the reads and subscription writes already admitted. A `false` removes that Session's subscriptions in one transaction, under its lock; any error keeps them.
 - A notice missed while EventHub was off is therefore repaired at the next apply, or at the first failed delivery. A delivery to a dead subscription in between fails `session_closed`, and `eventhub.subscriptions` shows the last failure. That is the repair path's cost, not a lost subscription left behind.
 
 ## 4. Timing and conflicts

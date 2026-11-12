@@ -423,8 +423,6 @@ pub enum Command {
         expected_revision: String,
         policy: SubagentModelPolicy,
     },
-    /// Install the offered version (the update dialog's "Update now").
-    UpgradeInstall(crate::update::Install),
 }
 
 /// One management area: an owner's management methods, drawn by the native
@@ -1275,11 +1273,6 @@ pub enum Update {
     SubmitNotSent(String),
     /// A newer version the user has not skipped, once per start.
     Upgrade(crate::update::Offer),
-    /// What installing the offered version came to.
-    UpgradeInstalled {
-        version: String,
-        result: Result<(), String>,
-    },
     Models(Result<ModelList, String>),
     EffortChoices(Result<crate::configure::EffortChoices, String>),
     /// A catalog `models()` asked `provider.refresh` to fill holds models

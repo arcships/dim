@@ -1343,7 +1343,7 @@ impl SqliteStorage {
                 path.display()
             ))
         };
-        let stored_markers = markers(&connection)?;
+        let stored_markers = markers(&connection).unwrap_or_default();
         let format = known_format(&schema(&connection)?, single_marker(&stored_markers))
             .ok_or_else(unsupported)?;
         if stored_markers != [i64::from(format)] {

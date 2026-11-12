@@ -491,20 +491,22 @@ impl ManagedWorktrees {
                 return view;
             }
         }
-        let toplevel = self
-            .git(&root, &["rev-parse", "--show-toplevel"], cancel)
-            .await
-            .ok()
-            .and_then(|text| std::fs::canonicalize(text.trim()).ok());
-        if toplevel.as_deref() != Some(root.as_path()) {
-            view.git_missing = true;
-            return view;
+        match git_unregistered(&root, cancel).await {
+            Ok(true) => {
+                view.git_missing = true;
+                return view;
+            }
+            Ok(false) => {}
+            Err(_) => {
+                view.unknown = true;
+                return view;
+            }
         }
         let Ok(branch) = self
             .git(&root, &["rev-parse", "--abbrev-ref", "HEAD"], cancel)
             .await
         else {
-            view.git_missing = true;
+            view.unknown = true;
             return view;
         };
         let branch = branch.trim().to_owned();
@@ -704,17 +706,20 @@ impl ManagedWorktrees {
                             checked.display()
                         )));
                     }
-                    let registered = git(
-                        &checked,
-                        &["rev-parse", "--show-toplevel"],
-                        &cancel,
-                        GIT_READ_TIMEOUT,
-                    )
-                    .await
-                    .is_ok();
-                    if !registered {
-                        return cleanup_unregistered_root(&repository, &checked, force, &cancel)
+                    match git_unregistered(&checked, &cancel).await {
+                        Ok(true) => {
+                            return cleanup_unregistered_root(
+                                &repository,
+                                &checked,
+                                force,
+                                &cancel,
+                            )
                             .await;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            return Err(AgentError::Storage(error.message().to_owned()));
+                        }
                     }
                     if !force {
                         let status = match git(
@@ -890,6 +895,34 @@ async fn git(
         .map_err(|_| WorktreeError::Git("Git returned non-UTF-8 output".into()))
 }
 
+/// Whether Git definitively answers that `root` is not a worktree of its own.
+/// A timeout, spawn failure, cancellation or any other Git error is not an
+/// answer: the caller must not fall back to deleting the directory.
+async fn git_unregistered(root: &Path, cancel: &CancellationToken) -> Result<bool, WorktreeError> {
+    let output = git_output(
+        root,
+        &["rev-parse", "--show-toplevel"],
+        cancel,
+        GIT_READ_TIMEOUT,
+    )
+    .await?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let toplevel = std::fs::canonicalize(text.trim()).ok();
+        return Ok(toplevel.as_deref() != Some(root));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if stderr.contains("not a git repository") || stderr.contains("not a work tree") {
+        return Ok(true);
+    }
+    Err(WorktreeError::Git(if stderr.is_empty() {
+        format!("Git rev-parse failed with {}", output.status)
+    } else {
+        stderr.to_owned()
+    }))
+}
+
 /// The exit code of one Git call, for the predicates that use it as the
 /// answer (`show-ref --verify --quiet`).
 async fn git_status(
@@ -1025,6 +1058,9 @@ async fn cleanup_unregistered_root(
     force: bool,
     cancel: &CancellationToken,
 ) -> Result<(), AgentError> {
+    if cancel.is_cancelled() {
+        return Err(AgentError::Storage("the operation was interrupted".into()));
+    }
     let resolved = tokio::fs::canonicalize(root)
         .await
         .map_err(|error| AgentError::Storage(error.to_string()))?;
@@ -1047,6 +1083,9 @@ async fn cleanup_unregistered_root(
             "{} is no longer a Git worktree and is not empty; --force removes it",
             root.display()
         )));
+    }
+    if cancel.is_cancelled() {
+        return Err(AgentError::Storage("the operation was interrupted".into()));
     }
     if !empty {
         tokio::fs::remove_dir_all(root)

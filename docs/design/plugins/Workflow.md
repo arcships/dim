@@ -44,6 +44,14 @@ A run spans Sessions, so runs belong to the process ([ADR 002](../../adr/002-plu
 | `Workflow` | Process (control node) | Existing `sessions`, `settings`, `pluginFiles`, `workflowFiles` | Run engine; `workflowRuns` and management namespace `workflow` |
 | `WorkflowSession` | Session, installed when enabled | C4 tool contract, creation configuration; declared `workflowRuns` and `toolRegistry` dependencies (§1.1) | Registers `workflow` with `toolRegistry`; handler refuses when `interactive === false` |
 
+The process part also declares the data service
+[`processActivity`](../../../crates/dim-app-server/README.md#process-activity).
+It holds admission before accepting a run and transfers protection into the owned
+stage/report task before returning acceptance. Restore, management/tool calls and
+retention writes participate as well. No run-record field changes. A runtime crash
+does not certify native work as settled; unreleased admission follows the owner
+contract's fail-closed behavior.
+
 **Existing contracts:** [C4 tools](../session-typescript.md), [S2 sessions](../appserver/sessions-service.md), [Settings](../appserver/settings-service.md), [method admission](../contracts/session-boundary.md), [pluginFiles](../../../crates/dim-app-server/README.md#trusted-plugin-storage). **Plugin-owned contracts specified here:** `dim.workflow/v1`, the `workflow` tool, `workflowRuns.call`, management namespace `workflow`, Settings source `workflow`, stage/report marker text and run records. Project/package file access is delivered by #265; the concrete package binding is §1.3. No `PluginContents` service is assumed.
 
 ### 1.1 Existing bindings and delivery requirements

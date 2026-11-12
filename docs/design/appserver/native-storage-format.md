@@ -24,6 +24,7 @@ v44 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inp
 其他表以 `REFERENCES agent_sessions(session_id)` 指向它，改名会把这些表的存储 SQL 改写成临时名，因此步骤内打开 `legacy_alter_table`，启动事务在关闭外键约束的状态下运行，提交前用 `PRAGMA foreign_key_check` 补做这次事务未强制的检查。
 
 步骤不回填：升级前由启动创建的 `internal` 行与 Workflow 阶段、丢失回复的空 Session 无法区分，改标 `automation` 会凭空造出库中没有的来源，这些行保持 `internal`、默认不列出。
+
 ## v41：合并 child tool-call 与 Timeline 索引格式
 
 main 已使用 v37 表示 child tool-call 事件信封、v38 表示 session_owners 允许协议4；本分支先前的 v37–v40 使用独立的成员/全文/数组/身份索引格式，不能只按编号判定两者兼容。

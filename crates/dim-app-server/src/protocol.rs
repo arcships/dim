@@ -521,8 +521,9 @@ pub struct Shutdown {
     #[serde(default)]
     pub force: bool,
     /// Refuse (`daemon_busy`) instead of stopping while another client
-    /// connection is open or a Session has an attached client or a running
-    /// turn. Advertised as `daemon.shutdown.ifIdle`.
+    /// connection is open or a Session has an attached client, accepted
+    /// branch work or a runtime activity hold. Advertised as
+    /// `daemon.shutdown.ifIdle`.
     #[serde(default)]
     pub if_idle: bool,
 }

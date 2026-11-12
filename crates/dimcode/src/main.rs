@@ -71,9 +71,12 @@ fn main() {
                 global: global.into(),
             })
         });
-        if let Err(error) =
-            dim_app_server::cli::process_entry(std::env::args().skip(2), provider, install)
-        {
+        if let Err(error) = dim_app_server::cli::process_entry(
+            std::env::args().skip(2),
+            provider,
+            install,
+            dim_cli::hold_installation,
+        ) {
             eprintln!("Error: {error}");
             std::process::exit(1);
         }
