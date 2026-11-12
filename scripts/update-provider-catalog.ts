@@ -565,6 +565,13 @@ function isFilteredModel(model) {
 }
 
 function applyLocalModelOverrides(providerId, models, previous) {
+  if (providerId === "kimi-for-coding") {
+    return models.map((model) => {
+      const context = model.limit?.context ?? model.contextWindow
+      if (model.id.trim() !== "k3.1-pro" || !Number.isSafeInteger(context) || context <= 262144) return model
+      return { ...model, limit: { ...model.limit, context: 262144 } }
+    })
+  }
   if (providerId === "stepfun") {
     const failClosedRemoteModels = models.map((model) => ({
       ...model,

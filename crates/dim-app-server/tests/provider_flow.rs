@@ -3820,6 +3820,7 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
     assert_eq!(catalog.version, refreshed.version);
     assert_eq!(catalog.models.len(), 1);
     assert_eq!(catalog.models[0].id, "k3.1-pro");
+    assert_eq!(catalog.models[0].capabilities.context_window, Some(262144));
     assert!(catalog.models[0].missing_limits.is_empty());
 
     // A driver that cannot list keeps what the user declared.

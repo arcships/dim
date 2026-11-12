@@ -75,7 +75,12 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   assert.match(empty.stderr, /sync would remove every bundled model/);
   assert.equal(await readFile(path, "utf8"), initialCatalog);
 
-  const freshModels = [old.models.find((model) => model.modelId === defaultId).metadata.raw, { id: "new-model" }];
+  const kimiPro = old.models.find((model) => model.modelId === "k3.1-pro").metadata.raw;
+  const freshModels = [
+    old.models.find((model) => model.modelId === defaultId).metadata.raw,
+    { ...kimiPro, limit: { ...kimiPro.limit, context: 1048576 } },
+    { id: "new-model" },
+  ];
   await writeFile(upstreamFile, JSON.stringify({ api: "https://upstream.invalid/v1", models: freshModels }));
   execFileSync(process.execPath, sync, { cwd, env });
   const generated = await readFile(path, "utf8");
@@ -84,7 +89,8 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   assert.notEqual(updatedAt, previous.updatedAt);
   assert.match(generated, /\n        {"modelId":"new-model",/);
   assert.deepEqual({ ...refreshed, models: old.models }, old);
-  assert.deepEqual(refreshed.models.map((model) => model.modelId), [defaultId, "new-model"]);
+  assert.deepEqual(refreshed.models.map((model) => model.modelId), [defaultId, "k3.1-pro", "new-model"]);
+  assert.equal(refreshed.models[1].capabilities.contextWindow, 262144);
   assert.deepEqual(providers.filter((provider) => provider !== refreshed), previous.providers.filter((provider) => provider !== old));
   assert.deepEqual((await readdir(join(cwd, resources))).sort(), ["default-catalog.json", "reasoning-off-overrides.json"]);
   assert.deepEqual(await readdir(join(cwd, "scripts")), ["update-provider-catalog.ts"]);

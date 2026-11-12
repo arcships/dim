@@ -55,6 +55,8 @@ The bundled catalog owns provider settings such as authentication, adapter, and
 the default model from the refreshed model list. The script's `remoteProviders` table can
 keep a provider's base URL, default model, and curated models local. When onboarding an
 upstream-backed provider, add its definition to the catalog and its policy to that table.
+The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus subscribers.
+The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
 
 Sync applies the existing reasoning overrides and replaces the complete catalog after
 validation. Sync rejects a candidate that removes every bundled model from a provider
