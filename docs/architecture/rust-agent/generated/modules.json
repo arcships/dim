@@ -10447,6 +10447,7 @@
         "path ContextCompactionResult::Cancelled",
         "path ContextPrepareData",
         "path EventDraft",
+        "path EventDraft::new",
         "path EventKind::ContextCompaction",
         "path EventKind::ContextConfigured",
         "path EventKind::ContextPrepare",
@@ -10488,6 +10489,7 @@
         "path PromptChangeReason::Initialize",
         "path PromptChangeReason::Refresh",
         "path PromptChangedData",
+        "path PromptDelivery::System",
         "path PromptReference",
         "path ToolSourceVersion"
       ]
@@ -14115,7 +14117,8 @@
         "path recovery::Projection",
         "path recovery::Projection::default",
         "path recovery::Projection::restore",
-        "path recovery::SCHEMA"
+        "path recovery::SCHEMA",
+        "path recovery::delivered"
       ]
     },
     {
@@ -14231,6 +14234,7 @@
         "path EventKind::BranchStart",
         "path EventKind::ContextScope",
         "path EventKind::Extension",
+        "path EventKind::PromptChanged",
         "path EventKind::PromptConfigureRequest",
         "path EventKind::PromptConfigureResult",
         "path EventKind::TurnEnd",
@@ -14362,6 +14366,7 @@
         "path QuerySelect::Fields",
         "path QuerySpec",
         "path QueryValue",
+        "path QueryValue::Missing",
         "path QueryValue::Value",
         "path TimelineQuery",
         "use dim_agent_runtime::QueryComparison",
@@ -14407,13 +14412,23 @@
     },
     {
       "from": "dim_agent_capabilities::prompt::recovery",
+      "to": "dim_agent_types::input",
+      "references": [
+        "path input"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt::recovery",
       "to": "dim_agent_types::prompt",
       "references": [
         "path ContextConfiguredData",
         "path ContextScopeStatus::Ended",
         "path ContextScopeStatus::Started",
+        "path PromptChange",
         "path PromptChange::Revoke",
         "path PromptChange::Set",
+        "path PromptChangeReason::Refresh",
+        "path PromptChangedData",
         "path PromptDelivery::System",
         "path PromptEntry",
         "path PromptReference",

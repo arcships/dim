@@ -271,7 +271,7 @@ const V45_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 30] = [
+const UPGRADES: [(u32, &[&str]); 31] = [
     (
         13,
         &[
@@ -383,6 +383,12 @@ const UPGRADES: [(u32, &[&str]); 30] = [
     (41, &[]),
     // #1413: checked withdrawal candidates, unreadable by v42.
     (42, &[]),
+    // v44: one optional field on one event kind (`prompt/changed` names its
+    // delivery inputs); the marker only. A daemon from before this format does
+    // not decode stored events at startup, so it would accept a store holding
+    // the field and fail on the first `prompt/changed` it decodes; the marker
+    // makes it refuse the store at open instead.
+    (43, &[]),
     // #1451: the managed worktree's last-used time; the column only, and a
     // store this daemon rewrites keeps `NULL` for rows it never recorded.
     (44, &[]),

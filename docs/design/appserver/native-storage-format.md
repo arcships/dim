@@ -10,6 +10,12 @@
 - 精确结构门禁改为 v45；v44 结构加 marker 仍可升级。写有 v45 的库被 v44 程序拒绝。
 - 不改变其他表、索引或业务事实；[托管 Worktree](../worktree-management.md) 的其余状态仍由 Git 与这两张记录表承担。
 
+## v44：提示变更携带其投递输入
+
+v44 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inputs`，列出与它同一批次写入、用于投递该变更的 `input/message` 事件 id。没有投递块的变更（System 内容、以及写在此字段出现之前的事实）不写该字段，读出为空列表。
+
+不改表、索引或行。之所以要 bump marker：`PromptChangedData` 拒绝未知字段，而自 #1409 起启动不再解码历史事件，所以旧 daemon 会先接受带该字段的存储、直到会话中第一次解码 `prompt/changed`（恢复的后缀重放或实时订阅）才失败。marker 让它在这一步之前就拒读。降级是单向的：v43 及更早的程序拒读 v44。
+
 ## v42：`agent_sessions` 接受 automation 来源
 
 [Session 分类](session-classification.md)（#1421）新增第五个创建来源 `automation`。
@@ -18,7 +24,6 @@
 其他表以 `REFERENCES agent_sessions(session_id)` 指向它，改名会把这些表的存储 SQL 改写成临时名，因此步骤内打开 `legacy_alter_table`，启动事务在关闭外键约束的状态下运行，提交前用 `PRAGMA foreign_key_check` 补做这次事务未强制的检查。
 
 步骤不回填：升级前由启动创建的 `internal` 行与 Workflow 阶段、丢失回复的空 Session 无法区分，改标 `automation` 会凭空造出库中没有的来源，这些行保持 `internal`、默认不列出。
-
 ## v41：合并 child tool-call 与 Timeline 索引格式
 
 main 已使用 v37 表示 child tool-call 事件信封、v38 表示 session_owners 允许协议4；本分支先前的 v37–v40 使用独立的成员/全文/数组/身份索引格式，不能只按编号判定两者兼容。
@@ -70,7 +75,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v45**, with conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records with the directory's last-used time, source-owned `settings_documents`,
+The current native format is **v45**, with conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records with the directory's last-used time, `prompt/changed` events naming their delivery inputs, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -83,7 +88,7 @@ requires the exact v45 SQL schema and a single
 format marker of 45 before writable PRAGMAs, or the exact v44, v43, v42, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
 which the same startup transaction upgrades in place to v45 one step after
-another ([#1451 v45 last-used time](#v45worktree-目录的最后使用时间), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
+another ([#1451 v45 last-used time](#v45worktree-目录的最后使用时间), [v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
