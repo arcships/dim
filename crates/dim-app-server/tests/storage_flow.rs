@@ -402,7 +402,7 @@ const V33_ADDITIONS: &[&str] = &[
 ];
 /// The same tables from v42, whose `worktree_directories` carries the
 /// last-used time; `schema_of` returns the schema a format actually has.
-const V33_ADDITIONS_V44: &[&str] = &[
+const V33_ADDITIONS_V45: &[&str] = &[
     "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, last_used_at_ms INTEGER, PRIMARY KEY (repository, root))",
     "CREATE TABLE session_worktrees (session_id TEXT NOT NULL REFERENCES agent_sessions(session_id), repository TEXT NOT NULL, root TEXT NOT NULL, subtree TEXT NOT NULL, PRIMARY KEY (session_id, repository, root), FOREIGN KEY (repository, root) REFERENCES worktree_directories(repository, root))",
     "CREATE INDEX session_worktrees_by_directory ON session_worktrees(repository, root, session_id)",
@@ -491,8 +491,8 @@ fn schema_of(version: u32) -> Vec<String> {
         .chain(V31_REPLACED.iter().filter(|_| version == 31))
         .chain(V31_ADDITIONS.iter().filter(|_| version >= 31))
         .chain(V32_ADDITIONS.iter().filter(|_| version >= 32))
-        .chain(V33_ADDITIONS.iter().filter(|_| (33..44).contains(&version)))
-        .chain(V33_ADDITIONS_V44.iter().filter(|_| version >= 44))
+        .chain(V33_ADDITIONS.iter().filter(|_| (33..45).contains(&version)))
+        .chain(V33_ADDITIONS_V45.iter().filter(|_| version >= 45))
         .chain(V35_ADDITIONS.iter().filter(|_| version >= 35))
         .chain(V36_ADDITIONS.iter().filter(|_| version >= 36))
         .chain(V37_ADDITIONS.iter().filter(|_| version >= 37))
@@ -629,7 +629,7 @@ fn rows(connection: &Connection, table: &str) -> Vec<String> {
         "agents" => "agent_id, profile, is_default",
         "agent_sessions" => "session_id, config, created_at_ms",
         "timeline_events" => "session_id, branch_id, sequence, last_sequence, kind, body, event_id",
-        // v44 adds the nullable last-used time; the identity rows are the
+        // v45 adds the nullable last-used time; the identity rows are the
         // facts these upgrade tests compare.
         "worktree_directories" => "repository, root",
         _ => "*",
@@ -8746,6 +8746,7 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
         (41, false),
         (42, false),
         (43, false),
+        (44, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();

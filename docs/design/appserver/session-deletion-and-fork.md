@@ -755,7 +755,7 @@ Missing Sessions fail as Closed; encoding, invalid path and storage failures lea
 The operation shares the existing delete/fork ownership gate, so it waits for an in-progress deletion and
 cannot recreate a deleted Session's association. Creation rollback removes associations in its row transaction too.
 
-A directory record also carries the time its last association was written or removed (native format v44).
+A directory record also carries the time its last association was written or removed (native format v45).
 Deletion updates it in the same pass, before the association rows go, so a cleanup can age an unassociated
 candidate from the moment it became one. The same ownership gate covers the Session creation that writes a
 managed worktree's directory and association in one transaction, and the removal that re-checks the directory

@@ -546,8 +546,8 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             } else {
                 ""
             };
-            // v44 adds the directory's last-used time; earlier formats lack it.
-            let worktree_time = if (33..44).contains(&version) {
+            // v45 adds the directory's last-used time; earlier formats lack it.
+            let worktree_time = if (33..45).contains(&version) {
                 "ALTER TABLE worktree_directories DROP COLUMN last_used_at_ms;"
             } else {
                 ""
