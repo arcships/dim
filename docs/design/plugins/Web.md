@@ -10,7 +10,7 @@ Web is a Session plugin that gives the model `web_search` and `web_fetch`, two t
 flowchart LR
   subgraph PROC["Process"]
     Settings["Settings: web business source"]
-    Managed["ManagedProviders: account web_search"]
+    Managed["managedSearch: account web_search"]
   end
   subgraph SESS["Session"]
     Web["Web: tools web_search, web_fetch"]:::new
@@ -30,11 +30,11 @@ flowchart LR
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
 | `web` | Process, when a home exists | `settings`, `partRegistry` | Registers the `web` Settings source and the Session part `Web` |
-| `Web` | Session | `settings`, `toolRegistry`, `managedProviders` | Registers `web_search` and `web_fetch`; owns the Session fetch cache; provides no name |
+| `Web` | Session | `settings`, `toolRegistry`, `managedSearch` | Registers `web_search` and `web_fetch`; owns the Session fetch cache; provides no name |
 
 **Contracts depended on:** the implemented [C4 tool binding](../session-typescript.md), [named Settings/source declarations](../appserver/settings-service.md), [managed provider contract](../../../crates/dim-app-server/README.md#managed-provider-contract), and Permission's existing `network` risk. #150 supplies tools, #166/#175 supply Settings, and #177 supplies Settings events. Web consumes no Session broadcast and does not wait for #168. **Contracts defined here:** the two tools, result formats and the `web` document.
 
-Web is a built-in process row in the App Server. That row registers the `web` Settings source and the Session part; it adds no Web-specific registry or host port. When `searchService` is absent (default) or `{"kind": "dim-oauth"}`, `web_search` delegates the authenticated relay query to `managedProviders` so OAuth tokens stay inside the Rust managed provider; when `searchService` names an explicit adapter such as `brave`, Web queries that adapter directly. Calls read Settings at use time, so the existing events require no additional subscription or cache-invalidation protocol. Non-fatal configuration diagnostics use existing `ToolResult.structuredContent`.
+Web is a built-in process row in the App Server. That row registers the `web` Settings source and the Session part; it adds no Web-specific registry or host port. When `searchService` is absent (default) or `{"kind": "dim-oauth"}`, `web_search` delegates the authenticated relay query to the `managedSearch` data face so OAuth tokens stay inside the managed provider implementation behind it; when `searchService` names an explicit adapter such as `brave`, Web queries that adapter directly. Calls read Settings at use time, so the existing events require no additional subscription or cache-invalidation protocol. Non-fatal configuration diagnostics use existing `ToolResult.structuredContent`.
 
 The search API key is `searchService.apiKey`, a user-only field in Web's Settings source ([settings-service §1.2](../appserver/settings-service.md#12-decision-secrets-belong-to-their-owner)). On Unix, the file-backed profile writes the user document with mode 0600. The native profile stores it as `user/web` in SQLite; its boundary is the product home, created with mode 0700 for a new directory on Unix (Windows inherits the parent DACL). Existing home permissions are preserved, and the database has no separate 0600 guarantee. `userOnly` restricts writes, not local reads: the field is written through the client method `settings.update`, never by Web, and local clients can read it through `settings.read`; remote and paired clients cannot. Web reads it with the document at each call, never keeps it, and never places it in definitions, results, `structuredContent`, diagnostics, errors or logs.
 
@@ -98,7 +98,7 @@ sequenceDiagram
   participant X as ToolExecutor
   participant W as Web handler
   participant S as Settings
-  participant M as ManagedProviders
+  participant M as managedSearch
   participant Q as Search service
   X->>W: execute(ToolCall: query, filters)
   W->>S: read searchService
@@ -122,7 +122,7 @@ sequenceDiagram
   end
 ```
 
-While a Session's Web part is Active, `web_search` is always declared; by default (when `searchService` is absent or `{"kind": "dim-oauth"}`) it uses the signed-in Dim account via `managedProviders`, and fails with `search_unavailable` until a usable account or configured service is available (A3). Changing the service or account sign-in state takes effect at the next call.
+While a Session's Web part is Active, `web_search` is always declared; by default (when `searchService` is absent or `{"kind": "dim-oauth"}`) it uses the signed-in Dim account via `managedSearch`, and fails with `search_unavailable` until a usable account or configured service is available (A3). Changing the service or account sign-in state takes effect at the next call.
 
 ## 4. Timing and conflicts
 
@@ -188,7 +188,7 @@ No Session methods, `managementMethods` or CLI subcommand: protected client conf
 
 ### 6.1 Registration and source
 
-The process row `web` is registered with the App Server when a home exists. Its apply registers the Settings source `web` (user file `web.json`, no project file) and the Session part `Web` with `partRegistry`. Each Session mounts that part. The part injects `settings`, `toolRegistry` and `managedProviders`. Its apply registers cleanup and the two tools, and performs no I/O until a call. The Rust spelling is Appendix G.
+The process row `web` is registered with the App Server when a home exists. Its apply registers the Settings source `web` (user file `web.json`, no project file) and the Session part `Web` with `partRegistry`. Each Session mounts that part. The part injects `settings`, `toolRegistry` and `managedSearch`. Its apply registers cleanup and the two tools, and performs no I/O until a call. The Rust spelling is Appendix G.
 
 The source schema the row registers, with `userOnly` paths `/searchService`, `/allowPrivateHosts` and `/proxyDns`:
 
@@ -218,7 +218,7 @@ The source schema the row registers, with `userOnly` paths `/searchService`, `/a
 }
 ```
 
-Execution follows the tool handler with the call's cancellation token. Every call reads the user-scoped `web` source. A read failure, or a stored document that does not deserialize into the web document, fails the call with `settings_unavailable` and opens no connection. Web does not substitute defaults for that document. When an API-key adapter is configured, the key is `searchService.apiKey`. When `searchService` is absent or `{"kind":"dim-oauth"}`, `web_search` calls `managedProviders` and does not read OAuth tokens.
+Execution follows the tool handler with the call's cancellation token. Every call reads the user-scoped `web` source. A read failure, or a stored document that does not deserialize into the web document, fails the call with `settings_unavailable` and opens no connection. Web does not substitute defaults for that document. When an API-key adapter is configured, the key is `searchService.apiKey`. When `searchService` is absent or `{"kind":"dim-oauth"}`, `web_search` calls `managedSearch` and does not read OAuth tokens.
 
 Settings treats `format: "uri"` as an annotation. Web parses `searchService.endpoint` and `proxy` when constructing an HTTP request, rather than revalidating the Settings document. An unparsable endpoint fails `web_search` with `search_unavailable`. An unparsable proxy, or `proxyDns: true` without a proxy, fails `web_search` with `search_unavailable` or `web_fetch` with `connect_failed`. No connection is attempted, no direct-connection fallback is used, and diagnostics omit configuration values. Web's proxy settings apply to fetches and directly configured search adapters; account-backed search follows the managed provider contract.
 
@@ -243,8 +243,8 @@ The initial source is the user file `web.json`, read at user scope, with no proj
 | Principles §4 rule 4 (no business meaning in core) | No core change; the tools use the generic tool registration contract. |
 | Principles §4 rule 5 (batch) | Not applicable: Web decides from call arguments and configuration, not from events. |
 | Principles §4 rule 6 (context from handed-over events) | Results reach the model only as `step/tool-result` facts written by ToolExecutor. |
-| Principles §4 rule 7 (public events and services only) | Web uses only `toolRegistry`, `managedProviders` and the Settings business source. |
-| Principles §4 rule 8 (requirements to mechanism owners) | Reuse implemented C4, `managedProviders` and Settings bindings; adapter API keys live in Web's own user-only field and account OAuth tokens stay in the Rust managed provider. |
+| Principles §4 rule 7 (public events and services only) | Web uses only `toolRegistry`, `managedSearch` and the Settings business source. |
+| Principles §4 rule 8 (requirements to mechanism owners) | Reuse implemented C4, `managedSearch` and Settings bindings; adapter API keys live in Web's own user-only field and account OAuth tokens stay in the Rust managed provider. |
 | Principles §4 rule 9 (only facts later decisions use) | Web writes no event; its fetch cache is memory only. |
 | Principles §1 (Capability and App Server boundary) | Web is a built-in Session capability. Its code is the App Server process row `web` and the Session part `Web`. It adds no Web-specific host port. |
 | ADR 002 D1 (scope follows state) | Session scope: Web holds no state shared across Sessions. |
@@ -347,7 +347,7 @@ Fake-IP DNS answers remain subject to the default address policy: reserved range
 
 | Field | Type | Default |
 | --- | --- | --- |
-| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` or absent; user-only | absent (uses `dim-oauth` via `managedProviders` when signed in; otherwise `web_search` returns `search_unavailable`) |
+| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` or absent; user-only | absent (uses `dim-oauth` via `managedSearch` when signed in; otherwise `web_search` returns `search_unavailable`) |
 | `allowPrivateHosts` | string[] | `[]` |
 | `proxy` | string (URL) | absent |
 | `proxyDns` | boolean; user-only; requires `proxy` when enabled | `false` |

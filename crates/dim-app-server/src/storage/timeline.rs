@@ -1133,7 +1133,7 @@ impl SessionStore {
     /// ADR 013 D2: records `path` as output owned by `session_id` before the
     /// tool result hands it to the model. A repeated path is a no-op; a
     /// missing Session fails.
-    pub async fn register(&self, session_id: &str, path: PathBuf) -> Result<()> {
+    pub async fn register(&self, session_id: &str, path: String) -> Result<()> {
         self.files
             .register(session_id.to_owned(), path)
             .await
@@ -1141,7 +1141,7 @@ impl SessionStore {
     }
     /// ADR 013 D3: whether `session_id` owns the resolved `path` through
     /// either ownership table.
-    pub async fn owns(&self, session_id: &str, path: PathBuf) -> Result<bool> {
+    pub async fn owns(&self, session_id: &str, path: String) -> Result<bool> {
         self.files
             .owns(session_id.to_owned(), path)
             .await
@@ -1149,7 +1149,7 @@ impl SessionStore {
     }
     /// ADR 013 D3: the Session file directories and output paths the Session
     /// owns.
-    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<PathBuf>> {
+    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<String>> {
         self.files
             .owned_paths(session_id.to_owned())
             .await
@@ -1461,7 +1461,12 @@ impl DynPlugin for SessionStorePlugin {
             files.start();
             ctx.provide_as::<SessionStore>(store.clone())?;
             ctx.provide_as::<WorktreeAssociations>(Arc::new(WorktreeAssociations(store.clone())))?;
+            let face = files::SessionFilesFace(files.clone());
             ctx.provide_as::<SessionFilesHost>(Arc::new(SessionFilesHost(Arc::new(files))))?;
+            ctx.provide_at(
+                host_key("sessionFiles"),
+                Arc::new(face) as Arc<dyn HostDispatch>,
+            )?;
             ctx.provide_at(
                 host_key("sessionMetadata"),
                 Arc::new(metadata::Dispatch(store)) as Arc<dyn HostDispatch>,

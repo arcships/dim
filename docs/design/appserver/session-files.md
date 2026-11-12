@@ -420,10 +420,13 @@ like `session_file_owners`, so output stays readable after the source is deleted
 | `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`, a Session file's directory and each output path |
 
 - `path` is absolute on the Session's resource node, the way `read` resolves it for the Session.
-  `bytes` is the stored length.
+  `bytes` is the stored length. A non-UTF-8 path is refused as `storage` before txn 1: the
+  reply could not carry it, so nothing is written and nothing is owned.
 - `register`, `owns` and `owned_paths` are ADR 013's ownership interface. `register` resolves the
   path and records it before the caller hands it to the model; `owns` answers from both ownership
   tables, and ADR 014 reads it as the session-owned fact for writes.
+- A put is one call message: `content` is base64, so the bytes and their 4/3 expansion must fit
+  the runtime's 16 MiB frame. §10 sets the 11 MiB cap that does.
 - Cancellation is a protocol action: the caller drops the call or sends the bridge's cancel
   request. It takes effect up to txn 2. After that the file is committed and the reply stands.
 - Errors are data, `{code, message}` (§10).
@@ -455,7 +458,7 @@ type; the Rust binding is Appendix A.
 | --- | --- | --- |
 | `not_found` | No Session record with that id, or it was deleted before txn 2. The same code as SessionStore's metadata service ([SessionTitle](../plugins/SessionTitle.md)) | Nothing owned; an abandoned directory is swept |
 | `invalid` | `name` breaks the rule below | Nothing |
-| `too_large` | Content over 16 MiB | Nothing |
+| `too_large` | Content over 11 MiB | Nothing |
 | `node_unavailable` | The FileStorage of the Session's resource node is not reachable. On the control node this means FileStorage is reloading or closed. Retryable | Nothing owned; an abandoned directory is swept |
 | `cancelled` | Cancelled before txn 2, including SessionStore unloading and a later generation's sweep claiming the pending row | Nothing owned; swept |
 | `storage` | SQLite or FileStorage failure, including `Unsynced` (durability unconfirmed) | Nothing owned; swept |
@@ -464,7 +467,7 @@ Limits, and who owns them:
 
 | Limit | Owner | Reason |
 | --- | --- | --- |
-| One file at most 16 MiB | SessionStore | A put is one message, and `replace` holds the content in memory; the bound caps one call's memory |
+| One file at most 11 MiB | SessionStore | A put is one call message and `content` crosses as base64, so the bytes and their 4/3 expansion plus the call envelope must fit the runtime's 16 MiB frame; 11 MiB is the largest whole MiB that does, and it also caps the memory one call holds |
 | `name`: `[A-Za-z0-9._-]{1,64}`, no leading dot, not `auth.json` or `auth.json.lock` in any letter case, and accepted by the node's FileStorage as one path component (Windows device names) | SessionStore | The name becomes a path component under SessionStore's directory. `auth.json` would switch `replace` to FileStorage's account-marker protocol |
 | Content rules (non-empty text, 10 MiB, default `paste.txt`) | Each consumer (Attachments A.2) | Business rules of the feature |
 | No per-Session count or total quota | None | Disk use ends with Session deletion and cleanup (S5c); a quota would need a business owner, and none exists |
@@ -687,7 +690,7 @@ None to the runtime or rutis. Supplements and requirements to other owners:
 5. FileStorage not active: `node_unavailable`; nothing written; SessionStore and Attachments
    stay loaded.
 6. Cancellation before txn 2: nothing owned; the directory is swept. An invalid name (including
-   `AUTH.JSON`) or content over 16 MiB: `invalid` or `too_large`; nothing written.
+   `AUTH.JSON`) or content over 11 MiB: `invalid` or `too_large`; nothing written.
 7. An empty store is created at v15. A disposable v13 store upgrades in place to the exact v15
    schema with every business row unchanged, then reopens as v15. The upgrading open reports
    the upgrade, which the §8 log line comes from; the reopen does not. The branch-only v14 and unknown
@@ -731,21 +734,23 @@ only S5a.
 ## Appendix A. Rust binding
 
 In `dim-agent-capabilities::host`, next to the other host ports, so Attachments depends on no
-App Server type:
+App Server type. This binding is the in-process spelling of §9.1, not a second contract: `path`
+is the same UTF-8 string, `content` is the same bytes without the wire's base64, the reply is
+the `put` reply's fields, and `SessionFileErrorCode::code` is the one spelling of §10's codes:
 
 ```rust
-pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes: u64 }
+pub struct StoredSessionFile { pub file_id: String, pub path: String, pub bytes: u64 }
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
 pub trait SessionFilesService: Send + Sync + 'static {
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
-    fn register(&self, session_id: String, path: PathBuf)
+    fn register(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
-    fn owns(&self, session_id: String, path: PathBuf)
+    fn owns(&self, session_id: String, path: String)
         -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
     fn owned_paths(&self, session_id: String)
-        -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
+        -> Pin<Box<dyn Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>>;
 }
 pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 ```
@@ -756,9 +761,11 @@ pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
 in `<db>.session-files/<fileId>/`. A query failure is an error that denies access.
 `owned_paths` lists the owned file-id directories and output paths.
 
-`SessionStorePlugin` takes the database directory's root index, provides `SessionFilesHost`, and
-reads `FileStorage` with `ctx.get_as` on each call. The fork, release and sweep steps are
-SessionStore methods over the native store connection, used by S5c.
+`SessionStorePlugin` takes the database directory's root index, provides `SessionFilesHost` and
+the `sessionFiles` dispatcher, and reads `FileStorage` with `ctx.get_as` on each call. The
+dispatcher deserializes the §9.1 request, decodes `content`, and calls this binding, so both
+spellings run one implementation. The fork, release and sweep steps are SessionStore methods
+over the native store connection, used by S5c.
 
 FileStorage:
 

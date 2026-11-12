@@ -2,14 +2,15 @@
 pub mod management;
 use crate::model_catalog::{MAX_MODEL_TOKENS, ModelEntry, ModelStatus};
 use dim_agent_capabilities::host::ModelProtocol;
-use dim_agent_runtime::Names;
 use management::{
     ApplyReset, BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
     ManagedBrowserLoginComplete, ManagedLoginAttempt, Referral, ResetApplied, ResetBatches, Usage,
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
-use serde::{Deserialize, Serialize};
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as ServiceValue};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
@@ -663,10 +664,32 @@ fn checked_lease(lease: CredentialLease) -> Result<CredentialLease, ManagedProvi
     Ok(lease)
 }
 
-pub struct ManagedProvidersPlugin;
+/// The managed provider's implementation handle for the App Server's own
+/// parts. `managedProviders` is no service: the face is `managedSearch`, and
+/// the account surface is the `account` method namespace, so the owner is
+/// provided under a key with no catalog name.
+pub fn owner_key() -> Key<ManagedProviders> {
+    Key::named("managedProviderOwner")
+}
+
+/// Provides the managed provider implementation behind `managedSearch`, and
+/// the `account` namespace where the profile hosts it.
+pub struct ManagedProvidersPlugin {
+    account: Option<Key<crate::methods::ManagementMethods>>,
+}
+impl ManagedProvidersPlugin {
+    /// `account` is the method table to place the `account` namespace on, as
+    /// the product profile does; `None` serves the search face alone.
+    pub fn new(account: Option<Key<crate::methods::ManagementMethods>>) -> Self {
+        Self { account }
+    }
+}
 impl DynPlugin for ManagedProvidersPlugin {
     fn name(&self) -> &str {
         "ManagedProviders"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        self.account.iter().map(Key::erase).collect()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
@@ -679,64 +702,83 @@ impl DynPlugin for ManagedProvidersPlugin {
                 owner.stop.cancel();
                 Ok(())
             })?;
-            ctx.provide_as::<ManagedProviders>(service)?;
+            if let Some(methods) = &self.account {
+                let methods = ctx.require_at(methods)?;
+                management::provide(ctx, &methods, service.clone())?;
+            }
+            let face = Arc::new(ManagedSearchFace(service.clone())) as Arc<dyn HostDispatch>;
+            ctx.provide_at(owner_key(), service)?;
+            ctx.provide_at(rutis_bridge::session::host_key("managedSearch"), face)?;
             Ok(Effect::Done)
         })
     }
 }
-/// Process owner of the `account` management namespace.
-pub struct ManagedProviderMethodsPlugin {
-    owner: Key<ManagedProviders>,
-    methods: Key<crate::methods::ManagementMethods>,
-}
-impl ManagedProviderMethodsPlugin {
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            owner: names.key()?,
-            methods: names.key()?,
-        })
+
+/// The `managedSearch` data face ([service faces](../../../docs/design/service-faces.md)
+/// §4.6): only the account's search operation crosses; its login and tokens
+/// stay on the owner implementation behind it.
+struct ManagedSearchFace(Arc<ManagedProviders>);
+
+impl HostDispatch for ManagedSearchFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "search": "async" }))
+    }
+
+    fn invoke(&self, method: &str, args: ServiceValue) -> Reply {
+        if method != "search" {
+            return Err(BridgeError::Value(format!(
+                "unknown managedSearch method {method}"
+            )));
+        }
+        let request: WebSearchRequest = request(args)?;
+        let owner = self.0.clone();
+        Ok(ServiceValue::cancellable_future(async move {
+            let cancel = CancellationToken::new();
+            let _dropped = cancel.clone().drop_guard();
+            match owner.search(request, &cancel).await {
+                Ok(reply) => rutis_bridge::session::arg(&reply),
+                Err(error) => Err(failure(error)),
+            }
+        }))
     }
 }
-impl DynPlugin for ManagedProviderMethodsPlugin {
-    fn name(&self) -> &str {
-        "ManagedProviderMethods"
-    }
-    fn injects(&self) -> Vec<TypeKey> {
-        vec![self.owner.erase(), self.methods.erase()]
-    }
-    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
-        Box::pin(async move {
-            let owner = ctx.require_at(&self.owner)?;
-            let methods = ctx.require_at(&self.methods)?;
-            management::provide(ctx, &methods, owner)?;
-            Ok(Effect::Done)
-        })
-    }
+
+/// One request object; anything else is the caller's programming error.
+fn request<T: DeserializeOwned>(args: ServiceValue) -> Result<T, BridgeError> {
+    let invalid = |detail: String| {
+        BridgeError::Value(format!(
+            "expected one managedSearch request object: {detail}"
+        ))
+    };
+    let Value::Array(args) = args.json()? else {
+        return Err(invalid("not an argument list".into()));
+    };
+    let [request] = <[Value; 1]>::try_from(args)
+        .map_err(|args| invalid(format!("{} arguments", args.len())))?;
+    serde_json::from_value(request).map_err(|error| invalid(error.to_string()))
 }
-/// Publishes a provider to ManagedProviders while both are active.
-pub struct ManagedProviderBinding {
-    owner: Key<ManagedProviders>,
-    provider: Key<dyn ManagedProvider>,
+
+fn failure(error: ManagedSearchError) -> BridgeError {
+    let code = match error {
+        ManagedSearchError::Unavailable => "unavailable",
+        ManagedSearchError::SearchFailed => "search_failed",
+    };
+    rutis_bridge::exports::failure("ManagedSearchError", code, error.to_string(), None)
 }
-impl ManagedProviderBinding {
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            owner: names.key()?,
-            provider: names.key()?,
-        })
-    }
-}
+
+/// Publishes a provider to the managed provider owner while both are active.
+pub struct ManagedProviderBinding;
 impl DynPlugin for ManagedProviderBinding {
     fn name(&self) -> &str {
         "ManagedProviderBinding"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.owner.erase(), self.provider.erase()]
+        vec![owner_key().erase(), TypeKey::of::<dyn ManagedProvider>()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let owner = ctx.require_at(&self.owner)?;
-            let provider = ctx.require_at(&self.provider)?;
+            let owner = ctx.require_at(&owner_key())?;
+            let provider = ctx.require::<dyn ManagedProvider>()?;
             if !valid_descriptors(&provider.providers()) {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "Invalid managed provider description".into(),

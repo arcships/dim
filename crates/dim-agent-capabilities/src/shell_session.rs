@@ -892,9 +892,12 @@ impl ShellSession {
                 path.display()
             ));
         }
+        let path = path
+            .to_str()
+            .ok_or_else(|| format!("Shell output path {} is not UTF-8", path.display()))?;
         owner
             .0
-            .register(self.session_id.clone(), path.to_path_buf())
+            .register(self.session_id.clone(), path.to_owned())
             .await
             .map_err(|failure| failure.to_string())
     }

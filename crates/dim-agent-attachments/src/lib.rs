@@ -9,7 +9,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{AgentBuilder, Names, SessionIdentity};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 /// The `sessionMethods` namespace Attachments provides.
 const NAMESPACE: &str = "attachment";
@@ -41,7 +41,7 @@ struct PutParams {
 #[serde(rename_all = "camelCase")]
 struct PutReply {
     attachment_id: String,
-    path: PathBuf,
+    path: String,
     bytes: u64,
 }
 

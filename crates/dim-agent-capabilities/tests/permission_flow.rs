@@ -156,14 +156,14 @@ impl SessionFilesService for TestFiles {
     fn register(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), SessionFileError>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
     fn owns(
         &self,
         _: String,
-        path: PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<bool, SessionFileError>> + Send + '_>>
     {
         let owned = self.owned.lock().unwrap().clone();
@@ -175,17 +175,21 @@ impl SessionFilesService for TestFiles {
                     message: "invalid ownership store".into(),
                 });
             }
-            Ok(owned.iter().any(|root| path.starts_with(root)))
+            Ok(owned.iter().any(|root| Path::new(&path).starts_with(root)))
         })
     }
     fn owned_paths(
         &self,
         _: String,
-    ) -> Pin<
-        Box<dyn Future<Output = std::result::Result<Vec<PathBuf>, SessionFileError>> + Send + '_>,
-    > {
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<String>, SessionFileError>> + Send + '_>>
+    {
         let owned = self.owned.lock().unwrap().clone();
-        Box::pin(async move { Ok(owned) })
+        Box::pin(async move {
+            Ok(owned
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect())
+        })
     }
 }
 fn grant(path: impl Into<PathBuf>, kind: GrantKind, mode: GrantMode) -> SessionGrant {

@@ -7724,11 +7724,18 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
     let output = directory.join("command-output/source/exec.log");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"output").unwrap();
-    sessions.register("source", output.clone()).await.unwrap();
-    assert!(sessions.owns("source", output.clone()).await.unwrap());
+    let output_text = output.to_str().unwrap().to_owned();
+    sessions
+        .register("source", output_text.clone())
+        .await
+        .unwrap();
+    assert!(sessions.owns("source", output_text.clone()).await.unwrap());
     assert!(
         !sessions
-            .owns("source", directory.join("other.log"))
+            .owns(
+                "source",
+                directory.join("other.log").to_str().unwrap().to_owned()
+            )
             .await
             .unwrap()
     );
@@ -7736,7 +7743,11 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
         !sessions
             .owns(
                 "source",
-                directory.join("command-output/source/../source/exec.log")
+                directory
+                    .join("command-output/source/../source/exec.log")
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
             )
             .await
             .unwrap()
@@ -7745,7 +7756,12 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
     {
         let link = directory.join("command-output/source/link.log");
         std::os::unix::fs::symlink(&output, &link).unwrap();
-        assert!(!sessions.owns("source", link).await.unwrap());
+        assert!(
+            !sessions
+                .owns("source", link.to_str().unwrap().to_owned())
+                .await
+                .unwrap()
+        );
     }
 
     let file_id = "file-1";
@@ -7766,12 +7782,22 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
         )
         .unwrap();
     drop(connection);
-    assert!(sessions.owns("source", attachment.clone()).await.unwrap());
+    let attachment_text = attachment.to_str().unwrap().to_owned();
+    assert!(
+        sessions
+            .owns("source", attachment_text.clone())
+            .await
+            .unwrap()
+    );
     assert!(
         !sessions
             .owns(
                 "source",
-                directory.join("dimcode.sqlite.session-files/another/paste.txt")
+                directory
+                    .join("dimcode.sqlite.session-files/another/paste.txt")
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
             )
             .await
             .unwrap()
@@ -7786,25 +7812,35 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
         .fork_session("source", "fork", 0, &config)
         .await
         .unwrap();
-    assert!(sessions.owns("fork", output.clone()).await.unwrap());
-    assert!(sessions.owns("fork", attachment.clone()).await.unwrap());
+    assert!(sessions.owns("fork", output_text.clone()).await.unwrap());
+    assert!(
+        sessions
+            .owns("fork", attachment_text.clone())
+            .await
+            .unwrap()
+    );
     assert_eq!(
         sessions.owned_paths("fork").await.unwrap(),
         vec![
-            directory.join("dimcode.sqlite.session-files").join(file_id),
-            output.clone(),
+            directory
+                .join("dimcode.sqlite.session-files")
+                .join(file_id)
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            output_text.clone(),
         ]
     );
 
     assert!(sessions.delete_session("source").await.unwrap());
     assert!(output.exists());
     assert!(attachment.exists());
-    assert!(!sessions.owns("source", output.clone()).await.unwrap());
-    assert!(sessions.owns("fork", output.clone()).await.unwrap());
+    assert!(!sessions.owns("source", output_text.clone()).await.unwrap());
+    assert!(sessions.owns("fork", output_text.clone()).await.unwrap());
 
     assert!(sessions.delete_session("fork").await.unwrap());
     assert!(!output.exists());
-    assert!(!sessions.owns("fork", output).await.unwrap());
+    assert!(!sessions.owns("fork", output_text).await.unwrap());
 
     drop(sessions);
     store.close().await.unwrap();

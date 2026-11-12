@@ -816,7 +816,7 @@ fn marker(
     if let Some(file) = file {
         marker.push_str(&format!(
             " file=\"{}\" bytes=\"{}\"",
-            escaped(&file.path.to_string_lossy()),
+            escaped(&file.path),
             file.bytes
         ));
     }

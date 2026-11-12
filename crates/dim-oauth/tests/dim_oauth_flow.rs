@@ -24,13 +24,14 @@ use dim_app_server::{
             BrowserLoginBegin, LoginBegin, LoginState, ManagedBrowserLoginComplete,
             ManagedLoginAttempt,
         },
+        owner_key,
     },
     provider::{ProviderPlugin, ProviderService},
     storage::SqliteStoragePlugin,
 };
 use dim_oauth::{ClientIds, DimOAuthPlugin};
 use rutis::Ctx;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
 use serde_json::{Value, json};
 use std::{
     os::unix::fs::PermissionsExt,
@@ -42,32 +43,18 @@ use tokio_util::sync::CancellationToken;
 
 const PROVIDER: &str = "dimcode-api-oauth";
 
-struct Capture {
-    captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    owner: Key<ManagedProviders>,
-}
-impl Capture {
-    fn new(
-        names: &Names<'_>,
-        captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    ) -> rutis::Result<Self> {
-        Ok(Self {
-            captured,
-            owner: names.key()?,
-        })
-    }
-}
+struct Capture(Arc<OnceLock<Arc<ManagedProviders>>>);
 impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture-managed"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.owner.erase()]
+        vec![owner_key().erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let owner = ctx.require_at(&self.owner)?;
-            let _ = self.captured.set(owner);
+            let owner = ctx.require_at(&owner_key())?;
+            let _ = self.0.set(owner);
             Ok(Effect::Done)
         })
     }
@@ -115,10 +102,10 @@ async fn process(home: &Path) -> Process {
     root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
     let views = [
         root.plugin(FileStoragePlugin::new(vec![home.to_path_buf()])),
-        root.plugin(ManagedProvidersPlugin),
+        root.plugin(ManagedProvidersPlugin::new(None)),
         root.plugin(DimOAuthPlugin::new(&names, 0, ids).unwrap()),
-        root.plugin(ManagedProviderBinding::new(&names).unwrap()),
-        root.plugin(Capture::new(&names, captured.clone()).unwrap()),
+        root.plugin(ManagedProviderBinding),
+        root.plugin(Capture(captured.clone())),
     ];
     for view in &views {
         active(view).await;

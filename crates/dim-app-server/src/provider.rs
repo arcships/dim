@@ -2868,7 +2868,7 @@ impl ProviderPlugin {
         Ok(Self {
             db: names.key()?,
             index: lifecycle.then(|| names.key()).transpose()?,
-            oauth: names.key()?,
+            oauth: crate::managed_provider::owner_key(),
             codex: names.key()?,
             grok: names.key()?,
             secret_host: secret_host.then(|| names.key()).transpose()?,

@@ -23,7 +23,7 @@ External protocols include v1/v2/v3; see [dim-app-server](../../../crates/dim-ap
 
 每个进程一个 rutis root。进程级服务、Session 与分支都是这棵树上的 Plugin；所有有状态服务、监听器和长期任务都由 Plugin 提供，依赖全部经 `TypedPlugin::Deps` 声明。`main` 只解析启动参数、建立 Tokio runtime、调用 `serve`、处理进程信号；纯协议解析、序列化与无状态转换是普通函数。
 
-可选的 managed provider 是 Rust 进程级 Plugin（Dim 账号在 `crates/dim-oauth`，client ID 在编译期从密钥注入）：账号版的 `dimcode` 通过 `cli::run_with` 注册它的行，它以类型化服务 `ManagedProvider` 提供，`ManagedProviderBinding` 把它绑定到进程服务 `ManagedProviders`。公开宿主只暴露通用的 provider/账号操作与请求内凭据租约，不实现具体账号体系、token 交换或刷新策略；没有它时 managed provider 请求明确失败，API-key 与原生订阅 provider 不受影响（合同见 [dim-app-server](../../../crates/dim-app-server/README.md#managed-provider-plugins)）。
+可选的 managed provider 是 Rust 进程级 Plugin（Dim 账号在 `crates/dim-oauth`，client ID 在编译期从密钥注入）：账号版的 `dimcode` 通过 `cli::run_with` 注册它的行，它以类型化端口 `ManagedProvider` 提供，`ManagedProviderBinding` 把它绑定到 managed provider 的实现 `ManagedProviders`。该实现不占 catalog 名字：对外只有数据面 `managedSearch`，账号操作走 `account` 方法命名空间，`ManagedProviders` 只给 Provider 等进程内实现部件使用，不对外暴露。公开宿主只暴露通用的 provider/账号操作与请求内凭据租约，不实现具体账号体系、token 交换或刷新策略；没有它时 managed provider 请求明确失败，API-key 与原生订阅 provider 不受影响（合同见 [dim-app-server](../../../crates/dim-app-server/README.md#managed-provider-plugins)）。
 
 MCP connection generations are nested `McpConnections` group instances owned by
 each Session in the same loader. `McpPublication` serializes source selection
@@ -50,8 +50,7 @@ rutis root
     ├─ Aimux ──► ModelHost / request 对象                   （--model-config PATH 或产品配置）
     ├─ ConfiguredModels ──► 开发目录与 resolver              （--model-config PATH）
     ├─ SqliteStorage ──► SessionStore                       （--database PATH 或 --home PATH）
-    ├─ ManagedProviders（每个 server）
-    ├─ ManagedProviderMethods ──► account 命名空间（--product-home PATH）
+    ├─ ManagedProviders ──► managedSearch 数据面、account 命名空间（--product-home PATH）
     ├─ OpenAICodexOAuth、GrokOAuth ──► Provider（--product-home PATH）
     ├─ ManagedProviderBinding、JS runtime 与账号插件行       （可选，单独提供的插件）
     ├─ Settings                                             （--product-home 或本地执行 Session）
@@ -140,9 +139,8 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `SessionStore`、`TimelineStore` 持久化端口 | `SqliteStorage` |
 | `SettingsPlugin` | Generic BusinessDocument sources and per-source CAS; no domain interpretation, approvals, connections or discovery | `SettingsService` | `FileStorage`, `When<SqliteStorage>` |
 | `OpenAICodexOAuthPlugin` / `GrokOAuthPlugin` | 各自账号字段、登录、刷新与终态 | `OpenAICodexOAuthService` / `GrokOAuthService` | `FileStorage` |
-| `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配 | `ManagedProviders` | —；`ManagedProviderBinding` 另注入 `ManagedProviders` 与 JS 宿主分发 |
-| `ManagedProviderMethodsPlugin` | `account` 管理命名空间（`account.providers/status/recover/logout`、`account.login.*`、`account.usage`）；随产品 home 装配 | 向 `ManagementMethods` 注册 `account` | `ManagedProviders`、`ManagementMethods` |
-| `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、`ManagedProviders`、Codex/Grok 账号服务；可选秘密宿主 |
+| `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配；产品 home 下同时注册 `account` 命名空间 | 实现 `ManagedProviders`（私有键，不占 catalog 名字）、`managedSearch` 数据面、`account` 命名空间 | `ManagementMethods`（仅产品 profile）；`ManagedProviderBinding` 另注入实现键与 `ManagedProvider` |
+| `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、managed provider 实现键、Codex/Grok 账号服务；可选秘密宿主 |
 | `AimuxPlugin`（进程级） | 共享 HTTP 资源、请求/流转换及取消桥接 | `ModelHost`：接收最终请求、已解析连接与取消信号的 request 对象 | 无业务服务依赖；不注入 Provider、ToolRegistry 或 Session |
 | `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModelHost` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
 | `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | `Publication` | `SettingsService`、`CredentialVariablesHost` |

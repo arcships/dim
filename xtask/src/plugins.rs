@@ -124,7 +124,7 @@ impl SessionFilesService for GraphFiles {
     fn register(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = std::result::Result<(), SessionFileError>> + Send + '_,
@@ -141,7 +141,7 @@ impl SessionFilesService for GraphFiles {
     fn owns(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = std::result::Result<bool, SessionFileError>>
@@ -157,7 +157,7 @@ impl SessionFilesService for GraphFiles {
         _: String,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<Output = std::result::Result<Vec<PathBuf>, SessionFileError>>
+            dyn std::future::Future<Output = std::result::Result<Vec<String>, SessionFileError>>
                 + Send
                 + '_,
         >,

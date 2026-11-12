@@ -10,7 +10,7 @@ Web 是一个 Session 插件，向模型提供 `web_search` 与 `web_fetch`，�
 flowchart LR
   subgraph PROC["进程"]
     Settings["Settings：web 业务来源"]
-    Managed["ManagedProviders：账号 web_search"]
+    Managed["managedSearch：账号 web_search"]
   end
   subgraph SESS["Session"]
     Web["Web：工具 web_search、web_fetch"]:::new
@@ -30,11 +30,11 @@ flowchart LR
 | 部件 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
 | `web` | 进程，当 home 存在时 | `settings`、`partRegistry` | 登记 Settings 来源 `web` 与 Session 部件 `Web` |
-| `Web` | Session | `settings`、`toolRegistry`、`managedProviders` | 把 `web_search` 与 `web_fetch` 注册到 `toolRegistry`；持有本 Session 的抓取缓存；不提供任何名称 |
+| `Web` | Session | `settings`、`toolRegistry`、`managedSearch` | 把 `web_search` 与 `web_fetch` 注册到 `toolRegistry`；持有本 Session 的抓取缓存；不提供任何名称 |
 
 **依赖的契约：** 已实现的 [C4 工具绑定](../../../design/session-typescript.md)、[Settings 具名服务与 row 来源声明](../appserver/settings-service.md)、[托管 Provider 契约](../../../../crates/dim-app-server/README.md#managed-provider-contract)及 Permission 既有的 `network` 风险。#150 提供工具，#166/#175 提供 Settings，#177 提供 Settings 事件。Web 不消费 Session 广播，不等待 #168。**本文定义的契约：** 两个工具、结果格式和 `web` 业务文档。
 
-Web 是 App Server 的内置进程 row。该 row 登记 Settings 来源 `web` 与 Session 部件，不增加 Web 专属注册表或宿主端口。当 `searchService` 缺省（默认）或为 `{"kind": "dim-oauth"}` 时，`web_search` 通过 `managedProviders` 发起带认证的 relay 查询，使 OAuth 令牌留在 Rust 托管 Provider 内；当 `searchService` 显式配置为 `brave` 等适配器时，Web 直接请求该适配器。工具按调用读取 Settings，已有事件无需为此再建订阅或缓存失效协议。非致命配置诊断放入既有 `ToolResult.structuredContent`。
+Web 是 App Server 的内置进程 row。该 row 登记 Settings 来源 `web` 与 Session 部件，不增加 Web 专属注册表或宿主端口。当 `searchService` 缺省（默认）或为 `{"kind": "dim-oauth"}` 时，`web_search` 通过 `managedSearch` 数据面发起带认证的 relay 查询，使 OAuth 令牌留在其后的托管 Provider 实现内；当 `searchService` 显式配置为 `brave` 等适配器时，Web 直接请求该适配器。工具按调用读取 Settings，已有事件无需为此再建订阅或缓存失效协议。非致命配置诊断放入既有 `ToolResult.structuredContent`。
 
 搜索 API 密钥是 `searchService.apiKey`，Web Settings 来源中的仅用户字段（[settings-service §1.2](../appserver/settings-service.md#12-决定密钥归其所有者)）。Unix 上的文件存储 profile 以 0600 权限写用户文档。原生 profile 将其作为 `user/web` 存入 SQLite；权限边界是产品 home，Unix 新建目录使用 0700，Windows 继承父目录 DACL；已有目录权限保持不变，数据库没有独立的 0600 保证。`userOnly` 限制写入，不屏蔽本地读取：该字段只经客户端方法 `settings.update` 写入，Web 从不写；本地客户端可经 `settings.read` 读回，远程与配对客户端不能。Web 每次调用随文档读取密钥，从不保留，也不把它放入声明、结果、`structuredContent`、诊断、错误或日志。
 
@@ -98,7 +98,7 @@ sequenceDiagram
   participant X as ToolExecutor
   participant W as Web handler
   participant S as Settings
-  participant M as ManagedProviders
+  participant M as managedSearch
   participant Q as 搜索服务
   X->>W: execute(ToolCall：query、filters)
   W->>S: 读取 searchService
@@ -122,7 +122,7 @@ sequenceDiagram
   end
 ```
 
-Web 启用时 `web_search` 始终被声明；默认（`searchService` 缺省或为 `{"kind": "dim-oauth"}`）经 `managedProviders` 使用已登录的 Dim 账号搜索，在有可用账号或配置可用服务之前以 `search_unavailable` 失败（A3）。更换服务或账号登录状态变化在下一次调用生效。
+Web 启用时 `web_search` 始终被声明；默认（`searchService` 缺省或为 `{"kind": "dim-oauth"}`）经 `managedSearch` 使用已登录的 Dim 账号搜索，在有可用账号或配置可用服务之前以 `search_unavailable` 失败（A3）。更换服务或账号登录状态变化在下一次调用生效。
 
 ## 4. 时序与冲突
 
@@ -188,7 +188,7 @@ Web 不写标记、不贡献 guide 条目；它的声明没有 policy 文本。
 
 ### 6.1 注册与来源
 
-home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry` 登记 Settings 来源 `web`（用户文件 `web.json`，无项目文件）和 Session 部件 `Web`。每个 Session 挂载该部件。部件注入 `settings`、`toolRegistry` 与 `managedProviders`。其 apply 只登记资源清理和两个工具，在调用发生前不做 I/O。Rust 形式见附录 G。
+home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry` 登记 Settings 来源 `web`（用户文件 `web.json`，无项目文件）和 Session 部件 `Web`。每个 Session 挂载该部件。部件注入 `settings`、`toolRegistry` 与 `managedSearch`。其 apply 只登记资源清理和两个工具，在调用发生前不做 I/O。Rust 形式见附录 G。
 
 该 row 登记的来源 schema，`userOnly` 路径为 `/searchService`、`/allowPrivateHosts` 与 `/proxyDns`：
 
@@ -218,7 +218,7 @@ home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry
 }
 ```
 
-执行沿工具 handler，并带上该调用的取消令牌。每次调用读取 user scope 的 `web` 来源。读取失败，或已存文档无法反序列化为 web 文档时，调用以 `settings_unavailable` 失败，不建立连接。Web 不用默认值顶替该文档。配置了 API 密钥适配器时，密钥是 `searchService.apiKey`。当 `searchService` 缺省或为 `{"kind":"dim-oauth"}` 时，`web_search` 调用 `managedProviders`，不读取 OAuth 令牌。
+执行沿工具 handler，并带上该调用的取消令牌。每次调用读取 user scope 的 `web` 来源。读取失败，或已存文档无法反序列化为 web 文档时，调用以 `settings_unavailable` 失败，不建立连接。Web 不用默认值顶替该文档。配置了 API 密钥适配器时，密钥是 `searchService.apiKey`。当 `searchService` 缺省或为 `{"kind":"dim-oauth"}` 时，`web_search` 调用 `managedSearch`，不读取 OAuth 令牌。
 
 Settings 将 `format: "uri"` 作为注解。Web 在构造 HTTP 请求时解析 `searchService.endpoint` 和 `proxy`，不重新校验 Settings 文档。端点无法解析时，`web_search` 返回 `search_unavailable`；`proxy` 配置值无法解析，或 `proxyDns: true` 却未配置代理时，`web_search` 返回 `search_unavailable`，`web_fetch` 返回 `connect_failed`。均不建立连接、不回退为直连，诊断不包含配置值。Web 的代理配置作用于抓取与直接配置的搜索适配器；账号搜索遵循托管 Provider 契约。
 
@@ -243,8 +243,8 @@ Settings 将 `format: "uri"` 作为注解。Web 在构造 HTTP 请求时解析 `
 | 原则 §4 第 4 条（核心不带业务含义） | 不改核心；工具使用通用的工具注册合同。 |
 | 原则 §4 第 5 条（批次） | 不适用：Web 依据调用参数和配置做决定，不依据事件。 |
 | 原则 §4 第 6 条（上下文只含交接后的事件） | 结果只以 ToolExecutor 写入的 `step/tool-result` 事实进入模型。 |
-| 原则 §4 第 7 条（只用公开事件和服务） | Web 只使用 `toolRegistry`、`managedProviders` 和 Settings 业务来源。 |
-| 原则 §4 第 8 条（向机制所有者提需求） | 复用已实现的 C4、`managedProviders` 与 Settings 绑定；适配器 API 密钥是 Web 自己的仅用户字段，账号 OAuth 令牌留在 Rust 托管 Provider 内。 |
+| 原则 §4 第 7 条（只用公开事件和服务） | Web 只使用 `toolRegistry`、`managedSearch` 和 Settings 业务来源。 |
+| 原则 §4 第 8 条（向机制所有者提需求） | 复用已实现的 C4、`managedSearch` 与 Settings 绑定；适配器 API 密钥是 Web 自己的仅用户字段，账号 OAuth 令牌留在 Rust 托管 Provider 内。 |
 | 原则 §4 第 9 条（只有后续决定要用的事实才进 Timeline） | Web 不写事件；抓取缓存只在内存中。 |
 | 原则 §1（Capability 与 App Server 边界） | Web 是内置 Session Capability。代码是 App Server 进程 row `web` 与 Session 部件 `Web`。不增加 Web 专属宿主端口。 |
 | ADR 002 D1（作用域跟随状态） | Session 作用域：Web 不持有跨 Session 共享的状态。 |
@@ -347,7 +347,7 @@ Fake-IP DNS 答案仍受默认地址策略约束，不会自动信任保留地�
 
 | 字段 | 类型 | 默认值 |
 | --- | --- | --- |
-| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` 或缺省；仅用户 | 缺省（已登录时经 `managedProviders` 使用 `dim-oauth`；否则 `web_search` 返回 `search_unavailable`） |
+| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` 或缺省；仅用户 | 缺省（已登录时经 `managedSearch` 使用 `dim-oauth`；否则 `web_search` 返回 `search_unavailable`） |
 | `allowPrivateHosts` | string[] | `[]` |
 | `proxy` | string（URL） | 缺省 |
 | `proxyDns` | boolean；仅用户；启用时必须配置 `proxy` | `false` |

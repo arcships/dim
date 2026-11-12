@@ -175,6 +175,8 @@ mod guide_entries;
 mod plugin_manager;
 #[path = "transport_flow/process_typescript.rs"]
 mod process_typescript;
+#[path = "transport_flow/session_files_loopback.rs"]
+mod session_files_loopback;
 #[path = "transport_flow/session_typescript.rs"]
 mod session_typescript;
 #[path = "transport_flow/settings_methods.rs"]

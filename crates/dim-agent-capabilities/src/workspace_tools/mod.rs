@@ -32,7 +32,10 @@ use file_reads::{FileReads, FileReadsPlugin};
 use files::{FileTools, FileWriteCoordinator};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 /// Host tools this capability provides.
@@ -228,16 +231,16 @@ impl WorkspaceTools {
         let Some(path) = fields.get("outputPath").and_then(|value| value.as_str()) else {
             return Ok(());
         };
-        let path = PathBuf::from(path);
-        if !path.starts_with(&self.output_dir) {
+        let output = Path::new(path);
+        if !output.starts_with(&self.output_dir) {
             return Err(HostError::failed(format!(
                 "Output path {} is outside the Session's output directory",
-                path.display()
+                output.display()
             )));
         }
         owner
             .0
-            .register(self.session_id.clone(), path)
+            .register(self.session_id.clone(), path.to_owned())
             .await
             .map_err(|failure| HostError::failed(failure.to_string()))
     }

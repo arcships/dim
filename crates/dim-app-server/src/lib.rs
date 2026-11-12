@@ -265,6 +265,11 @@ impl RunningServer {
     pub fn service<T: ?Sized + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
         self.root.get::<T>()
     }
+    /// The process service under `key`, for one the profile provides without a
+    /// catalog name.
+    pub fn service_at<T: ?Sized + Send + Sync + 'static>(&self, key: &Key<T>) -> Option<Arc<T>> {
+        self.root.get_at(key)
+    }
     /// Emits a Session notice from the process root, standing in for an
     /// owner of process-level state after its commit. Feature `testing` only.
     #[cfg(feature = "testing")]
@@ -753,9 +758,21 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     rows.push(register_part(&mut builtins, builder.catalog(), |names| {
         Ok(Box::new(connection::CallChannelPlugin::new(names)?))
     })?);
-    rows.push(register_part(&mut builtins, builder.catalog(), |_| {
-        Ok(Box::new(managed_provider::ManagedProvidersPlugin))
-    })?);
+    let host_account_methods = product_root.is_some();
+    rows.push(register_part(
+        &mut builtins,
+        builder.catalog(),
+        move |names| {
+            let account = if host_account_methods {
+                Some(names.key::<methods::ManagementMethods>()?)
+            } else {
+                None
+            };
+            Ok(Box::new(managed_provider::ManagedProvidersPlugin::new(
+                account,
+            )))
+        },
+    )?);
     if let Some(home_root) = plugin_root {
         rows.push(register_part(
             &mut builtins,
@@ -768,17 +785,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         )?);
     }
     if let Some(home_root) = product_root {
-        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-            Ok(Box::new(
-                managed_provider::ManagedProviderMethodsPlugin::new(names)?,
-            ))
-        })?);
         if let Some(provider) = &config.managed_provider {
             rows.push((provider.0)(&mut builtins, home_root));
-            rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-                Ok(Box::new(managed_provider::ManagedProviderBinding::new(
-                    names,
-                )?))
+            rows.push(register_part(&mut builtins, builder.catalog(), |_| {
+                Ok(Box::new(managed_provider::ManagedProviderBinding))
             })?);
         }
         rows.push(register_part(
@@ -1324,7 +1334,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ui_extensions::UiExtensions>(catalog, None);
     register::<ui_extensions::UiResources>(catalog, Some(SESSION_GROUP));
     register::<settings::SettingsService>(catalog, None);
-    register::<managed_provider::ManagedProviders>(catalog, None);
     register::<dyn managed_provider::ManagedProvider>(catalog, None);
     register::<codex_oauth::OpenAICodexOAuthService>(catalog, None);
     register::<grok_oauth::GrokOAuthService>(catalog, None);
@@ -1351,6 +1360,8 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
         "pluginFiles",
         "sessions",
         "sessionMetadata",
+        "sessionFiles",
+        "managedSearch",
         "auxiliaryModel",
         "settings",
         "ocrHelper",
@@ -1406,7 +1417,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("listenAddresses", "legacy-no-consumer"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
-        ("managedProviders", "secret"),
         ("mcpAuth", "secret"),
         ("mcpService", "host-resource"),
         ("mcpSession", "object"),
@@ -1498,7 +1508,7 @@ async fn coordinate(root: Ctx, control: Arc<ServerControl>) -> Result<ShutdownRe
         return Ok(ShutdownReason::Forced);
     }
     let mut errors = vec![];
-    if let Some(providers) = root.get::<managed_provider::ManagedProviders>() {
+    if let Some(providers) = root.get_at(&managed_provider::owner_key()) {
         providers.quiesce().await;
     }
     if let Some(index) = root.get::<AgentIndex>() {

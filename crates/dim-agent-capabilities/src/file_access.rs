@@ -113,12 +113,15 @@ impl ReadFileAccessFacts for Facts {
                     HostError::failed(format!("file access facts task failed: {error}"))
                 })?
                 .map_err(HostError::failed)?;
-            let owned = self
-                .files
-                .0
-                .owns(session_id, path.clone())
-                .await
-                .map_err(|error| HostError::failed(error.to_string()))?;
+            let owned = match path.to_str() {
+                Some(path) => self
+                    .files
+                    .0
+                    .owns(session_id, path.to_owned())
+                    .await
+                    .map_err(|error| HostError::failed(error.to_string()))?,
+                None => false,
+            };
             let grants = self.grants.0.grants(cancel.clone()).await?;
             let mut facts = FileFacts {
                 workspace: path.starts_with(&workspace),

@@ -2592,6 +2592,8 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/managed_provider.rs",
       "unexpandedMacros": [
+        "format",
+        "json",
         "matches",
         "vec"
       ]
@@ -3384,6 +3386,7 @@
       "file": "crates/dim-app-server/src/storage/files.rs",
       "unexpandedMacros": [
         "format",
+        "json",
         "matches",
         "params",
         "tokio::select",
@@ -22309,11 +22312,10 @@
       "references": [
         "mod managed_provider",
         "path managed_provider::ManagedProvider",
-        "path managed_provider::ManagedProviderBinding::new",
-        "path managed_provider::ManagedProviderMethodsPlugin::new",
+        "path managed_provider::ManagedProviderBinding",
         "path managed_provider::ManagedProviderRow",
-        "path managed_provider::ManagedProviders",
-        "path managed_provider::ManagedProvidersPlugin"
+        "path managed_provider::ManagedProvidersPlugin::new",
+        "path managed_provider::owner_key"
       ]
     },
     {
@@ -26210,14 +26212,6 @@
     },
     {
       "from": "dim_app_server::managed_provider",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path Names",
-        "use dim_agent_runtime::Names"
-      ]
-    },
-    {
-      "from": "dim_app_server::managed_provider",
       "to": "dim_agent_types::model",
       "references": [
         "path ModelProtocol",
@@ -28967,6 +28961,7 @@
         "path ManagedModel",
         "path ManagedProviders",
         "path crate::managed_provider::ManagedProviderError",
+        "path crate::managed_provider::owner_key",
         "path reason_excludes_modality",
         "use crate::managed_provider::AccountSnapshot",
         "use crate::managed_provider::CredentialLease",
@@ -31006,7 +31001,8 @@
       "from": "dim_app_server::storage",
       "to": "dim_app_server::storage::files",
       "references": [
-        "mod files"
+        "mod files",
+        "use files::MAX_SESSION_FILE_BYTES"
       ]
     },
     {
@@ -31582,6 +31578,7 @@
       "references": [
         "path SessionFiles",
         "path SessionFiles::new",
+        "path failure",
         "path like_prefix",
         "path release",
         "path share"
@@ -32305,6 +32302,7 @@
         "path SessionFiles",
         "path SessionFiles::new",
         "path files",
+        "path files::SessionFilesFace",
         "path files::release",
         "path files::share",
         "path files::share_output",
@@ -32965,13 +32963,10 @@
       "from": "dim_app_server::web",
       "to": "dim_app_server::managed_provider",
       "references": [
-        "path ManagedProviders",
-        "path ManagedSearchError::SearchFailed",
-        "path ManagedSearchError::Unavailable",
         "path WebSearchRequest",
-        "use crate::managed_provider::ManagedProviders",
-        "use crate::managed_provider::ManagedSearchError",
-        "use crate::managed_provider::WebSearchRequest"
+        "path WebSearchResponse",
+        "use crate::managed_provider::WebSearchRequest",
+        "use crate::managed_provider::WebSearchResponse"
       ]
     },
     {

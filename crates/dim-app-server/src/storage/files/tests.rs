@@ -13,6 +13,21 @@ use rutis::host::CtxHost;
 use std::path::PathBuf;
 use tokio::sync::Semaphore;
 
+/// The reply path is the face's string; a path the host cannot spell is a
+/// storage failure, and `put` computes it before txn 1 so nothing is written.
+#[cfg(unix)]
+#[test]
+fn a_reply_path_that_is_not_utf8_is_a_storage_error() {
+    use std::os::unix::ffi::OsStringExt;
+    let path = PathBuf::from(std::ffi::OsString::from_vec(
+        b"/tmp/db-\xff/paste.txt".to_vec(),
+    ));
+    assert_eq!(
+        path_text(path).unwrap_err().code,
+        SessionFileErrorCode::Storage
+    );
+}
+
 /// Hooks that run once, for the named Session, right before the
 /// cancellation check that precedes txn 2.
 type Hook = Box<dyn FnOnce() + Send>;
@@ -187,7 +202,8 @@ async fn a_fork_shares_files_until_their_last_owner_is_released() {
             std::fs::metadata(path).unwrap().len()
         }
     };
-    let before = identity(&stored.path);
+    let path = std::path::Path::new(&stored.path);
+    let before = identity(path);
     fixture
         .db
         .run(|connection| {
@@ -204,7 +220,7 @@ async fn a_fork_shares_files_until_their_last_owner_is_released() {
     fixture.timeline.rollback_session("source").await.unwrap();
     assert!(fixture.files.0.sweep().await);
     assert_eq!(fixture.rows(), [format!("{}|-|1", stored.file_id)]);
-    assert_eq!(identity(&stored.path), before);
+    assert_eq!(identity(path), before);
     assert_eq!(std::fs::read(&stored.path).unwrap(), b"pasted");
     assert_eq!(fixture.entries(), std::slice::from_ref(&stored.file_id));
 
@@ -413,7 +429,7 @@ async fn a_fork_owns_output_registered_before_the_file_exists() {
     let log = fixture.home.join("command-output/running-source/exec.log");
     fixture
         .files
-        .register("running-source".into(), log.clone())
+        .register("running-source".into(), log.to_str().unwrap().to_owned())
         .await
         .unwrap();
     assert!(!log.exists());
@@ -458,7 +474,7 @@ async fn a_fork_waits_for_a_delete_that_removed_output() {
     std::fs::write(&log, b"output").unwrap();
     fixture
         .files
-        .register("paused-source".into(), log.clone())
+        .register("paused-source".into(), log.to_str().unwrap().to_owned())
         .await
         .unwrap();
 
@@ -528,7 +544,7 @@ async fn concurrent_deletes_remove_a_shared_output_directory() {
     std::fs::write(&log, b"output").unwrap();
     fixture
         .files
-        .register("source".into(), log.clone())
+        .register("source".into(), log.to_str().unwrap().to_owned())
         .await
         .unwrap();
     let config = store.session_config_text("source").await.unwrap().unwrap();
@@ -579,7 +595,7 @@ async fn a_delete_removes_shell_output_of_its_last_owner() {
     std::fs::write(&log, b"output").unwrap();
     fixture
         .files
-        .register("source".into(), log.clone())
+        .register("source".into(), log.to_str().unwrap().to_owned())
         .await
         .unwrap();
     let config = store.session_config_text("source").await.unwrap().unwrap();

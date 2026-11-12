@@ -556,7 +556,6 @@ async fn migration_validates_dim_account_tokens_before_writing_the_account_file(
 async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
     use dim_agent_capabilities::file_storage::FileStoragePlugin;
     use dim_app_server::managed_provider::ManagedProvider;
-    use dim_app_server::managed_provider::ManagedProviders;
     use sha2::{Digest, Sha256};
 
     let directory = tempfile::tempdir().unwrap();
@@ -784,7 +783,7 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
         .await
         .unwrap();
         let account = server
-            .service::<ManagedProviders>()
+            .service_at(&dim_app_server::managed_provider::owner_key())
             .unwrap()
             .status(
                 "dimcode-api-oauth",

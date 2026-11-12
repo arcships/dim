@@ -901,7 +901,7 @@ impl SessionFilesService for FailingSessionFiles {
     fn register(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), SessionFileError>> + Send + '_>,
     > {
@@ -910,7 +910,7 @@ impl SessionFilesService for FailingSessionFiles {
     fn owns(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<bool, SessionFileError>> + Send + '_>,
     > {
@@ -920,7 +920,7 @@ impl SessionFilesService for FailingSessionFiles {
         &self,
         _: String,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>,
+        Box<dyn std::future::Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>,
     > {
         Box::pin(async { Err(failed()) })
     }
@@ -962,7 +962,7 @@ impl SessionFilesService for CountingSessionFiles {
         Box::pin(async move {
             Ok(StoredSessionFile {
                 file_id: format!("file-{session_id}-{name}"),
-                path: PathBuf::from(format!("/{session_id}/{name}")),
+                path: format!("/{session_id}/{name}"),
                 bytes,
             })
         })
@@ -970,7 +970,7 @@ impl SessionFilesService for CountingSessionFiles {
     fn register(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), SessionFileError>> + Send + '_>,
     > {
@@ -979,7 +979,7 @@ impl SessionFilesService for CountingSessionFiles {
     fn owns(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<bool, SessionFileError>> + Send + '_>,
     > {
@@ -989,7 +989,7 @@ impl SessionFilesService for CountingSessionFiles {
         &self,
         _: String,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>,
+        Box<dyn std::future::Future<Output = Result<Vec<String>, SessionFileError>> + Send + '_>,
     > {
         Box::pin(async { Ok(Vec::new()) })
     }

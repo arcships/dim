@@ -224,15 +224,15 @@ impl SessionFilesService for RecordedOutputs {
     fn register(
         &self,
         _: String,
-        path: PathBuf,
+        path: String,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<(), SessionFileError>> + Send + '_>> {
-        self.0.lock().unwrap().push(path);
+        self.0.lock().unwrap().push(PathBuf::from(path));
         Box::pin(async { Ok(()) })
     }
     fn owns(
         &self,
         _: String,
-        _: PathBuf,
+        _: String,
     ) -> Pin<Box<dyn Future<Output = std::result::Result<bool, SessionFileError>> + Send + '_>>
     {
         Box::pin(async { Ok(false) })
@@ -240,9 +240,8 @@ impl SessionFilesService for RecordedOutputs {
     fn owned_paths(
         &self,
         _: String,
-    ) -> Pin<
-        Box<dyn Future<Output = std::result::Result<Vec<PathBuf>, SessionFileError>> + Send + '_>,
-    > {
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<Vec<String>, SessionFileError>> + Send + '_>>
+    {
         Box::pin(async { Ok(Vec::new()) })
     }
 }

@@ -1,17 +1,24 @@
 //! SessionStore Session files through the `sessionFiles` service and the
 //! native store (session-files design §16).
+use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{SessionFileErrorCode, SessionFilesHost, StoredSessionFile},
 };
 use dim_agent_runtime::SessionConfig;
 use dim_agent_runtime::testing::chain_events;
-use dim_app_server::storage::{SessionStore, SessionStorePlugin, SqliteStoragePlugin};
+use dim_app_server::storage::{
+    MAX_SESSION_FILE_BYTES, SessionStore, SessionStorePlugin, SqliteStoragePlugin,
+};
 use rusqlite::Connection;
 use rutis::host::{CtxHost, FiberState};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Value as RpcValue, host_key, settle,
+};
+use serde_json::{Value as Json, json};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 use tokio_util::sync::CancellationToken;
@@ -88,13 +95,21 @@ impl Store {
     /// Mounts the native store with the database directory as FileStorage
     /// root 0, or without FileStorage.
     async fn mount(home: &Home, file_storage: bool) -> Self {
+        Self::mount_at(&home.0, home.database(), file_storage).await
+    }
+    /// The same, for a database directory that is not a `Home`.
+    async fn mount_at(
+        directory: &std::path::Path,
+        database: std::path::PathBuf,
+        file_storage: bool,
+    ) -> Self {
         let root = Ctx::root().unwrap();
         if file_storage {
-            (&root.plugin(FileStoragePlugin::new(vec![home.0.clone()])))
+            (&root.plugin(FileStoragePlugin::new(vec![directory.to_path_buf()])))
                 .await
                 .unwrap();
         }
-        root.plugin(SqliteStoragePlugin::new(home.database()));
+        root.plugin(SqliteStoragePlugin::new(database));
         let catalog = dim_app_server::catalog();
         let build = rutis_loader::resolve::Build::default();
         let names = dim_agent_runtime::Names::copy(&catalog, &build);
@@ -138,13 +153,29 @@ impl Store {
             .await
             .map_err(|error| error.code)
     }
-    async fn owns(&self, session: &str, path: &std::path::Path) -> bool {
+    async fn owns(&self, session: &str, path: &str) -> bool {
         self.files
             .0
-            .owns(session.into(), path.to_path_buf())
+            .owns(session.into(), path.to_owned())
             .await
             .unwrap()
     }
+    /// The `sessionFiles` data face, as a part in another language finds it.
+    fn face(&self) -> Arc<dyn HostDispatch> {
+        self.root
+            .get_at::<dyn HostDispatch>(&host_key("sessionFiles"))
+            .expect("the sessionFiles data face is provided")
+    }
+}
+
+/// One data-face call: one request object argument, a future reply.
+async fn face_call(
+    dispatch: &Arc<dyn HostDispatch>,
+    method: &str,
+    request: Json,
+) -> Result<Json, BridgeError> {
+    let reply = dispatch.invoke(method, RpcValue::List(vec![request.into()]))?;
+    settle(reply).await?.json()
 }
 
 #[tokio::test]
@@ -159,9 +190,14 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     assert_eq!(stored.file_id, id.hyphenated().to_string());
     assert_eq!(
         stored.path,
-        home.files().join(&stored.file_id).join("paste.txt")
+        home.files()
+            .join(&stored.file_id)
+            .join("paste.txt")
+            .to_str()
+            .unwrap()
     );
-    assert!(stored.path.is_absolute());
+    let path = std::path::Path::new(&stored.path);
+    assert!(path.is_absolute());
     assert_eq!(stored.bytes, 11);
     assert_eq!(std::fs::read(&stored.path).unwrap(), b"pasted text");
     assert!(
@@ -175,9 +211,9 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
         use std::os::unix::fs::PermissionsExt;
         let mode =
             |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&stored.path), 0o400);
+        assert_eq!(mode(path), 0o400);
         assert_eq!(mode(&home.files()), 0o700);
-        assert_eq!(mode(stored.path.parent().unwrap()), 0o700);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
     }
     assert_eq!(
         home.rows("SELECT file_id || '|' || ifnull(node, '-') || '|' || ifnull(writer, '-') FROM session_files"),
@@ -198,12 +234,16 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     assert!(store.owns("s1", &stored.path).await);
     assert!(store.owns("s1", &again.path).await);
     assert!(!store.owns("s2", &stored.path).await);
-    assert!(!store.owns("s1", &home.0.join("outside.txt")).await);
+    assert!(
+        !store
+            .owns("s1", &home.0.join("outside.txt").to_string_lossy())
+            .await
+    );
     let stranger = home
         .files()
         .join(uuid::Uuid::new_v4().to_string())
         .join("paste.txt");
-    assert!(!store.owns("s1", &stranger).await);
+    assert!(!store.owns("s1", &stranger.to_string_lossy()).await);
 
     let rows = |home: &Home| {
         (
@@ -237,7 +277,7 @@ async fn a_put_stores_an_immutable_file_its_session_owns() {
     }
     assert_eq!(
         store
-            .put("s1", "big.txt", &vec![0; 16 * 1024 * 1024 + 1])
+            .put("s1", "big.txt", &vec![0; MAX_SESSION_FILE_BYTES + 1])
             .await,
         Err(SessionFileErrorCode::TooLarge)
     );
@@ -418,7 +458,7 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
             .put(session.id(), "paste.txt", b"pasted for the model")
             .await
             .unwrap();
-        assert!(!stored.path.starts_with(&work));
+        assert!(!std::path::Path::new(&stored.path).starts_with(&work));
         let before = session.get::<PermissionState>("main").unwrap().unwrap();
         session
             .submit(
@@ -462,4 +502,273 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
     }
     agent.close().await.unwrap();
     store.root.shutdown().await.unwrap();
+}
+
+/// The `sessionFiles` data face: the owner's four operations as data, with
+/// §10's errors and §9.1's field spelling.
+#[tokio::test]
+async fn the_session_files_data_face_serves_the_owner() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    store.session("s2").await;
+    let face = store.face();
+
+    let stored = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "paste.txt", "content": "cGFzdGVkIHRleHQ="}),
+    )
+    .await
+    .unwrap();
+    let file_id = stored["fileId"].as_str().unwrap().to_owned();
+    let id = uuid::Uuid::parse_str(&file_id).unwrap();
+    assert_eq!(id.get_version_num(), 4);
+    let path = home.files().join(&file_id).join("paste.txt");
+    assert_eq!(stored["path"], path.to_str().unwrap(), "{stored}");
+    assert_eq!(stored["bytes"], 11);
+    assert_eq!(std::fs::read(&path).unwrap(), b"pasted text");
+
+    let owned = |session: &str| json!({"sessionId": session, "path": path.to_str().unwrap()});
+    assert_eq!(
+        face_call(&face, "owns", owned("s1")).await.unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owns", owned("s2")).await.unwrap(),
+        json!({"owned": false})
+    );
+
+    let output = home.0.join("out.txt");
+    assert_eq!(
+        face_call(
+            &face,
+            "register",
+            json!({"sessionId": "s1", "path": output.to_str().unwrap()}),
+        )
+        .await
+        .unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        face_call(&face, "owns", owned("s1")).await.unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owned_paths", json!({"sessionId": "s1"}))
+            .await
+            .unwrap(),
+        json!({"paths": [
+            home.files().join(&file_id).to_str().unwrap(),
+            output.to_str().unwrap(),
+        ]})
+    );
+
+    let missing = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "missing", "name": "paste.txt", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(missing.code(), Some("not_found"), "{missing}");
+    for content in ["not base64!", "eA"] {
+        let invalid = face_call(
+            &face,
+            "put",
+            json!({"sessionId": "s1", "name": "paste.txt", "content": content}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.code(), Some("invalid"), "{invalid}");
+    }
+    let invalid = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "auth.json", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(invalid.code(), Some("invalid"), "{invalid}");
+    let unknown = face_call(&face, "read", json!({"sessionId": "s1"}))
+        .await
+        .unwrap_err();
+    assert!(
+        unknown.to_string().contains("unknown sessionFiles method"),
+        "{unknown}"
+    );
+
+    store.root.shutdown().await.unwrap();
+}
+
+/// The typed `SessionFilesService` binding and the `sessionFiles` wire are one
+/// contract: the same operations, field spelling and error codes.
+#[tokio::test]
+async fn the_typed_binding_and_the_wire_are_one_contract() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    let face = store.face();
+
+    let typed = store.put("s1", "paste.txt", b"pasted text").await.unwrap();
+    let wire = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "paste.txt", "content": "cGFzdGVkIHRleHQ="}),
+    )
+    .await
+    .unwrap();
+    let encoded = serde_json::to_value(&typed).unwrap();
+    for reply in [&wire, &encoded] {
+        assert_eq!(
+            reply.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["fileId", "path", "bytes"],
+            "{reply}"
+        );
+        assert_eq!(reply["bytes"], 11);
+        assert_eq!(
+            Path::new(reply["path"].as_str().unwrap()),
+            home.files()
+                .join(reply["fileId"].as_str().unwrap())
+                .join("paste.txt"),
+            "{reply}"
+        );
+    }
+
+    let output = home.0.join("out.txt");
+    std::fs::write(&output, b"output").unwrap();
+    let output = output.to_str().unwrap();
+    assert!(
+        store
+            .files
+            .0
+            .register("s1".into(), output.into())
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        face_call(
+            &face,
+            "register",
+            json!({"sessionId": "s1", "path": output}),
+        )
+        .await
+        .unwrap(),
+        json!({})
+    );
+    assert!(store.owns("s1", output).await);
+    assert_eq!(
+        face_call(&face, "owns", json!({"sessionId": "s1", "path": output}))
+            .await
+            .unwrap(),
+        json!({"owned": true})
+    );
+    assert_eq!(
+        face_call(&face, "owned_paths", json!({"sessionId": "s1"}))
+            .await
+            .unwrap(),
+        json!({"paths": store.files.0.owned_paths("s1".into()).await.unwrap()})
+    );
+
+    let typed_error = store
+        .files
+        .0
+        .put(
+            "missing".into(),
+            "paste.txt".into(),
+            b"x".to_vec(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(typed_error.code.code(), "not_found");
+    let wire_error = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "missing", "name": "paste.txt", "content": "eA=="}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        wire_error.code(),
+        Some(typed_error.code.code()),
+        "{wire_error}"
+    );
+
+    store.root.shutdown().await.unwrap();
+}
+
+/// The face limit is the largest whole MiB whose base64 fits the runtime's
+/// 16 MiB call frame; one byte more is `too_large` before anything is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_over_the_face_limit_is_too_large_before_it_writes() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("s1").await;
+    let face = store.face();
+    assert!(
+        4 * MAX_SESSION_FILE_BYTES.div_ceil(3) < 16 * 1024 * 1024,
+        "the limit's base64 must fit the runtime's 16 MiB frame"
+    );
+
+    let at_limit = STANDARD.encode(vec![b'a'; MAX_SESSION_FILE_BYTES]);
+    let stored = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "at-limit.txt", "content": at_limit}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stored["bytes"], MAX_SESSION_FILE_BYTES);
+
+    let over = STANDARD.encode(vec![b'a'; MAX_SESSION_FILE_BYTES + 1]);
+    let refused = face_call(
+        &face,
+        "put",
+        json!({"sessionId": "s1", "name": "over.txt", "content": over}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), Some("too_large"), "{refused}");
+    assert_eq!(home.entries().len(), 1);
+    assert_eq!(
+        home.rows("SELECT file_id FROM session_files"),
+        [format!("Text(\"{}\")", stored["fileId"].as_str().unwrap())]
+    );
+    store.root.shutdown().await.unwrap();
+}
+
+/// A non-UTF-8 database path cannot be carried in the reply, so the put is
+/// refused before txn 1: nothing is written and nothing is owned. Linux is the
+/// checked Unix that admits such a name; macOS refuses it at `mkdir` (EILSEQ).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_non_utf8_database_directory_refuses_a_put_before_it_writes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let base = std::env::temp_dir().join(format!("dim-session-files-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&base).unwrap();
+    let directory = base.join(std::ffi::OsString::from_vec(b"db-\xff".to_vec()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let database = directory.join("dimcode.sqlite");
+
+    let store = Store::mount_at(&directory, database.clone(), true).await;
+    store.session("s1").await;
+    assert_eq!(
+        store.put("s1", "paste.txt", b"pasted text").await,
+        Err(SessionFileErrorCode::Storage)
+    );
+    let session_files = database.with_file_name("dimcode.sqlite.session-files");
+    assert!(
+        !session_files.exists() || std::fs::read_dir(&session_files).unwrap().next().is_none(),
+        "nothing is written"
+    );
+    let connection = Connection::open(&database).unwrap();
+    let rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM session_files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "nothing is owned");
+
+    store.root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
 }
