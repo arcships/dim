@@ -1352,6 +1352,130 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
     }
 }
 
+/// An adopted capability snapshot whose reasoning declaration is `reasoning`,
+/// or none when it is null.
+fn declaration(reasoning: Value) -> Value {
+    let mut capabilities = dim_agent_types::ModelCapabilities::with_limits(64_000, 2_048);
+    capabilities.reasoning = !reasoning.is_null();
+    let mut snapshot =
+        json!({"target":{"providerId":"test","modelId":"model"},"capabilities":capabilities});
+    if !reasoning.is_null() {
+        snapshot["reasoning"] = reasoning;
+    }
+    snapshot
+}
+
+#[test]
+fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
+    // A model whose declaration names a default effort adopts it, a model with
+    // efforts but no adopted one says so, and a model without reasoning gets no
+    // option at all.
+    for (reasoning, preferences, expected) in [
+        (
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"medium"}),
+            Some(("medium", 4)),
+        ),
+        // A declaration that names an effort its own options do not list, as
+        // 325 bundled entries do, so the adopted configuration carries none.
+        (
+            json!({"supported":true,"effort":"xhigh","effortOptions":["low","medium","high"]}),
+            json!({}),
+            Some(("provider-default", 4)),
+        ),
+        // The adopted configuration carries an effort its own declaration
+        // does not list, so the option shows it rather than denying it.
+        (
+            json!({"supported":true,"effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"minimal"}),
+            Some(("minimal", 5)),
+        ),
+        (json!(null), json!({}), None),
+    ] {
+        let home = Home::new();
+        let declaration = declaration(reasoning);
+        let daemon = home.daemon(move |wire| {
+            let mut methods = METHODS.to_vec();
+            methods.extend([
+                "session.methods",
+                "provider.catalog",
+                "session.model.update",
+            ]);
+            wire.hello(&methods);
+            wire.created();
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["capabilitySnapshot"] = declaration;
+            if !preferences
+                .as_object()
+                .is_some_and(|value| value.is_empty())
+            {
+                record["modelPreferences"] = preferences;
+            }
+            wire.reply(&attach, record);
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            let methods = wire.read("session.methods");
+            wire.reply(
+                &methods,
+                json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+            );
+            let list = wire.read("provider.list");
+            wire.reply(
+                &list,
+                json!({"providers":[{"providerId":"test","enabled":true}]}),
+            );
+            let catalog = wire.read("provider.catalog");
+            wire.reply(
+                &catalog,
+                json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            );
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        let created = peer.response(2);
+        let option = created["result"]["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["id"] == "effort");
+        let Some((current, count)) = expected else {
+            assert!(option.is_none(), "{created}");
+            peer.close();
+            daemon.join().unwrap();
+            continue;
+        };
+        let option = option.unwrap_or_else(|| panic!("no effort option: {created}"));
+        assert_eq!(option["category"], "thought_level", "{option}");
+        assert_eq!(option["currentValue"], current, "{option}");
+        let values: Vec<&str> = option["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values.len(), count, "{option}");
+        assert_eq!(values[0], "provider-default", "{option}");
+        if current == "minimal" {
+            assert!(values.contains(&"minimal"), "{option}");
+            peer.send(
+                3,
+                "session/set_config_option",
+                json!({"sessionId":"session","configId":"effort","value":"minimal"}),
+            );
+            let refused = peer.response(3);
+            assert_eq!(refused["error"]["code"], -32602, "{refused}");
+        }
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
 #[test]
 fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
     let home = Home::new();
