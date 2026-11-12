@@ -214,7 +214,8 @@ declared service tier and the declared reasoning summary.
 | `defaultEnabled`, `off`, `supported` | configures | they select or deny the effort control and send nothing themselves |
 | `serviceTier` | configures | the tier mapping, validated against the advertised options |
 | `summaries` | configures | the summary style, in the one body that carries it |
-| `mode`, `level`, `levelOptions`, `verbosity`, `verbosityOptions`, `budget` | not applied | no field exists on any request path; the first five would need their own control dispatch |
+| `budget` | configures | `max` lowers and `min` floors a Gemini thinking budget that the split derives or caps; `default` and `unit` are not read |
+| `mode`, `level`, `levelOptions`, `verbosity`, `verbosityOptions` | not applied | no field exists on any request path; they would need their own control dispatch |
 | `visibility`, `continuation`, `notes` | describes | no reader; they are upstream prose |
 | `interleaved` | describes | not expressible on any dim protocol path |
 
@@ -275,6 +276,41 @@ maximum stays in the capability snapshot
 ([ContextCompaction §5.1](plugins/ContextCompaction.md#51-productcontextmodel)).
 A Session that stored another value reads it back through the same rule when a
 request is prepared, and the stored fact is left unchanged.
+
+That allowance is also split: `answer_tokens` keeps a quarter of it for the
+answer, at least 4096 tokens and never more than half, and `thinking_tokens` is
+the rest, so a reply that thinks can never spend the whole allowance on
+thinking. The split is provisional, like the compaction trigger reserve.
+
+It applies only where a request already thinks with a budget, so no model starts
+thinking because of it. Anthropic and Bedrock take a budget when the
+configuration carries `reasoning.budgetTokens` or `reasoning.enabled`; a model
+that thinks with an effort alone keeps no budget. Gemini takes the thinking room
+on a budget-mode model whose declaration does not say thinking is off, on a
+request that states no effort, because an effort is a thinking level that a
+budget cannot sit beside. On Anthropic the request sends the answer room as
+`max_tokens` and the budget as `thinking.budget_tokens`, which the adapter sums
+back into the allowance; Bedrock sends the allowance as `maxTokens` with the
+budget beside it; Gemini keeps `maxOutputTokens` at the allowance and sends the
+room as `thinkingBudget`, lowered to the model's declared maximum and never
+raised to its minimum.
+
+A configured budget is an upper bound: it is validated as it always was, then
+capped by the thinking room, so the answer never falls below `answer_tokens`. It
+is refused only when the room itself is below the protocol's floor. A request
+with no output allowance keeps the request it had. The effort-only protocols
+(`openai-chat`, `openai-compatible`, `openai-responses`, `xai`, `xai-responses`),
+adaptive-thinking Anthropic models and level-mode Gemini models have no field to
+carry a reserve, so there thinking and the answer share one cap as before.
+
+Gemini states its budget's floor too, and the split never turns thinking off or
+changes its default: a derived room below the model's declared minimum sends no
+budget, so the model keeps its own, and a configured budget the room lowers
+below that minimum is refused, naming the allowance. A configured budget already
+below the minimum without the cap keeps the path it had. A configured `0` or
+`-1` is sent as it is, because those are Gemini's own off and dynamic settings
+rather than a size, and a budget the provider declares natively is sent as
+given, uncapped like Anthropic's native budget.
 
 `/fast on` sends `serviceTier: "priority"`; `/fast off` sends
 `serviceTier: "default"`. The shortcut requires both advertised values and a
