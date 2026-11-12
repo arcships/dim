@@ -38,19 +38,9 @@ is, always in the daemon that owns that Session
 SQLite or PostgreSQL. Whether a face is reachable over a link is decided by deployment, not by a
 classification on the name.
 
-**The target rule, and its decision dependency.** This document is written against one contract
-per service: the operations are the public contract, and a Rust typed client is a binding over
-them, not a second API. The policy text in [service faces](service-faces.md) §1, §2.4, §3.5–§3.7
-and §4.1–§4.2 still classifies the rest of the catalog with `internal` reasons, and
-[#1393](https://github.com/arcships/dim/pull/1393) keeps justified reasons for other names; this
-document does not amend that policy, and nothing outside these three faces follows from it. Until
-the maintainer decides that policy ([#1292](https://github.com/arcships/dim/issues/1292)), treat
-this section as the target these faces are designed against, and the policy document as
-authoritative for every other name. What it settles here: a shape that used to be an object is
-reshaped into operations; a credential is a capability an operation uses and never returns; a hot
-path is a property of the consumer, not a reason to publish a second API. The old names —
-`hostPlatform`, `fileStorage`, `sqliteStorage`, `timelineStore` — are the providers and their Rust
-bindings (§6).
+The public contract and migration rules are in [service faces](service-faces.md) §2.
+For these resource faces, §6 maps `hostPlatform`, `fileStorage`, `sqliteStorage` and `timelineStore`
+to their public operations and Rust bindings.
 
 What stays on the control side, in every case: Session and branch scope, admission
 (`Approval`, and `Permission` with the [ADR 014](../adr/014-file-access-facts.md) table), the
