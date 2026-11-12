@@ -14,7 +14,7 @@ normalized codes and the `AiMuxError` variant. It never matches message text.
 | `network` | `ApiCall`, origin Transport, no HTTP status | yes | could not reach the provider, or the connection dropped | check the network or proxy |
 | `rate_limited` | 429, rate-limit codes | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
 | `server_error` | 408, 5xx except 501 and 505, server and overload codes, transient stream-event codes | yes | the provider reported a server error | try again later or choose another model |
-| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
+| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream, tool arguments that never complete | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
 | `auth_rejected` | 401, 403, invalid-key/auth codes | no (the existing one credential recovery stays) | the provider rejected the credentials | sign in again or check the API key |
 | `quota_exhausted` | 402, quota/billing codes | no | the account has no quota left | check the plan or billing |
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
@@ -95,7 +95,12 @@ ModelFailure {
   the same string in `TurnOutcome::Failed.error`, so a client can tell the two
   apart and drop the repeat.
 - The `max_tokens` stop keeps its presentation and also writes
-  `failure.kind = output_limit`.
+  `failure.kind = output_limit`. It does not fail the turn: the Loop ends the
+  turn Completed with reason `output_limit` (Loop.md, the announced-call
+  section).
+- Tool arguments that never complete write
+  `failure.kind = malformed_response`, the kind `InvalidToolInput` carries for
+  the same defect.
 - A failure from a host with no provider boundary gets kind `unknown` and the
   message it already carried.
 

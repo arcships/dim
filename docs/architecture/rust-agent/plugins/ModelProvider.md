@@ -60,10 +60,13 @@ shows the pending attempt; that is display state, not a Timeline fact. The proce
 process `ProviderConnectionResolver` to resolve each request's connection; this
 profile does not.
 
-A provider's `max_tokens` stop fails that turn with a `max_tokens` presentation,
-the request's provider/model identity and an action to increase the output limit.
-It also writes `failure.kind = output_limit`.
-It is not a context-budget recovery signal and is never retried automatically.
+A provider's `max_tokens` stop fails that request with a `max_tokens`
+presentation, the request's provider/model identity and an action to increase the
+output limit. It also writes `failure.kind = output_limit`. The Loop ends that
+turn Completed with reason `output_limit`, after its one continuation for calls
+the reply announced and never executed, so the stop ends a turn rather than
+failing it. It is not a context-budget recovery signal and is never retried
+automatically.
 The private daemon log records model request failures with their Session, turn and request
 identities. The Session remains available for a later input or model configuration.
 A presentation supplied by the model host takes precedence; ModelFailurePolicy
@@ -81,7 +84,9 @@ from the origin, the status, the normalized codes and the `AiMuxError` variant,
 never from message text. A host with no provider boundary gets `unknown` and the
 message it already carried. A tool start whose name is not in `request.tools`
 fails the request before a call is committed; it is a host failure, so its
-`failure.kind` is `unknown`. `failure` is absent on events written before it
+`failure.kind` is `unknown`. Arguments that never complete fail it with
+`failure.kind = malformed_response`, the kind the same defect carries when the
+bridge reports unparseable arguments. `failure` is absent on events written before it
 existed and on failures that are not a provider call's: the agent loop's
 unsettled call on a reload and a context preparation failure. `error` is the
 default English line

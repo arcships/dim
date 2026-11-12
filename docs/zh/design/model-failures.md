@@ -11,7 +11,7 @@ aimux 桥接层是唯一持有提供方结构化错误的地方，因此由它�
 | `network` | `ApiCall`，origin 为 Transport，无 HTTP 状态 | 是 | 无法连接提供方，或连接中断 | 检查网络或代理 |
 | `rate_limited` | 429、限流 code | 是；`Retry-After` 在等待预算内时用作延迟 | 提供方正在限流 | 等待后重试 |
 | `server_error` | 408、除 501 和 505 外的 5xx、server 和 overload code、可重试的流事件 code | 是 | 提供方报告服务器错误 | 稍后重试或换一个模型 |
-| `malformed_response` | `InvalidResponseData`、`JsonParse`、`InvalidToolInput`、`NoSuchTool`、`TypeValidation`、无法解码的流 | 一次 | 提供方发来的响应 Dim 无法使用 | 重试；若反复出现，换一个模型或检查代理或网关 |
+| `malformed_response` | `InvalidResponseData`、`JsonParse`、`InvalidToolInput`、`NoSuchTool`、`TypeValidation`、无法解码的流、始终没有完成的工具参数 | 一次 | 提供方发来的响应 Dim 无法使用 | 重试；若反复出现，换一个模型或检查代理或网关 |
 | `auth_rejected` | 401、403、无效 key/认证 code | 否（保留现有的一次凭据恢复） | 提供方拒绝了凭据 | 重新登录或检查 API key |
 | `quota_exhausted` | 402、配额/计费 code | 否 | 账户没有配额了 | 检查套餐或计费 |
 | `not_found` | 404 | 否 | 提供方找不到模型或端点 | 检查模型和提供方 base URL |
@@ -57,7 +57,8 @@ ModelFailure {
 - `cause`：来自 `ApiCallError.message` 和 `ErrorCause` 的链，由外到内，每帧一行。`providerCode` 和 `requestId` 是单行且有界，最多 200 字符；为空则不存在。
 - 从不存储：请求 URL、请求头、请求值、响应体或任何凭据。aimux 已丢弃 URL；桥接层不得复制 `url`、`request_body_values` 或 `response_body`，`reason` 和原因帧只是去除了控制字符的文本。
 - 旧客户端读取的 `error` 是默认英文行 `<meaning>: <reason>. <action>`，没有 reason 时省略 `: <reason>`。不再有 `ApiCall:` 前缀。该失败结束的回合在 `TurnOutcome::Failed.error` 中携带同一字符串，客户端据此可以区分两者并去掉重复。
-- `max_tokens` 停止保留其 presentation，同时写入 `failure.kind = output_limit`。
+- `max_tokens` 停止保留其 presentation，同时写入 `failure.kind = output_limit`。它不使 turn 失败：Loop 以 `output_limit` 为 reason 把该 turn 结算为 Completed（见 Loop.md「声明了调用却从未执行的失败步骤」一节）。
+- 工具参数始终没有完成时写入 `failure.kind = malformed_response`，与 `InvalidToolInput` 对同一缺陷的 kind 相同。
 - 没有提供方边界的宿主机失败得到 kind `unknown` 和它原本携带的消息。
 
 ## 3. 谁来措辞
