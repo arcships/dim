@@ -258,7 +258,7 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
 /// Updates this installation's package on its current channel, independently
 /// of automatic-check preferences and skipped versions. Unknown installation
 /// layouts return a manual command without installing anything.
-pub async fn run() -> crate::Result<i32> {
+pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
     let package = package()?;
     let current = crate::version::VERSION;
     let tag = channel(current);
@@ -276,7 +276,7 @@ pub async fn run() -> crate::Result<i32> {
         writeln!(stderr, "Updating {package} on the {tag} channel...")?;
     }
     let cancel = CancellationToken::new();
-    let installation = install(installation, cancel.clone());
+    let installation = install(installation, cancel.clone(), legacy_exited);
     tokio::pin!(installation);
     let started = tokio::time::Instant::now();
     let mut progress = tokio::time::interval(Duration::from_millis(120));
@@ -323,35 +323,112 @@ pub async fn run() -> crate::Result<i32> {
     Ok(0)
 }
 
-/// Runs `install`; failures report the last nonempty stderr line.
-/// Cancellation terminates and waits for the installer's process tree.
-pub async fn install(install: Install, cancel: CancellationToken) -> Result<(), String> {
-    let path = install.directory.join(".dimcode-update.lock");
+const LOCK_FILE: &str = ".dimcode-update.lock";
+const BASELINE_FILE: &str = ".dimcode-consumers";
+
+/// The shared lock this process holds on its installation for its lifetime.
+static LEASE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+fn open_lock(directory: &Path, create: bool) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
+    options
+        .read(true)
+        .write(create)
+        .create(create)
+        .truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let lock = options
-        .open(&path)
-        .map_err(|error| format!("Cannot lock installation {}: {error}", path.display()))?;
-    if !lock
-        .metadata()
-        .map_err(|error| error.to_string())?
-        .is_file()
-    {
-        return Err("Installation lock must be a regular file".to_owned());
+    let file = options.open(directory.join(LOCK_FILE))?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "Installation lock must be a regular file",
+        ));
     }
+    Ok(file)
+}
+
+fn shared(directory: &Path) -> Result<Option<std::fs::File>, String> {
+    let Ok(file) = open_lock(directory, true).or_else(|_| open_lock(directory, false)) else {
+        return Ok(None);
+    };
+    match file.try_lock_shared() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err("An update is replacing this installation; retry after it finishes".to_owned())
+        }
+        Err(std::fs::TryLockError::Error(error)) => Err(error.to_string()),
+    }
+}
+
+/// Registers this process as a live consumer of the installation it runs
+/// from, in any home, until it exits. An update refuses while any consumer
+/// holds the lease. Does nothing for a source build or a layout the updater
+/// does not recognise, and when the installation's lock file cannot be
+/// opened (a root-owned prefix the user cannot write). Fails while an update
+/// is replacing the installation.
+pub fn hold_installation() -> Result<(), String> {
+    let Ok(package) = package() else {
+        return Ok(());
+    };
+    let Some(directory) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| installer(&exe, &package, "x"))
+        .map(|install| install.directory)
+    else {
+        return Ok(());
+    };
+    *LEASE.lock().unwrap() = shared(&directory)?;
+    Ok(())
+}
+
+/// Runs `install`; failures report the last nonempty stderr line.
+/// Cancellation terminates and waits for the installer's process tree.
+///
+/// The installation lock is taken exclusively, so it fails while any other
+/// process (client, server or installer, in any home) uses the installation.
+/// This process's own lease is released for the duration and restored after.
+/// Without the baseline marker an older consumer, which holds no lease, cannot
+/// be ruled out: the install is refused unless `legacy_exited` states that
+/// every older client and server has exited, which then creates the marker.
+pub async fn install(
+    install: Install,
+    cancel: CancellationToken,
+    legacy_exited: bool,
+) -> Result<(), String> {
+    let own = LEASE.lock().unwrap().take();
+    drop(own);
+    let result = install_exclusive(&install, cancel, legacy_exited).await;
+    *LEASE.lock().unwrap() = shared(&install.directory).ok().flatten();
+    result
+}
+
+async fn install_exclusive(
+    install: &Install,
+    cancel: CancellationToken,
+    legacy_exited: bool,
+) -> Result<(), String> {
+    let path = install.directory.join(LOCK_FILE);
+    let lock = open_lock(&install.directory, true)
+        .map_err(|error| format!("Cannot lock installation {}: {error}", path.display()))?;
     match lock.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
             return Err(
-                "Another update is using this installation; retry after it finishes".to_owned(),
+                "This installation is in use by a client, server or update (in any home). Exit them, stop the server with `dimcode daemon stop`, and retry".to_owned(),
             );
         }
         Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
+    }
+    let baseline = install.directory.join(BASELINE_FILE);
+    if !baseline.exists() {
+        if !legacy_exited {
+            return Err("Older versions do not register as users of this installation, so an idle installation cannot be confirmed. Exit every client and stop every server, then run `dimcode update --confirm-legacy-exited`".to_owned());
+        }
+        std::fs::write(&baseline, b"")
+            .map_err(|error| format!("Cannot record {}: {error}", baseline.display()))?;
     }
     let mut command = tokio::process::Command::new(&install.program);
     command

@@ -631,6 +631,48 @@ echo 'Installed package'
         .map_or("latest", |(_, prerelease)| {
             prerelease.split('.').next().unwrap()
         });
+    let refuse = |extra: &[&str]| {
+        Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .args(extra)
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .output()
+            .unwrap()
+    };
+    let output = refuse(&[]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--confirm-legacy-exited"),
+        "{output:?}"
+    );
+    assert!(
+        !recorded.exists(),
+        "an unconfirmed legacy installation must not start npm"
+    );
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(prefix.join(".dimcode-update.lock"))
+        .unwrap();
+    lease.try_lock_shared().unwrap();
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("in use by a client, server or update"),
+        "{output:?}"
+    );
+    assert!(
+        !recorded.exists() && !prefix.join(".dimcode-consumers").exists(),
+        "a live consumer must block the install and the baseline"
+    );
+    drop(lease);
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(prefix.join(".dimcode-consumers").exists());
+    fs::remove_file(&recorded).unwrap();
     for (package, fail) in [
         ("dimcode-alpha", false),
         ("dimcode", false),
@@ -746,7 +788,7 @@ echo 'Installed package'
                 assert!(!output.status.success(), "{output:?}");
                 assert!(
                     String::from_utf8_lossy(&output.stderr)
-                        .contains("Another update is using this installation"),
+                        .contains("in use by a client, server or update"),
                     "{output:?}"
                 );
                 assert!(

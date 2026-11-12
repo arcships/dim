@@ -65,6 +65,10 @@ fn main() {
         ));
     }
     if std::env::args().nth(1).as_deref() == Some("app-server") {
+        if let Err(error) = dim_cli::hold_installation() {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
         let provider = CLIENT_IDS.map(|(cn, global)| {
             dim_oauth::row(dim_oauth::ClientIds {
                 cn: cn.into(),

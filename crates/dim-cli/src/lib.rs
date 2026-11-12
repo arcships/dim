@@ -52,6 +52,13 @@ use std::sync::Arc;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
 
+/// Registers the calling process as a live user of its package installation,
+/// so `update` refuses while it runs. The host calls it before starting the
+/// App Server.
+pub fn hold_installation() -> std::result::Result<(), String> {
+    update::hold_installation()
+}
+
 /// Runs the CLI with the process arguments and returns its exit code. The
 /// host binary must answer `app-server` with the App Server command line,
 /// which the CLI starts as its daemon unless `--server` names another.
@@ -599,9 +606,10 @@ async fn run_acp(
 }
 
 async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
-    if matches!(options.action, Action::Update) {
-        return update::run().await;
+    if let Action::Update { legacy_exited } = options.action {
+        return update::run(legacy_exited).await;
     }
+    update::hold_installation()?;
     // `block_on` polls `act` on this thread, so the thread-local language
     // holds; the connection code may run on another thread, so it carries the
     // same language as a value.
@@ -967,7 +975,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         | Action::Migration(_)
         | Action::Help
         | Action::Version
-        | Action::Update
+        | Action::Update { .. }
         | Action::DaemonStop
         | Action::DaemonVacuum { .. }
         | Action::Timeline { .. }

@@ -2244,16 +2244,20 @@ need alignment with the lifecycle and launch owners before changing their contra
   Refusal must not cancel accepted work. Reuse Session leases and activity holds, rather
   than interpreting each business plugin's state from the updater. The owner specifies
   the language-neutral face and verifies concurrent input, creation and detached work.
-- **Launch requirement:** consumers of one installation need live OS-owned leases before
-  using its payload, across homes, coordinated with the installer lock. Recorded home/PID
-  metadata alone is not proof of occupancy or idleness. An unrecognized or older consumer
-  that cannot participate must lead to refusal, not an assumed empty installation.
-- **First migration:** installing a lease-aware build cannot retroactively register older
-  running consumers. Until a trustworthy baseline exists, automatic updates refuse. The
-  manual path requires exiting all clients and stopping all old servers before reinstalling.
-  An explicit operator confirmation that this manual migration is complete could initialize
-  the baseline; this is a proposed trust boundary requiring owner approval, not an automatic
-  inference from the installed version or permission to override a known active lease.
+- **Installation leases:** every CLI and App Server process started from a recognised
+  package installation holds a shared OS file lock on `.dimcode-update.lock` at the manager
+  root, in any home, until it exits. `update` takes the lock exclusively and refuses without
+  starting its package manager while any lease exists; a leaseholder fails to start while an
+  update holds the lock. The OS releases a lease when its process dies, so a crash never
+  leaves a stale occupant. A source build or unrecognised layout holds no lease and is never
+  updated.
+- **First migration:** older builds hold no lease, so a lease-aware install cannot prove
+  they have exited. Until `.dimcode-consumers` exists at the manager root, `update` refuses.
+  After exiting every client and stopping every old server, the operator runs
+  `update --confirm-legacy-exited`, which creates the marker and installs. The flag trusts
+  that statement for older processes only: a live lease still refuses.
+- **Remaining:** quiescing process admission before shutdown, safe replacement on Windows,
+  and successor activation by the new client are not part of the command yet.
 - **Effects and ownership:** quiescence changes admission, not Timeline order, batching,
   recovery formats or already accepted work. The App Server/lifecycle owners implement
   and verify the generic operation; native launch and installation owners implement the

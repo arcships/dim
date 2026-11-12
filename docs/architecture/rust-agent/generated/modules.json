@@ -33752,6 +33752,7 @@
       "to": "dim_cli::update",
       "references": [
         "mod update",
+        "path update::hold_installation",
         "path update::registry",
         "path update::run"
       ]
