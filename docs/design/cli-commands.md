@@ -2313,9 +2313,11 @@ The line client and both terminal UI modes print one line per warning, as the ch
 In the terminal UI each line is a status row in the warning colour, committed to the transcript
 beside the message it belongs to (`Update::Report { warning: true }`). In the line client it is one
 record: `stdout` when interactive, `stderr` otherwise. `exec` writes it to `stderr`, so `exec --json`
-stdout stays one JSON-RPC notification per line. The row is not an error: the input was written. A steer whose
-old message had already left the queue is written all the same, so its warnings appear beside the notice that
-the message left.
+stdout stays one JSON-RPC notification per line. The row is not an error: the input was written. A steer's
+warnings belong to the replacement that call wrote, and a call that wrote none shows none; whether a withdrawal
+whose old message has left the queue writes one is A.4's decision
+([session access A.4](contracts/session-access.md#a4-withdrawal)), and the notice that the message left is shown
+either way.
 
 ### Headless execution
 

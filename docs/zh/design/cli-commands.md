@@ -1483,7 +1483,7 @@ Assistant: ...
 在终端 UI 里每行是警告色的状态行，提交进 transcript、紧挨它所属的那条消息
 （`Update::Report { warning: true }`）。行客户端里它只是一条记录：交互时写 `stdout`，否则写
 `stderr`。`exec` 写到 `stderr`，因此 `exec --json` 的 stdout 仍是一行一条 JSON-RPC 通知。这行不是错误：
-输入已经写入。旧消息已离开队列时 steer 仍会写入，因此它的警告与「消息已离开队列」的提示并排出现。
+输入已经写入。steer 的警告属于该调用写入的那条替代输入，没写入替代输入的调用也就不显示警告；旧消息已离开队列的撤回是否写入替代输入，由 A.4 决定（[Session 访问 A.4](contracts/session-access.md#a4-撤回)），而「消息已离开队列」的提示两种情况都会显示。
 
 ### 无头执行
 
