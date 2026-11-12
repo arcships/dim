@@ -36,14 +36,74 @@ Other tools retain their existing header summaries. Summary
 adds one row per call, in call order, naming its tool and input target or command,
 without output, diffs or script bodies. Each row truncates to one terminal row;
 a multiline command shows its first nonblank line followed by `…`. Expanded
-retains the full tool details. Clicking a tool header cycles the same three forms
-for that group only. A member's summary row still opens its conversation.
+retains the full tool details. These are the scrollback forms; fullscreen uses
+the same preference as a default for independently expandable nodes.
 
-`/tools` cycles the three tool forms, retaining its control of compaction details:
+In fullscreen, collapsed closes the batch; summary opens its call list with
+call details closed; expanded opens both containers and details. A click toggles
+only its actual batch, codemode or call header between open and closed. Closing
+a parent hides its descendants without changing their choices. Siblings and
+other batches never change. Children belong to their actual parent call, not a
+category inferred from indentation; category labels add no disclosure layer.
+A single codemode may use the batch header without a duplicate container.
+
+```text
+▾ ✓ Edited 2 files
+  ▾ ✓ Edit src/a.rs +2 −1
+        Old New   Changes
+         12     − old
+             12 + new
+  ▸ ✓ Edit src/b.rs +1 −1
+```
+
+Only headers with details have disclosures. Completed calls show bounded,
+type-appropriate results: command output, file/skill content, search matches,
+directory/glob entries, web results, task results or generic input/results.
+Edit and Write share a single-column compare with old/new line numbers,
+explicit deletion/addition signs, unchanged context and hunk gaps. Diff body
+text takes removal/addition background colors where the terminal palette
+supports them; line-number gutters stay neutral and wrapped code continues in
+its content column. New files compare empty to their recorded contents;
+overwrites compare the operation's actual before/after, never a later disk
+read. Missing historical diffs say comparison is unavailable. Running or failed
+calls do not present proposed changes as applied. Existing output budgets remain.
+In both modes, file results and change counts use only recorded comparisons,
+never a reconstruction from tool input, including while a call is running.
+Write is labeled Create only when the recorded comparison identifies a new file;
+an additions-only overwrite remains Write. Batch change totals are shown only
+when every completed file operation has a recorded comparison; an omitted
+comparison must not make a partial total look complete.
+
+Pending calls retain an animated activity mark and a `Running…` title status even
+when their details are closed. Open command details show available output, or
+`Waiting for result…` until output exists. Completion or failure changes the
+status and body without changing any node's expansion. Spinner-only title
+updates do not invalidate a press on the same stable header.
+
+Hover highlights only the actionable title, pressed feedback is stronger without
+moving its text, and a successful click retains a subtle position indication.
+Neither feedback nor new output changes expansion. A click requires release on
+the same still-valid target without a drag. Text selection, safe links and the
+explicit member-conversation entry keep separate actions; the member's tool
+header toggles its details instead of navigating. Existing Tab/Shift+Tab
+transcript traversal includes committed tool headers; Enter/Space toggles only
+the focused tool. Mouse-off retains native
+terminal selection. Free-motion reports are enabled and restored with fullscreen
+mouse mode; unsupported terminals retain click and keyboard operation.
+
+`/tools` cycles the three tool defaults, retaining its control of compaction details:
 only expanded shows a compaction's summary body. Thinking details controls both streaming and completed thoughts,
 including the line side panel. Changing either setting updates its retained
-history and live content without changing the other setting. Scrollback already
-written to the terminal remains append-only; fullscreen redraws retained history. A runtime block a hook wrote follows the same rule: collapsed and summary keep a hook context's or a `Stop` follow-up's body closed, only expanded opens it, and a click on the row toggles that row alone.
+history and live content without changing the other setting. In fullscreen,
+explicit per-node choices override the preset and survive live-to-settled,
+resize, history reconstruction and line changes in the same client. Choices
+are isolated by Session, line, request and call identity, remain in client
+memory only, and are not Timeline facts. The preset affects unchosen and future
+nodes without clearing manual choices. Scrollback already
+written to the terminal remains append-only; fullscreen redraws retained history.
+A runtime block a hook wrote follows the same rule: collapsed and summary keep
+a hook context's or a `Stop` follow-up's body closed, only expanded opens it,
+and a click on the row toggles that row alone.
 
 In scrollback, expanded thinking streams its complete body into native terminal
 history, without a preview line limit or an omitted-prefix marker. Only the
@@ -2402,6 +2462,27 @@ permission preset, the goal marker, the context use against
 its window, and one slot for the state in force — a notice, a required answer or permission,
 `esc interrupt`, or the background task count. The model, with its effort when both fit, is
 right-aligned on the same line; the line is clipped to the terminal width.
+
+### Submit check warnings
+
+A successful `session.submit`, `session.input.withdraw {steer}` or `session.branch_create` reply may
+carry `warnings: [{check, message}]`: work a submit check did not do, such as a `UserPromptSubmit`
+hook that failed with `onFailure: continue` ([Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)).
+The line client and both terminal UI modes print one line per warning, as the check sent it:
+
+```text
+◦ Hook user did not finish: exited with exit status: 3
+◦ Hook project did not finish: timed out after 30s
+```
+
+In the terminal UI each line is a status row in the warning colour, committed to the transcript
+beside the message it belongs to (`Update::Report { warning: true }`). In the line client it is one
+record: `stdout` when interactive, `stderr` otherwise. `exec` writes it to `stderr`, so `exec --json`
+stdout stays one JSON-RPC notification per line. The row is not an error: the input was written. A steer's
+warnings belong to the replacement that call wrote, and a call that wrote none shows none; whether a withdrawal
+whose old message has left the queue writes one is A.4's decision
+([session access A.4](contracts/session-access.md#a4-withdrawal)), and the notice that the message left is shown
+either way.
 
 ### Headless execution
 
