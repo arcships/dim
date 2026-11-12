@@ -81,6 +81,7 @@ async fn v38_array_upgrade_is_atomic_reuses_versions_and_rejects_missing_locator
             .unwrap();
     }
     drop_v40(&connection);
+    without_automation_origin(&connection);
     connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 38)); INSERT INTO agent_store_format VALUES(38);").unwrap();
     assert_eq!(schema(&connection), schema_of(38));
     let old_events = rows(&connection, "timeline_events");

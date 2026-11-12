@@ -54,7 +54,7 @@ approve such a write.
   replacement. The change is tracked in #691.
 - An existing `host-isolation.json` is not read; ADR 010's startup diagnostic is the visible
   channel, and the user removes the file.
-- No Timeline event or wire field is added. The source is business configuration.
+- No new Timeline event type or wire field is added. A branch part appends a one-time `<dim-state>` snapshot as an Append-mode `input/message` on open and on each `SettingsChanged`, and a Session part registers the read-only `settings` tool. Snapshots and tool results use their existing context paths; the source remains business configuration. Snapshot delivery is defined by [EnvironmentSettings](../design/plugins/EnvironmentSettings.md), and the read tool by [AgentSettings](../design/plugins/AgentSettings.md).
 
 ## Non-goals
 
@@ -72,16 +72,16 @@ remains as written.
 
 | Rule | Application |
 | --- | --- |
-| §1, ADR 002 D1 | `ExecutionSettings` is an App Server process part that owns the source and the port; `HostPlatform` remains a process part and reads the port. |
+| §1, ADR 002 D1 | `ExecutionSettings` is an App Server process part that owns the source and the port and registers the branch snapshot Capability and the normal Session read-tool part; `HostPlatform` remains a process part and reads the port. |
 | §4 rule 1 | The source is configuration with typed `settings.read/update`; no command event. |
 | §4 rule 2 | The source applies to the next process; an admitted call is unchanged. |
 | §4 rule 3 | No `before` callback. |
 | §4 rule 4 | No core mechanism change. |
 | §4 rule 5 | No Timeline batch. |
-| §4 rule 6 | No context-input change. |
+| §4 rule 6 | The snapshot enters the model as an appended input; no Prompt source and no second context path. |
 | §4 rule 7 | `HostPlatform` reads its port; the App Server part reads the typed `SettingsService`. |
 | §4 rule 8 | No infrastructure change; the port follows `CommandRulesHost` and `SkillSettingsHost`. |
-| §4 rule 9 | No new Timeline fact. |
+| §4 rule 9 | The source remains business configuration; only delivered snapshots enter existing input facts. |
 | ADR 002 D2 | No wiring plugin. |
 | ADR 002 D3 | The source is user-scoped; `HostPlatform` depends on the port. |
 | ADR 002 D4 | Business configuration, read at use time. |

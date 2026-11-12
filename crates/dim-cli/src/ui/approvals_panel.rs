@@ -97,7 +97,7 @@ impl ApprovalsPanel {
         self.focus_hint();
         match event {
             Event::Close => Effect::Close,
-            Event::Pick(id) => match id.as_str() {
+            Event::Pick { id, .. } => match id.as_str() {
                 "rules" => Effect::OpenArea {
                     area: Area::Permissions,
                     note: None,

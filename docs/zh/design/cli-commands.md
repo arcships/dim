@@ -717,10 +717,12 @@ Select a model
   Manual: no models · add a model with provider.models.create
   Edit models                Manual  manual
   Subagent models: Agent choice
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 ```
 
 `dimcode models PROVIDER remove MODEL` 不经面板的确认直接移除；`dimcode models PROVIDER inspect MODEL` 打印详情显示的那些行。
+
+Enter 同时写入新 Session 在此文件夹读取的默认值（[Provider 管理 §4](appserver/provider-management.md#4-客户端集成)）。
 
 ### Workflow 领域
 
@@ -858,7 +860,7 @@ Remove 先在提示栏询问，`Remove deny prefix git push? Enter confirm · Es
 | `dimcode session delete SESSION` | 永久删除该 Session 及存储为它保留的一切；不弹出确认。 |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | 列出某个选择器命中的 Session，确认后删除。 |
 | `/rename TITLE` 或 `/rename --clear` | 设置或清除所显示 Session 的手动标题；该文本是命令，永不成为模型输入。 |
-| `/resume` | 在当前工作区上打开 Session 选择面板（[`/resume` 选择面板](#resume-选择面板)）；`Ctrl+S` 在本地范围（启动工作区，或 git 回答后的当前仓库）与所有工作区之间切换。 |
+| `/resume` | 在当前工作区上打开 Session 选择面板（[`/resume` 选择面板](#resume-选择面板)）；`Ctrl+S` 在本地范围（启动工作区，或 git 回答后的当前仓库）与所有工作区之间切换，`Ctrl+X` 在确认后一次删除一行。 |
 | `/export markdown PATH` 或 `/export json PATH` | 交互客户端空闲时把当前主分支导出到文件。 |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | 不经守护进程，把 Session 的完整 Timeline 写成带版本的 JSONL（[Timeline 导出](appserver/timeline-export.md)）；未给输出路径时写到 stdout。 |
 | `dimcode daemon vacuum [--database PATH]` | 用 SQLite `VACUUM` 重写离线原生库，回收已删除 Session 留下的页，并打印操作前后的大小（[存储格式](appserver/native-storage-format.md#sqlite-运行参数与空间回收)）；守护进程持库时失败，也不创建或升级库。 |
@@ -1037,7 +1039,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago                                          │
 │   Update the catalog design  1d ago                                          │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1047,7 +1049,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/app-fix/web                      │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 ```text
@@ -1057,7 +1059,7 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 │                                                                              │
 │   Fix the failing test       3h ago · ~/src/app/web                          │
 │   Update the catalog design  1d ago · ~/src/other                            │
-╰───────────────────── Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
+╰────────────── Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close ─╯
 ```
 
 - 切换范围像一次新的查询：取消尚未完成的读取、丢掉游标、重新读第一页；查询保留，并在新范围内生效。
@@ -1075,6 +1077,19 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
   的本地范围、所有工作区范围以及无匹配行都显示 `No saved sessions yet.`。
 - 没有 `session.catalog` 的守护进程经 `session.summaries` 列目录，客户端把范围应用到收到的行上：
   恰好是启动工作区、属于 git 集合，或不过滤。
+- `Ctrl+X` 在 `Delete "{name}"? Enter confirm · Esc cancel` 确认后删除所选行，其中 `{name}`
+  是该行去掉来源标签后的名称，在按键时捕获——之后到来的分页、范围回答或刷新都不会重新指向问题，
+  Enter 也不会再按行查找。问题占据所有按键：Enter 发送 `session.delete {sessionId}`
+  （不带 `requireInactive`，因此正在运行的 Session 也会连同其收尾一起被删除），其余任何按键都取消，
+  Esc 不关闭面板。守护进程回答期间行保持绘制，除 Esc 外按键不产生作用——Esc 关闭面板：
+  删除可能等待一次缓慢的关闭，结果会显示在操作者所在的对话记录中。`{deleted:true}` 时行离开列表并显示
+  `Deleted {name}.`；`{deleted:false}` 重新读取第一页并显示 `Nothing was removed: no stored
+  Session {name}.`；出错时行保留并显示 `Delete failed · <守护进程的句子>`；不支持 `session.delete`
+  的守护进程保留行并说明不能删除 Session。另一个调用方已先移除的 Session 就是这样的 `{deleted:false}`
+  回复：已没有可移除的行。删除当前显示的 Session 时，无论删除成功、还是关闭已执行而删除失败
+  （`-32603`），都像 `/new` 一样返回 Home 且不报告断开：
+  排在其后的 `session.state` 与 `session.closed` 通知不匹配任何 Session 而被忽略。一次只删一行；
+  批量选择仍由 `dimcode session cleanup` 提供。
 - `dimcode --resume ID` 仍可恢复任何工作区的 Session，清理也在所有工作区范围内选择。
 
 ### 会话标题
@@ -1112,7 +1127,8 @@ TITLE 视为缺失，也按同样方式拒绝。
 `true` 时打印 `Deleted ID`，为 `false` 时在 stderr 打印
 `Nothing was removed: no stored Session ID.` 并以 1 退出。守护进程
 在这个 id 下没有行，是一次什么都没移除的成功删除；这不是用法错误，命令行本身写错才是。回复不带该字段
-（来自更旧的 App Server）时按一次删除处理：两种情况下行都已不在，也就是所要求的状态。
+（来自更旧的 App Server）时按一次删除处理：两种情况下行都已不在，也就是所要求的状态。TUI 的 `/resume`
+对一行调用同一个方法，回复含义相同（[`/resume` 选择面板](#resume-选择面板)），从不多行删除。
 
 `dimcode session cleanup` 用同样的两个方法组合删除，符合
 [§5.1](appserver/session-deletion-and-fork.md#51-cleanup-by-age-or-count) 的要求。它用
@@ -1135,9 +1151,10 @@ TITLE 视为缺失，也按同样方式拒绝。
 清理在所有工作区范围内选择，而不只是 `/resume` 打开时所在的那一个：它选的类别就是 `/resume`
 默认列出的那些
 （[分类](../../design/appserver/session-classification.md#35-catalog-visibility)）：来源为 `client` 或 `unknown`。
-`internal` 的 Session
+这是一份正向名单，没有列出的来源一律不会被选中。`internal` 的 Session
 永远不会被选中：成员随其 leader 的删除一起消失，启动的 Session 属于它的插件。`acp` 的 Session
-同样不会被选中；用 `dimcode session delete ID` 删除它。不被选中的 Session 既不占用 `--keep N`
+同样不会被选中；用 `dimcode session delete ID` 删除它。`automation` 的 Session 也一样：它由已保存的配置启动，
+由启动它的插件按自己的保留策略删除。不被选中的 Session 既不占用 `--keep N`
 的名额，也不出现在预览里。
 
 轮次正在运行或仍有客户端附着的 Session 会被保留：预览在选择结果之后以 `Kept (active):` 列出这些
@@ -1445,6 +1462,23 @@ Assistant: ...
 滚动回显客户端在编辑器下方画一行状态行：代理标记与当前权限预设、目标标记、
 上下文对窗口的占用，以及一个显示当前状态的槽位——通知、需要回答或审批、`esc interrupt` 或后台任务数。
 模型（放得下时连同推理强度）靠右对齐；整行按终端宽度截断。
+
+### 提交检查的警告
+
+成功的 `session.submit`、`session.input.withdraw {steer}` 或 `session.branch_create` 回复可以带
+`warnings: [{check, message}]`：提交检查没有做的工作，例如以 `onFailure: continue` 失败的
+`UserPromptSubmit` Hook（[Hooks A.6.2](plugins/Hooks.md#a62-操作者输入入口处的提交检查)）。行客户端与两种终端 UI
+模式按检查给出的原样，每条警告打印一行：
+
+```text
+◦ Hook user did not finish: exited with exit status: 3
+◦ Hook project did not finish: timed out after 30s
+```
+
+在终端 UI 里每行是警告色的状态行，提交进 transcript、紧挨它所属的那条消息
+（`Update::Report { warning: true }`）。行客户端里它只是一条记录：交互时写 `stdout`，否则写
+`stderr`。`exec` 写到 `stderr`，因此 `exec --json` 的 stdout 仍是一行一条 JSON-RPC 通知。这行不是错误：
+输入已经写入。steer 的警告属于该调用写入的那条替代输入，没写入替代输入的调用也就不显示警告；旧消息已离开队列的撤回是否写入替代输入，由 A.4 决定（[Session 访问 A.4](contracts/session-access.md#a4-撤回)），而「消息已离开队列」的提示两种情况都会显示。
 
 ### 无头执行
 

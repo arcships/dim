@@ -3,6 +3,7 @@ pub use dim_client::wire::*;
 
 use dim_agent_types::ToolResult;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +210,15 @@ pub fn workflow_report(text: &str) -> Option<(String, WorkflowState)> {
     let (status, _) = rest.strip_prefix(r#" status=""#)?.split_once('"')?;
     let status = serde_json::from_value(serde_json::Value::String(status.to_owned())).ok()?;
     Some((unescape(run), status))
+}
+
+/// The warnings a reply carries: the submit checks' work that did not happen
+/// (Hooks A.6.2). An absent list is no warning.
+pub fn warnings(reply: &Value) -> Vec<dim_agent_types::SubmitWarning> {
+    reply
+        .get("warnings")
+        .and_then(|warnings| serde_json::from_value(warnings.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Reverses the marker's attribute escaping.

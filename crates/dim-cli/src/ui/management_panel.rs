@@ -488,7 +488,7 @@ impl ManagementPanel {
         };
         let event = self.list.handle_key(key);
         self.refresh_hint();
-        let Event::Pick(key) = event else {
+        let Event::Pick { id: key, .. } = event else {
             return Effect::None;
         };
         let Some(entry) = self.entry(&key) else {

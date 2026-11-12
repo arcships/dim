@@ -21,15 +21,23 @@ The root `./dev` entry performs incremental CLI/App Server builds without disabl
 
 The [Web workspace](../design/web-workspace.md) frontend in `web/` is a separate artifact (`scripts/stage-web.mjs` builds it; the CLI finds the installed `dimcode-web` package or a `web/` directory beside the executable or in the product home, or `DIMCODE_WEB_ASSETS` names one), so building `dim-app-server` and `dimcode` needs neither Node nor npm. Only `cargo build --features embedded-web` compiles the frontend in; then `build.rs` runs `npm ci` and `npm run build` when that frontend changed, and a host without npm fails the build. Otherwise Node is only needed for packaging, packaging checks and TypeScript plugin execution/development. `.node-version` pins the Node version bundled into account-enabled releases. The `runtime/package-lock.json` fixes the rutis Node runtime and its transitive dependencies; `npm ci --ignore-scripts --prefix runtime` installs them for local bridge testing.
 
-Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only the check groups their paths need (see [GitHub workflows](../release/README.md#github-workflows)). A separate CLI job uses a self-hosted Windows x64 runner for its native boundary flows; its clipboard fixture writes the runner's current clipboard. Release builds use separate GitHub-hosted VMs matching each target OS and CPU. See the [runner setup and release matrix](../release/README.md#runner-setup).
+Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only the check groups their paths need (see [GitHub workflows](../release/README.md#github-workflows)). The separate `windows-cli` job runs native boundary flows on a GitHub-hosted Windows x64 VM, where its fixture writes to the clipboard. Release builds use GitHub-hosted VMs matching each target OS and CPU. See the [runner setup and release matrix](../release/README.md#runner-setup).
 
 The macOS clipboard flows use private pasteboards and serialize access to the shared pasteboard server; other tests remain parallel.
+
+The confined Apple Vision PNG recognition test is manual on macOS ARM64. Use it to reproduce or verify [#1446](https://github.com/arcships/dim/issues/1446).
+
+```sh
+cargo test --locked -p dimcode --test ocr_helper_flow an_image_is_recognized_under_the_confinement -- --ignored --exact
+```
 
 Each runner's OS/libc baseline must be recorded and verified before declaring that platform supported. Cross-built executables are checked for the target architecture during staging, but installation and runtime acceptance still require the corresponding target system.
 
 Public Node provider and MCP interoperability fixtures use development dependencies declared in `runtime/package.json`. Install them with `npm ci --prefix runtime --ignore-scripts`; distribution staging uses `--omit=dev` and does not ship those SDKs.
 
 Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
+
+The full-screen permission acceptance flow runs manually while [#1454](https://github.com/arcships/dim/issues/1454) tracks its intermittent stall. Run `cargo test --locked -p dimcode --test cli_flow tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules -- --ignored --exact`.
 
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
 

@@ -333,7 +333,7 @@ sequenceDiagram
 9. **管理面**：管理方法（`account.*`、`provider.*`、`mcp.*`、`skills.*`、`settings.read`/`settings.update`/`settings.sources`/`settings.projects`，以及新进程插件的方法）由进程插件注册到 `managementMethods`；rutis 会话的远端也能访问该服务（[rutis 0.19 升级 M8](rutis-0.19-upgrade.md#m8-ui-leaf-是一个插件它的生命周期就是一条会话)）。Session 方法没有级别；`shell.*` 是普通 Session 方法。本地 RPC 服务两类方法，RemoteGateway 只服务 Session 方法，rutis 会话的对端通过导出的 `managementMethods` 服务使用管理方法（受信的本地代码）。不存在身份分级。`hello`、`daemon.*`、`agent.*` 和现有的 `session.*` 方法保持为 Rpc 内建方法；`daemon.shutdown` 是内建方法，从不提供给已配对设备（带 `deviceId` 的连接）。
 10. **远程 Session 方法**：已配对设备可调用所有 Session 方法，包括 `session.permission.update` 和 `shell.*`（兼容性变更，[方法 A.4](contracts/session-boundary.md#a4-迁移与兼容性)）。
 11. **在途工作**：没有共享注册表。每个所有者提供自己的查询与停止，由 CLI 汇总。
-12. **撤回**：由 InputQueue 拥有的单一合同。`input/withdraw {input_id, reason?}` 是一个指令事件，可由任何合法生产方写入：客户端经 `session.input.withdraw`（InputQueue 通过 `sessionMethods` 提供的 Session 方法），进程调用方经 `sessions.withdraw`。InputQueue 按序消费它；只有当它仍持有该输入且尚未应用（无 `input/applied`）时，才写入结果事实 `input/deleted {input_id}`，且永不应用该输入。否则（未知、已应用或已删除）不写入任何内容，调用方收到的回复为 `notHeld`。已应用的输入无法撤回，Loop 不变。“撤回并作为 Steer 重新提交”是一个原子批次。每个待处理输入推导都排除已删除的输入，它们从不进入模型上下文（其带 key 的块从不生效）。
+12. **撤回**：InputQueue 拥有撤回与排队输入条件 Steer 合同（[Session 访问 A.4](contracts/session-access.md#a4-撤回)）。每个待处理输入推导都排除已删除的输入，它们从不进入模型上下文（其带 key 的块从不生效）。
 13. **提交前处理**：插件只能通过 Timeline before 回调，在另一个所有者的写入提交前对其作出处理，回调同步变换草稿，不阻止写入，不等待外部工作；该写入的消费方不做任何特定于插件的改动。
 14. **低业务耦合**：raw 块标记与 key、配置 key 和方法命名空间都带所有者前缀。消费方为自己的任务选择的模型是它自己的配置，显式传给共享服务；共享服务不保存按消费方区分的策略。收集方从不点名贡献方。
 15. **交互式 Session**：`interactive` 表示 Session 有可交互的对象，能回答它的提问和审批，可以是用户，也可以是另一个 Session 或分支的 agent（[Session 访问 A.3](contracts/session-access.md)）。`session.create` 设置 `interactive`（客户端只在其为 false 时发送）。Exec 和自动化创建非交互 Session；ACP Session 是交互的，因为编辑器回答它的审批。装配不依赖 `interactive`，因此 fork 前后工具集合与提示词前缀保持一致（#30）；这类 Session 中 `ask_user` 回答当前没有可以回答的对象。SessionTitle 只作用于交互式 leader Session。
@@ -368,7 +368,7 @@ rutis 节点通过连接行相连：连接把一个通道交给 rutis session，
 
 | 事件 | 写入方 | 必要性 |
 | --- | --- | --- |
-| `input/withdraw {input_id, reason?}` | 客户端（`session.input.withdraw`，由 InputQueue 提供）、进程调用方（`sessions.withdraw`） | 一个通过序号与采纳排序的指令；可选的 `reason`（通用文本，不带业务含义）是客户端为被删除输入显示的内容 |
+| `input/withdraw`（[A.4](contracts/session-access.md#a4-撤回)） | 客户端（`session.input.withdraw`，由 InputQueue 提供）、进程调用方（`sessions.withdraw`） | 一个通过序号与采纳排序的指令；其所有者定义可选的原因与已检查的 Steer 候选输入 |
 | `input/deleted {input_id}` | InputQueue | 结果事实：被持有的输入永不被应用；队列状态必须可重建 |
 
 Questions 不新增事件：待答问题是没有 `step/tool-result` 的 `ask_user` 的 `step/tool-call`，回答就是工具结果（[Questions §2](plugins/Questions.md#2-数据与状态)）。
@@ -381,7 +381,7 @@ Questions 不新增事件：待答问题是没有 `step/tool-result` 的 `ask_us
 | `external_agent/*` | Collaboration 事实、审批事实 | 外部 Agent 是 Collaboration 成员；委派事实归 Collaboration |
 | `session/titled` | SessionStore 进程级状态，经其类型化操作写入，并发出 Session 广播通知 | 不影响分支行为 |
 | Workflow 与定时运行结果 | 工具结果、已消费的报告输入及 `pluginFiles` 记录 | 不需要插件自有 Timeline 事件或进程通知协议 |
-| 排队消息转 Steer | `input/withdraw` + 新 Steer 输入，在一个批次中 | 无需单独事件 |
+| 排队消息转 Steer | InputQueue 的条件操作（[Session 访问 A.4](contracts/session-access.md#a4-撤回)） | 无需单独事件 |
 
 ## 8. 阶段
 
@@ -482,9 +482,9 @@ ADR 002 中记录的 HostPlatform exec shell 变更（作为业务配置在每�
 | 插件 | 类型 | 内容 | 理由 |
 | --- | --- | --- | --- |
 | **已撤回（#28）。** Approval | 补充 | 在模型步骤打开期间，接受宿主来源的准入（由 ModelProvider 针对 `approval_ask` 流条目发起），写入普通的 `approval/request`、`approval/respond`、`approval/cancelled` 事实；通用，不了解 model kind | ExternalAgent（首个使用方） |
-| InputQueue | 变更 | 按序消费 `input/withdraw {input_id, reason?}`（`reason`：提议的通用可选文本，最多 2 KiB，任何生产方都可写入，由客户端显示；InputQueue 做决定时忽略它；不带它的事件不变；设计规则 §4 第 9 条允许必需事件带描述性字段），只为它仍持有且未应用的输入写入 `input/deleted {input_id}`（否则不写入，`notHeld`）；经 `sessionMethods` 提供 `session.input.withdraw`（命名空间 `session.input`，提议中）；“撤回并作为 Steer 重新提交”作为一个批次；队列状态从事件重建（[Session 访问 A.4](contracts/session-access.md#a4-撤回)） | `Ctrl+S`、`/queue`；AcpGateway、Scheduler |
+| InputQueue | 变更 | 经 `session.input.withdraw` 撤回与条件 Steer 排队输入；队列状态从事件重建。指令、结果与恢复语义由所有者定义（[Session 访问 A.4](contracts/session-access.md#a4-撤回)） | `Ctrl+S`、`/queue`；AcpGateway、Scheduler |
 | Permission, ToolExecutor, Approval | 变更 | Approval 把 `AdmitCall.source` 传给 Permission 的准入决定；Permission 在其中（策略与命令规则之后、结果不是 Deny 时）调用向它登记的建议者并合并其 `none`/`allow`/`ask`/`deny` 建议（deny 优先，其次 ask，再次 allow；建议从不推翻 Deny）；Approval 在回应后的复核仍是普通 `decide`，不再询问；ToolExecutor 不变。通用，不带业务含义（[Hooks A.6.1](plugins/Hooks.md#a61-permission-的工具建议)） | Hooks `PreToolUse` |
-| Rpc `session.submit` 与 `session.branch_create`、InputQueue `InputMethods`、CLI | 变更 | 写入操作者输入之前（`session.submit`、`session.branch_create {prompt}`、`session.input.withdraw {steer}`），入口调用向 Session 的 `submitChecks` 登记的检查；被拦下时调用以 `input_blocked`（消息 `Hook <source>: <reason>`，`data` 只有 `appError`）失败且不写入任何内容，否则把返回的块中每一个运行时标记元素追加到该输入的用户内容中、操作者自己的内容之后，使其仍是操作者输入，不是这样的块则丢弃（新分支的提示词不带这些块）。`input_blocked` 在 App Server README 与 CLI 中加入保证未提交任何东西的 `session.submit` 错误。调用方断开不取消任何东西。不改事件与持久化格式。通用（[Hooks A.6.2](plugins/Hooks.md#a62-操作者输入入口处的提交检查)） | Hooks `UserPromptSubmit` |
+| Rpc `session.submit` 与 `session.branch_create`、InputQueue `InputMethods`、CLI | 变更 | 写入操作者输入之前（`session.submit`、`session.branch_create {prompt}`、`session.input.withdraw {steer}`），入口调用向 Session 的 `submitChecks` 登记的检查；被拦下时调用以 `input_blocked`（消息 `Hook <source>: <reason>`，`data` 只有 `appError`）失败且不写入任何内容，否则把返回的块中每一个运行时标记元素追加到该输入的用户内容中、操作者自己的内容之后，使其仍是操作者输入，不是这样的块则丢弃（新分支的提示词不带这些块）。`input_blocked` 在 App Server README 与 CLI 中加入保证未提交任何东西的 `session.submit` 错误。检查的警告（它没有做的工作）走回复上可选的附加字段 `warnings`——`session.submit` 与 `session.branch_create` 在回复上，`session.input.withdraw {steer}` 在 `status` 旁——空时缺省；在冻结的 v1/v2 编码上不填（`session.branch_create` 从 v2 起提供），而回答 `notHeld` 但仍写入 steer 的撤回照样携带；不增加协议版本。调用方断开不取消任何东西。不改事件与持久化格式。通用（[Hooks A.6.2](plugins/Hooks.md#a62-操作者输入入口处的提交检查)） | Hooks `UserPromptSubmit` |
 | **已撤回（现有门面）。** 运行时 Session 门面 | 补充 | 按命名空间查找 `sessionMethods`：Rpc 经现有门面读取该 Session 唯一的 `sessionMethods` 表，固定前缀读取也由现有门面组合实现（#50） | Rpc；进程调用方 |
 | ToolRegistry | 补充 | 任何语言的部件向 `toolRegistry` 注册工具（[方法 A.5](contracts/session-boundary.md#a5-工具贡献)） | 非 Rust 的 Session 工具 |
 | Agent 装配 | 补充 | 收集每个已安装插件在 `provides` 中声明的具名服务；可选的 Session 与分支部分按已启用插件安装 | 所有 Session 插件 |
