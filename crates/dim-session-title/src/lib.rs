@@ -356,7 +356,14 @@ impl Owner {
                 query: QuerySpec { filter: Some(filter), select, group_by: vec![], pick, order_by: vec![] },
                 page: Some(QueryPage { limit: NonZeroU64::MIN, after: None }),
             };
-            let first = self.tree.query("main".into(), request(None, QueryFilter::And {
+            let operator = self.tree.query("main".into(), request(None, QueryFilter::And {
+                conditions: vec![kind("input/message"), field("id", input_id.into()), eligible_input()],
+            }, QuerySelect::Fields { fields: vec!["id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
+            let through = operator.through;
+            if through < sequence { return Err(()); }
+            let QueryOutput::Rows { rows } = operator.result else { return Err(()); };
+            if rows.is_empty() { return Ok("skipped"); }
+            let first = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
                 conditions: vec![kind("input/applied"), QueryFilter::Exists {
                     condition: Box::new(QueryFilter::And { conditions: vec![
                         kind("input/message"),
@@ -369,16 +376,9 @@ impl Owner {
                     ] }),
                 }],
             }, QuerySelect::Fields { fields: vec!["data.input_id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
-            let through = first.through;
-            if through < sequence { return Err(()); }
             let QueryOutput::Rows { rows } = first.result else { return Err(()); };
             let Some(first) = rows.first() else { return Ok("skipped"); };
             let [QueryValue::Value { value: Value::String(first_id) }] = first.values.as_slice() else { return Err(()); };
-            let operator = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
-                conditions: vec![kind("input/message"), field("id", input_id.into()), eligible_input()],
-            }, QuerySelect::Fields { fields: vec!["id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
-            let QueryOutput::Rows { rows } = operator.result else { return Err(()); };
-            if rows.is_empty() { return Ok("skipped"); }
             let input = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
                 conditions: vec![kind("input/message"), field("id", first_id.clone().into())],
             }, QuerySelect::Fields { fields: vec!["data.user".into(), "data.blocks".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;

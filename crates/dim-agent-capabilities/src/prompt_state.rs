@@ -119,23 +119,54 @@ impl PromptSnapshot {
         }
     }
 
-    pub(crate) fn rebuild_system(&mut self) {
-        let mut entries: Vec<_> = self
-            .entries
-            .values()
-            .filter(|entry| entry.delivery == PromptDelivery::System)
-            .collect();
-        entries.sort_by(|a, b| {
-            a.order
-                .cmp(&b.order)
-                .then(a.source.cmp(&b.source))
-                .then(a.scope.cmp(&b.scope))
+    pub(crate) fn system_after(&self, changes: &[PromptChange]) -> Option<String> {
+        let changed = changes.iter().any(|change| {
+            let (source, scope, system) = match change {
+                PromptChange::Set { entry } => (
+                    &entry.source,
+                    &entry.scope,
+                    entry.delivery == PromptDelivery::System,
+                ),
+                PromptChange::Revoke { source, scope } => (source, scope, false),
+            };
+            system
+                || self
+                    .entries
+                    .get(&(source.clone(), scope.clone()))
+                    .is_some_and(|entry| entry.delivery == PromptDelivery::System)
         });
-        self.system = entries
-            .into_iter()
-            .map(|entry| entry.body.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        if !changed {
+            return None;
+        }
+        let mut entries: BTreeMap<_, _> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.delivery == PromptDelivery::System)
+            .map(|(key, entry)| ((&key.0, &key.1), entry))
+            .collect();
+        for change in changes {
+            match change {
+                PromptChange::Set { entry } if entry.delivery == PromptDelivery::System => {
+                    entries.insert((&entry.source, &entry.scope), entry);
+                }
+                PromptChange::Set { entry } => {
+                    entries.remove(&(&entry.source, &entry.scope));
+                }
+                PromptChange::Revoke { source, scope } => {
+                    entries.remove(&(source, scope));
+                }
+            }
+        }
+        Some(system_text(entries.into_values().collect()))
+    }
+
+    pub(crate) fn rebuild_system(&mut self) {
+        self.system = system_text(
+            self.entries
+                .values()
+                .filter(|entry| entry.delivery == PromptDelivery::System)
+                .collect(),
+        );
     }
 
     pub fn apply(&mut self, event: &AgentEvent) {
@@ -192,4 +223,13 @@ impl PromptSnapshot {
             PromptScope::Task { .. } => tasks.contains(scope),
         });
     }
+}
+
+fn system_text(mut entries: Vec<&PromptEntry>) -> String {
+    entries.sort_by(|a, b| (a.order, &a.source, &a.scope).cmp(&(b.order, &b.source, &b.scope)));
+    entries
+        .into_iter()
+        .map(|entry| entry.body.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }

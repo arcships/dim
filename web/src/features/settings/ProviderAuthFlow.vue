@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { Copy, ExternalLink } from "lucide-vue-next"
 import { copyText } from "../../clipboard"
 import { settingsMessages } from "../../i18n/settings"
 import { readAccountDescriptors, readLoginAttempt, readLoginStatus, type LoginAttempt, type ManagementProvider } from "../../rpc/management"
@@ -31,6 +30,11 @@ const namespace = props.provider.account?.namespace ?? "account"
 const target = namespace === "account" ? { providerId: props.provider.providerId } : {}
 const url = computed(() => attempt.value?.authorizationUrl ?? attempt.value?.verificationUriComplete ?? attempt.value?.verificationUri)
 const methods = props.provider.account?.loginMethods ?? []
+const regionItems = computed(() => [
+  { label: t("cn"), value: "https://dimagent.cn" },
+  { label: t("global"), value: "https://dimagent.com" },
+])
+const methodItems = computed(() => methods.map((method) => ({ label: t(method), value: method })))
 onMounted(async () => {
   if (namespace !== "account") return
   try {
@@ -143,32 +147,44 @@ onBeforeUnmount(() => {
   <form class="settings-auth settings-form" @submit.prevent="attempt ? finish() : start()">
     <template v-if="!attempt">
       <div v-if="namespace === 'account'" class="settings-grid">
-        <label><span>{{ t("region") }}</span><select v-model="directory" class="ui-field" :disabled="busy" required><option value="" disabled>{{ t("region") }}</option><option value="https://dimagent.cn">{{ t("cn") }}</option><option value="https://dimagent.com">{{ t("global") }}</option></select></label>
-        <label v-if="methods.length > 1"><span>{{ t("authType") }}</span><select v-model="mode" class="ui-field" :disabled="busy"><option v-for="method in methods" :key="method" :value="method">{{ t(method) }}</option></select></label>
+        <UFormField :label="t('region')">
+          <USelect :model-value="directory || undefined" :items="regionItems" :placeholder="t('region')" :disabled="busy" required class="w-full" @update:model-value="directory = String($event)" />
+        </UFormField>
+        <UFormField v-if="methods.length > 1" :label="t('authType')">
+          <USelect v-model="mode" :items="methodItems" :disabled="busy" class="w-full" />
+        </UFormField>
       </div>
-      <label v-if="enterprise" ><span>{{ t("email") }}</span><input v-model="email" class="ui-field" type="email" autocomplete="email" required :disabled="busy" /></label>
+      <UFormField v-if="enterprise" :label="t('email')">
+        <UInput v-model="email" type="email" autocomplete="email" required :disabled="busy" class="w-full" />
+      </UFormField>
       <div class="settings-inline-actions">
-        <button class="ui-button" data-variant="primary" type="submit" :disabled="busy || connection.phase !== 'connected'">{{ busy ? t("working") : t("login") }}</button>
-        <button v-if="namespace === 'account'" class="ui-button" data-variant="ghost" type="button" :disabled="busy" @click="enterprise = !enterprise">{{ t("enterprise") }}</button>
+        <UButton color="primary" type="submit" :disabled="busy || connection.phase !== 'connected'">{{ busy ? t("working") : t("login") }}</UButton>
+        <UButton v-if="namespace === 'account'" color="neutral" variant="ghost" :disabled="busy" @click="enterprise = !enterprise">{{ t("enterprise") }}</UButton>
       </div>
     </template>
     <template v-else>
       <p class="settings-help" role="status">{{ t("waiting") }}</p>
       <code v-if="attempt.userCode" class="settings-auth-code">{{ attempt.userCode }}</code>
       <div class="settings-inline-actions">
-        <button class="ui-button" data-variant="primary" type="button" @click="open"><ExternalLink aria-hidden="true" />{{ t("openAuth") }}</button>
-        <button class="ui-button" data-variant="secondary" type="button" @click="copy"><Copy aria-hidden="true" />{{ t("copy") }}</button>
+        <UButton color="primary" icon="i-lucide-external-link" @click="open">{{ t("openAuth") }}</UButton>
+        <UButton color="neutral" variant="outline" icon="i-lucide-copy" @click="copy">{{ t("copy") }}</UButton>
       </div>
       <p class="settings-meta">{{ t("expires") }}: {{ new Date(attempt.expiresAt).toLocaleTimeString() }}</p>
       <template v-if="mode === 'browser'">
-        <label><span>{{ t("callback") }}</span><textarea v-model="callback" class="ui-field" rows="3" autocomplete="off" spellcheck="false" /></label>
+        <UFormField :label="t('callback')">
+          <UTextarea v-model="callback" :rows="3" autocomplete="off" spellcheck="false" class="w-full" />
+        </UFormField>
         <p class="settings-help">{{ t("callbackHint") }}</p>
       </template>
       <div class="settings-inline-actions">
-        <button v-if="mode === 'browser'" class="ui-button" data-variant="primary" type="submit" :disabled="busy || !callback.trim() || connection.phase !== 'connected'">{{ t("finish") }}</button>
-        <button class="ui-button" data-variant="secondary" type="button" :disabled="busy" @click="cancel">{{ t("cancel") }}</button>
+        <UButton v-if="mode === 'browser'" color="primary" type="submit" :disabled="busy || !callback.trim() || connection.phase !== 'connected'">{{ t("finish") }}</UButton>
+        <UButton color="neutral" variant="outline" :disabled="busy" @click="cancel">{{ t("cancel") }}</UButton>
       </div>
     </template>
-    <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }} <button v-if="attempt && !busy" class="ui-button" data-variant="ghost" type="button" :disabled="polling || connection.phase !== 'connected'" @click="poll">{{ t("retry") }}</button></p>
+    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-alert-circle" :description="error" role="alert">
+      <template v-if="attempt && !busy" #actions>
+        <UButton size="xs" color="neutral" variant="ghost" :disabled="polling || connection.phase !== 'connected'" @click="poll">{{ t("retry") }}</UButton>
+      </template>
+    </UAlert>
   </form>
 </template>

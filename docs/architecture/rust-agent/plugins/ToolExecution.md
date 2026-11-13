@@ -144,7 +144,12 @@ settle after the outer result. Child events are execution facts:
 child batches first as errors, then settles an open outer batch with the
 confirmed effects of terminal child results; child results keep their effects. Reload-settled results make Loop fail the turn. Recovery selects
 batch identities without a matching `call_event_id` result, reads their turn,
-request, call and parent identities, and does not read tool arguments. Interrupt
+request, call and parent identities, and does not read tool arguments.
+For an unfinished outer batch, one query selects child result effects for its
+known parent call IDs. Each parent receives only its own children's effects;
+arguments and result text are not read. During cancellation this query omits
+parents whose returned result already contains effects, and is skipped when
+none need it. State is not cached beyond settlement. Interrupt
 state comes from the latest interrupt or turn boundary at the same fixed read
 boundary. Cancellation is not rollback of a tool's completed side effect.
 

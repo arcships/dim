@@ -42,8 +42,8 @@ character with the cut marked (session boundary A.6; the compaction digest
 shares the rule). The target is the line the caller was cut from, and on
 `main` a tool line it opened; with no
 `after`, the read continues after the caller's last successful read of that
-line, which the line's BranchLine folds from its own `tool/use` and
-`tool/result` (design [§6](../../../design/timeline-branches.md#6-messages-between-lines)).
+line, which BranchLine retains from live results and otherwise reads for that
+specific target from its own `tool/use` and `tool/result` (design [§6](../../../design/timeline-branches.md#6-messages-between-lines)).
 
 ## Tests
 
@@ -87,9 +87,10 @@ creation and at restore.
 | Service | Purpose |
 | --- | --- |
 | `B:Dispatcher` | Consume the line's own facts in order after the rebuild. |
-| `B:Timeline` | Read the fields the line's fold uses at one committed cutoff, including the unpublished tail. |
+| `B:Timeline` | Fix the committed mount cutoff. |
 | `B:TimelineIdentity` | The line's own id. |
-| `B:BranchLifecycle` | Wait for the branch to be Active before resolving its role and writing. |
+| `B:BranchLifecycle` | Wait for the branch to be Active before writing. |
+| `S:SessionLifecycle` | Wait for the restored child directory to be published before roster repair. |
 | `S:TreeCommands` | `info` for the role and its lines; `head`, the crate-internal `turn_ends` and the parent's new-activity check for the parent block; `input` for every write. |
 | `S:GuideEntries` | Register the roster and message entries on every line, until this part unloads. |
 
@@ -125,17 +126,7 @@ Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
 - **Ended notice.** On `main`, the roster update and `<dim-branch-ended>` in one
   Steer, for any end of a tool line other than the line's own `end`.
 
-The rebuild pages through branch lifecycle fields, input identities and modes,
-roster and parent blocks, branch tool routing fields, and result success/cursor
-fields. It keeps the resulting line state, not the input pages. It reads no
-user content, unrelated tool arguments or tool result content, and writes
-nothing; each write follows a live event, except one heal of a load that writes
-a roster a crash left missing and at most one parent block a restore finds due.
-A
-restart can lose an idle notice: the notice is decided on live events only
-(design [§6.2](../../../design/timeline-branches.md#62-known-costs)). It
-registers with `Dispatcher::consume` and writes from one owned task, which
-rechecks the fold before writing.
+BranchLine mounts at the committed Dispatcher cutoff without reading historical events. It starts its writer after both branch and Session publication so all current child directory entries are available. Roster repair reads known current creation positions and the last roster block. Parent notices read the last parent block and the requested parent's read cursor. Old turn progress is not restored; a recovery turn end does not emit an idle notice. Read cursors are loaded for one target when used, and neither ordinary input history nor all tool results are retained. No recovery event is written.
 
 ### Tests
 
@@ -166,7 +157,7 @@ rechecks the fold before writing.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:TreeCommands` |
+| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle`、`S:TreeCommands` |
 | 提供 | `B:BranchLine` |
 | 被注入于 | — |
 <!-- /generated -->

@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import WorkStatusIcon from "./WorkStatusIcon.vue"
 import { computed, onBeforeUnmount, ref } from "vue"
-import { Check, ChevronRight, Copy } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { copyText } from "../../clipboard"
 import { diffLines, resolveToolDisplay } from "./tool-display"
@@ -103,15 +103,16 @@ async function copy(section: PanelSection): Promise<void> {
       :aria-expanded="hasDetails ? expanded : undefined"
       @click="hasDetails && emit('toggle')"
     >
-      <ChevronRight :size="14" aria-hidden="true" :class="{ 'is-expanded': expanded && hasDetails }" />
+      <WorkStatusIcon :state="isError ? 'error' : item.kind === 'thinking' ? (item.running ? 'thinking' : 'done') : item.category" :active="item.kind === 'thinking' ? item.running : item.status === 'running'" />
       <span v-if="tool" class="timeline-work-item-summary" :title="[label, tool.primary].filter(Boolean).join(' ')">
-        <span>{{ label }}</span><small v-if="tool.primary">{{ tool.primary }}</small>
+        <span class="timeline-status-label">{{ label }}<span class="timeline-status-shine" aria-hidden="true">{{ label }}</span></span><small v-if="tool.primary">{{ tool.primary }}</small>
       </span>
-      <span v-else class="timeline-work-item-summary"><span>{{ thinkingTitle }}</span></span>
+      <span v-else class="timeline-work-item-summary"><span class="timeline-status-label">{{ thinkingTitle }}<span class="timeline-status-shine" aria-hidden="true">{{ thinkingTitle }}</span></span></span>
       <template v-if="stats">
         <span class="timeline-work-stat" data-tone="success">+{{ stats.added }}</span>
         <span v-if="stats.removed" class="timeline-work-stat" data-tone="danger">−{{ stats.removed }}</span>
       </template>
+      <UIcon v-if="hasDetails" name="i-lucide-chevron-right" class="timeline-status-chevron" :class="{ 'is-expanded': expanded }" aria-hidden="true" />
     </button>
 
     <div v-if="expanded && hasDetails" class="timeline-work-item-details">
@@ -120,9 +121,9 @@ async function copy(section: PanelSection): Promise<void> {
         <template v-for="section in sections" :key="section.id">
           <div class="tool-panel-label">
             <span :title="section.label">{{ section.label }}</span>
-            <button type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="copy(section)">
-              <Check v-if="copiedId === section.id" aria-hidden="true" /><Copy v-else aria-hidden="true" />{{ t(copiedId === section.id ? "timeline.copied" : "timeline.copy") }}
-            </button>
+            <UButton color="neutral" variant="ghost" size="xs" :icon="copiedId === section.id ? 'i-lucide-check' : 'i-lucide-copy'" @click="copy(section)">
+              {{ t(copiedId === section.id ? "timeline.copied" : "timeline.copy") }}
+            </UButton>
           </div>
           <div v-if="section.body === 'command'" class="tool-panel-code">
             <div class="is-strong"><span class="is-muted">$</span> {{ section.copy }}</div>

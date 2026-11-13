@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { RouterView, useRoute } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { Menu, PanelLeftOpen, X } from "lucide-vue-next"
 import AppSidebar from "../components/AppSidebar.vue"
 import ToastRegion from "../components/ToastRegion.vue"
 import EndLineDialog from "../features/lines/EndLineDialog.vue"
@@ -21,7 +20,6 @@ const connection = useConnectionStore()
 const sessions = useSessionsStore()
 const ui = useUiStore()
 const root = ref<HTMLElement>()
-const drawer = ref<HTMLDialogElement>()
 let observer: ResizeObserver | undefined
 
 const settingsRoute = computed(() => route.path === "/settings" || route.path.startsWith("/settings/"))
@@ -39,32 +37,8 @@ const pageTitle = computed(() => {
 })
 
 watch(pageTitle, (title) => { document.title = `${title} — Dim` }, { immediate: true })
-watch(() => ui.drawerOpen, async (open) => {
-  await nextTick()
-  const element = drawer.value
-  if (element === undefined) return
-  if (open && !element.open) element.showModal()
-  else if (!open && element.open) element.close()
-})
-
-/**
- * Menus and popovers are native `<details>`, which only close from their own
- * summary; a press anywhere else or Escape dismisses them.
- */
-const POPOVERS = "details.session-menu[open], details.composer-popover[open]"
-
-function closeMenusOutside(event: PointerEvent): void {
-  const target = event.target instanceof Node ? event.target : undefined
-  for (const menu of document.querySelectorAll<HTMLDetailsElement>(POPOVERS)) {
-    if (target === undefined || !menu.contains(target)) menu.open = false
-  }
-}
 
 function onKey(event: KeyboardEvent): void {
-  if (event.key === "Escape") {
-    for (const menu of document.querySelectorAll<HTMLDetailsElement>(POPOVERS)) menu.open = false
-    return
-  }
   // ⌘B / Ctrl+B toggles the sidebar: the drawer in compact mode, the inline rail otherwise.
   const mod = navigator.userAgent.includes("Mac") ? event.metaKey : event.ctrlKey
   if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "b") {
@@ -88,19 +62,13 @@ onMounted(() => {
   }
   window.addEventListener("keydown", onKey)
   window.addEventListener("focus", onFocus)
-  document.addEventListener("pointerdown", closeMenusOutside, true)
 })
 
 onBeforeUnmount(() => {
   observer?.disconnect()
   window.removeEventListener("keydown", onKey)
   window.removeEventListener("focus", onFocus)
-  document.removeEventListener("pointerdown", closeMenusOutside, true)
 })
-
-function closeDrawerFromBackdrop(event: MouseEvent): void {
-  if (event.target === drawer.value) ui.drawerOpen = false
-}
 
 function startResize(event: PointerEvent): void {
   if (ui.shellMode === "compact") return
@@ -130,24 +98,40 @@ function resizeBy(delta: number): void {
     :data-sidebar-collapsed="ui.sidebarCollapsed"
     :data-chat-route="chatRoute"
     :data-settings-route="settingsRoute"
-    style="--sidebar-width: 280px"
+    style="--sidebar-width: 320px"
   >
     <ToastRegion />
 
     <header v-if="ui.shellMode === 'compact' && !settingsRoute" class="compact-header">
-      <button class="ui-icon-button" data-variant="ghost" data-size="md" type="button" :aria-label="t('sidebar.openMenu')" @click="ui.drawerOpen = true">
-        <Menu aria-hidden="true" />
-      </button>
+      <UButton icon="i-lucide-menu" variant="ghost" color="neutral" size="md" square :aria-label="t('sidebar.openMenu')" @click="ui.drawerOpen = true" />
       <span class="compact-title">{{ pageTitle }}</span>
     </header>
 
-    <dialog v-if="ui.shellMode === 'compact'" ref="drawer" class="drawer-content" @click="closeDrawerFromBackdrop" @close="ui.drawerOpen = false">
-      <h2 class="sr-only">{{ t("sidebar.workspaces") }}</h2>
-      <button autofocus class="ui-icon-button drawer-close" data-variant="ghost" data-size="md" type="button" :aria-label="t('sidebar.closeMenu')" @click="ui.drawerOpen = false">
-        <X aria-hidden="true" />
-      </button>
-      <AppSidebar @navigate="ui.drawerOpen = false" />
-    </dialog>
+    <UDrawer
+      v-if="ui.shellMode === 'compact'"
+      v-model:open="ui.drawerOpen"
+      direction="left"
+      :handle="false"
+      :title="t('sidebar.workspaces')"
+      :ui="{ content: 'p-0 w-[88vw] max-w-[340px] rounded-none', body: 'p-0 flex-1 min-h-0' }"
+    >
+      <template #content>
+        <div class="relative flex h-full w-full flex-col">
+          <UButton
+            autofocus
+            class="drawer-close"
+            icon="i-lucide-x"
+            variant="ghost"
+            color="neutral"
+            size="md"
+            square
+            :aria-label="t('sidebar.closeMenu')"
+            @click="ui.drawerOpen = false"
+          />
+          <AppSidebar @navigate="ui.drawerOpen = false" />
+        </div>
+      </template>
+    </UDrawer>
 
     <AppSidebar v-if="ui.shellMode !== 'compact' && !ui.sidebarCollapsed && !settingsRoute" class="inline-sidebar" />
 
@@ -158,13 +142,30 @@ function resizeBy(delta: number): void {
       :style="{ '--detail-width': `${ui.detailWidth}px` }"
     >
       <main id="main" class="main-region" :aria-label="t('a11y.mainContent')" @pointerdown="ui.detailFocused = false" @focusin="ui.detailFocused = false">
-        <button v-if="ui.sidebarCollapsed && ui.shellMode !== 'compact' && !settingsRoute" class="ui-icon-button sidebar-reopen" data-variant="ghost" data-size="md" type="button" :aria-label="t('sidebar.openMenu')" v-tooltip="t('sidebar.openMenu')" @click="ui.sidebarCollapsed = false">
-          <PanelLeftOpen aria-hidden="true" />
-        </button>
+        <UTooltip v-if="ui.sidebarCollapsed && ui.shellMode !== 'compact' && !settingsRoute" :text="t('sidebar.openMenu')">
+          <UButton
+            class="sidebar-reopen"
+            icon="i-lucide-panel-left-open"
+            variant="ghost"
+            color="neutral"
+            size="md"
+            square
+            :aria-label="t('sidebar.openMenu')"
+            @click="ui.sidebarCollapsed = false"
+          />
+        </UTooltip>
         <header v-if="!settingsRoute" class="main-header">
           <div><p>Dim {{ connection.hello?.serverVersion }}</p><strong>{{ pageTitle }}</strong></div>
         </header>
-        <p v-if="connection.phase === 'reconnecting'" class="reconnect-banner" role="status">{{ t("page.reconnecting") }}</p>
+        <UAlert
+          v-if="connection.phase === 'reconnecting'"
+          class="reconnect-banner rounded-none"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-wifi-off"
+          :description="t('page.reconnecting')"
+          role="status"
+        />
         <RouterView :key="settingsRoute ? 'settings' : route.fullPath" />
       </main>
 

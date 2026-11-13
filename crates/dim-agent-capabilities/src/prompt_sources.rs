@@ -9,11 +9,12 @@ use crate::{
     host_platform::{
         ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
+    prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
     prompt_state::PromptSnapshot,
 };
 use dim_agent_runtime::{
-    AgentBuilder, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
+    AgentBuilder, BranchLifecycle, BranchPhase, ConfigureUpdate, Names, PromptSourceTarget,
     ReplyLanguage, SessionConfig, StateCell,
 };
 use dim_agent_types::*;
@@ -291,54 +292,50 @@ fn read_project_instructions(path: &Path) -> Result<String, HostError> {
     })
 }
 
-/// The project and user rule bodies, escaped. Mirrors TS `manager.ts`: the nearest
-/// `AGENTS.md` from cwd upwards fails the load when unreadable;
-/// `~/AGENTS.md` is ignored when unreadable or when it is the project file.
-#[derive(PartialEq)]
-struct Instructions {
-    project: Option<String>,
-    user: Option<String>,
-}
-
-fn read_instructions(cwd: &Path, home: &Path) -> Result<Instructions, HostError> {
+fn read_instructions(cwd: &Path, home: &Path, project: bool) -> Result<Option<String>, HostError> {
     let project_path = cwd
         .ancestors()
         .map(|dir| dir.join("AGENTS.md"))
         .find(|candidate| candidate.exists());
-    let mut project = None;
-    if let Some(path) = &project_path {
-        let content = read_project_instructions(path)?;
-        let content = content.trim();
-        if !content.is_empty() {
-            project = Some(format!(
-                "# Project instructions ({}; applies to this directory and below)\n{}",
-                context_block::text(&path.display().to_string()),
-                context_block::text(content)
-            ));
-        }
+    if project {
+        return project_path
+            .map(|path| {
+                let content = read_project_instructions(&path)?;
+                Ok((!content.trim().is_empty()).then(|| {
+                    format!(
+                        "# Project instructions ({}; applies to this directory and below)\n{}",
+                        context_block::text(&path.display().to_string()),
+                        context_block::text(content.trim())
+                    )
+                }))
+            })
+            .transpose()
+            .map(Option::flatten);
     }
     let user_path = home.join("AGENTS.md");
-    let same = project_path.as_ref().is_some_and(|project| {
-        matches!(
-            (project.canonicalize(), user_path.canonicalize()),
-            (Ok(a), Ok(b)) if a == b
-        )
-    });
-    let user = std::fs::read_to_string(&user_path)
+    if project_path.as_ref().is_some_and(
+        |path| matches!((path.canonicalize(), user_path.canonicalize()), (Ok(a), Ok(b)) if a == b),
+    ) {
+        return Ok(None);
+    }
+    Ok(std::fs::read_to_string(user_path)
         .ok()
-        .filter(|content| !same && !content.trim().is_empty())
+        .filter(|content| !content.trim().is_empty())
         .map(|content| {
             format!(
                 "# User instructions (~/AGENTS.md)\n{}",
                 context_block::text(content.trim())
             )
-        });
-    Ok(Instructions { project, user })
+        }))
 }
 
-async fn load_instructions(cwd: &str, home: &Path) -> Result<Instructions, HostError> {
+async fn load_instructions(
+    cwd: &str,
+    home: &Path,
+    project: bool,
+) -> Result<Option<String>, HostError> {
     let (cwd, home) = (PathBuf::from(cwd), home.to_owned());
-    tokio::task::spawn_blocking(move || read_instructions(&cwd, &home))
+    tokio::task::spawn_blocking(move || read_instructions(&cwd, &home, project))
         .await
         .map_err(|_| HostError::failed("AGENTS.md read task failed"))?
 }
@@ -457,13 +454,12 @@ impl LoadPrompt for Sources {
                     0,
                 ),
                 PROJECT_INSTRUCTIONS | USER_INSTRUCTIONS => {
-                    let instructions =
-                        load_instructions(&self.config.cwd, &self.platform.home).await?;
-                    let body = if target.source == PROJECT_INSTRUCTIONS {
-                        instructions.project
-                    } else {
-                        instructions.user
-                    };
+                    let body = load_instructions(
+                        &self.config.cwd,
+                        &self.platform.home,
+                        target.source == PROJECT_INSTRUCTIONS,
+                    )
+                    .await?;
                     let order = if target.source == PROJECT_INSTRUCTIONS {
                         100
                     } else {
@@ -608,13 +604,12 @@ impl DynPlugin for PromptSourcesPlugin {
 /// Branch part: while the branch is loaded, compares what the checked
 /// sources hold now (AGENTS.md, runtime environment, date, reply language)
 /// with what Prompt adopted on this branch, and has Prompt adopt any
-/// difference. The first check runs when the branch becomes Active, then
-/// every `every`. What a new or resumed branch receives first is Prompt's,
-/// at `branch/start` and `branch/resume`.
+/// difference. Opening loads are reused; periodic checks begin one `every`
+/// later. A part reloaded on an active branch checks immediately.
 pub struct PromptSourcesBranchPlugin {
     branch: Key<BranchLifecycle>,
     host: Key<PromptHost>,
-    configure: Key<dyn ConfigureControl>,
+    configure: Key<Prompt>,
     prompts: Key<StateCell<PromptSnapshot>>,
     language: Key<SessionLanguage>,
     service: Key<PromptSourcesBranch>,
@@ -642,56 +637,59 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             let language = ctx.require_at(&self.language)?;
             let (every, lifecycle) = (self.every, ctx.cancellation_token());
             let checked_language = language.clone();
+            let initial_opening = branch.phase() != BranchPhase::Active;
+            let prompts = prompts.subscribe();
             let tasks = TaskTracker::new();
             tasks.spawn(async move {
                 tokio::select! {
                     _ = lifecycle.cancelled() => return,
                     active = branch.activated() => if !active { return },
                 }
+                if initial_opening {
+                    tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        _ = branch.closing() => return,
+                        _ = tokio::time::sleep(every) => {}
+                    }
+                }
                 loop {
                     let mut changed = Vec::new();
-                    for target in targets(CHECKED) {
-                        let key = (target.source.clone(), target.scope.clone());
-                        // The reply language is Session-wide and changes
-                        // between turns: its load and comparison hold the
-                        // Session's gate, so a check never reads a value an
-                        // update is replacing. The other sources change on
-                        // their own and take no gate.
-                        let _held = match key.0.as_str() {
-                            LANGUAGE => Some(checked_language.gate().await),
-                            _ => None,
-                        };
+                    for target in targets(CHECKED).into_iter().filter(|target| target.source != LANGUAGE) {
                         let current = tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            loaded = host.0.load(target, lifecycle.child_token()) => loaded,
+                            loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
                         };
                         match current {
-                            Ok(current) if current.as_ref() != prompts.get().entries.get(&key) => {
-                                changed.push(key.0);
-                            }
+                            Ok(current) if current.as_ref() != prompts.borrow().entries.get(&(target.source.clone(), target.scope.clone())) => changed.push((target, current)),
                             Ok(_) => {}
-                            Err(error) => tracing::warn!(%error, source = key.0, "prompt source was not checked"),
+                            Err(error) => tracing::warn!(%error, source = target.source, "prompt source was not checked"),
                         }
                     }
+                    let language_gate = checked_language.gate().await;
+                    let target = targets([LANGUAGE]).pop().expect("language target");
+                    let current = tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
+                    };
+                    let mut language_changed = false;
+                    match current {
+                        Ok(current) if current.as_ref() != prompts.borrow().entries.get(&(target.source.clone(), target.scope.clone())) => {
+                            changed.push((target, current));
+                            language_changed = true;
+                        }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(%error, source = LANGUAGE, "prompt source was not checked"),
+                    }
+                    let _language_gate = language_changed.then_some(language_gate);
                     if !changed.is_empty() {
-                        // The adoption that carries the language holds the
-                        // same gate, so the update and the check never
-                        // interleave their record, value and entry writes.
-                        let _held = match changed.iter().any(|source| source == LANGUAGE) {
-                            true => Some(checked_language.gate().await),
-                            false => None,
-                        };
-                        let update = ConfigureUpdate {
-                            sources: targets(changed.iter().map(String::as_str)),
-                            model: None,
-                        };
                         tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            result = configure.clone().configure(update) => if let Err(error) = result {
+                            result = configure.clone().configure_loaded(None, changed) => if let Err(error) = result {
                                 tracing::warn!(%error, "changed prompt sources were not adopted");
                             },
                         }
                     }
+                    drop(_language_gate);
                     tokio::select! {
                         _ = lifecycle.cancelled() => return,
                         _ = branch.closing() => return,
