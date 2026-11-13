@@ -34,7 +34,9 @@ Session 部件在自己的 `apply` 中为每个标记各注册一个条目，按
 
 `agent` 工具的对外协调文本中，§1 标为 policy 的句子就是它的 policy：两段 description 中的指引。每段 description 是插件配置的一个出厂成员，`leader_description` 与 `member_description`，产品都不设置，因此内置文本生效。一个成员承载整段 description，其中的 protocol 句子由流程测试钉住：候选若改动其中一句，就是改动 protocol，必须与行为和测试一起落地（[面向模型的提示词 §9.2](../model-prompts.md#92-每个写入面向模型文字的能力)）。
 
-**配置如何到达 part。**`install_with_config` 注册该配置的 Session 名并提供其值；part 只在这时才声明并读取该键，即 [rutis 用法 A.2](../rutis-usage.md#a2-绑定) 所说的由配置启用的依赖。`serve` 为每个装配注册这些 part，因此一个按名要求这些 part 而不调用 install 的 profile 没有可声明的名字，内置 description 生效，而不是等待一个无人提供的配置；两条路径都有流程测试。
+**配置如何到达 part。**`install_with_config` 把该配置的 Session 名注册为 shared instance 并提供其值；part 只在这时才声明并读取该键，即 [rutis 用法 A.2](../rutis-usage.md#a2-绑定) 所说的由配置启用的依赖。这个名字也是 `collaborationConfig` 数据面：`get` 返回 `{leaderDescription?, memberDescription?}`，供其他语言的 part 读取，`null` 表示内置文本。`serve` 为每个装配注册这些 part，因此一个按名要求这些 part 而不调用 install 的 profile 没有可声明的名字，内置 description 生效，而不是等待一个无人提供的配置；两条路径都有流程测试。
+
+`collaborationSession` 按 dispatch 顺序结算操作。其公共操作或私有实现职责遵循[服务迁移规则](../../../design/service-faces.md#26-migration-rule)；配置数据面的暴露不改变结算契约。
 
 ## 4. 规则检查
 

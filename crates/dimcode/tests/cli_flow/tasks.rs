@@ -2505,3 +2505,194 @@ fn tui_new_creates_the_session_on_the_first_message() {
     home.kill(&terminal);
     terminal.wait();
 }
+/// Reads whatever the CLI painted until it has been quiet for `quiet`.
+fn probe_1476_drain(terminal: &mut Terminal, quiet: Duration) {
+    let mut idle = Duration::ZERO;
+    loop {
+        let mut poll = libc::pollfd {
+            fd: terminal.master.as_ref().unwrap().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 40) } > 0 {
+            let mut bytes = [0u8; 8192];
+            match terminal.master.as_mut().unwrap().read(&mut bytes) {
+                Ok(0) | Err(_) => return,
+                Ok(size) => {
+                    terminal.record(&bytes[..size]);
+                    idle = Duration::ZERO;
+                    continue;
+                }
+            }
+        }
+        idle += Duration::from_millis(40);
+        if idle >= quiet {
+            return;
+        }
+    }
+}
+
+/// The topmost `paged-message-NNN` in the last painted frame: fullscreen
+/// repaints its viewport row by row, so the smallest number in the tail is the
+/// first drawn row.
+fn top_paged_message(text: &str) -> String {
+    let plain = strip_ansi(text);
+    let tail: String = plain
+        .chars()
+        .rev()
+        .take(6000)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let mut seen: Vec<u32> = Vec::new();
+    let mut rest = tail.as_str();
+    while let Some(at) = rest.find("paged-message-") {
+        let after = &rest[at + "paged-message-".len()..];
+        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(number) = digits.parse::<u32>()
+            && !seen.contains(&number)
+        {
+            seen.push(number);
+        }
+        rest = after;
+    }
+    seen.sort_unstable();
+    seen.first().map_or_else(
+        || "none".to_owned(),
+        |first| format!("paged-message-{first:03}"),
+    )
+}
+
+/// #1476. Three hundred messages in four pages of 75 (message `i` at sequences
+/// `3i..3i+2`, fixed `through` 902). The latest-turn window reads the two
+/// newest pages, 150 rows, so the transcript is drawn from message 201 and the
+/// 50 before it wait behind the load-more row. PageUp at the drawn top must
+/// reach the branch's first message, and a press after that must read nothing.
+#[test]
+fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let (proceed, control) = std::sync::mpsc::channel();
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&reads);
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["sessionId"], "paged");
+        wire.reply(&attach, json!({"sessionId":"paged","cwd":"/workspace",
+            "model":{"providerId":"test","modelId":"restored-model"},"createdAt":1,
+            "running":false,"sequence":0,"attachedClients":1}));
+        let first = wire.read("session.history");
+        assert_eq!(first["params"]["latestTurn"], true);
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        ready.send(()).unwrap();
+        control.recv_timeout(Duration::from_secs(10)).unwrap();
+        let page = |start: usize| {
+            let mut events = Vec::new();
+            for index in start..start + 75 {
+                let sequence = index as u64 * 3;
+                events.push(fact(&format!("message-{index}"), sequence, sequence, "input", "message",
+                    json!({"mode":"append","user":{"content":[{"type":"text","text":format!("paged-message-{index:03}")}]}})));
+                events.push(fact(&format!("applied-{index}"), sequence + 1, sequence, "input", "applied",
+                    json!({"input_id": format!("message-{index}"), "mode": "append"})));
+                events.push(fact(&format!("consumed-{index}"), sequence + 2, sequence, "input", "consumed",
+                    json!({"input_id": format!("message-{index}")})));
+            }
+            events
+        };
+        wire.reply(&first, json!({"events":page(226),"through":902,"nextAfter":902,
+            "nextBefore":678,"done":false}));
+        let second = wire.read("session.history");
+        assert_eq!(second["params"]["before"], 678);
+        wire.reply(&second, json!({"events":page(151),"through":902,"nextAfter":677,
+            "nextBefore":453,"done":false}));
+        // Every earlier read the interface asks for, counted, in the order the
+        // branch holds them. A read past the start is still answered so the
+        // count can show it happened.
+        let mut served = 0;
+        loop {
+            let request = wire.read_any();
+            assert_eq!(request["method"], "session.history", "{request}");
+            assert_eq!(request["params"]["through"], 902);
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // A page covers every event of its messages: message `i` holds
+            // sequences `3i..3i+2`, so page(76) ends at 452 and page(1) at 227.
+            let reply = match served {
+                0 => json!({"events":page(76),"through":902,"nextAfter":452,
+                    "nextBefore":228,"done":false}),
+                1 => json!({"events":page(1),"through":902,"nextAfter":227,
+                    "nextBefore":1,"done":false}),
+                _ => json!({"events":[],"through":902,"nextAfter":1,
+                    "nextBefore":1,"done":false}),
+            };
+            served += 1;
+            wire.reply(&request, reply);
+        }
+    });
+    let mut command = home.command();
+    command.args(["--resume", "paged", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(command);
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    terminal.until("test / restored-model");
+    proceed.send(()).unwrap();
+    terminal.until("resumed paged · 100 messages");
+    probe_1476_drain(&mut terminal, Duration::from_millis(600));
+    // Home puts the view at the drawn top; PageUp there shows what is before
+    // it, revealing loaded rows first and reading only when none are loaded.
+    let mut steps: Vec<String> = Vec::new();
+    let mut drawn = false;
+    for step in 1..=10 {
+        terminal.write(b"\x1b[H");
+        probe_1476_drain(&mut terminal, Duration::from_millis(300));
+        terminal.write(b"\x1b[5~");
+        probe_1476_drain(&mut terminal, Duration::from_millis(900));
+        let top = top_paged_message(&terminal.transcript);
+        steps.push(format!(
+            "  step {step}: reads={} top={top}",
+            reads.load(std::sync::atomic::Ordering::SeqCst)
+        ));
+        if strip_ansi(&terminal.transcript).contains("paged-message-001") {
+            drawn = true;
+            break;
+        }
+    }
+    if !drawn {
+        let plain = strip_ansi(&terminal.transcript);
+        let rows: Vec<&str> = plain
+            .lines()
+            .rev()
+            .take(14)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        home.kill(&terminal);
+        terminal.wait();
+        panic!(
+            "PageUp at the top never drew the branch's first message\n\
+             reads={} top={}\n{}\nlast frame:\n{}",
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            top_paged_message(&terminal.transcript),
+            steps.join("\n"),
+            rows.join("\n"),
+        );
+    }
+    let settled = reads.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(settled, 2, "the branch start needed two earlier pages");
+    // One more press at the top: the whole branch is loaded, so nothing is read.
+    terminal.write(b"\x1b[H");
+    probe_1476_drain(&mut terminal, Duration::from_millis(300));
+    terminal.write(b"\x1b[5~");
+    probe_1476_drain(&mut terminal, Duration::from_millis(1500));
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        settled,
+        "a press past the branch start reads nothing"
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}

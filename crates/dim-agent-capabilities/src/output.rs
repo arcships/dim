@@ -746,7 +746,31 @@ async fn parse_output(
                     });
                 }
                 if !partial.is_empty() {
-                    return Err(HostError::failed("Provider left incomplete tool arguments"));
+                    // The same shape as a stream that reports unparseable
+                    // arguments (InvalidToolInput): one user-visible defect,
+                    // one failure kind.
+                    return Err(HostError::Failed {
+                        message: "Provider left incomplete tool arguments".into(),
+                        budget: None,
+                        kind: HostErrorKind::Other,
+                        model: Some(Box::new(ModelFailureFacts {
+                            kind: ModelFailureKind::MalformedResponse,
+                            reason: Some(
+                                "the model output ended before its tool arguments were complete"
+                                    .into(),
+                            ),
+                            status: None,
+                            provider_code: None,
+                            request_id: None,
+                            cause: Vec::new(),
+                            retry_after: None,
+                            attempts: 1,
+                            waited: Duration::ZERO,
+                            retry_after_stop: None,
+                            retry_forbidden: false,
+                        })),
+                        presentation: None,
+                    });
                 }
                 if (reason == ModelStopReason::ToolUse) != !output.started.is_empty() {
                     return Err(HostError::failed(

@@ -67,7 +67,7 @@ Provider，model-config 配置为 ConfiguredModels）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
-| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, cost?, currency?}}` |
+| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?, cost?, currency?}}` |
 
 - `model` 必填。调用方从自己的配置中解析出它；Provider 不回退到其他模型。
 - `messages` 使用现有可序列化的 `Message` 类型（dim-agent-types），例如

@@ -415,8 +415,9 @@ own flat record type in the v1 module (§12).
 its own retries and the shared failure policy's attempts (§5.2). `durationMs` is measured around the strategy call,
 so it is the summarizer's duration; the policy's own work is local. `modelUsage` is the `Usage`
 the strategy's replies reported, summed over them — `promptTokens`, `completionTokens`,
-`totalTokens` and the cache read and write tokens; `cost` and `currency` stay absent, and a
-strategy that sent no request reports none. `insufficientSpace` is present exactly on a
+`totalTokens`, the cache read and write tokens and the reasoning tokens; a count no reply
+reported stays absent in the sum, `cost` and `currency` do too, and a strategy that sent no
+request reports none. `insufficientSpace` is present exactly on a
 completed compaction whose total — the projected request's size, which the record reports as
 `estimatedOutputTokens` — exceeds `0.5 × B`; its excess is that total minus `0.5 × B`, and
 `parts` names the resident parts that cover it, largest first, each with its `count_tokens`

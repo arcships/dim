@@ -1113,7 +1113,8 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 - 本地范围是启动工作区，以及它所在 git 仓库每个 worktree 中同一个相对目录；选择面板打开时在后台用
   `git rev-parse` 与 `git worktree list --porcelain` 读取。第一页不等 git，两次读取共用一个两秒的时限。
   git 成功时该范围名为 `This repository`；当面板正显示本地范围且集合多于一个条目时，标题改变并重新读
-  第一页；单条目集合只改变标题，因为目录的规范化 `cwd` 把这一个工作区当作同一个过滤条件。git 失败或
+  第一页；单条目集合只改变标题，因为目录的规范化 `cwd` 把这一个工作区当作同一个过滤条件。已经画出的行
+  会保留到更宽的一页替换它们，选择停在该行上，或停在读取更宽一页期间操作者移到的行上。git 失败或
   不回答、守护进程既不读一组工作区（`session.catalog.workspaces`）也不经 `session.summaries` 列目录时，
   本地范围保持名为 `This workspace`，只列启动工作区，也不提示。bare worktree 不加入。
 - 在本地范围中，只有当它包含多于一个工作区时，每行才写明所属工作区，因此单 worktree 仓库不会给每行加
@@ -1443,7 +1444,8 @@ $ dimcode exec -p 'Explain this project' --json > run.jsonl
 退出码为 3。它不改变 `SessionConfig.interactive`。以非交互方式创建的
 Session 保留 Approval 现有的所有者侧策略（#98 D10）。`--permission` 选择包含文件范围和风险判定的旧策略；
 仍需审批的调用照样被拒绝（[无头执行](#无头执行)）。其他退出码保持原生 CLI 合同，包括回合失败为 2、
-中断为 130。传输失败不重试提交。重复的 `--image` 参数遵循无头附件合同：先文本，再按参数顺序放入
+中断为 130。运行的结局就是回合的结局：回合从失败步骤中续接成功，以及以 `output_limit` 为 reason 结算
+为已完成的回合，都退出 0，同时仍然打印该步骤的失败行。传输失败不重试提交。重复的 `--image` 参数遵循无头附件合同：先文本，再按参数顺序放入
 经过校验的原始图片字节，路径相对于调用进程。只有图片的调用是有效的。连接仍在时，提交错误保持
 "结果不确定"的诊断/退出路径，除非其 `error.data.appError` 是七种
 [保证在提交前拒绝](../../../crates/dim-app-server/README.md#session-submission-errors)之一：

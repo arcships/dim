@@ -1273,8 +1273,8 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             let event = &params["event"];
             if method == "session.event"
                 && params["branchId"] == "main"
-                && ((event["type"] == "turn" && event["name"] == "end")
-                    || (event["type"] == "step" && event["name"] == "model-output-end"))
+                && event["type"] == "turn"
+                && event["name"] == "end"
                 && event["data"]["status"] == "failed"
             {
                 display.failed = true;

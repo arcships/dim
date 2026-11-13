@@ -90,6 +90,11 @@ export interface AuxiliaryReply {
   usage?: {
     promptTokens: number; completionTokens: number; totalTokens: number;
     cacheReadTokens?: number; cacheWriteTokens?: number;
+    /** The part of `completionTokens` spent thinking, already inside it and
+     * in `totalTokens`. It is the count the protocol adapter gives: absent
+     * when the adapter gives none, and zero when Gemini or a Responses adapter
+     * reads a missing field as zero, as it does for the cached count. */
+    reasoningTokens?: number;
     cost?: number; currency?: string;
   };
 }

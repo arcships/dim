@@ -93,12 +93,22 @@ updates do not invalidate a press on the same stable header.
 
 Hover highlights only the actionable title, pressed feedback is stronger without
 moving its text, and a successful click retains a subtle position indication.
+Tool-title feedback uses normal text on the theme's subtle surface, falling back
+to a neutral gray background where the terminal palette supports one. Without a
+subtle background, titles use an underline. Pressed and keyboard-focused titles
+also use bold text instead of accent colors.
 Neither feedback nor new output changes expansion. A click requires release on
 the same still-valid target without a drag. Text selection, safe links and the
 explicit member-conversation entry keep separate actions; the member's tool
 header toggles its details instead of navigating. Existing Tab/Shift+Tab
 transcript traversal includes committed tool headers; Enter/Space toggles only
-the focused tool. Mouse-off retains native
+the focused tool. A press on the scrollbar column drags the view instead of
+selecting: the view moves as far as the thumb moves with the pointer, so a
+drag along the grabbed row keeps the view; a press on the track centres the
+thumb there first. The first and last transcript rows reach the top and the
+bottom, and dragging past the last one follows new output again. Motion without
+the button, or another press, ends a drag whose release the terminal lost.
+Mouse-off retains native
 terminal selection. Free-motion reports are enabled and restored with fullscreen
 mouse mode; unsupported terminals retain click and keyboard operation.
 
@@ -1817,15 +1827,17 @@ the selection down.
   cursor and reads the first page again; the query stays and applies within the
   new scope.
 - The local scope is the launch workspace and the same relative directory in
-  every worktree of its git repository, read with `git rev-parse` and
-  `git worktree list --porcelain` in the background when the picker opens. The
-  first page does not wait for git, and both reads share a two-second bound. A
-  git that succeeds names the scope `This repository`; when the picker is
-  showing the local scope and the set holds more than one entry, the title
-  changes and the first page is read again, and a one-entry set changes only
-  the title, since the catalog's canonical `cwd` treats the single workspace as
-  the same filter. A git that fails or does not answer, and a daemon that reads
-  neither a workspace set (`session.catalog.workspaces`) nor
+  every worktree of its git repository, read with `git rev-parse` and `git
+  worktree list --porcelain` in the background when the picker opens. The first
+  page does not wait for git, and both reads share a two-second bound. A git
+  that succeeds names the scope `This repository`; when the picker is showing
+  the local scope and the set holds more than one entry, the title changes and
+  the first page is read again, and a one-entry set changes only the title,
+  since the catalog's canonical `cwd` treats the single workspace as the same
+  filter. The rows already drawn stay until the wider page replaces them, and
+  the selection stays on its row, or on the row the operator moved to while the
+  wider page was read. A git that fails or does not answer, and a daemon that
+  reads neither a workspace set (`session.catalog.workspaces`) nor
   `session.summaries`, leave the local scope named `This workspace` and listing
   exactly the launch workspace, without a notice. A bare worktree adds nothing.
 - The rows name their workspace inside the local scope only when it holds more
@@ -2416,7 +2428,10 @@ It does not change
 `--permission` selects a preset, including its file scope and risk decisions; a call that still asks is denied
 the same way ([headless execution](#headless-execution)).
 Other exit codes retain the native CLI contract, including 2 for turn failure
-and 130 for interruption. A transport failure does not retry a submission.
+and 130 for interruption. The run's own outcome is the turn's: a failed model
+step that the turn recovered from, and a turn that completed at its output limit
+with reason `output_limit`, both exit 0 while still printing that step's failure
+line. A transport failure does not retry a submission.
 Repeated `--image` arguments follow the headless attachment contract: text first,
 then validated original image bytes in argument order, with paths relative to the
 invoking process. An image-only invocation is valid. A submission error on a live

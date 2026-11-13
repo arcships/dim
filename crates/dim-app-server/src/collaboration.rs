@@ -95,6 +95,26 @@ pub struct CollaborationConfig {
     pub member_description: Option<Arc<str>>,
 }
 
+/// The `get` reply: each description text the assembly configured, or `null`
+/// for the built-in one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollaborationConfigReply {
+    pub leader_description: Option<String>,
+    pub member_description: Option<String>,
+}
+
+#[rutis::service]
+impl CollaborationConfig {
+    /// The two `agent` descriptions the assembly configured, as data.
+    pub fn get(&self) -> CollaborationConfigReply {
+        CollaborationConfigReply {
+            leader_description: self.leader_description.as_deref().map(str::to_owned),
+            member_description: self.member_description.as_deref().map(str::to_owned),
+        }
+    }
+}
+
 /// Requires the Session and branch parts in the profile; Collaboration,
 /// which `serve` places at the process, registers them.
 pub fn install(builder: &mut AgentBuilder) {
@@ -105,9 +125,9 @@ pub fn install(builder: &mut AgentBuilder) {
 /// sets none, so the built-in descriptions stay in force.
 pub fn install_with_config(builder: &mut AgentBuilder, config: CollaborationConfig) {
     crate::register_names(builder.catalog_mut());
-    dim_agent_runtime::names::register::<CollaborationConfig>(
-        builder.catalog_mut(),
-        Some(dim_agent_runtime::SESSION_GROUP),
+    builder.catalog_mut().register_shared_instance(
+        dim_agent_runtime::names::name_of::<CollaborationConfig>(),
+        dim_agent_runtime::SESSION_GROUP,
     );
     builder.session_value(Arc::new(config));
     builder

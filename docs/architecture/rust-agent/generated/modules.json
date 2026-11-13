@@ -7506,8 +7506,6 @@
         "path TurnOutcome::Cancelled",
         "path TurnOutcome::Completed",
         "path TurnOutcome::Failed",
-        "path dim_agent_types::ModelFailureKind::OutputLimit",
-        "path dim_agent_types::ModelOutputOutcome::Failed",
         "path dim_agent_types::ToolUseData",
         "use dim_agent_types::TurnOutcome"
       ]
@@ -7564,7 +7562,6 @@
         "path EventContent::Input",
         "path EventContent::InputConsumed",
         "path EventContent::InputDeleted",
-        "path EventContent::ModelEnd",
         "path EventContent::PermissionChanged",
         "path EventContent::ToolCall",
         "path EventContent::ToolCompleted",
@@ -9243,7 +9240,8 @@
       "from": "dim_agent_capabilities",
       "to": "dim_agent_runtime::names",
       "references": [
-        "path dim_agent_runtime::names::catalog"
+        "path dim_agent_runtime::names::catalog",
+        "path dim_agent_runtime::names::name_of"
       ]
     },
     {
@@ -9617,6 +9615,7 @@
         "path EventKind::ToolUseStart",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
+        "path FailureChain",
         "path FinishReason::EndTurn",
         "path FinishReason::StopSequence",
         "path FinishReason::ToolUse",
@@ -9626,6 +9625,19 @@
         "path InputMode::Append",
         "path InputMode::default",
         "path InterruptScope::Turn",
+        "path ModelFailureKind",
+        "path ModelFailureKind::AuthRejected",
+        "path ModelFailureKind::ContentFiltered",
+        "path ModelFailureKind::ContextTooLong",
+        "path ModelFailureKind::InvalidRequest",
+        "path ModelFailureKind::MalformedResponse",
+        "path ModelFailureKind::Network",
+        "path ModelFailureKind::NotFound",
+        "path ModelFailureKind::OutputLimit",
+        "path ModelFailureKind::QuotaExhausted",
+        "path ModelFailureKind::RateLimited",
+        "path ModelFailureKind::ServerError",
+        "path ModelFailureKind::Unknown",
         "path ModelOutputEndData",
         "path ModelOutputOutcome::Cancelled",
         "path ModelOutputOutcome::Completed",
@@ -13927,6 +13939,7 @@
         "path FinishReason::ToolUse",
         "path ModelCallData",
         "path ModelContentData",
+        "path ModelFailureKind::MalformedResponse",
         "path ModelFailureKind::OutputLimit",
         "path ModelUsageData",
         "path ProviderPresentation",
@@ -15969,7 +15982,7 @@
       "from": "dim_agent_capabilities::skills",
       "to": "dim_agent_runtime::names",
       "references": [
-        "path dim_agent_runtime::names::register"
+        "path dim_agent_runtime::names::name_of"
       ]
     },
     {
@@ -22250,6 +22263,7 @@
         "path crate::EventKind::ContextPrepare",
         "path crate::EventKind::InputMessage",
         "path crate::EventKind::ModelCall",
+        "path crate::EventKind::ModelUsage",
         "path crate::EventKind::ToolCompleted",
         "path crate::EventKind::ToolResult",
         "path crate::InputAppliedData",
@@ -22278,8 +22292,10 @@
         "path CompactionUsage",
         "path ModelRequest",
         "path ProviderOutputBudgetFacts",
+        "path Usage",
         "path crate::ModelRequest",
-        "path crate::ProviderOutputBudgetFacts"
+        "path crate::ProviderOutputBudgetFacts",
+        "path crate::Usage"
       ]
     },
     {
@@ -24473,7 +24489,7 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
-        "path dim_agent_runtime::names::register",
+        "path dim_agent_runtime::names::name_of",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -32481,10 +32497,13 @@
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_capabilities::file_access",
       "references": [
-        "path AssociateWorktree",
+        "path WorktreeAssociation",
+        "path WorktreeAssociationError::Failed",
         "path WorktreeAssociations",
+        "path WorktreeAssociations::new",
         "path WorktreeDirectory",
-        "use dim_agent_capabilities::file_access::AssociateWorktree",
+        "use dim_agent_capabilities::file_access::WorktreeAssociation",
+        "use dim_agent_capabilities::file_access::WorktreeAssociationError",
         "use dim_agent_capabilities::file_access::WorktreeAssociations",
         "use super::WorktreeDirectory"
       ]
@@ -32493,11 +32512,7 @@
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path HostError::failed",
-        "path HostFuture",
         "path SessionFilesHost",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::HostFuture",
         "use dim_agent_capabilities::host::SessionFilesHost"
       ]
     },
@@ -39016,6 +39031,7 @@
         "path TaskOutputState::Unavailable",
         "path TaskOutputState::Unsupported",
         "path TaskTarget",
+        "use crate::model::view::Earlier",
         "use crate::model::view::LineState",
         "use crate::model::view::LineView",
         "use crate::model::view::SideLine",
@@ -39384,11 +39400,16 @@
       "from": "dim_cli::session_host::member",
       "to": "dim_cli::model::view",
       "references": [
+        "path Earlier",
+        "path Earlier::AtStart",
+        "path Earlier::Reading",
+        "path Earlier::Unread",
         "path MemberConversationState",
         "path MemberConversationState::Closed",
         "path MemberConversationState::Live",
         "path MemberConversationState::Loading",
         "path MemberConversationState::ReadError",
+        "use crate::model::view::Earlier",
         "use crate::model::view::MemberConversationState"
       ]
     },
@@ -39586,6 +39607,10 @@
       "from": "dim_cli::session_host::tasks",
       "to": "dim_cli::model::view",
       "references": [
+        "path Earlier",
+        "path Earlier::AtStart",
+        "path Earlier::Reading",
+        "path Earlier::Unread",
         "path MemberTarget::Provider",
         "path MemberTarget::Session",
         "path MemberTarget::Starting",
@@ -43888,9 +43913,19 @@
     },
     {
       "from": "dim_cli::ui::render::fullscreen::tests",
+      "to": "dim_cli::ui::theme",
+      "references": [
+        "path crate::ui::theme::Theme::named"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::render::fullscreen::tests",
       "to": "dim_cli::ui::theme::palette",
       "references": [
         "path Appearance::Dark",
+        "path Appearance::Light",
+        "path ColorMode::Ansi16",
+        "path ColorMode::Ansi256",
         "path ColorMode::TrueColor",
         "path terminal_palette",
         "use crate::ui::theme::Appearance",
@@ -46695,6 +46730,9 @@
       "to": "dim_cli::model::view",
       "references": [
         "path CompactionState::Running",
+        "path Earlier::AtStart",
+        "path Earlier::Reading",
+        "path Earlier::Unread",
         "path LineState::Waiting",
         "path LineState::Working",
         "path LineView",
@@ -46715,6 +46753,7 @@
         "path crate::model::view::CompactionTarget",
         "path crate::model::view::TaskView",
         "use crate::model::view::CompactionState",
+        "use crate::model::view::Earlier",
         "use crate::model::view::LineState",
         "use crate::model::view::LineView",
         "use crate::model::view::RowKind",
@@ -47648,8 +47687,10 @@
         "path Command::InputControl",
         "path Command::ListPlugins",
         "path Command::ListRuntimes",
+        "path Command::ListSessions",
         "path Command::OpenLine",
         "path Command::Plugin",
+        "path Command::Resume",
         "path Command::Runtime",
         "path Command::Stop",
         "path Command::Submit",
@@ -47688,7 +47729,9 @@
         "path Update::Ready",
         "path Update::ReportReply",
         "path Update::Reportable",
+        "path Update::RepositoryWorkspaces",
         "path Update::Runtimes",
+        "path Update::Sessions",
         "path Update::Skills",
         "path Update::Snapshot",
         "path Update::StartupFailed",
@@ -47716,6 +47759,9 @@
       "to": "dim_cli::model::view",
       "references": [
         "path CompactionState::Completed",
+        "path Earlier::AtStart",
+        "path Earlier::Reading",
+        "path Earlier::Unread",
         "path LineState::Waiting",
         "path LineState::Working",
         "path RowKind::AssistantMessage",
@@ -47985,6 +48031,7 @@
         "path App::new",
         "path ClipboardRead::Native",
         "path GIT_BRANCH_POLL",
+        "path HISTORY_WINDOW",
         "path ImageRead",
         "path LOAD_MORE",
         "path ManagementDraft",

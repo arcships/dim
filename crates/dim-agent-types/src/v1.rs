@@ -623,6 +623,42 @@ impl<'a> From<&'a crate::ToolResult> for ToolResultRef<'a> {
         }
     }
 }
+/// A usage as v1 writes it: every field the frozen shape had before
+/// `reasoning_tokens`, which v1 does not carry.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageRef<'a> {
+    #[serde(with = "crate::finite_number")]
+    prompt_tokens: f64,
+    #[serde(with = "crate::finite_number")]
+    completion_tokens: f64,
+    #[serde(with = "crate::finite_number")]
+    total_tokens: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    cache_read_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    cache_write_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    currency: Option<&'a str>,
+}
+impl<'a> From<&'a crate::Usage> for UsageRef<'a> {
+    fn from(value: &'a crate::Usage) -> Self {
+        Self {
+            prompt_tokens: value.prompt_tokens,
+            completion_tokens: value.completion_tokens,
+            total_tokens: value.total_tokens,
+            cache_read_tokens: value.cache_read_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            cost: value.cost,
+            currency: value.currency.as_deref(),
+        }
+    }
+}
 impl Serialize for KindRef<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
@@ -655,6 +691,12 @@ impl Serialize for KindRef<'_> {
             request_id: &'a str,
             #[serde(serialize_with = "serialize_request")]
             request: &'a Arc<crate::ModelRequest>,
+        }
+        #[derive(Serialize)]
+        struct Usage<'a> {
+            turn_id: &'a str,
+            request_id: &'a str,
+            usage: UsageRef<'a>,
         }
         #[derive(Serialize)]
         struct Completed<'a> {
@@ -716,6 +758,17 @@ impl Serialize for KindRef<'_> {
                     turn_id: &data.turn_id,
                     request_id: &data.request_id,
                     request: &data.request,
+                },
+            }
+            .serialize(serializer)
+        } else if let crate::EventKind::ModelUsage(data) = self.0 {
+            Tagged {
+                event_type: "model",
+                name: "usage",
+                data: Usage {
+                    turn_id: &data.turn_id,
+                    request_id: &data.request_id,
+                    usage: (&data.usage).into(),
                 },
             }
             .serialize(serializer)
