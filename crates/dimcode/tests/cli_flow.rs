@@ -679,6 +679,8 @@ cp -R "$live" "$staged"
 if [ "$name" = dimcode-alpha ]; then command=dima; else command=dim; fi
 printf '{"name":"%s","version":"%s","bin":{"%s":"bin/report"}}\n' \
   "$name" "$next" "$command" > "$staged/package.json"
+mkdir -p "$prefix/bin"
+ln -sfn "../lib/node_modules/$name/bin/report" "$prefix/bin/$command"
 echo 'Installed package'
 "#,
     )

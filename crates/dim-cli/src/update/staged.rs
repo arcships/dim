@@ -8,7 +8,7 @@
 //! it.
 
 use super::{Install, run_manager};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -105,13 +105,15 @@ async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -
     }
     let live = package_at(&install.directory, &install.package);
     let staged = package_at(staging, &install.package);
-    let new = match staged_package(install, &staged) {
+    let version = match staged_version(install, &staged) {
+        Ok(version) => version,
+        Err(error) => return Outcome::Failed(error),
+    };
+    let new = match staged_commands(staging, &staged) {
         Ok(new) => new,
         Err(error) => return Outcome::Failed(error),
     };
-    // A live package whose manifest cannot be read names no command to retire,
-    // which is also the state of an installation placed by hand.
-    let previous = manifest(&live).map(|old| old.bins).unwrap_or_default();
+    let previous = live_commands(&install.directory, &install.package);
     let switch = match switch_in(&live, &staged, staging.join("retired")) {
         Ok(switch) => switch,
         Err(outcome) => return outcome,
@@ -125,7 +127,7 @@ async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -
         staging,
         &mut changes,
     ) {
-        Ok(()) => verify_entries(&install.directory, &new).await,
+        Ok(()) => verify_entries(&install.directory, &new, &version).await,
         Err(error) => Err(error),
     };
     if let Err(error) = checked {
@@ -138,81 +140,26 @@ async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -
     Outcome::Switched
 }
 
-/// A package's `package.json`: the version it is and the commands it installs.
-struct Manifest {
-    version: String,
-    /// Each command the package installs, and the file inside it that runs.
-    bins: Vec<(String, String)>,
+/// A command an installation provides: the name of one link directly inside a
+/// `bin` directory, and the file inside the package that it runs.
+struct Command {
+    /// One ordinary path component, so every live link is a direct child of the
+    /// installation's `bin` directory.
+    name: String,
+    /// Relative to the package directory.
+    file: String,
 }
 
-/// Reads `<package>/package.json`.
-fn manifest(package: &Path) -> Result<Manifest, String> {
-    let path = package.join("package.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
-    let version = value
-        .get("version")
-        .and_then(|version| version.as_str())
-        .ok_or_else(|| format!("{} has no version", path.display()))?
-        .to_owned();
-    let name = value
-        .get("name")
-        .and_then(|name| name.as_str())
-        .unwrap_or_default();
-    let mut bins = Vec::new();
-    match value.get("bin") {
-        Some(serde_json::Value::String(file)) => bins.push((name.to_owned(), file.clone())),
-        Some(serde_json::Value::Object(map)) => {
-            for (command, file) in map {
-                let file = file
-                    .as_str()
-                    .ok_or_else(|| format!("{}: bin.{command} is not a path", path.display()))?;
-                bins.push((command.clone(), file.to_owned()));
-            }
-        }
-        None => {}
-        Some(_) => {
-            return Err(format!(
-                "{}: bin is neither a path nor a map of commands",
-                path.display()
-            ));
-        }
-    }
-    Ok(Manifest { version, bins })
-}
-
-/// The staged package, once it says the manager installed a newer version of
-/// this build's own channel, with the commands and platform package an
-/// installation needs.
-fn staged_package(install: &Install, staged: &Path) -> Result<Manifest, String> {
-    let incomplete = |error: String| {
-        format!(
-            "The package manager reported success but the staged package is incomplete: {error}"
-        )
-    };
-    let new = manifest(staged).map_err(incomplete)?;
+/// The staged package, once it names a newer version of this build's own
+/// channel and has the platform package an installation needs.
+fn staged_version(install: &Install, staged: &Path) -> Result<String, String> {
+    let version = manifest_version(staged).map_err(incomplete)?;
     let current = crate::version::VERSION;
     let channel = super::channel(current);
-    if super::channel(&new.version) != channel || !super::newer(current, &new.version) {
+    if super::channel(&version) != channel || !super::newer(current, &version) {
         return Err(format!(
-            "The package manager installed {}, which is not a newer {channel} version than {current}; the installation is unchanged",
-            new.version
+            "The package manager installed {version}, which is not a newer {channel} version than {current}; the installation is unchanged"
         ));
-    }
-    if new.bins.is_empty() {
-        return Err(incomplete(format!(
-            "{} installs no command",
-            staged.display()
-        )));
-    }
-    for (command, file) in &new.bins {
-        if !staged.join(file).exists() {
-            return Err(incomplete(format!(
-                "{file}, which installs {command}, is missing"
-            )));
-        }
     }
     if !platform_package(&install.package, staged) {
         return Err(incomplete(format!(
@@ -220,7 +167,126 @@ fn staged_package(install: &Install, staged: &Path) -> Result<Manifest, String> 
             staged.join("node_modules").display()
         )));
     }
-    Ok(new)
+    Ok(version)
+}
+
+/// The one wording every incomplete staged tree reports.
+fn incomplete(error: String) -> String {
+    format!("The package manager reported success but the staged package is incomplete: {error}")
+}
+
+/// The version a package's `package.json` declares.
+fn manifest_version(package: &Path) -> Result<String, String> {
+    let path = package.join("package.json");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
+    value
+        .get("version")
+        .and_then(|version| version.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{} has no version", path.display()))
+}
+
+/// The commands the manager linked into the staging prefix. npm normalizes a
+/// package's `bin` keys before linking them (`npm-normalize-package-bin`), so
+/// the link names, and not the manifest keys, are what a shell runs: a package
+/// that declares `../bin2/escape` is installed as `bin/escape`.
+fn staged_commands(staging: &Path, staged: &Path) -> Result<Vec<Command>, String> {
+    let bin = staging.join("bin");
+    let entries = match std::fs::read_dir(&bin) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(no_command(&bin)),
+        Err(error) => return Err(format!("Cannot read {}: {error}", bin.display())),
+    };
+    let mut commands = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("Cannot read {}: {error}", bin.display()))?
+            .path();
+        let name = single(&path)
+            .ok_or_else(|| incomplete(format!("{} does not name one command", path.display())))?;
+        let target = std::fs::read_link(&path)
+            .map_err(|error| format!("{} is not a link ({error})", path.display()))?;
+        let resolved = resolve(&path, &target);
+        let file = resolved.strip_prefix(staged).map_err(|_| {
+            incomplete(format!(
+                "{} points at {}, which is outside the staged package",
+                path.display(),
+                resolved.display()
+            ))
+        })?;
+        if !resolved.is_file() {
+            return Err(incomplete(format!(
+                "{} points at {}, which is not a file",
+                path.display(),
+                resolved.display()
+            )));
+        }
+        commands.push(Command {
+            name: name.to_owned(),
+            file: file.to_string_lossy().into_owned(),
+        });
+    }
+    if commands.is_empty() {
+        return Err(no_command(&bin));
+    }
+    Ok(commands)
+}
+
+fn no_command(bin: &Path) -> String {
+    incomplete(format!(
+        "the manager linked no command in {}",
+        bin.display()
+    ))
+}
+
+/// The name of the entry at `path`, which must be one ordinary path component
+/// directly inside its directory.
+fn single(path: &Path) -> Option<&str> {
+    let name = path.file_name()?.to_str()?;
+    let mut components = Path::new(name).components();
+    (matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none())
+        .then_some(name)
+}
+
+/// `link` with `target` applied, without touching the filesystem, so a link that
+/// leaves its directory is seen for what it is before anything moves.
+fn resolve(link: &Path, target: &Path) -> PathBuf {
+    let mut resolved = if target.is_absolute() {
+        PathBuf::from("/")
+    } else {
+        link.parent().unwrap_or(Path::new("")).to_path_buf()
+    };
+    for component in target.components() {
+        match component {
+            Component::Normal(part) => resolved.push(part),
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => {}
+        }
+    }
+    resolved
+}
+
+/// The commands the live package is installed as: every link in the
+/// installation's `bin` directory that resolves inside it.
+fn live_commands(prefix: &Path, package: &str) -> Vec<String> {
+    let live = package_at(prefix, package);
+    let Ok(entries) = std::fs::read_dir(prefix.join("bin")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let target = std::fs::read_link(&path).ok()?;
+            resolve(&path, &target).starts_with(&live).then_some(())?;
+            single(&path).map(str::to_owned)
+        })
+        .collect()
 }
 
 /// Whether a platform package, which holds the binary behind an entry point,
@@ -410,17 +476,18 @@ enum BinChange {
 fn link_bins(
     prefix: &Path,
     package: &str,
-    previous: &[(String, String)],
-    new: &Manifest,
+    previous: &[String],
+    new: &[Command],
     staging: &Path,
     changes: &mut Vec<BinChange>,
 ) -> Result<(), String> {
     let root = prefix.join("bin");
+    let live = package_at(prefix, package);
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("Cannot create {}: {error}", root.display()))?;
-    for (command, file) in &new.bins {
-        let target = format!("../lib/node_modules/{package}/{file}");
-        let path = root.join(command);
+    for command in new {
+        let target = format!("../lib/node_modules/{package}/{}", command.file);
+        let path = root.join(&command.name);
         match std::fs::read_link(&path) {
             Ok(current) if current == Path::new(&target) => {}
             Ok(current) => {
@@ -431,24 +498,18 @@ fn link_bins(
                 place_link(&path, &target, staging)?;
                 changes.push(BinChange::Added(path));
             }
-            Err(error) => {
-                return Err(format!(
-                    "{} is not a link ({error}); remove it and retry",
-                    path.display()
-                ));
-            }
+            Err(error) => return Err(format!("Cannot read {}: {error}", path.display())),
         }
     }
-    let owned = format!("../lib/node_modules/{package}/");
-    for (command, _) in previous {
-        if new.bins.iter().any(|(installed, _)| installed == command) {
+    for command in previous {
+        if new.iter().any(|installed| &installed.name == command) {
             continue;
         }
         let path = root.join(command);
         let Ok(target) = std::fs::read_link(&path) else {
             continue;
         };
-        if !target.to_string_lossy().starts_with(&owned) {
+        if !resolve(&path, &target).starts_with(&live) {
             continue;
         }
         std::fs::remove_file(&path)
@@ -499,15 +560,15 @@ fn undo(changes: &[BinChange], staging: &Path) -> Vec<String> {
 /// Runs every command the new version installs and checks that it reports the
 /// version the package declares, which is the proof the switch left a working
 /// command rather than a folder of files.
-async fn verify_entries(prefix: &Path, new: &Manifest) -> Result<(), String> {
-    for (command, _) in &new.bins {
-        let path = prefix.join("bin").join(command);
+async fn verify_entries(prefix: &Path, new: &[Command], version: &str) -> Result<(), String> {
+    for command in new {
+        let path = prefix.join("bin").join(&command.name);
         let reported = reported_version(&path).await?;
-        if reported != new.version {
+        if reported != version {
             return Err(format!(
                 "{} reports {reported} after the switch, not {}",
                 path.display(),
-                new.version
+                version
             ));
         }
     }
