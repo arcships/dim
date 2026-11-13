@@ -2721,6 +2721,12 @@ async fn a_steer_during_the_context_read_ends_the_request_before_it_is_handed_ov
 /// A preparation that stays below the threshold reads no turn order and no
 /// cut window: its estimate takes one page per fact it compares against, so
 /// what it reads does not grow with the stored history (#914).
+///
+/// Turn 0 is not compared with the last turn. `create_session` returns when
+/// the Agent publishes, while the line's writer issues its one-shot
+/// `branch/create` roster read only once the branch and Session are active,
+/// so that read falls before turn 0's window or inside it by scheduling
+/// alone. Turns 1 to 11 all start after it.
 #[tokio::test]
 async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
     let store = Arc::new(CountContextReads::default());
@@ -2758,7 +2764,7 @@ async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
         }
     }
     assert_eq!(
-        per_turn[0].len(),
+        per_turn[1].len(),
         per_turn[per_turn.len() - 1].len(),
         "the reads of a turn do not grow with the stored history: {per_turn:?}"
     );
