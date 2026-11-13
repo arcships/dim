@@ -2745,7 +2745,39 @@ fn every_inert_script_leaves_the_scan_at_the_top_level() {
             );
         }
     }
+    for (script, verdicts) in BY_EDITION {
+        for (edition, refused) in EDITIONS.iter().zip(verdicts) {
+            if *refused {
+                continue;
+            }
+            assert!(
+                refuses(&format!("{script}\nsleep 5 &"), *edition)
+                    || REJECTS_THE_LINE
+                        .iter()
+                        .any(|(row, rejected)| row == script && rejected == edition),
+                "{edition:?} still accepts after a marker: {script:?}"
+            );
+        }
+    }
 }
+
+/// A pair an edition accepts only because that shell rejects the whole line: the
+/// shell stops at a parse error, so a marker appended after it starts nothing
+/// and a refusal would not be accuracy. These four are the only such pairs, and
+/// the probe shows no background job for each of them with the marker appended.
+#[cfg(test)]
+const REJECTS_THE_LINE: &[(&str, ShellEdition)] = &[
+    ("echo $'a\\' ' & sleep 5 &", ShellEdition::Dash),
+    ("echo ${v:-$'a\\'b'} & sleep 5 &", ShellEdition::Dash),
+    (
+        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
+        ShellEdition::Zsh,
+    ),
+    (
+        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
+        ShellEdition::Ksh,
+    ),
+];
 
 /// The refusal names the marker that decided: the first one a reading refuses,
 /// as written, counted in characters of the command as given.
