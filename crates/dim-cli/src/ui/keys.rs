@@ -165,6 +165,30 @@ mod tests {
                 assert!(!report.contains("Tab pick a message"), "{report}");
             }
         }
+        let previous = crate::ui::i18n::active();
+        for (locale, code, _) in crate::ui::i18n::LOCALES {
+            if locale == crate::ui::i18n::Locale::En {
+                continue;
+            }
+            crate::ui::i18n::set(locale);
+            for fullscreen in [false, true] {
+                let report = report(fullscreen, false, SubmitMode::Queue).join("\n");
+                for (key, visible) in [
+                    ("Shift+Tab cycle permissions (composer focused)", true),
+                    (
+                        "Shift+Tab newer target while picked · Esc return to composer",
+                        fullscreen,
+                    ),
+                ] {
+                    let translated = t(key);
+                    assert_ne!(translated, key, "{code} lacks {key:?}");
+                    assert_eq!(report.contains(translated), visible, "{code}: {report}");
+                }
+            }
+            let hint = "(shift+tab to cycle)";
+            assert_ne!(t(hint), hint, "{code} lacks {hint:?}");
+        }
+        crate::ui::i18n::set(previous);
     }
 
     #[test]

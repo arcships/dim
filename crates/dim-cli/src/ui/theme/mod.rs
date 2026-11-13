@@ -235,6 +235,9 @@ mod tests {
             &theme.palette.highlight,
             &theme.palette.keybind,
             &theme.palette.activity,
+            &theme.palette.permission_read,
+            &theme.palette.permission_write,
+            &theme.palette.permission_full,
             &theme.code.number,
         ] {
             let color = parse_hex(role).expect("hex role on a light terminal");
@@ -246,6 +249,9 @@ mod tests {
         let few = Theme::system(ColorMode::Ansi16, Appearance::Light, None);
         assert_eq!(few.palette.accent, "ansi:3");
         assert_eq!(few.palette.activity, "ansi:12");
+        assert_eq!(few.palette.permission_read, "ansi:6");
+        assert_eq!(few.palette.permission_write, "ansi:5");
+        assert_eq!(few.palette.permission_full, "ansi:3");
         for mode in [ColorMode::TrueColor, ColorMode::Ansi256] {
             for id in ["system", "dim-light", "monokai-light"] {
                 for background in ["#ffffff", "#f5f5f5", "#d0d0d0"] {

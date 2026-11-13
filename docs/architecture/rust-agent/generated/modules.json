@@ -5538,7 +5538,8 @@
       "file": "crates/dim-cli/src/ui/keys.rs",
       "unexpandedMacros": [
         "assert",
-        "assert_eq"
+        "assert_eq",
+        "assert_ne"
       ]
     },
     {
@@ -36864,6 +36865,13 @@
     },
     {
       "from": "dim_cli::model::session",
+      "to": "dim_cli::permission",
+      "references": [
+        "path crate::permission::PresetSelection"
+      ]
+    },
+    {
+      "from": "dim_cli::model::session",
       "to": "dim_cli::report",
       "references": [
         "path crate::report::Captured",
@@ -41447,9 +41455,26 @@
     },
     {
       "from": "dim_cli::ui::keys::tests",
+      "to": "dim_cli::locale",
+      "references": [
+        "path crate::ui::i18n::LOCALES",
+        "path crate::ui::i18n::Locale::En"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys::tests",
       "to": "dim_cli::model::session",
       "references": [
         "path SubmitMode::Queue"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::keys::tests",
+      "to": "dim_cli::ui::i18n",
+      "references": [
+        "path crate::ui::i18n::active",
+        "path crate::ui::i18n::set",
+        "path t"
       ]
     },
     {
@@ -46496,6 +46521,8 @@
       "from": "dim_cli::ui::tui",
       "to": "dim_cli::permission",
       "references": [
+        "path crate::permission::PresetSelection::Next",
+        "path crate::permission::PresetSelection::Preset",
         "path crate::permission::name"
       ]
     },

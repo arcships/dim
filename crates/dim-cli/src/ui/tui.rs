@@ -3040,13 +3040,9 @@ impl App {
                     && (key.mods == Modifiers::SHIFT
                         || (key.code == KeyCode::BackTab && key.mods == Modifiers::NONE)) =>
             {
-                use dim_agent_types::PermissionPreset;
-                let preset = match self.permission_policy.preset {
-                    PermissionPreset::ReadOnly => PermissionPreset::WorkspaceWrite,
-                    PermissionPreset::WorkspaceWrite => PermissionPreset::FullAccess,
-                    PermissionPreset::FullAccess => PermissionPreset::ReadOnly,
-                };
-                self.host.send(Command::SetPermission(preset));
+                self.host.send(Command::SetPermission(
+                    crate::permission::PresetSelection::Next,
+                ));
                 return Outcome::Continue;
             }
             KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
@@ -3881,7 +3877,9 @@ impl App {
             }
             Effect::SetPermission(preset) => {
                 self.prompt = None;
-                self.host.send(Command::SetPermission(preset));
+                self.host.send(Command::SetPermission(
+                    crate::permission::PresetSelection::Preset(preset),
+                ));
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
@@ -7253,7 +7251,7 @@ impl App {
             PermissionPreset::FullAccess => &p.permission_full,
         };
         let permission = fg(&format!("⏵⏵ {}", permission_label(preset)), color);
-        let hint = fg("(shift+tab to cycle)", &p.muted);
+        let hint = fg(t("(shift+tab to cycle)"), &p.muted);
         let mut left = format!("{}{permission} {hint}", " ".repeat(MARGIN));
         let total = cols.saturating_sub(2);
         if self.fullscreen {
@@ -11096,7 +11094,9 @@ mod tests {
         app.handle_input(key(KeyCode::Enter));
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::SetPermission(PermissionPreset::WorkspaceWrite))
+            Some(Command::SetPermission(
+                crate::permission::PresetSelection::Preset(PermissionPreset::WorkspaceWrite)
+            ))
         ));
         app.apply(Update::PermissionSelected(PermissionPreset::WorkspaceWrite));
         let saved: serde_json::Value = serde_json::from_str(

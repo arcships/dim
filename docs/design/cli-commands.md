@@ -241,15 +241,15 @@ Commands
 ```
 
 ```text
-Fullscreen, 8 rows             Scrollback, 8 rows
-+- Command Palette -------+
-| >                       |   +- input -----------------+
-| /new                    |   | > /                     |
-+-------------------------+   +-------------------------+
-                              +-------------------------+
-+- input -----------------+   | /new                    |
-|                         |   +-------------------------+
-+-------------------------+   AGENT
+Fullscreen, 8 rows                           Scrollback, 8 rows
++- > -------------------------------+
+| /new                              |       +- input ---------------------------+
++-----------------------------------+       | > /                               |
+                                            +-----------------------------------+
++- input ---------------------------+       +-----------------------------------+
+|                                   |       | /new                              |
++-----------------------------------+       +-----------------------------------+
+ ⏵⏵ Read only (shift+tab to cycle)            ⏵⏵ Read only (shift+tab to cycle)
 ```
 
 ## Run keys and queue
@@ -2599,11 +2599,14 @@ Assistant: ...
 [permission] main branch preset: workspace-write  <- changed by another client
 ```
 
-The scrollback client draws a status line under the composer: the agent marker and the
-permission preset, the goal marker, the context use against
-its window, and one slot for the state in force — a notice, a required answer or permission,
-`esc interrupt`, or the background task count. The model, with its effort when both fit, is
-right-aligned on the same line; the line is clipped to the terminal width.
+Both TUI modes draw a live permission footer under the composer, without an `AGENT` prefix;
+the preset, colors, localized shortcut hint and key behavior are defined in
+[`/permissions`](#permissions). It is not committed to transcript history.
+Scrollback keeps the goal marker, context use against its window, and one slot for the state
+in force — a notice, a required answer or permission, `esc interrupt`, or the background task
+count — on the same line. The model, with its effort when both fit, is right-aligned there;
+the line is clipped to the terminal width. Fullscreen instead keeps run status, the status
+slot, goal and context information in the composer border, not the permission preset.
 
 ### Submit check warnings
 
@@ -2763,7 +2766,8 @@ Both TUI modes always show the effective preset below the composer, aligned at t
   ⏵⏵ Full access (shift+tab to cycle)
 ```
 
-The three rows above are alternatives: only the effective preset appears. Read only is cyan,
+The three rows above are alternatives: only the effective preset appears. The shortcut hint
+is translated into the selected interface language. Read only is cyan,
 Workspace write is purple and Full access is yellow; the shortcut hint is muted. Light themes
 use darker shades for contrast, and limited-color terminals use their cyan, magenta and yellow
 slots. The permission label takes priority over the hint and other status content on narrow
@@ -2771,8 +2775,9 @@ terminals. Fullscreen retains run, goal, context and notice information in the c
 
 With the composer owning the keys, Shift+Tab cycles Read only → Workspace write → Full access
 → Read only without submitting or changing the draft, including during a running turn. It
-uses the same selection operation and remembered preference as the picker; the label changes
-only when the operation succeeds. Prompts, command and mention menus keep their existing
+uses the same selection operation and remembered preference as the picker; rapid presses are
+processed in order against the policy in force when each operation runs, not a stale UI copy.
+The label changes only when the operation succeeds. Prompts, command and mention menus keep their existing
 Shift+Tab behavior. In fullscreen, Tab starts transcript navigation; while a transcript target
 is picked, Shift+Tab still moves to the newer target, and Esc returns to the composer.
 

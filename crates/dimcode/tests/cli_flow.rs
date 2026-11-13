@@ -3612,6 +3612,24 @@ impl Terminal {
             consumed: 0,
         }
     }
+    fn resize(&self, cols: u16, rows: u16) {
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    self.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+    }
     fn record(&mut self, bytes: &[u8]) {
         self.utf8_pending.extend_from_slice(bytes);
         let complete = match std::str::from_utf8(&self.utf8_pending) {
@@ -10338,6 +10356,7 @@ fn tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules
         }
     });
     let mut terminal = Terminal::resume_tui(home.command());
+    terminal.resize(160, 32);
     terminal.until("test / model");
     terminal.write(b"/approvals\r");
     terminal.until("Full access");
@@ -10481,6 +10500,7 @@ fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
         let (submitted, wait_submitted) = std::sync::mpsc::channel();
         let (controls, wait_controls) = std::sync::mpsc::channel();
         let (checked, wait_checked) = std::sync::mpsc::channel();
+        let (burst, wait_burst) = std::sync::mpsc::channel();
         let daemon = home.daemon(move |wire| {
             wire.hello(&["session.permission.get", "session.permission.update"]);
             let attach = wire.read("session.attach");
@@ -10507,10 +10527,27 @@ fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
                 assert_eq!(update["params"], json!({"sessionId":"session","branchId":"main","expectedVersion":version,"policy":policy}));
                 wire.reply(&update, json!({"version":version + 1}));
             }
+            for (version, preset) in [(4, "workspace-write"), (5, "full-access"), (6, "read-only")] {
+                let read = wire.read("session.permission.get");
+                if version == 4 {
+                    wait_burst.recv_timeout(PATIENCE).unwrap();
+                }
+                wire.reply(&read, json!({"version":version,"policy":policy}));
+                policy["preset"] = json!(preset);
+                let update = wire.read("session.permission.update");
+                assert_eq!(update["params"], json!({"sessionId":"session","branchId":"main","expectedVersion":version,"policy":policy}));
+                wire.reply(&update, json!({"version":version + 1}));
+            }
             let read = wire.read("session.permission.get");
-            wire.reply(&read, json!({"version":4,"policy":policy}));
+            wire.reply(&read, json!({"version":7,"policy":policy}));
             let update = wire.read("session.permission.update");
             wire.send(json!({"jsonrpc":"2.0","id":update["id"],"error":{"code":-32000,"message":"permission update refused"}}));
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":7,"policy":policy}));
+            policy["preset"] = json!("workspace-write");
+            let update = wire.read("session.permission.update");
+            assert_eq!(update["params"]["policy"], policy);
+            wire.reply(&update, json!({"version":8}));
             let submit = wire.read("session.submit");
             assert_eq!(submit["params"]["text"], "keep this draft");
             wire.reply(&submit, json!({"event":{}}));
@@ -10527,22 +10564,7 @@ fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
             .env("COLORTERM", "truecolor")
             .env("DIM_TERMINAL_APPEARANCE", "dark");
         let mut terminal = Terminal::resume_tui(command);
-        let size = libc::winsize {
-            ws_row: 32,
-            ws_col: 160,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        assert_eq!(
-            unsafe {
-                libc::ioctl(
-                    terminal.master.as_ref().unwrap().as_raw_fd(),
-                    libc::TIOCSWINSZ,
-                    &size,
-                )
-            },
-            0
-        );
+        terminal.resize(160, 32);
         terminal.until("test / model");
         terminal.until_anywhere("⏵⏵ Read only");
         terminal.until_anywhere("(shift+tab to cycle)");
@@ -10568,11 +10590,20 @@ fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
                     .unwrap();
             assert_eq!(config["permission"], preset);
         }
+        terminal.write(b"\x1b[Z\x1b[Z\x1b[Zx");
+        terminal.until("keep this draftx");
+        terminal.write(b"\x7f");
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["permission"], "read-only");
+        burst.send(()).unwrap();
         terminal.write(b"\x1b[Z");
         terminal.until("permission update refused");
         let config: Value =
             serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
         assert_eq!(config["permission"], "read-only");
+        terminal.write(b"\x1b[Z");
+        terminal.until("Permission: workspace-write (also for new sessions)");
         terminal.write(b"\r");
         wait_submitted.recv_timeout(PATIENCE).unwrap();
         home.kill(&terminal);
