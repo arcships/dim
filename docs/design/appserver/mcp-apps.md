@@ -410,7 +410,7 @@ or an approval, so it has nothing to report about one. `mcp_app_refused` and `mc
 ### 4.4 The `mcpSession` data face
 
 The two methods are RPC projections of the Session part's own service. That service is the data face
-`mcpSession` ([service faces §3.4](../service-faces.md#34-对象句柄拆成操作加id)); the typed
+`mcpSession` ([service faces §3.4](../service-faces.md#34-对象句柄拆成操作加-id)); the typed
 `McpSession` serves it and stays the Rust binding.
 
 | Method | Positional arguments | Reply |

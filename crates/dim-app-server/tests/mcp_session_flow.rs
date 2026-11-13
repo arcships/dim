@@ -3948,6 +3948,52 @@ async fn mcp_session_face_answers_as_the_typed_service() {
         McpAppError::UnknownServer
     );
 
+    {
+        env.remote.app_hold.store(true, Ordering::SeqCst);
+        let called = env.remote.app_called.notified();
+        tokio::pin!(called);
+        called.as_mut().enable();
+        let before = env.remote.cancelled().len();
+        let mut pending = Box::pin(face_call(
+            &ctx,
+            instance,
+            "mcpSession",
+            "call",
+            vec![
+                json!("docs").into(),
+                json!("chart").into(),
+                json!({"step":2}).into(),
+            ],
+        ));
+        tokio::select! {
+            _ = &mut pending => panic!("the server holds the call until it is abandoned"),
+            result = tokio::time::timeout(Duration::from_secs(5), &mut called) => result.unwrap(),
+        }
+        drop(pending);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while env.remote.cancelled().len() == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoning the face call sends MCP cancellation to the server");
+        assert_eq!(env.remote.cancelled().len(), before + 1);
+        env.remote.app_hold.store(false, Ordering::SeqCst);
+        let next = face_call(
+            &ctx,
+            instance,
+            "mcpSession",
+            "call",
+            vec![
+                json!("docs").into(),
+                json!("chart").into(),
+                json!({"step":2}).into(),
+            ],
+        )
+        .await;
+        assert_eq!(next, serde_json::to_value(&typed).unwrap());
+    }
+
     mcp.refresh().unwrap();
     let wire = face_call(&ctx, instance, "mcpSession", "refresh", Vec::new()).await;
     assert_eq!(wire, Value::Null);

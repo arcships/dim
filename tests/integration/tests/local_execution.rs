@@ -2362,6 +2362,42 @@ async fn background_exec_face_answers_as_the_typed_service() {
     .await;
     assert_eq!(error.code(), Some("timeout"));
 
+    let watches = workspace_tools::background::testing::completion_watches(&background, &task);
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key("backgroundExec").instance(instance))
+        .unwrap();
+    let reply = dispatch
+        .invoke(
+            "wait",
+            BridgeValue::List(vec![json!(task).into(), json!(60_000).into()]),
+        )
+        .unwrap();
+    let mut waiting = Box::pin(settle(reply));
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while workspace_tools::background::testing::completion_watches(&background, &task)
+            != watches + 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the admitted face call owns a completion watch");
+    drop(waiting);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while workspace_tools::background::testing::completion_watches(&background, &task)
+            != watches
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("abandoning the face call releases its completion watch");
+    assert_eq!(
+        background.output(task.clone()).await.unwrap(),
+        "face-output"
+    );
+
     let wire = face_call(
         &ctx,
         instance,

@@ -913,6 +913,13 @@ pub mod testing {
     };
     use tokio::sync::oneshot;
 
+    /// Counts active completion watches for an existing task.
+    pub fn completion_watches(background: &super::BackgroundExec, task_id: &str) -> usize {
+        background.state.lock().unwrap().tasks[task_id]
+            .ended
+            .receiver_count()
+    }
+
     type Hold = (PathBuf, oneshot::Sender<()>, oneshot::Receiver<()>);
     static HOLDS: Mutex<Vec<Hold>> = Mutex::new(Vec::new());
 

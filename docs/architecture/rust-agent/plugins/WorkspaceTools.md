@@ -496,7 +496,7 @@ bounded completion notices on the calling branch.
 
 ### Data face
 
-`backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id));
+`backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id));
 the typed `BackgroundExec` serves it and stays the Rust binding.
 
 | Method | Positional arguments | Reply | Errors |

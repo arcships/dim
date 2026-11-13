@@ -17976,6 +17976,13 @@
       ]
     },
     {
+      "from": "dim_agent_capabilities::workspace_tools::background::testing",
+      "to": "dim_agent_capabilities::workspace_tools::background",
+      "references": [
+        "path super::BackgroundExec"
+      ]
+    },
+    {
       "from": "dim_agent_capabilities::workspace_tools::exec",
       "to": "dim_agent_capabilities::context_policy",
       "references": [
