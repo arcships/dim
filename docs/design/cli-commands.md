@@ -1524,6 +1524,10 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `dimcode session rename SESSION --clear` | Clear the manual title, so the Session is untitled again. |
 | `dimcode session delete SESSION` | Permanently delete the Session and everything the store keeps for it; there is no prompt. |
 | `dimcode session cleanup (--older-than DURATION\|--keep N) [--yes]` | Show the Sessions one selector matches, then delete them after confirmation. |
+| `dimcode worktree list [--json]` | List the managed worktrees under `$DIMCODE_HOME/worktrees` ([managed worktrees](#managed-worktrees)): task id, repository, root, branch and HEAD, owning Sessions, last use, dirty and untracked counts, and whether the directory or its Git registration is gone. |
+| `dimcode worktree remove TASK_ID [--force] [--json]` | Remove one managed worktree whose Sessions are deleted; `--force` overrides only the uncommitted-content check. A root verified missing deletes the record and prunes the Git metadata. |
+| `dimcode worktree prune (--older-than DURATION\|--keep N) [--yes] [--force] [--json]` | Show the unassociated managed worktrees the selector matches with the kept rows and their reasons, then delete them after confirmation. |
+| `--worktree [--worktree-base REF] [--worktree-branch NAME]` | Create one managed worktree for a new `tui` or `exec` Session and start the Session in it ([managed worktrees](#managed-worktrees)). |
 | `/rename TITLE` or `/rename --clear` | Set, or clear, the shown Session's manual title; the text is a command and never becomes model input. |
 | `/resume` | Open the Sessions picker on this workspace ([the `/resume` picker](#the-resume-picker)); `Ctrl+S` toggles between the local scope — the launch workspace, or its repository once git answers — and every workspace, and `Ctrl+X` deletes one row after a confirmation. |
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
@@ -1781,15 +1785,17 @@ the selection down.
   cursor and reads the first page again; the query stays and applies within the
   new scope.
 - The local scope is the launch workspace and the same relative directory in
-  every worktree of its git repository, read with `git rev-parse` and
-  `git worktree list --porcelain` in the background when the picker opens. The
-  first page does not wait for git, and both reads share a two-second bound. A
-  git that succeeds names the scope `This repository`; when the picker is
-  showing the local scope and the set holds more than one entry, the title
-  changes and the first page is read again, and a one-entry set changes only
-  the title, since the catalog's canonical `cwd` treats the single workspace as
-  the same filter. A git that fails or does not answer, and a daemon that reads
-  neither a workspace set (`session.catalog.workspaces`) nor
+  every worktree of its git repository, read with `git rev-parse` and `git
+  worktree list --porcelain` in the background when the picker opens. The first
+  page does not wait for git, and both reads share a two-second bound. A git
+  that succeeds names the scope `This repository`; when the picker is showing
+  the local scope and the set holds more than one entry, the title changes and
+  the first page is read again, and a one-entry set changes only the title,
+  since the catalog's canonical `cwd` treats the single workspace as the same
+  filter. The rows already drawn stay until the wider page replaces them, and
+  the selection stays on its row, or on the row the operator moved to while the
+  wider page was read. A git that fails or does not answer, and a daemon that
+  reads neither a workspace set (`session.catalog.workspaces`) nor
   `session.summaries`, leave the local scope named `This workspace` and listing
   exactly the launch workspace, without a notice. A bare worktree adds nothing.
 - The rows name their workspace inside the local scope only when it holds more
@@ -1864,6 +1870,57 @@ message's topic, and the placeholder `New session` counts as no title in both th
 title and the `/resume` row. `/new` returns the window title to `DIM`. The idle line
 client reads the same two forms and prints
 `Use /rename TITLE or /rename --clear` for a bare `/rename`.
+
+### Managed worktrees
+
+`--worktree` on `dimcode tui` and `dimcode exec` creates one worktree for the new Session
+under `$DIMCODE_HOME/worktrees/<task-id>/<repo-name>`: `--worktree-base REF` selects the
+commit (the source workspace's `HEAD` by default) and `--worktree-branch NAME` names a
+new branch. The branch is create-only — an existing one is refused — and without the flag
+it is `dim/<task-id>`. `--worktree-base` is resolved with `git rev-parse --verify` before
+the checkout, so a value beginning with `-` is never read as a Git option;
+`--worktree-branch` is consumed by `-b` and Git validates the ref name. The Session starts
+in the source workspace's relative subtree of the new worktree, so its scope is the same
+relative directory. The member is sent only when `hello.features` carries
+`session.create.worktree`; the normal output names the task id and the root. A failed
+creation removes the directory and the branch this call made with an uncancelled token;
+when Git refuses, or content appeared since the creation, both stay and `list` shows an
+unregistered entry.
+
+`dimcode worktree list` reads Git and the SessionStore records and joins them: each
+recorded directory under the managed root with its owning Sessions, branch and HEAD, last
+use, dirty and untracked counts, or a directory that is missing, no longer named by Git
+(`git-missing`), or unregistered. A directory a failed creation left behind is listed with
+its task id as unregistered; `prune` never selects an unregistered entry, and it is removed by task id.
+
+`dimcode worktree remove TASK_ID` removes one recorded worktree after its Sessions are
+deleted. A Session association, uncommitted or untracked content (ignored files
+included), or any stored Session's workspace at or under the root refuses it; `--force`
+overrides only the content check and is the only case that passes Git's own `--force`, so
+content written after the check is refused by Git instead of deleted. The removal goes
+through `git worktree remove`, keeps the branch, and deletes the record in the same
+storage operation. A root that is missing or no longer named by Git gets record-only
+cleanup plus `git worktree prune`; when the directory exists and is not empty, that needs
+`--force`. An unregistered directory is removed by task id only when it has no `.git`
+entry and is empty, or has no `.git` entry and `--force` is given; one with a `.git` entry
+is reported with its path and left for `git worktree remove`.
+
+`dimcode worktree prune` selects recorded directories with no remaining association and
+applies one selector: `--older-than DURATION` reads the directory's last use, and a record
+without one is never selected; `--keep N` keeps the N most recently used candidates.
+Uncommitted content, a Git-missing directory without `--force`, and unregistered entries
+stay in the kept rows. The preview lists the candidates and the kept rows with their
+reasons; only `y` or `yes` confirms on a terminal, and a script passes `--yes`. The apply
+call carries the previewed task ids, so it removes exactly the set the operator saw and
+rechecks each one; a candidate the delete refuses keeps its record and prints `Failed
+TASK_ID: reason` on stderr, the other candidates still go, and the run exits 1. Because an
+association lasts until its Session is deleted, cleaning an idle Session's worktree is
+`session delete` followed by `worktree remove`. `session delete` and `session cleanup`
+never delete a worktree and do not report them.
+
+These are host management methods on the `worktree` namespace: user commands, never agent
+tools, never through Permission approval, and never served to a paired device. The
+design is [managed worktrees](worktree-management.md).
 
 ### Session deletion and cleanup
 

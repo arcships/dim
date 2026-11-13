@@ -3,7 +3,7 @@ use crate::{
     agent_records::AgentRecords,
     protocol::{AgentInfo, SessionOrigin},
     settings::SettingsService,
-    storage::{SessionStore, SqliteStorage},
+    storage::{PreparedWorktree, SessionStore, SqliteStorage},
 };
 use dim_agent_capabilities::host::ModelSelectionHost;
 use dim_agent_runtime::{
@@ -1327,6 +1327,7 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
@@ -1342,6 +1343,7 @@ impl AgentIndex {
                         version,
                         leader.as_deref(),
                         origin,
+                        worktree,
                     )
                     .await
             })
@@ -1383,6 +1385,7 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> dim_agent_runtime::Result<Session> {
         let _activity = self
             .activity
@@ -1391,7 +1394,7 @@ impl AgentIndex {
         let mut config = config;
         config.exclude_codemode_below(version);
         match self
-            .prepare_session(host, &config, version, leader, origin)
+            .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
             Some((id, prepare)) => {

@@ -8492,6 +8492,7 @@ mod tests {
                             total_tokens: 385_000.,
                             cache_read_tokens: None,
                             cache_write_tokens: None,
+                            reasoning_tokens: None,
                             cost: None,
                             currency: None,
                         },

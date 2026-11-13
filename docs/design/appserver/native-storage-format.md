@@ -1,5 +1,21 @@
 # Rust 会话存储格式
 
+## v46：`model/usage` 携带推理 token 数
+
+v46 只增加一个可选字段：`model/usage` 事件的 `Usage` 里多出 `reasoningTokens`，即一次回复的 completion 中用于思考的那部分。没有该计数的适配器不写这个字段。
+
+不改表、索引或行。之所以要 bump marker：`Usage` 拒绝未知字段，而启动不再解码历史事件，所以旧 daemon 会先接受带该字段的存储、直到会话中第一次解码 `model/usage`（恢复的后缀重放或实时订阅）才失败。marker 让它在这一步之前就拒读。降级是单向的：v45 及更早的程序拒读 v46。
+
+## v45：worktree 目录的最后使用时间
+
+托管 worktree 的清理按目录记录的最后使用时间选择候选，而 v33 只记录了候选本身。v45 在
+`worktree_directories` 增加可空列 `last_used_at_ms INTEGER`：
+
+- 新库直接按 v45 建表；v44 及更早的库在同一升级事务中 `ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER`，已有行保持 `NULL`。
+- 关联写入（Session 创建、识别确认）和关联解除（Session 删除）更新该列。`NULL` 表示未知时间，不是“未使用”：`--older-than` 不选它，`--keep` 按最旧处理。
+- 精确结构门禁改为 v45；v44 结构加 marker 仍可升级。写有 v45 的库被 v44 程序拒绝。
+- 不改变其他表、索引或业务事实；[托管 Worktree](../worktree-management.md) 的其余状态仍由 Git 与这两张记录表承担。
+
 ## v44：提示变更携带其投递输入
 
 v44 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inputs`，列出与它同一批次写入、用于投递该变更的 `input/message` 事件 id。没有投递块的变更（System 内容、以及写在此字段出现之前的事实）不写该字段，读出为空列表。
@@ -14,6 +30,7 @@ v44 只增加一个可选字段：`prompt/changed` 事件的数据里多出 `inp
 其他表以 `REFERENCES agent_sessions(session_id)` 指向它，改名会把这些表的存储 SQL 改写成临时名，因此步骤内打开 `legacy_alter_table`，启动事务在关闭外键约束的状态下运行，提交前用 `PRAGMA foreign_key_check` 补做这次事务未强制的检查。
 
 步骤不回填：升级前由启动创建的 `internal` 行与 Workflow 阶段、丢失回复的空 Session 无法区分，改标 `automation` 会凭空造出库中没有的来源，这些行保持 `internal`、默认不列出。
+
 ## v41：合并 child tool-call 与 Timeline 索引格式
 
 main 已使用 v37 表示 child tool-call 事件信封、v38 表示 session_owners 允许协议4；本分支先前的 v37–v40 使用独立的成员/全文/数组/身份索引格式，不能只按编号判定两者兼容。
@@ -65,7 +82,7 @@ v36 的文本索引和事件编码合同继续适用。
 
 后续提案：[状态读取索引与数组元素](#提案状态读取索引与数组元素)。数组元素编码采用独立新格式；owner 结果复用既有事件索引。
 
-The current native format is **v44**, with conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records, source-owned `settings_documents`,
+The current native format is **v46**, with conditional queued-input Steer candidates in withdrawal commands, directly addressed large-array elements, versioned unfinished-member indexes, property text-candidate indexes, a submission identity index, a Session's activity time following its own activity, worktree directory and Session usage records with the directory's last-used time, `prompt/changed` events naming their delivery inputs, source-owned `settings_documents`,
 SessionStore's Session-file rows, its title metadata, request messages stored
 as lists of content-addressed nodes, extension event rows, Session
 configurations and Agent profiles that may omit their mount list, the two
@@ -74,11 +91,11 @@ omit `type`, the Session catalog projection, a configuration's System source,
 a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
-requires the exact v44 SQL schema and a single
-format marker of 44 before writable PRAGMAs, or the exact v43, v42, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+requires the exact v46 SQL schema and a single
+format marker of 46 before writable PRAGMAs, or the exact v45, v44, v43, v42, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
-which the same startup transaction upgrades in place to v44 one step after
-another ([v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
+which the same startup transaction upgrades in place to v46 one step after
+another ([#1477 v46 reasoning count](#v46modelusage-携带推理-token-数), [#1451 v45 last-used time](#v45worktree-目录的最后使用时间), [v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),
 [S5a v15 decision](#s5a-v15-格式决定),
 [S5b v16 decision](#s5b-v16-格式决定), [#193 v17 decision](#193-v17-格式决定),
 [#2 v18 decision](#2-v18-格式决定), [#364 v19 decision](#364-v19-格式决定),
@@ -91,7 +108,7 @@ branch-only v14 `user_configuration` format are unsupported and preserved, never
 migrated, downgraded or interpreted as an admitted format.
 No migration API or startup option is provided. S5c (Session deletion and fork)
 kept v15 unchanged ([S5c decision](#s5c-格式决定)). v13 document bytes remain
-valid in v44, and v16 request rows stay readable as written.
+valid in v46, and v16 request rows stay readable as written.
 除格式自身的 SQL 外，每次打开都接受派生索引：`timeline_history_anchors`
 （`(session_id, branch_id, kind, sequence) WHERE kind IN ('turn/start', 'input/message')`，
 [latest-turn 窗口 §5.1](session-history-window.md#51-the-derived-index)）、
@@ -101,7 +118,7 @@ valid in v44, and v16 request rows stay readable as written.
 读取事件而不碰事件体，[ADR 019](../../adr/019-event-query.md) D4）：读写打开在启动事务内用
 `CREATE INDEX IF NOT EXISTS` 创建或补建，只读导出只接受它们。它们不含数据，可从
 `timeline_events` 重新推导，读同一份事件不因它们有无而不同，因此不属于格式：启动门禁的
-精确结构比较忽略这些名字，格式标记不变（当前 v44）；其余任何多余对象仍按原规则拒绝。代价是早于
+精确结构比较忽略这些名字，格式标记不变（当前 v46）；其余任何多余对象仍按原规则拒绝。代价是早于
 该变更的二进制不认识这些名字，会以 "unsupported SQLite schema … preserved" 拒绝已有该
 索引的库（行不变，新二进制可再次打开）。
 Storage versions are independent of RPC versions. Private MCP/Skill business documents do not belong
@@ -239,7 +256,7 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 
 删除 Session 只释放库内页，数据库文件本身不缩小。维护入口是 `dimcode daemon vacuum [--database PATH]`：守护进程未运行时它取同一把维护锁，校验当前格式的精确结构后执行 `VACUUM`，打印操作前后数据库与 WAL 的字节数之和。`VACUUM` 重写整个库，需要约等于库大小的临时空间；守护进程持锁时该命令拒绝执行，也不升级或创建库。
 
-## Current v44 tables
+## Current v46 tables
 
 下表逐列对应 `SqliteStorage::SCHEMA`。新表按业务实体命名，其中 `agent_sessions` 与旧 TypeScript 的 `sessions` 区分；当前启动门禁仍只接受本格式，不因此支持旧表同库存取。`—` 表示 SQL 中没有显式 `DEFAULT`；可空列若省略会得到 SQLite 的隐式 `NULL`。SQLite rowid 表中的 `TEXT PRIMARY KEY` 不自动保证非空，因此下表如实标出 v1 的两个缺口；正常写入仍必须给出 ID。
 
@@ -314,6 +331,7 @@ fork 与 Session 删除各用一条复制连接，按 256 个逻辑序号（内�
 | `session_output_owners.path` | `TEXT` | 否 | — | 联合主键第 2 列；命令输出的规范绝对路径；fork 复制行，删除时按父目录清理 |
 | `worktree_directories.repository` | `TEXT` | 否 | — | 联合主键第 1 列；规范公共 Git 目录，UTF-8 绝对路径（v33） |
 | `worktree_directories.root` | `TEXT` | 否 | — | 联合主键第 2 列；worktree 规范根目录；最后关联解除后保留 |
+| `worktree_directories.last_used_at_ms` | `INTEGER` | 是 | `NULL` | 关联写入或解除时更新的最后使用时间（v45）；`NULL` 为未知，`--older-than` 不选、`--keep` 按最旧 |
 | `session_worktrees.session_id` | `TEXT` | 否 | — | 联合主键第 1 列；外键到 `agent_sessions(session_id)`；随 Session 删除，不随 fork 复制 |
 | `session_worktrees.repository` | `TEXT` | 否 | — | 联合主键第 2 列；与 `root` 联合作为外键引用 `worktree_directories(repository, root)` |
 | `session_worktrees.root` | `TEXT` | 否 | — | 联合主键第 3 列；关联的 worktree 根目录 |
@@ -953,9 +971,9 @@ from **v42** to **v43** for InputQueue's
 
 `session_owners.session_id` 与 `agents.agent_id` 两个 ID 列的 SQL 可空缺口见表结构。永久关闭字段与旧记录回填尚未设计。
 
-## 完整记录示例（v43）
+## 完整记录示例（v46）
 
-v43 沿用 v42 的示例：`agent_sessions.origin` 的取值集多一个 `automation`，示例行仍是 `client`；可选 `parent_call_id` 在示例中省略；顶层模型批次不写该字段。
+v46 沿用 v42 的示例：`worktree_directories` 多一个可空的 `last_used_at_ms`，示例为 `null`；`agent_sessions.origin` 的取值集多一个 `automation`，示例行仍是 `client`；可选 `parent_call_id` 在示例中省略；顶层模型批次不写该字段。
 
 下例是一条 Session `s1`、主分支 `main` 和子分支 `child` 的全部原生表记录，用于核对存储关系，不代表完整的对话执行序列。为便于阅读，`profile`、`config`、`info` 和事件 `body` 这几个实际为 `TEXT` 的列在展示时解析为 JSON；写入时各自是完整 JSON 字符串，类型规定省略的可选字段照常省略。ID/时间是示例值。`timeline_content.body` 保留实际写入的字符串形式，因此下面各 hash 可以按上文算法复核。`main` 第 4 条 `model/call` 是升级前 v16 写入的行，`child` 第 3 条是升级后 v17 写入的行，示例同时展示两种行混存。
 
@@ -1115,7 +1133,7 @@ current manual title.
   "session_file_owners": [{"session_id": "s1", "file_id": "0b4e7d2c-5a1f-4c3e-9f6a-2d8b1e7c4a90"}],
   "session_grants": [{"session_id": "s1", "path": "/work/notes.md", "kind": "file", "mode": "write"}],
   "session_output_owners": [{"session_id": "s1", "path": "/work/command-output/s1/exec.log"}],
-  "worktree_directories": [{"repository":"/repo/.git","root":"/repo-wt"}],
+  "worktree_directories": [{"repository":"/repo/.git","root":"/repo-wt","last_used_at_ms": null}],
   "session_worktrees": [{"session_id":"s1","repository":"/repo/.git","root":"/repo-wt","subtree":"/repo-wt"}],
   "session_metadata": [{"session_id": "s1", "revision": 2, "title": "Example conversation", "title_source": "manual"}]
 }

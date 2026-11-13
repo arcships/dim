@@ -16356,4 +16356,179 @@ mod tests {
             }
         }
     }
+
+    /// #1474: `/resume` in a repository with several worktrees must draw one
+    /// page. The panel opens on the exact launch workspace and asks for its
+    /// first page; the git probe answers later with the repository's
+    /// worktrees, and that answer may not clear a page already drawn.
+    ///
+    /// The git read itself is covered where it lives
+    /// (`session_host::tests::the_git_read_answers_one_worktree_several_and_nothing_outside_git`);
+    /// this drives the client's state sequence, which is what the operator
+    /// sees, and injects the set that read publishes.
+    #[test]
+    fn resume_draws_one_page_in_a_repository_with_several_worktrees() {
+        use crate::model::session::{SessionItem, SessionsScope};
+
+        let root = tempfile::tempdir().unwrap();
+        let launch = root.path().join("main");
+        let sibling = root.path().join("fix");
+        std::fs::create_dir_all(&launch).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let set = vec![
+            launch.to_string_lossy().into_owned(),
+            sibling.to_string_lossy().into_owned(),
+        ];
+
+        let item = |id: &str, title: &str, cwd: &std::path::Path| SessionItem {
+            id: id.into(),
+            title: Some(title.into()),
+            preview: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            updated_at: u64::MAX,
+            model: "p/m".into(),
+            origin: None,
+        };
+        let here = item("s-here", "Fix the failing test", &launch);
+        let also = item("s-also", "Retry the flaky test", &launch);
+        let there = item("s-there", "Update the cache", &sibling);
+
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut drawn = Drawn::new((100, 30), None, true);
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+
+        // What the operator sees, in reading order: the panel's title, its
+        // loading line, and its rows.
+        const MARKS: [&str; 6] = [
+            "Sessions · This workspace",
+            "Sessions · This repository",
+            "Loading sessions...",
+            "Fix the failing test",
+            "Retry the flaky test",
+            "Update the cache",
+        ];
+        let states = |drawn: &mut Drawn| -> Vec<&'static str> {
+            drawn.draw();
+            let text = drawn.emu.rows_text().join("\n");
+            MARKS
+                .iter()
+                .copied()
+                .filter(|mark| text.contains(mark))
+                .collect()
+        };
+        // The first-page reads asked for since the last call: their id and
+        // their scope, which is `None` for a cursor-less first page.
+        let reads = |sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            let mut commands = sent.borrow_mut();
+            let reads: Vec<(String, SessionsScope)> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::ListSessions {
+                        id, scope, cursor, ..
+                    } => {
+                        assert!(cursor.is_none(), "a first page carries no cursor");
+                        Some((id.clone(), scope.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            commands.clear();
+            reads
+        };
+        // Pressing Enter resumes the selected row: the id it picks.
+        let pressed = |drawn: &mut Drawn, sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            sent.borrow_mut().clear();
+            drawn.key(KeyCode::Enter);
+            let picked = sent.borrow_mut().iter().find_map(|command| match command {
+                Command::Resume(id) => Some(id.clone()),
+                _ => None,
+            });
+            sent.borrow_mut().clear();
+            picked.expect("Enter resumes the selected row")
+        };
+
+        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
+        for open in 1..=2 {
+            typed(&mut drawn.app, "/resume");
+            drawn.key(KeyCode::Enter);
+            sequence.push(("opened", states(&mut drawn)));
+
+            let asked = reads(&sent);
+            assert_eq!(
+                asked.len(),
+                1,
+                "open {open}: one read is asked for at open: {asked:?}"
+            );
+            assert!(
+                matches!(asked[0].1, SessionsScope::Local(None)),
+                "open {open}: the opening read lists the exact launch workspace: {asked:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: asked[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), also.clone()], None)),
+            });
+            sequence.push(("first page", states(&mut drawn)));
+
+            // The operator moves to the second row before git answers, and the
+            // wider page lists that row third: the selection must stay on it,
+            // not on the same index.
+            drawn.key(KeyCode::Down);
+            drawn.app.apply(Update::RepositoryWorkspaces(set.clone()));
+            let answered = states(&mut drawn);
+            assert!(
+                !answered.contains(&"Loading sessions..."),
+                "open {open}: the git answer does not clear the drawn page: {answered:?}"
+            );
+            sequence.push(("git answer", answered));
+
+            drawn.app.tick();
+            let widened = reads(&sent);
+            assert!(
+                matches!(
+                    widened.as_slice(),
+                    [(_, SessionsScope::Local(Some(asked)))] if *asked == set
+                ),
+                "open {open}: the wider scope reads its first page: {widened:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: widened[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), there.clone(), also.clone()], None)),
+            });
+            sequence.push(("wider page", states(&mut drawn)));
+            assert_eq!(
+                pressed(&mut drawn, &sent),
+                "s-also",
+                "open {open}: the selection stays on its row, now the third"
+            );
+        }
+
+        for open in 1..=2 {
+            let state = |label: &str| -> &Vec<&'static str> {
+                sequence
+                    .iter()
+                    .filter_map(|(recorded, states)| (*recorded == label).then_some(states))
+                    .nth(open - 1)
+                    .unwrap_or_else(|| {
+                        panic!("open {open} {label} was not recorded: {sequence:#?}")
+                    })
+            };
+            assert_eq!(
+                state("opened"),
+                &["Sessions · This workspace", "Loading sessions..."],
+                "open {open} opens on the launch workspace"
+            );
+            assert_eq!(
+                state("wider page"),
+                &[
+                    "Sessions · This repository",
+                    "Fix the failing test",
+                    "Retry the flaky test",
+                    "Update the cache",
+                ],
+                "open {open} ends on the repository's page without a second loading line"
+            );
+        }
+    }
 }

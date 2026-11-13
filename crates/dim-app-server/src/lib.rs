@@ -44,6 +44,7 @@ mod ui_leaf;
 pub mod web;
 mod web_entry;
 mod workspace_files;
+mod worktrees;
 
 use agents::{AgentIndex, AgentsPlugin};
 pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
@@ -741,6 +742,24 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             },
         )?);
     }
+    // The managed root outlives a Session, so its owner exists only where the
+    // product home and the native store do.
+    if let Some(home) = config
+        .product_home
+        .clone()
+        .filter(|_| config.database_path.is_some())
+    {
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(worktrees::ManagedWorktreesPlugin::new(
+                    names,
+                    home.clone(),
+                )?))
+            },
+        )?);
+    }
     rows.push(register_part(&mut builtins, builder.catalog(), |names| {
         Ok(Box::new(methods::ManagementMethodsPlugin::new(names)?))
     })?);
@@ -1314,6 +1333,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
     register::<storage::SessionStore>(catalog, None);
+    register::<worktrees::ManagedWorktrees>(catalog, None);
     register::<agents::AgentDirectory>(catalog, None);
     register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
@@ -1407,6 +1427,8 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("listenAddresses", "legacy-no-consumer"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
+        // Session creation calls it directly; no leaf needs the service.
+        ("managedWorktrees", "hot-path"),
         ("managedProviders", "secret"),
         ("mcpAuth", "secret"),
         ("mcpService", "host-resource"),
