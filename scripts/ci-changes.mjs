@@ -1,7 +1,7 @@
 import {execFileSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','dependencies'];
+export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','dependencies','ocr'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 
 const rules=[
@@ -23,6 +23,12 @@ const rules=[
   [/^crates\/dim-agent-capabilities\/src\/(background_exec|workspace_tools\/exec|host_platform)/,['rust','node','execution']],
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
   [/^xtask\//,['rust','node','eval']],
+  // The OCR-only tests: the light-ocr Node tests and the dim-ocr/dim-modality
+  // Rust suites check the OS frameworks' and upstream's behaviour, so they run
+  // on the paths that can change them and on every main push. This rule is
+  // before the catch-all below, so it repeats the groups that catch-all gives
+  // these paths.
+  [/^(runtime\/(plugins|fixtures)\/light-ocr\/|runtime\/light-ocr-[^/]*\.test\.mjs$|runtime\/package-lock\.json$|crates\/dim-(ocr|modality)\/)/,['rust','node','ocr']],
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
 
