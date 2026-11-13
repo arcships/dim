@@ -575,7 +575,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             Wait::Event(InputEvent::Key(key))
                 if full.is_some()
                     && app.keyboard_free()
-                    && (matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                    && ((key.code == KeyCode::Tab && key.mods.0 == 0)
                         || full.as_ref().is_some_and(FullScreen::focused)) =>
             {
                 let Some(full) = &mut full else { continue };
@@ -1346,13 +1346,13 @@ fn live_panel_rows(live_budget: usize, composer_rows: usize, status_rows: usize)
 }
 
 /// The rows a fullscreen overlay gives a panel: the terminal less the
-/// composer and two rows on either side, never under six unless the terminal
-/// cannot hold that.
+/// composer, status row and two rows on either side, never under six unless
+/// the terminal cannot hold that.
 fn overlay_panel_rows(terminal_rows: usize, composer_rows: usize) -> usize {
     terminal_rows
-        .saturating_sub(composer_rows + 2 + 2)
+        .saturating_sub(composer_rows + 1 + 2 + 2)
         .max(6)
-        .min(terminal_rows.saturating_sub(composer_rows + 1))
+        .min(terminal_rows.saturating_sub(composer_rows + 2))
         .min(OVERLAY_MAX_ROWS)
 }
 
@@ -2815,6 +2815,7 @@ impl App {
                 self.restore_unsent();
             }
             Update::StartupFailed { message, resumable } => {
+                self.prompt = None;
                 self.failure = Some(message);
                 self.failure_resumable = resumable;
                 // A first message the invocation supplied has no Session
@@ -3050,6 +3051,16 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::BackTab | KeyCode::Tab
+                if self.keyboard_free()
+                    && (key.mods == Modifiers::SHIFT
+                        || (key.code == KeyCode::BackTab && key.mods == Modifiers::NONE)) =>
+            {
+                self.host.send(Command::SetPermission(
+                    crate::permission::PresetSelection::Next,
+                ));
+                return Outcome::Continue;
+            }
             KeyCode::Char('o' | 'p') if ctrl && !self.composer.palette_open() => {
                 self.open_palette();
                 return Outcome::Continue;
@@ -3882,7 +3893,9 @@ impl App {
             }
             Effect::SetPermission(preset) => {
                 self.prompt = None;
-                self.host.send(Command::SetPermission(preset));
+                self.host.send(Command::SetPermission(
+                    crate::permission::PresetSelection::Preset(preset),
+                ));
             }
             Effect::Provider(action) => self.host.send(Command::Provider(action)),
             Effect::Plugin(action) => self.host.send(Command::Plugin(action)),
@@ -5626,7 +5639,7 @@ impl App {
                 crate::ui::render::screen::MIN_HISTORY_ROWS as usize
             },
         );
-        let status_rows = usize::from(!self.fullscreen);
+        let status_rows = 1;
         let input_budget = live_budget
             .saturating_sub(
                 3 + status_rows
@@ -5981,9 +5994,7 @@ impl App {
         if let Some(panel) = panel {
             live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
         }
-        if !self.fullscreen {
-            live.push(self.status_line(cols));
-        }
+        live.push(self.status_line(cols));
         let composer_cursor = (
             (box_top + 1 + cursor_row) as u16,
             (MARGIN + 2 + cursor_col).min(cols.saturating_sub(1)) as u16,
@@ -7323,8 +7334,7 @@ impl App {
     }
 
     /// Fullscreen's bottom border label, the status corner: the run
-    /// status, the slot (a notice in the highlight colour), the approvals
-    /// mode when it is not the default one and the context use.
+    /// status, the slot (a notice in the highlight colour) and the context use.
     fn dock_status(&self, run: Option<&str>) -> Option<String> {
         let p = &self.palette;
         let mut parts: Vec<String> = Vec::new();
@@ -7344,9 +7354,6 @@ impl App {
         }
         if let Some(goal) = self.goal_label() {
             parts.push(fg(goal, &p.muted));
-        }
-        if self.permission_policy.preset == dim_agent_types::PermissionPreset::FullAccess {
-            parts.push(fg("\u{23f5}\u{23f5} Full access", &p.muted));
         }
         if let Some(context) = self.context_label() {
             let color = if self.context_near() {
@@ -7394,62 +7401,56 @@ impl App {
     }
 
     fn status_line(&self, cols: usize) -> String {
+        use dim_agent_types::PermissionPreset;
+        let p = &self.palette;
+        let preset = self.permission_policy.preset;
+        let color = match preset {
+            PermissionPreset::ReadOnly => &p.permission_read,
+            PermissionPreset::WorkspaceWrite => &p.permission_write,
+            PermissionPreset::FullAccess => &p.permission_full,
+        };
+        let permission = fg(&format!("⏵⏵ {}", permission_label(preset)), color);
+        let hint = fg(t("(shift+tab to cycle)"), &p.muted);
+        let mut left = format!("{}{permission} {hint}", " ".repeat(MARGIN));
+        let total = cols.saturating_sub(2);
+        if self.fullscreen {
+            return clip(&left, total).0;
+        }
+        let prefix_width = width_of(&left);
         let slot = self.slot();
-        let approval = permission_label(self.permission_policy.preset);
-        let mut left = format!("{}AGENT  \u{23f5}\u{23f5} {}", " ".repeat(MARGIN), approval);
         if let Some(goal) = self.goal_label() {
-            left.push_str("  ");
-            left.push_str(goal);
+            left.push_str(&fg(&format!("  {goal}"), &p.muted));
         }
         if let Some(context) = self.context_label() {
-            left.push_str("  ");
-            left.push_str(&context);
+            let color = if self.context_near() {
+                &p.warning
+            } else {
+                &p.muted
+            };
+            left.push_str(&fg(&format!("  {context}"), color));
         }
         if let Some(slot) = slot {
-            left.push_str("  ");
-            left.push_str(&slot);
+            let color = if self.notice.is_some() {
+                &p.highlight
+            } else {
+                &p.muted
+            };
+            left.push_str(&fg(&format!("  {slot}"), color));
         }
         if let Some(background) = self.background_label() {
-            left.push_str("  ");
-            left.push_str(&background);
+            left.push_str(&fg(&format!("  {background}"), &p.muted));
         }
-        let total = cols.saturating_sub(2);
         let label = self
             .label
             .as_ref()
-            .and_then(|label| label.fitted(|text| width_of(&left) + 2 + width_of(text) <= total));
+            .and_then(|label| label.fitted(|text| prefix_width + 2 + width_of(text) <= total));
         let line = match label {
             Some(ref label) => {
-                let gap = total - width_of(&left) - width_of(label);
+                let (left, width) = clip(&left, total - width_of(label) - 2);
+                let gap = total - width - width_of(label);
                 format!("{left}{}", " ".repeat(gap))
             }
             None => clip(&left, total).0,
-        };
-        let line = if let Some((text, _)) = &self.notice
-            && let Some(at) = line.find(text.as_str())
-        {
-            let (before, rest) = line.split_at(at);
-            let (notice, after) = rest.split_at(text.len().min(rest.len()));
-            format!(
-                "{}{}{}",
-                fg(before, &self.palette.muted),
-                fg(notice, &self.palette.highlight),
-                fg(after, &self.palette.muted)
-            )
-        } else if self.context_near()
-            && let Some(context) = self.context_label()
-            && let Some(at) = line.find(&context)
-        {
-            let (before, rest) = line.split_at(at);
-            let (context, after) = rest.split_at(context.len().min(rest.len()));
-            format!(
-                "{}{}{}",
-                fg(before, &self.palette.muted),
-                fg(context, &self.palette.warning),
-                fg(after, &self.palette.muted)
-            )
-        } else {
-            fg(&line, &self.palette.muted)
         };
         match label {
             Some(label) => format!("{line}{}", fg(&label, &self.palette.highlight)),
@@ -8341,6 +8342,27 @@ mod tests {
                             );
                         }
                         drawn.key(KeyCode::Down);
+                    }
+                    if fullscreen {
+                        drawn
+                            .app
+                            .composer
+                            .set_draft(&format!("/{}", "abcdefghij".repeat(4)));
+                        let frame = drawn.app.frame(size);
+                        let bytes = FullScreen::new(size, true).render(
+                            &frame,
+                            size,
+                            &drawn.app.palette,
+                            &drawn.app,
+                        );
+                        let mut emu =
+                            crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+                        emu.feed(&bytes);
+                        let text = emu.rows_text().join("\n");
+                        assert!(
+                            text.contains("> abcdefghij"),
+                            "long query visible: {size:?}: {text}"
+                        );
                     }
                 }
             }
@@ -11446,7 +11468,9 @@ mod tests {
         app.handle_input(key(KeyCode::Enter));
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::SetPermission(PermissionPreset::WorkspaceWrite))
+            Some(Command::SetPermission(
+                crate::permission::PresetSelection::Preset(PermissionPreset::WorkspaceWrite)
+            ))
         ));
         app.apply(Update::PermissionSelected(PermissionPreset::WorkspaceWrite));
         let saved: serde_json::Value = serde_json::from_str(

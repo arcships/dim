@@ -723,14 +723,14 @@ fn tui_fullscreen_resize_cancels_a_task_release_before_reflow() {
     terminal.until("\x1b[?2026l");
     let task_row = terminal
         .transcript
-        .rsplit_once("\x1b[18;1H")
-        .expect("task row 18 was painted")
+        .rsplit_once("\x1b[17;1H")
+        .expect("task row 17 was painted")
         .1;
     assert!(
         strip_ansi(task_row).trim_start().starts_with("◐ sleep 60"),
         "{task_row}"
     );
-    terminal.write(b"\x1b[<0;5;18M processed");
+    terminal.write(b"\x1b[<0;5;17M processed");
     terminal.until("kept draft processed");
     terminal.until("\x1b[?2026l");
     terminal.signal(libc::SIGSTOP);
@@ -756,7 +756,7 @@ fn tui_fullscreen_resize_cancels_a_task_release_before_reflow() {
         },
         0
     );
-    terminal.write(b"\x1b[<0;5;18m after resize\r");
+    terminal.write(b"\x1b[<0;5;17m after resize\r");
     terminal.signal(libc::SIGCONT);
     let request = received.recv_timeout(PATIENCE).unwrap();
     home.kill(&terminal);
@@ -820,6 +820,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     let mut launch = home.command();
     launch.args(["--resume", "session"]);
     let mut terminal = Terminal::launch_tui(launch);
+    terminal.resize(160, 32);
     terminal.until("test / model");
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
     terminal.write(b"/tasks\r");
@@ -1474,8 +1475,8 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
     terminal.until("\x1b[?2026l");
     let task_row = terminal
         .transcript
-        .rsplit_once("\x1b[18;1H")
-        .expect("task row 18 was painted")
+        .rsplit_once("\x1b[17;1H")
+        .expect("task row 17 was painted")
         .1;
     assert!(
         strip_ansi(task_row)
@@ -1483,7 +1484,7 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
             .starts_with("◐ Inspect member code"),
         "{task_row}"
     );
-    terminal.write(b"\x1b[<0;5;18M\x1b[<0;5;18m");
+    terminal.write(b"\x1b[<0;5;17M\x1b[<0;5;17m");
     terminal.until("Member Session: member");
     terminal.until("member original + live");
     terminal.until("live member thought");
@@ -1511,8 +1512,9 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
     terminal.write(b"readonly typing\r");
     terminal.write(b"\x1b[200~hidden detail paste\x1b[201~");
     terminal.write(b"x");
-    terminal.until("Delegation result: Cancelled");
     terminal.until("real cancelled delegation result");
+    terminal.write(b"\x1b[A");
+    terminal.until("Delegation result: Cancelled");
     assert!(!terminal.transcript.contains("never-copy"));
     assert!(!terminal.transcript.contains("wrong member branch"));
     assert!(!terminal.transcript.contains("wrong leader branch thought"));
@@ -2080,6 +2082,7 @@ fn tui_workflow_inventory_errors_block_stop_all_until_reopen_and_stops_follow_ot
         wire.quiet(Duration::from_millis(1500));
     });
     let mut terminal = Terminal::resume_tui(home.command());
+    terminal.resize(160, 32);
     terminal.until("2 in background");
     terminal.write(b"/tasks\r");
     terminal.until("Workflow: last observed; refresh failed");

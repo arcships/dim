@@ -288,6 +288,7 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
                 command.args(["--resume", "session"]);
             }
             let mut terminal = Terminal::launch_tui(command);
+            terminal.resize(160, 32);
             if initial_setup {
                 terminal.until("Welcome to DIM");
             } else {
@@ -296,9 +297,13 @@ fn tui_home_remembers_permissions_without_login_and_applies_them_to_the_first_me
                 terminal.until("─ new session ─");
             }
             let mark = terminal.transcript.len();
-            terminal.write(b"/permissions\r");
-            terminal.until("Full access");
-            terminal.write(b"\x1b[B\r");
+            if initial_setup {
+                terminal.write(b"\x1b[Z");
+            } else {
+                terminal.write(b"/permissions\r");
+                terminal.until("Full access");
+                terminal.write(b"\x1b[B\r");
+            }
             terminal.until("Permission: full-access (also for new sessions)");
             let config: Value =
                 serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap())
@@ -1863,6 +1868,7 @@ fn tui_permissions_panel_adds_and_removes_command_rules() {
             command.arg("--fullscreen");
         }
         let mut terminal = Terminal::resume_tui(command);
+        terminal.resize(160, 32);
         terminal.until("test / model");
         shown.send(()).unwrap();
         open_command_rules(&mut terminal);

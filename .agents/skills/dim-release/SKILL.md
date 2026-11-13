@@ -17,11 +17,27 @@ Read [version preparation](../../../docs/release/README.md#version-preparation) 
 - A container-image request covers its dry run and, with `publish=true`, GHCR publication; it does not authorize npm or GitHub Release changes.
 - A skill review or configuration check never runs a release. `publish-alpha.mjs --dry-run` builds the targets; it is not a read-only version check.
 
+## Sync the bundled catalog before each release
+
+The App Server embeds a checked-in catalog, and nothing refreshes it during a build. Sync it once, before the version work, from a clean checkout of the latest `origin/main`:
+
+1. Run `node scripts/update-provider-catalog.ts --sync` and read its summary.
+2. No diff: continue the release.
+3. A diff: commit the regenerated catalog on its own branch, with the summary in the commit message. Show the user the summary and ask whether to open a pull request; open it only when the user says yes. Never merge it.
+4. Once the user reports it merged, `git fetch origin` and confirm the sync commit is on `origin/main`. For a squash merge, take `mergeCommit` from `gh pr view N --json state,mergeCommit` and check `git merge-base --is-ancestor <it> origin/main`.
+5. Dispatch `release.yml` as the selected route below describes.
+
+Never sync a second time for the same release. Recovery and nightly repair skip this step: they rebuild an existing SHA or tag.
+
 ## Prepare the next GitHub alpha from main
+
+Start with [Sync the bundled catalog before each release](#sync-the-bundled-catalog-before-each-release); this build uses the `main` SHA it leaves.
 
 Dispatch `gh workflow run release.yml --ref main` for an authorized GitHub alpha build. Preflight verifies the wrapper and all seven dependency tarballs for the selected main SHA, including integrity, exact versions and account-enabled native provenance; a Git tag or matching Web source alone does not skip a build. If a complete nightly exists, a build-only dispatch stops with instructions. When tag writes, mirror sync and installation acceptance are authorized, add `-f repair_nightly=true` to reuse it without rebuilding; only successful acceptance reports no new build needed. Otherwise the workflow allocates the next alpha across npm packages and Git tags, stamps that version into the GitHub-hosted build checkouts, tags their source commit and uploads the original native and npm archives to the prerelease draft. Review the draft and publish it when authorized. npm publication is a separate manual dispatch against that published tag.
 
 ## Select the version for a version PR
+
+Start with [Sync the bundled catalog before each release](#sync-the-bundled-catalog-before-each-release); the version PR is built on the `main` it leaves.
 
 1. Inspect the working tree, current branch, `origin/main`, remote tags, open release PRs and existing GitHub Releases. Fetch `origin/main` and tags without changing unrelated work. Continue an existing PR for the same preparation task rather than opening a duplicate. Resume the matching release branch or immutable Release when the request is a retry.
 2. Read registry versions for `dimcode-alpha`, `dimcode-web`, every `dimcode-<platform>` in `npm/package.json`, and legacy `dimcode`. Use `npm view PACKAGE versions --json --registry=https://registry.npmjs.org`; only an explicit E404 means an absent package. Authentication or network failures do not mean a version is free.
@@ -79,6 +95,8 @@ git diff --check
 - Acceptance pulls that exact index digest on native amd64 and arm64 runners, checks `dimcode --version`, the version/revision/source labels, UID 1000, both CLI symlinks and the Web assets. Only then does it copy the accepted index to `alpha` and assert the digest is unchanged. A wrong image needs a new alpha; do not rebuild a version tag.
 
 ## Recovery
+
+The catalog step does not apply here: recovery and nightly repair rebuild an existing SHA or tag, and the catalog a release embeds is the one its SHA carries.
 
 - For a complete nightly built from the exact main SHA selected by the dispatch, an authorized `gh workflow run npm-publish.yml --ref main -f source_commit=FULL_MAIN_SHA -f publish=true` repairs tags and runs acceptance without a GitHub Release or package publication. It fails if that SHA has no complete nightly. `release.yml -f repair_nightly=true` reuses this path when complete, but builds a draft otherwise. Both require `NPM_ALPHA_PUBLISH_ENABLED=true`; neither source-only input accepts older ancestor SHAs. Older published Releases use `release_tag`; an older nightly without a Release requires a new main build. This is the CI dual-tag nightly route; the explicit local publisher remains alpha-only and does not provide its acceptance contract.
 - For an unchanged source/tag, resume its existing run, Release and original archives. A matching registry integrity may be skipped; different bytes or registry/authentication errors stop publication. Do not allocate a new version just because the publication job needs retrying.

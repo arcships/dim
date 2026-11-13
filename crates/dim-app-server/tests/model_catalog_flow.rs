@@ -367,3 +367,26 @@ fn every_shipped_realtime_capability_declares_its_transport() {
         )]
     );
 }
+
+#[test]
+fn every_bundled_provider_states_whether_it_serves_or_resells() {
+    use dim_app_server::model_catalog::ProviderRole;
+    let catalog = BundledCatalog::load().unwrap();
+    let mut sellers = Vec::new();
+    let mut resellers = Vec::new();
+    for provider in catalog.providers() {
+        let role = catalog.role(&provider.provider_id);
+        if provider.models.is_empty() {
+            assert_eq!(role, None, "{} lists no models", provider.provider_id);
+            continue;
+        }
+        match role {
+            Some(ProviderRole::Vendor) => sellers.push(provider.provider_id.as_str()),
+            Some(ProviderRole::Aggregator) => resellers.push(provider.provider_id.as_str()),
+            None => panic!("{} lists models but no role", provider.provider_id),
+        }
+    }
+    assert!(sellers.contains(&"openai"));
+    assert!(resellers.contains(&"openrouter"));
+    assert_eq!(catalog.role("not-a-provider"), None);
+}

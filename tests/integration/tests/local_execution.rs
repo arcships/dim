@@ -1148,6 +1148,42 @@ async fn exec_results_declare_the_command_they_started() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn exec_reads_background_markers_by_shell_syntax() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[
+                ("exec", json!({ "command": "cat <<'PY'\nmask = a & b\nPY" })),
+                ("exec", json!({ "command": "echo hi # a & b" })),
+                (
+                    "exec",
+                    json!({ "command": "echo \"$(sleep 1 > /dev/null &)\"" }),
+                ),
+            ],
+        )
+        .await;
+    let events = until(&session, "markers", |events| tool_results(events) == 1).await;
+    let results = results(&events);
+    assert_eq!(text(&results[0]).trim_end(), "mask = a & b");
+    assert_eq!(results[0].is_error, None, "{}", text(&results[0]));
+    assert_eq!(text(&results[1]).trim_end(), "hi");
+    assert_eq!(results[1].is_error, None);
+    assert_eq!(code(&results[2]), Some("exec_invalid_request"));
+    assert!(
+        text(&results[2]).contains(
+            "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later. The & at line 1, column 29 starts a background job."
+        ),
+        "{}",
+        text(&results[2])
+    );
+    assert_eq!(results[2].effects, None, "a refusal starts no command");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_completion_is_recorded_once_and_wakes_with_a_bounded_notice() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let session = harness.session().await;
