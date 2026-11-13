@@ -110,6 +110,16 @@ impl Installed {
         }
     }
 
+    /// Rewrites the live package's manifest so it declares `bins`, which is the
+    /// set the update may retire.
+    fn declare(&self, bins: &[(&str, &str)]) {
+        fs::write(
+            self.prefix.join("lib/node_modules/dimcode-alpha/package.json"),
+            package_json(CURRENT, bins),
+        )
+        .unwrap();
+    }
+
     /// npm is taken from `<prefix>/bin/npm`, so the fake one goes there.
     fn mock_npm(&self) {
         let npm = self.prefix.join("bin/npm");
@@ -370,6 +380,7 @@ fn an_update_that_installs_nothing_keeps_the_installed_command() {
 #[test]
 fn a_staged_update_switches_the_package_its_commands_and_the_global_config() {
     let installed = Installed::new(CURRENT, &["dima", "retired"]);
+    installed.declare(&[("dima", "bin/dimcode.mjs"), ("retired", "bin/dimcode.mjs")]);
     installed.mock_npm();
     installed.release();
     let version = next_version();
@@ -657,5 +668,97 @@ fn an_interruption_during_the_post_switch_check_puts_the_previous_version_back()
     assert!(
         !installed.staging().exists(),
         "an interrupted check must clear its staging directory: {stderr}"
+    );
+}
+
+#[test]
+fn an_alias_the_package_never_declared_survives_an_update() {
+    let installed = Installed::new(CURRENT, &["dima"]);
+    installed.mock_npm();
+    installed.release();
+    let alias = installed.prefix.join("bin/mydima");
+    std::os::unix::fs::symlink("../lib/node_modules/dimcode-alpha/bin/dimcode.mjs", &alias).unwrap();
+    let version = next_version();
+    let output = installed
+        .update(
+            &version,
+            &[("dima", "bin/dimcode.mjs")],
+            &[("UPDATE_COMMAND", REPORTS_VERSION)],
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        alias.is_symlink(),
+        "an alias the package never declared is not the update's to remove: {stderr}"
+    );
+    assert_eq!(
+        installed.version("mydima"),
+        version,
+        "the alias must run the new version: {stderr}"
+    );
+}
+
+#[test]
+fn a_declared_command_the_new_version_drops_is_retired() {
+    let installed = Installed::new(CURRENT, &["dima", "dropped"]);
+    installed.declare(
+        &[("dima", "bin/dimcode.mjs"), ("dropped", "bin/dimcode.mjs")],
+    );
+    installed.mock_npm();
+    installed.release();
+    let output = installed
+        .update(
+            &next_version(),
+            &[("dima", "bin/dimcode.mjs")],
+            &[("UPDATE_COMMAND", REPORTS_VERSION)],
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        !installed.prefix.join("bin/dropped").exists(),
+        "a command the previous version declared and the new one drops must be retired: {stderr}"
+    );
+}
+
+#[test]
+fn a_live_manifest_that_cannot_be_read_retires_nothing_and_the_update_goes_on() {
+    let installed = Installed::new(CURRENT, &["dima", "dropped"]);
+    installed.mock_npm();
+    installed.release();
+    let manifest = installed
+        .prefix
+        .join("lib/node_modules/dimcode-alpha/package.json");
+    fs::write(&manifest, "{").unwrap();
+    let version = next_version();
+    let output = installed
+        .update(
+            &version,
+            &[("dima", "bin/dimcode.mjs")],
+            &[("UPDATE_COMMAND", REPORTS_VERSION)],
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Updated dimcode-alpha"),
+        "a live manifest the update cannot read must not fail it: {stderr}"
+    );
+    assert!(
+        stderr.contains("no command was retired"),
+        "the update must say what it left alone: {stderr}"
+    );
+    assert_eq!(
+        installed.installed(),
+        version,
+        "the new version must be live and its command must run it: {stderr}"
+    );
+    assert!(
+        fs::symlink_metadata(installed.prefix.join("bin/dropped")).is_ok(),
+        "nothing may be retired when the previous commands are unknown: {stderr}"
     );
 }

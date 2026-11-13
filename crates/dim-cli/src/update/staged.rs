@@ -23,8 +23,8 @@ const INTERRUPTED: &str = "Update interrupted while checking the installed comma
 
 /// What one staged update left behind.
 enum Outcome {
-    /// The new version is live and verified.
-    Switched,
+    /// The new version is live and verified, with what the update could not do.
+    Switched(Vec<String>),
     /// The previous version is live and staging holds nothing it needs.
     Failed(String),
     /// A tree exists only in staging, so staging is kept and the message says
@@ -34,7 +34,10 @@ enum Outcome {
 
 /// Installs the new version beside the live package and switches it in, or
 /// leaves the live package as it was.
-pub(super) async fn update(install: &Install, cancel: &CancellationToken) -> Result<(), String> {
+pub(super) async fn update(
+    install: &Install,
+    cancel: &CancellationToken,
+) -> Result<Vec<String>, String> {
     let kept = install.directory.join(STAGING);
     let root = kept.join(&install.package);
     clear(install, &root)?;
@@ -42,11 +45,11 @@ pub(super) async fn update(install: &Install, cancel: &CancellationToken) -> Res
     std::fs::create_dir_all(&staging)
         .map_err(|error| format!("Cannot create {}: {error}", staging.display()))?;
     match replace(install, &staging, cancel).await {
-        Outcome::Switched => {
+        Outcome::Switched(warnings) => {
             // A staging directory left behind costs space, not correctness:
             // the next update clears it.
             finished(&root, &kept);
-            Ok(())
+            Ok(warnings)
         }
         Outcome::Failed(error) => {
             finished(&root, &kept);
@@ -127,7 +130,19 @@ async fn replace(install: &Install, staging: &Path, cancel: &CancellationToken) 
     if let Err(error) = check_ownership(install, &new) {
         return Outcome::Failed(error);
     }
-    let previous = live_commands(&install.directory, &install.package);
+    // A live manifest that cannot be read names no command to retire. The
+    // update still replaces the package, which is what repairs such an
+    // installation, and says what it left alone.
+    let (retire, warnings) = match declared_commands(&live) {
+        Ok(previous) => (
+            live_commands(&install.directory, &install.package)
+                .into_iter()
+                .filter(|command| previous.iter().any(|declared| declared == command))
+                .collect::<Vec<_>>(),
+            Vec::new(),
+        ),
+        Err(error) => (Vec::new(), vec![format!("{error}; no command was retired")]),
+    };
     let switch = match switch_in(&live, &staged, staging.join("retired")) {
         Ok(switch) => switch,
         Err(outcome) => return outcome,
@@ -136,7 +151,7 @@ async fn replace(install: &Install, staging: &Path, cancel: &CancellationToken) 
     let checked = match link_bins(
         &install.directory,
         &install.package,
-        &previous,
+        &retire,
         &new,
         staging,
         &mut changes,
@@ -151,7 +166,7 @@ async fn replace(install: &Install, staging: &Path, cancel: &CancellationToken) 
             Err(revert) => Outcome::Stranded(format!("{error}{}; {revert}", notes(undone))),
         };
     }
-    Outcome::Switched
+    Outcome::Switched(warnings)
 }
 
 /// A command an installation provides: the name of one link directly inside a
@@ -283,6 +298,82 @@ fn resolve(link: &Path, target: &Path) -> PathBuf {
         }
     }
     resolved
+}
+
+/// The commands the package's own `package.json` declares, normalized the way
+/// npm normalizes them before it links them: `npm-normalize-package-bin` reads
+/// a string as the package name, an array as the basename of each entry, and an
+/// object through the same two steps.
+fn declared_commands(package: &Path) -> Result<Vec<String>, String> {
+    let path = package.join("package.json");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
+    let name = value.get("name").and_then(|name| name.as_str());
+    Ok(normalized_commands(&value, name))
+}
+
+/// The command names npm installs for a manifest's `bin` field. Mirrors
+/// `npm-normalize-package-bin` 5.0.0 `lib/index.js`: the dispatch at `:5-10`,
+/// the string form at `:12-18`, the array form at `:20-26`, and the key and
+/// target rules of `normalizeObject` at `:33-58`.
+fn normalized_commands(manifest: &serde_json::Value, name: Option<&str>) -> Vec<String> {
+    let mut declared: Vec<(String, String)> = Vec::new();
+    match manifest.get("bin") {
+        Some(serde_json::Value::String(file)) => {
+            if let Some(name) = name {
+                declared.push((name.to_owned(), file.clone()));
+            }
+        }
+        Some(serde_json::Value::Array(entries)) => {
+            for entry in entries.iter().filter_map(|entry| entry.as_str()) {
+                declared.push((basename(entry, '/'), entry.to_owned()));
+            }
+        }
+        Some(serde_json::Value::Object(map)) => {
+            for (key, file) in map {
+                let Some(file) = file.as_str() else {
+                    continue;
+                };
+                declared.push((key.clone(), file.to_owned()));
+            }
+        }
+        _ => {}
+    }
+    declared
+        .into_iter()
+        .filter_map(|(key, file)| {
+            let key = basename(&key.replace(['\\', ':'], "/"), '/');
+            let target = resolve_from_root(&file.replace('\\', "/"));
+            (!matches!(key.as_str(), "" | "." | "..") && !target.is_empty()).then_some(key)
+        })
+        .collect()
+}
+
+/// The last component of `path`, with `separator` splitting it, as npm's
+/// `basename` does: a trailing separator is dropped first, and an empty result
+/// means the name normalizes to nothing.
+fn basename(path: &str, separator: char) -> String {
+    let path = path.trim_end_matches(separator);
+    path.rsplit(separator).next().unwrap_or_default().to_owned()
+}
+
+/// `path` resolved from `/`, as `join('/', path).slice(1)` resolves it: empty
+/// and `.` segments are dropped, and `..` pops one segment without going above
+/// the root.
+fn resolve_from_root(path: &str) -> String {
+    let mut resolved: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                resolved.pop();
+            }
+            segment => resolved.push(segment),
+        }
+    }
+    resolved.join("/")
 }
 
 /// The commands the live package is installed as: every link in the
@@ -636,10 +727,10 @@ async fn verify_entries(
 /// its end, so the check carries its own bound rather than waiting on one.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What a command reports for `--version`: the last word of its last line. A
-/// command still running when the update is cancelled is killed with its
-/// handle, and the check reports the interruption, so the update rolls back and
-/// exits nonzero rather than reporting a version it never read.
+/// What a command reports for `--version`: the last word of its last line. The
+/// check runs in its own process tree, so an interruption or the timeout ends
+/// every process the command started and waits for them before the update rolls
+/// back, releases the lease and exits.
 async fn reported_version(command: &Path, cancel: &CancellationToken) -> Result<String, String> {
     let child = tokio::process::Command::new(command)
         .arg("--version")
@@ -685,5 +776,118 @@ fn notes(notes: Vec<String>) -> String {
         String::new()
     } else {
         format!("; {}", notes.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn declared(manifest: serde_json::Value) -> Vec<String> {
+        let name = manifest
+            .get("name")
+            .and_then(|name| name.as_str())
+            .map(str::to_owned);
+        normalized_commands(&manifest, name.as_deref())
+    }
+
+    /// The commands as a sorted set: an object map keeps no order, and the
+    /// package manager links them in whatever order it reads the keys.
+    fn set(manifest: serde_json::Value) -> Vec<String> {
+        let mut commands = declared(manifest);
+        commands.sort();
+        commands
+    }
+
+    #[test]
+    fn a_string_bin_takes_the_package_name() {
+        assert_eq!(
+            declared(json!({"name": "dimcode-alpha", "bin": "bin/dimcode.mjs"})),
+            ["dimcode-alpha"]
+        );
+        assert_eq!(
+            declared(json!({"name": "@arcships/dim", "bin": "bin/dim"})),
+            ["dim"]
+        );
+        assert!(declared(json!({"bin": "bin/dim"})).is_empty());
+    }
+
+    #[test]
+    fn an_array_bin_takes_each_entrys_basename() {
+        assert_eq!(
+            declared(json!({"bin": ["bin/dim", "scripts/dima", "tools/"]})),
+            ["dim", "dima", "tools"]
+        );
+    }
+
+    #[test]
+    fn an_object_bin_reads_separators_and_backslashes_in_a_key() {
+        assert_eq!(
+            declared(json!({"bin": {
+                "../bin2/escape": "bin/launcher",
+                "nested\\windows": "bin/launcher",
+                "drive:name": "bin/launcher",
+                "plain": "bin/launcher"
+            }})),
+            ["escape", "windows", "name", "plain"]
+        );
+    }
+
+    /// npm drops a key that resolves to `.` or `..`, and an array entry that
+    /// does the same.
+    #[test]
+    fn a_dot_key_normalizes_to_nothing() {
+        assert_eq!(
+            set(json!({"bin": {
+                ".": "bin/x",
+                "..": "bin/x",
+                "x/:": "bin/x",
+                "y/\\": "bin/x",
+                "z/a:": "bin/x",
+                "keep": "bin/x"
+            }})),
+            ["a", "keep", "x", "y"]
+        );
+    }
+
+    /// npm resolves the target from `/`, so a path that climbs above the root
+    /// or ends in `..` has nothing left and is dropped.
+    #[test]
+    fn a_target_that_resolves_to_nothing_is_dropped() {
+        assert_eq!(
+            set(json!({"bin": {
+                "t1": ".",
+                "t2": "a/..",
+                "t3": "../..",
+                "t4": "./bin/x",
+                "t5": "../bin/x",
+                "t6": "/"
+            }})),
+            ["t4", "t5"]
+        );
+    }
+
+    #[test]
+    fn an_array_entry_that_normalizes_to_nothing_is_dropped() {
+        assert_eq!(set(json!({"bin": ["a\\b", "x/:", "..", "c/."]})), ["b"]);
+    }
+
+    #[test]
+    fn a_package_name_that_normalizes_to_nothing_is_dropped() {
+        assert!(set(json!({"name": "..", "bin": "bin/x"})).is_empty());
+    }
+
+    #[test]
+    fn a_key_or_a_value_that_normalizes_to_nothing_is_dropped() {
+        assert_eq!(
+            declared(json!({"bin": {
+                "/": "bin/launcher",
+                "ok": "/",
+                "empty": "",
+                "nested/": "bin/launcher"
+            }})),
+            ["nested"]
+        );
     }
 }
