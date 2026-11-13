@@ -6507,6 +6507,16 @@
       ]
     },
     {
+      "id": "dim_cli::update::staged",
+      "crate": "dim_cli",
+      "parent": "dim_cli::update",
+      "file": "crates/dim-cli/src/update/staged.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches"
+      ]
+    },
+    {
       "id": "dim_cli::update::tests",
       "crate": "dim_cli",
       "parent": "dim_cli::update",
@@ -47821,6 +47831,14 @@
     },
     {
       "from": "dim_cli::update",
+      "to": "dim_cli::update::staged",
+      "references": [
+        "mod staged",
+        "path staged::update"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
       "to": "dim_cli::update::tests",
       "references": [
         "mod tests"
@@ -47831,6 +47849,25 @@
       "to": "dim_cli::version",
       "references": [
         "path crate::version::RELEASE",
+        "path crate::version::VERSION"
+      ]
+    },
+    {
+      "from": "dim_cli::update::staged",
+      "to": "dim_cli::update",
+      "references": [
+        "path Install",
+        "path run_manager",
+        "path super::channel",
+        "path super::newer",
+        "use super::Install",
+        "use super::run_manager"
+      ]
+    },
+    {
+      "from": "dim_cli::update::staged",
+      "to": "dim_cli::version",
+      "references": [
         "path crate::version::VERSION"
       ]
     },
@@ -53050,6 +53087,10 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "TurnEnd::Completed"
+    },
+    {
+      "module": "dim_cli::update::staged",
+      "path": "CString::new"
     },
     {
       "module": "dim_cli::usage",
