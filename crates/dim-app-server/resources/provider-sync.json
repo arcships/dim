@@ -40,7 +40,7 @@
     "github": { "source": "local", "reason": "models endpoint; upstream github-copilot is a different product" },
     "nvidia": { "source": "remote" },
     "fireworks": { "source": "remote", "upstreamId": "fireworks-ai" },
-    "stepfun": { "source": "remote", "mediaModels": ["step-image-edit-2", "step-2x-large", "stepaudio-2.5-tts", "step-tts-2", "step-tts-mini", "step-tts-vivid", "stepaudio-2.5-asr", "stepaudio-2-asr-pro", "step-asr"] },
+    "stepfun": { "source": "remote", "keepBundledModels": true, "failClosedUpstreamModels": true, "mediaModels": ["step-image-edit-2", "step-2x-large", "stepaudio-2.5-tts", "step-tts-2", "step-tts-mini", "step-tts-vivid", "stepaudio-2.5-asr", "stepaudio-2-asr-pro", "step-asr"] },
     "step-plan": { "source": "local", "reason": "curated list; upstream differs on reasoning and on the audio entries" },
     "upstage": { "source": "remote" },
     "modelscope": { "source": "remote", "keepDefaultModel": true },

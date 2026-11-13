@@ -9,6 +9,7 @@ const resources = join(import.meta.dirname, "../crates/dim-app-server/resources"
 const catalogOutput = join(resources, "default-catalog.json")
 const reasoningOffOverridesFile = join(resources, "reasoning-off-overrides.json")
 const syncPolicyFile = join(resources, "provider-sync.json")
+const modelOverridesFile = join(resources, "model-overrides.json")
 const remoteBase = process.env.DIM_PROVIDER_REMOTE_BASE ?? "https://raw.githubusercontent.com/ThinkInAIXYZ/PublicProviderConf/refs/heads/dev/dist"
 
 type ProviderPolicy = {
@@ -98,6 +99,7 @@ async function main() {
   validateCatalog(catalog)
   const policies = await loadPolicies(catalog)
   const remote = Object.keys(policies).filter((id) => policies[id].source === "remote")
+  const overrides = await loadModelOverrides(policies)
   if (command === undefined) {
     console.log(`Validated catalog: ${catalogOutput}`)
     return
@@ -111,24 +113,34 @@ async function main() {
   }
 
   const selected = new Set(requested)
-  const overrides = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile), policies)
+  const reasoningOff = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile), policies)
+  const applied = loadSelectedOverrides(overrides, selected)
+  const notes = []
   const providers = []
   for (const provider of catalog.providers) {
     providers.push(selected.has(provider.providerId)
-      ? await syncProvider(provider, policies[provider.providerId], overrides.get(provider.providerId))
+      ? await syncProvider(provider, policies[provider.providerId], reasoningOff.get(provider.providerId), applied, notes)
       : provider)
   }
+  for (const [providerId, pending] of applied) {
+    if (pending.size > 0) {
+      throw new Error(`Model overrides target missing models for provider ${providerId}: ${[...pending.keys()].join(", ")}`)
+    }
+  }
+  const report = overrideReport(notes)
   if (isDeepStrictEqual(providers, catalog.providers)) {
     console.log("Catalog is up to date")
+    if (report.length > 0) console.log(report.join("\n"))
     return
   }
   const candidate = { ...catalog, updatedAt: new Date().toISOString(), providers }
   validateCatalog(candidate)
+  console.log(summarize(catalog.providers, providers, policies, selected, notes, report))
   await writeCatalog(previous, candidate)
   console.log(`Updated catalog: ${requested.join(", ")}`)
 }
 
-async function syncProvider(provider, policy: ProviderPolicy, overrides) {
+async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patches, notes) {
   const id = provider.providerId
   const raw = { ...provider.metadata.raw }
   const sourceId = policy.upstreamId ?? id
@@ -142,7 +154,7 @@ async function syncProvider(provider, policy: ProviderPolicy, overrides) {
     if (model === undefined) throw new Error(`Provider ${id}: missing local model ${modelId}`)
     return model
   }
-  const upstream = applyLocalModelOverrides(id, remote.models.filter((model) => !isFilteredModel(model)), previous)
+  const upstream = failClosed(policy, applyModelOverrides(id, fetchUpstream(policy, remote.models, previous), patchFor(id, patches), notes), previous)
   if (upstream.length === 0 && provider.models.some(({ modelId }) =>
     !policy.localModels?.includes(modelId) && !policy.mediaModels?.includes(modelId)
   )) {
@@ -166,7 +178,7 @@ async function syncProvider(provider, policy: ProviderPolicy, overrides) {
   }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
-  const result = { ...provider, models: applyReasoningOffOverrides(id, [...models.values()], overrides).map(toCatalogModel), metadata }
+  const result = { ...provider, models: applyReasoningOffOverrides(id, [...models.values()], reasoningOff).map(toCatalogModel), metadata }
   if (!policy.keepBaseUrl) {
     const api = normalizeProviderApi(remote.api, metadata.adapter)
     if (api !== undefined) {
@@ -175,6 +187,231 @@ async function syncProvider(provider, policy: ProviderPolicy, overrides) {
     }
   }
   return result
+}
+
+/// The upstream rows a sync starts from, with the filtered entries removed.
+/// `keepBundledModels` keeps the bundled row wherever one exists, and adds an
+/// upstream row the bundle lacks.
+function fetchUpstream(policy, models, previous) {
+  const usable = models.filter((model) => !isFilteredModel(model))
+  if (!policy.keepBundledModels) return usable
+  return usable.map((model) => previous.get(model.id.trim()) ?? model)
+}
+
+/// Where a `keepBundledModels` provider gets a model the bundle lacks, its
+/// upstream row is kept but declared unusable: no chat, no tools, text only.
+function failClosed(policy, models, previous) {
+  if (!policy.failClosedUpstreamModels) return models
+  return models.map((model) => previous.has(model.id.trim()) ? model : {
+    ...model,
+    type: "other",
+    chat: false,
+    tool_call: false,
+    structured_output: false,
+    modalities: { input: ["text"], output: ["text"] },
+  })
+}
+
+function patchFor(providerId, patches) {
+  const providerPatches = patches.get(providerId)
+  return providerPatches ?? new Map()
+}
+
+/// A patch merges into the upstream row field by field. Objects merge key by
+/// key, so a `limit` patch keeps the output cap upstream states; scalars and
+/// arrays replace the upstream value. Every leaf the patch sets is recorded
+/// with upstream's own value, so a reviewer sees what the table overrides and
+/// when upstream has caught up with it.
+function applyModelOverrides(providerId, models, patches, notes) {
+  if (patches.size === 0) return models
+  return models.map((model) => {
+    const id = model.id.trim()
+    const patch = patches.get(id)
+    if (patch === undefined) return model
+    patches.delete(id)
+    const differences = []
+    collectDifferences(model, patch, [], differences)
+    notes.push({ providerId, modelId: id, differences })
+    return mergePatch(model, patch)
+  })
+}
+
+/// Every scalar or array the patch sets that upstream states differently, as a
+/// dotted path with both values. A key upstream lacks counts as differing.
+function collectDifferences(upstream, patch, path, differences) {
+  for (const [key, value] of Object.entries(patch)) {
+    const next = [...path, key]
+    const current = isRecord(upstream) ? upstream[key] : undefined
+    if (isRecord(value)) {
+      collectDifferences(current, value, next, differences)
+    } else if (!isDeepStrictEqual(current, value)) {
+      differences.push({ path: next.join("."), patched: value, upstream: current })
+    }
+  }
+}
+
+function mergePatch(current, patch) {
+  if (!isRecord(current) || !isRecord(patch)) return patch
+  const merged = { ...current }
+  for (const [key, value] of Object.entries(patch)) {
+    merged[key] = isRecord(merged[key]) && isRecord(value)
+      ? mergePatch(merged[key], value)
+      : value
+  }
+  return merged
+}
+
+/// Every model override, checked on every run, offline included: a patch for a
+/// provider the catalog lacks or one whose policy is `local` would never be
+/// applied by a sync, so it fails here by name instead of being ignored.
+async function loadModelOverrides(policies) {
+  const file = await readJson(modelOverridesFile)
+  const providers = isRecord(file?.providers) ? file.providers : {}
+  const state = new Map()
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (!isRecord(providerConfig)) {
+      throw new Error(`Model override provider ${providerId} must be an object`)
+    }
+    if (policies[providerId] === undefined) {
+      throw new Error(`Model override provider ${providerId} is not a bundled provider`)
+    }
+    if (policies[providerId].source !== "remote") {
+      throw new Error(`Model override provider ${providerId} has no remote sync policy`)
+    }
+    const models = isRecord(providerConfig.models) ? providerConfig.models : undefined
+    if (models === undefined) {
+      throw new Error(`Model override provider ${providerId} models must be an object`)
+    }
+    const providerModels = new Map()
+    for (const [modelId, patch] of Object.entries(models)) {
+      if (!isRecord(patch) || Object.keys(patch).length === 0) {
+        throw new Error(`Model override ${providerId}/${modelId} must be a non-empty object`)
+      }
+      providerModels.set(modelId, patch)
+    }
+    state.set(providerId, providerModels)
+  }
+  return state
+}
+
+/// The copy a run applies its patches to, so the table a later report reads is
+/// the file, not what one sync consumed.
+function loadSelectedOverrides(overrides, synced) {
+  const state = new Map()
+  for (const [providerId, providerModels] of overrides) {
+    if (synced.has(providerId)) state.set(providerId, new Map(providerModels))
+  }
+  return state
+}
+
+const SUMMARY_FIELDS = [
+  ["contextWindow", "context"],
+  ["maxOutputTokens", "output"],
+]
+
+/// What a reviewer reads instead of the catalog diff. The changes a reviewer
+/// must judge come first, then every override with upstream's own value beside
+/// it, and the local providers last, since nothing there changed.
+function summarize(before, after, policies, synced, notes, report) {
+  const changed = []
+  let changedProviders = 0
+  for (const provider of after) {
+    if (!synced.has(provider.providerId)) continue
+    const old = before.find((entry) => entry.providerId === provider.providerId)
+    const oldModels = new Map(old.models.map((model) => [model.modelId, model]))
+    const newModels = new Map(provider.models.map((model) => [model.modelId, model]))
+    const added = [...newModels.keys()].filter((id) => !oldModels.has(id))
+    const removed = [...oldModels.keys()].filter((id) => !newModels.has(id))
+    const details = []
+    let changedModels = 0
+    for (const [id, model] of newModels) {
+      const previous = oldModels.get(id)
+      if (previous === undefined) continue
+      const fields = changedFields(previous, model)
+      if (fields.length === 0) continue
+      changedModels += 1
+      const note = notes.find((entry) => entry.providerId === provider.providerId && entry.modelId === id)
+      const leaves = note?.differences.length
+        ? `  (override: ${note.differences.map((difference) => difference.path).join(", ")})`
+        : ""
+      details.push(`  ~ ${pad(id)} ${fields.join(", ")}${leaves}`)
+    }
+    const oldDefault = old.metadata.defaultModelId
+    const newDefault = provider.metadata.defaultModelId
+    if (oldDefault !== newDefault) {
+      details.push(`  ~ defaultModelId ${oldDefault ?? "none"} -> ${newDefault ?? "none"}`)
+    }
+    if (added.length === 0 && removed.length === 0 && details.length === 0) continue
+    changedProviders += 1
+    changed.push(`${pad(provider.providerId, 24)} +${added.length} -${removed.length} ~${changedModels}`)
+    if (added.length > 0) changed.push(`  + ${listPreview(added)}`)
+    if (removed.length > 0) changed.push(`  - ${listPreview(removed)}`)
+    changed.push(...details)
+  }
+  const locals = Object.entries(policies).filter(([, policy]) => policy.source === "local")
+  const head = [`Synced ${synced.size} providers (${synced.size - changedProviders} unchanged, ${changedProviders} changed)`]
+  const tail = [`local: ${locals.length} providers kept as written`]
+  for (const [id, policy] of locals) tail.push(`  ${pad(id)} ${policy.reason}`)
+  return [...head, "", ...changed, "", ...report, "", ...tail].join("\n")
+}
+
+/// Every override the run applied, with the value upstream states beside the
+/// patched one. A patch whose leaves all equal upstream says so, so a reviewer
+/// can retire it with evidence. This prints on an up-to-date run too.
+function overrideReport(notes) {
+  if (notes.length === 0) return []
+  const lines = []
+  let providerId
+  for (const note of notes) {
+    if (note.providerId !== providerId) {
+      providerId = note.providerId
+      lines.push(`${pad(providerId, 24)} overrides`)
+    }
+    if (note.differences.length === 0) {
+      lines.push(`  = ${pad(note.modelId)} override repeats upstream; retire it`)
+      continue
+    }
+    for (const difference of note.differences) {
+      lines.push(`  * ${pad(note.modelId)} ${difference.path} ${show(difference.patched)} (upstream ${show(difference.upstream)})`)
+    }
+  }
+  return lines
+}
+
+function show(value) {
+  if (value === undefined) return "absent"
+  return JSON.stringify(value)
+}
+
+function changedFields(before, after) {
+  const fields = []
+  for (const [key, label] of SUMMARY_FIELDS) {
+    const a = before.capabilities?.[key]
+    const b = after.capabilities?.[key]
+    if (a !== b) fields.push(`${label} ${a ?? "none"} -> ${b ?? "none"}`)
+  }
+  if (before.status !== after.status) fields.push(`status ${before.status} -> ${after.status}`)
+  for (const key of ["reasoning", "toolCalling", "vision"]) {
+    const a = before.capabilities?.[key]
+    const b = after.capabilities?.[key]
+    if (a !== b) fields.push(`${key} ${a} -> ${b}`)
+  }
+  const a = before.metadata?.reasoning?.effortOptions
+  const b = after.metadata?.reasoning?.effortOptions
+  if (JSON.stringify(a) !== JSON.stringify(b)) fields.push(`effortOptions ${showOptions(a)} -> ${showOptions(b)}`)
+  return fields
+}
+
+function showOptions(value) {
+  return Array.isArray(value) ? value.join(",") : "none"
+}
+
+function listPreview(ids) {
+  return ids.length <= 6 ? ids.join(", ") : `${ids.slice(0, 6).join(", ")}, ... (${ids.length})`
+}
+
+function pad(text, width = 32) {
+  return text.length >= width ? text : `${text}${" ".repeat(width - text.length)}`
 }
 
 function mediaOverlay(providerId, model) {
@@ -594,78 +831,6 @@ function isFilteredModel(model) {
   if (matches(model?.family)) return true
   const hints = model?.typeHints
   return Array.isArray(hints) && hints.some((hint) => matches(hint))
-}
-
-function applyLocalModelOverrides(providerId, models, previous) {
-  if (providerId === "kimi-for-coding") {
-    return models.map((model) => {
-      const context = model.limit?.context ?? model.contextWindow
-      if (model.id.trim() !== "k3.1-pro" || !Number.isSafeInteger(context) || context <= 262144) return model
-      return { ...model, limit: { ...model.limit, context: 262144 } }
-    })
-  }
-  if (providerId === "stepfun") {
-    const failClosedRemoteModels = models.map((model) => ({
-      ...model,
-      type: "other",
-      chat: false,
-      tool_call: false,
-      structured_output: false,
-      modalities: { input: ["text"], output: ["text"] },
-    }))
-    return failClosedRemoteModels.map((model) => previous.get(model.id.trim()) ?? model)
-  }
-  if (providerId === "custom-provider") {
-    return models.map((model) => {
-      const id = normalizeString(model?.id)?.toLowerCase()
-      if (id !== "minimax-m2.7") return model
-      return withReasoningCapability(model, { interleaved: true })
-    })
-  }
-  if (providerId === "aihubmix") {
-    // AIHubMix omits the feature flags for glm-5.3-flashx, so the upstream
-    // pipeline reports it as tool-call/reasoning-incapable and the model drops
-    // out of agent model selection. The model supports both — Z.AI's own route
-    // advertises them — so patch the capability fields at sync time instead of
-    // hand-editing the synced file, which the next sync would overwrite.
-    return models.map((model) => {
-      if (normalizeString(model?.id) !== "glm-5.3-flashx") return model
-      const metadata = isRecord(model.metadata) ? model.metadata : {}
-      const extraReasoning = isRecord(model.extra_capabilities?.reasoning)
-        ? model.extra_capabilities.reasoning
-        : {}
-      const features = stringArray(metadata.features) ?? [
-        "thinking",
-        "tools",
-        "function_calling",
-        "structured_outputs",
-      ]
-      return {
-        ...model,
-        reasoning: { supported: true, default: true },
-        tool_call: true,
-        metadata: { ...metadata, features },
-        extra_capabilities: {
-          ...(model.extra_capabilities ?? {}),
-          reasoning: { ...extraReasoning, supported: true },
-        },
-      }
-    })
-  }
-  return models
-}
-
-function withReasoningCapability(model, capability) {
-  return {
-    ...model,
-    extra_capabilities: {
-      ...(model.extra_capabilities ?? {}),
-      reasoning: {
-        ...(model.extra_capabilities?.reasoning ?? {}),
-        ...capability,
-      },
-    },
-  }
 }
 
 async function readRemoteJson(url) {
