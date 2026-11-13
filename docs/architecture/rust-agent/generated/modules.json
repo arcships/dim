@@ -1953,6 +1953,7 @@
         "format",
         "json",
         "matches",
+        "tracing::debug",
         "tracing::warn"
       ]
     },
@@ -21248,6 +21249,7 @@
       "to": "dim_agent_scheduler::engine",
       "references": [
         "path crate::engine::target_gone",
+        "path crate::engine::uncertain",
         "path sessions",
         "use crate::engine::sessions"
       ]
@@ -21426,9 +21428,14 @@
       "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_scheduler::loops",
       "references": [
+        "path Lookup",
+        "path Lookup::NextMinute",
+        "path Lookup::NextTick",
+        "path Lookup::Settled",
         "path crate::loops::Loops",
         "path crate::loops::LoopsFace",
-        "path crate::loops::read"
+        "path crate::loops::read",
+        "use crate::loops::Lookup"
       ]
     },
     {

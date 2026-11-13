@@ -707,6 +707,49 @@ fn submission(loop_id: &str, round: u64) -> String {
     format!("loop:{loop_id}:{round}")
 }
 
+/// What a lookup pass asks of the timer: the round waits for the next pass, and
+/// how soon that pass is worth running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lookup {
+    /// Every `delivering` round got a definite answer; nothing is pending.
+    Settled,
+    /// A round's answer says the service is not ready yet, so the timer runs the
+    /// pass again on its next tick. A reloading index right after a start is the
+    /// expected case.
+    NextTick,
+    /// A round whose answer does not clear by itself, so the timer waits for its
+    /// minute pass instead of asking every tick.
+    NextMinute,
+}
+
+/// How one lookup answer affects the timer's cadence. A lost reply is the case a
+/// restart meets first, so it is worth the next tick; a code that
+/// [`crate::engine::uncertain`] accepts says the service is not ready yet, so it
+/// is too. A target that is gone is a definite answer, because the pass settles
+/// the record `Stopped`. Any other code does not clear by itself and must not be
+/// retried at the tick rate.
+pub(crate) fn retry_for(answer: &Result<Result<serde_json::Value, String>, String>) -> Lookup {
+    match answer {
+        Ok(Err(code)) if crate::engine::uncertain(code) => Lookup::NextTick,
+        Ok(Err(code)) if crate::engine::target_gone(code) => Lookup::Settled,
+        Ok(Err(_)) => Lookup::NextMinute,
+        // A reply that never arrived says nothing about the service, so it
+        // cannot be a lasting refusal; the pass asks again at the next tick.
+        Err(_) => Lookup::NextTick,
+        Ok(Ok(_)) => Lookup::Settled,
+    }
+}
+
+/// The cadence a pass settles on, once every round it looked up has answered: a
+/// round that needs the next tick wins over one that can wait for the minute.
+fn merge(left: Lookup, right: Lookup) -> Lookup {
+    match (left, right) {
+        (Lookup::NextTick, _) | (_, Lookup::NextTick) => Lookup::NextTick,
+        (Lookup::NextMinute, _) | (_, Lookup::NextMinute) => Lookup::NextMinute,
+        _ => Lookup::Settled,
+    }
+}
+
 impl Loops {
     /// One pass of the timer over the loops, in the same one-second pass that
     /// serves the jobs and the wakeups (design §12.3): a running loop whose
@@ -877,21 +920,26 @@ impl Loops {
     /// nothing is ever written a second time; an unresolved answer leaves the
     /// record for the next pass.
     ///
-    /// `Ok(false)` says at least one record got no definite answer, so the
-    /// window it holds stays shut until a later pass asks again (§12.1). A
-    /// daemon with no live loop answers `Ok(true)`: it has nothing to settle.
-    pub(crate) async fn settle_delivering(&self) -> Result<bool, SchedulerError> {
+    /// The answer says how soon the timer asks again (§12.1): a reply that never
+    /// arrived, or one that says the service is not ready yet, is worth the next
+    /// tick; one that does not clear by itself waits for the minute pass. While a
+    /// round stays `delivering` the loop writes no round, so the cadence decides
+    /// how long that window stays shut. A daemon with no live loop answers
+    /// `Settled`.
+    pub(crate) async fn settle_delivering(&self) -> Result<Lookup, SchedulerError> {
         if !self.any_live() {
-            return Ok(true);
+            return Ok(Lookup::Settled);
         }
         let Some(_activity) = self.shared.activity.take_hold() else {
-            return Ok(false);
+            // Paused admission is transient: the pass never ran, so this is not
+            // an answer about any round.
+            return Ok(Lookup::NextTick);
         };
         let _hold = self.shared.loops.lock().await;
         let now = Utc::now();
         let snapshot = read(&self.shared.files).await?;
         let mut changes: Vec<Change> = Vec::new();
-        let mut answered = true;
+        let mut cadence = Lookup::Settled;
         for record in snapshot
             .iter()
             .filter(|record| record.delivering_round.is_some())
@@ -919,6 +967,10 @@ impl Loops {
             };
             #[cfg(not(feature = "testing"))]
             let answer = sessions(self.shared.sessions.as_ref(), "lookup", request).await;
+            let retry = retry_for(&answer);
+            if retry != Lookup::Settled {
+                cadence = merge(cadence, retry);
+            }
             match answer {
                 Ok(Ok(value)) => {
                     if value.get("status").and_then(|s| s.as_str()) == Some("accepted") {
@@ -949,33 +1001,51 @@ impl Loops {
                     LoopState::Stopped,
                     Some(code),
                 )),
-                // No fact about the round: the record stays `delivering` and
-                // the next pass asks again with the same submission id. While
-                // it stays unsettled the loop writes no round, so a restart
-                // whose one startup lookup is unanswered must not wait for the
-                // minute-long retry (§12.1).
                 Ok(Err(code)) => {
-                    answered = false;
-                    tracing::warn!(
-                        loop_id = %record.loop_id,
-                        round,
-                        %code,
-                        "scheduler loop lookup left the round unsettled"
-                    );
+                    // The record stays `delivering` and a later pass asks again
+                    // with the same submission id. A service that is not ready
+                    // yet is worth the next tick and is only a debug line; any
+                    // other code waits for the minute pass and is a warning, so
+                    // a lasting failure does not log once a second.
+                    if retry == Lookup::NextTick {
+                        tracing::debug!(
+                            loop_id = %record.loop_id,
+                            round,
+                            %code,
+                            "scheduler loop lookup left the round unsettled"
+                        );
+                    } else {
+                        tracing::warn!(
+                            loop_id = %record.loop_id,
+                            round,
+                            %code,
+                            "scheduler loop lookup left the round unsettled"
+                        );
+                    }
                 }
                 Err(error) => {
-                    answered = false;
-                    tracing::warn!(
-                        loop_id = %record.loop_id,
-                        round,
-                        %error,
-                        "scheduler loop lookup left the round unsettled"
-                    );
+                    // A reply that never arrived is what a restart meets first,
+                    // so it is retried at the next tick like a not-ready code.
+                    if retry == Lookup::NextTick {
+                        tracing::debug!(
+                            loop_id = %record.loop_id,
+                            round,
+                            %error,
+                            "scheduler loop lookup left the round unsettled"
+                        );
+                    } else {
+                        tracing::warn!(
+                            loop_id = %record.loop_id,
+                            round,
+                            %error,
+                            "scheduler loop lookup left the round unsettled"
+                        );
+                    }
                 }
             }
         }
         self.settle(changes, Vec::new()).await?;
-        Ok(answered)
+        Ok(cadence)
     }
 
     /// Applies the pass's changes in one write and announces each record.
@@ -1172,5 +1242,73 @@ mod tests {
     #[test]
     fn a_self_paced_loop_has_no_window() {
         assert_eq!(Cadence::SelfPaced.next_window_at(Utc::now()), None);
+    }
+
+    /// Only an answer that may clear by itself is worth the next tick. A code
+    /// that does not clear by itself waits for the minute pass: retrying it every
+    /// second would log and look up at that rate for as long as the loop lives.
+    #[test]
+    fn only_a_not_ready_answer_retries_on_the_next_tick() {
+        let code = |code: &str| Ok(Err(code.to_owned()));
+        for not_ready in [
+            "reloading",
+            "service_reloading",
+            "capability reloading",
+            "publication_unknown",
+            "ambiguous",
+        ] {
+            assert_eq!(
+                retry_for(&code(not_ready)),
+                Lookup::NextTick,
+                "{not_ready} says the service is not ready yet"
+            );
+        }
+        for lasting in ["failed", "rejected"] {
+            assert_eq!(
+                retry_for(&code(lasting)),
+                Lookup::NextMinute,
+                "{lasting} does not clear by itself"
+            );
+        }
+        // The pass answers a gone target by settling the record, so it is not a
+        // retry at all.
+        for gone in ["session_closed", "branch_missing", "branch_ended"] {
+            assert_eq!(
+                retry_for(&code(gone)),
+                Lookup::Settled,
+                "{gone} settles the record"
+            );
+        }
+        assert_eq!(
+            retry_for(&Err("lookup reply lost".to_owned())),
+            Lookup::NextTick,
+            "a reply that never arrived is what a restart meets first"
+        );
+        assert_eq!(
+            retry_for(&Ok(Ok(serde_json::json!({"status": "unknown"})))),
+            Lookup::Settled,
+            "a reply is a fact, so it settles the question either way"
+        );
+    }
+
+    /// One round that needs the next tick takes the whole pass with it: a pass
+    /// has one cadence, and the shorter one is the safe choice.
+    #[test]
+    fn a_round_that_needs_the_next_tick_wins_over_one_that_waits() {
+        assert_eq!(merge(Lookup::Settled, Lookup::Settled), Lookup::Settled);
+        assert_eq!(merge(Lookup::Settled, Lookup::NextTick), Lookup::NextTick);
+        assert_eq!(merge(Lookup::NextTick, Lookup::NextTick), Lookup::NextTick);
+        assert_eq!(
+            merge(Lookup::NextMinute, Lookup::NextTick),
+            Lookup::NextTick
+        );
+        assert_eq!(
+            merge(Lookup::Settled, Lookup::NextMinute),
+            Lookup::NextMinute
+        );
+        assert_eq!(
+            merge(Lookup::NextMinute, Lookup::NextMinute),
+            Lookup::NextMinute
+        );
     }
 }

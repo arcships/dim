@@ -2,6 +2,7 @@
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
+    loops::Lookup,
     runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -323,19 +324,22 @@ pub(crate) struct Shared {
     /// serial order at the record level (design §12.3), and the flag can only
     /// ever store a snapshot no later write has superseded.
     ///
-    /// A holder may await `sessions.pending` and `sessions.input` in queue
-    /// mode: both return once the input is published and neither takes this
-    /// lock. A holder must never await a round's turn, or anything else that
-    /// can take this lock.
+    /// A holder may await only these external calls, and none of them takes
+    /// this lock: `sessions.pending` reads the branch's InputQueue,
+    /// `sessions.lookup` reads the Timeline by submission id, and
+    /// `sessions.input` in queue mode returns once the input is published.
+    /// Reads and writes of the loop file through `pluginFiles` never take it
+    /// either. A holder must never await a round's turn, or anything else
+    /// that can take this lock; a new external call under it joins this list
+    /// first.
     pub(crate) loops: tokio::sync::Mutex<()>,
     /// Whether any live loop exists. A daemon with none does no loop work, so
     /// the pass takes no process hold and reads no file (design 12.2). Every
     /// write under `loops` recomputes it.
     pub(crate) live_loops: std::sync::atomic::AtomicBool,
-    /// Whether the last loop lookup pass left a round without an answer. While
-    /// it holds, the loop writes no round (`delivering_round` stays set), so
-    /// the timer runs the pass again on its next tick instead of a minute later
-    /// (§12.1).
+    /// Whether the last loop lookup pass left a round whose answer says the
+    /// service is not ready yet. While it holds, the timer runs the pass again
+    /// on its next tick instead of a minute later (§12.1).
     pub(crate) loop_lookup: std::sync::atomic::AtomicBool,
     /// Cancelled when this generation starts to unload.
     pub(crate) stop: CancellationToken,
@@ -363,7 +367,7 @@ impl Shared {
         self.retention.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Whether the last loop lookup pass left a round without an answer, so the
+    /// Whether the last loop lookup pass settled on [`Lookup::NextTick`], so the
     /// timer repeats it on its next tick instead of a minute later.
     pub(crate) fn loop_lookup_pending(&self) -> bool {
         self.loop_lookup.load(std::sync::atomic::Ordering::Relaxed)
@@ -380,20 +384,23 @@ impl Shared {
     }
 }
 
-/// Records what the loop lookup pass answered: a round without an answer, or a
-/// pass that failed as a whole, keeps the retry pending so the timer runs the
-/// pass on its next tick instead of a minute later (§12.1).
-fn note_loop_lookup(shared: &Shared, answer: Result<bool, SchedulerError>) {
-    let pending = match answer {
-        Ok(answered) => !answered,
+/// Records the cadence the loop lookup pass settled on: only a round whose
+/// answer says the service is not ready yet keeps the retry pending, so the
+/// timer runs the pass on its next tick instead of a minute later (§12.1). Any
+/// other unresolved answer waits for the minute pass, and a pass that failed as
+/// a whole does the same.
+fn note_loop_lookup(shared: &Shared, answer: Result<Lookup, SchedulerError>) {
+    let tick = match answer {
+        Ok(Lookup::NextTick) => true,
+        Ok(Lookup::Settled | Lookup::NextMinute) => false,
         Err(error) => {
             tracing::warn!(%error, "scheduler loop lookup pass failed");
-            true
+            false
         }
     };
     shared
         .loop_lookup
-        .store(pending, std::sync::atomic::Ordering::Release);
+        .store(tick, std::sync::atomic::Ordering::Release);
 }
 
 fn handler(shared: Arc<Shared>) -> Handler {
