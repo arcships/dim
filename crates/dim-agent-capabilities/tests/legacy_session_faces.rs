@@ -1,8 +1,3 @@
-//! The legacy Session and process ports whose content is data: the Session's
-//! reply language, the Skills factory configuration, the Agent's identity and
-//! the worktree association write. Each owner binds its operation on the port
-//! type; these tests pin that the Rust binding and the face answer the same
-//! ([service faces §4.8](../../docs/design/service-faces.md#48-旧主机端口agentconfig-等六个)).
 use dim_agent_capabilities::file_access::{
     WorktreeAssociation, WorktreeAssociationError, WorktreeAssociations, WorktreeDirectory,
 };
@@ -149,4 +144,67 @@ async fn a_worktree_association_failure_crosses_as_a_code_and_a_message() {
         .expect_err("the owner refused the write");
     assert_eq!(error.code(), Some("failed"));
     assert!(error.to_string().contains("session is closed"));
+}
+
+struct AgentConfigReader {
+    binding: rutis::host::Key<AgentConfig>,
+    face: rutis::host::Key<dyn rutis_bridge::session::HostDispatch>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl rutis::host::DynPlugin for AgentConfigReader {
+    fn name(&self) -> &str {
+        "test.agent-config-face"
+    }
+
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.binding.erase(), self.face.erase()]
+    }
+
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let binding = ctx.require_at(&self.binding)?;
+            let face = ctx.require_at(&self.face)?;
+            let reply = face
+                .invoke("get", rutis_bridge::session::Value::List(vec![]))
+                .unwrap();
+            let reply = rutis_bridge::session::settle(reply)
+                .await
+                .unwrap()
+                .json()
+                .unwrap();
+            assert_eq!(reply, serde_json::to_value(binding.get()).unwrap());
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_agent_config_face_resolves_inside_each_session_instance() {
+    use dim_agent_runtime::{AgentBuilder, Feature, SessionConfig, testing::MinimalHost};
+
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+    dim_agent_capabilities::defaults::install(&mut builder);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let observed = reads.clone();
+    builder.require_feature(Feature::new("test.agent-config-face").session(
+        "test.agent-config-face",
+        move |names| {
+            Ok(Box::new(AgentConfigReader {
+                binding: names.key()?,
+                face: names.named("agentConfig")?,
+                reads: observed.clone(),
+            }))
+        },
+    ));
+    let host = MinimalHost::start(&builder).await.unwrap();
+    host.create_session(SessionConfig::default()).await.unwrap();
+    host.create_session(SessionConfig::default()).await.unwrap();
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    host.close().await.unwrap();
 }

@@ -87,6 +87,13 @@ pub struct SessionConfig {
     /// member in place while the Session runs; a fork copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<ReplyLanguage>,
+    /// The title the creating caller already knew for the Session, fixed at
+    /// creation. Only `sessions.launch` sets it (#1421); SessionTitle applies
+    /// its text rules and writes it as the first manual title. It stays in the
+    /// stored record, so a daemon that stops before that write still makes it
+    /// on the next load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_title: Option<String>,
 }
 fn default_interactive() -> bool {
     true
@@ -217,6 +224,7 @@ impl Default for SessionConfig {
             collaboration_role: CollaborationRole::Leader,
             interactive: default_interactive(),
             language: None,
+            initial_title: None,
         }
     }
 }
@@ -479,6 +487,10 @@ impl SessionLifecycle {
         self.holds
             .compare_exchange(0, RELEASING, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    pub(crate) fn resume_holds(&self) {
+        self.holds.store(0, Ordering::Release);
     }
 }
 

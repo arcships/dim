@@ -2,7 +2,7 @@
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
-    runs::{self, Delivery, SchedulerError, SessionOrigin, stamp},
+    runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::{
@@ -15,6 +15,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use dim_agent_types::InputMode;
 use dim_app_server::{
+    ProcessActivity,
     methods::ManagementMethods,
     plugin_files::PluginFileTransactions,
     settings::{BusinessDocument, SettingsError, SettingsService},
@@ -31,8 +32,13 @@ const NAMESPACE: &str = "schedule";
 const DEFAULT_HISTORY_LIMIT: u32 = 20;
 const MAX_HISTORY_LIMIT: u32 = 50;
 
+pub(crate) type DeliveryHolds =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<dim_app_server::ProcessHold>>>>;
+
 /// Process owner of the `schedule` namespace.
 pub struct SchedulerPlugin {
+    activity: Key<ProcessActivity>,
+    pub(crate) deliveries: DeliveryHolds,
     settings: Key<SettingsService>,
     files: Key<PluginFileTransactions>,
     methods: Key<ManagementMethods>,
@@ -46,6 +52,8 @@ pub struct SchedulerPlugin {
 impl SchedulerPlugin {
     pub fn new(names: &Names<'_>, texts: Arc<crate::SchedulerTexts>) -> rutis::Result<Self> {
         Ok(Self {
+            activity: names.key()?,
+            deliveries: Default::default(),
             settings: names.key()?,
             files: names.key()?,
             methods: names.key()?,
@@ -78,6 +86,7 @@ impl DynPlugin for SchedulerPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.activity.erase(),
             self.settings.erase(),
             self.files.erase(),
             self.methods.erase(),
@@ -87,6 +96,12 @@ impl DynPlugin for SchedulerPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let activity = ctx.require_at(&self.activity)?;
+            let startup = Arc::new(activity.take_hold().ok_or_else(|| {
+                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    "Process admission is paused".into(),
+                ))
+            })?);
             let settings = ctx.require_at(&self.settings)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
@@ -94,6 +109,8 @@ impl DynPlugin for SchedulerPlugin {
             settings.register::<crate::document::ScheduleDocument>(ctx)?;
             let shared = Arc::new(Shared {
                 ctx: ctx.clone(),
+                activity,
+                deliveries: self.deliveries.clone(),
                 sessions,
                 settings,
                 files,
@@ -160,6 +177,22 @@ impl DynPlugin for SchedulerPlugin {
                     format!("scheduler delivery history: {error}").into(),
                 ))
             })?;
+            {
+                let mut holds = shared.deliveries.lock().expect("delivery admission");
+                holds.retain(|id, _| {
+                    active
+                        .iter()
+                        .any(|run| run.run_id == *id && run.state == DeliveryState::Delivering)
+                });
+                for run in active
+                    .iter()
+                    .filter(|run| run.state == DeliveryState::Delivering)
+                {
+                    holds
+                        .entry(run.run_id.clone())
+                        .or_insert_with(|| startup.clone());
+                }
+            }
             // A wakeup file that is not valid v1 fails the row like an invalid
             // delivery history; the bytes stay unchanged (A.7's rule).
             crate::wakeups::read(&shared.files).await.map_err(|error| {
@@ -229,6 +262,8 @@ pub(crate) struct Shared {
     /// This generation's context, used to announce committed changes on a
     /// Session's channel (design §11).
     pub(crate) ctx: Ctx,
+    pub(crate) activity: Arc<ProcessActivity>,
+    pub(crate) deliveries: DeliveryHolds,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) files: Arc<PluginFileTransactions>,
@@ -965,6 +1000,9 @@ impl ScheduleJobs {
         caller: Caller,
     ) -> Result<JobReply, SchedulerError> {
         let shared = &*self.shared;
+        let _activity = shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let cancel = CancellationToken::new();
         match request.action {
             ToolAction::Create | ToolAction::Update => {

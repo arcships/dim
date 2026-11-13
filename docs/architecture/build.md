@@ -21,9 +21,15 @@ The root `./dev` entry performs incremental CLI/App Server builds without disabl
 
 The [Web workspace](../design/web-workspace.md) frontend in `web/` is a separate artifact (`scripts/stage-web.mjs` builds it; the CLI finds the installed `dimcode-web` package or a `web/` directory beside the executable or in the product home, or `DIMCODE_WEB_ASSETS` names one), so building `dim-app-server` and `dimcode` needs neither Node nor npm. Only `cargo build --features embedded-web` compiles the frontend in; then `build.rs` runs `npm ci` and `npm run build` when that frontend changed, and a host without npm fails the build. Otherwise Node is only needed for packaging, packaging checks and TypeScript plugin execution/development. `.node-version` pins the Node version bundled into account-enabled releases. The `runtime/package-lock.json` fixes the rutis Node runtime and its transitive dependencies; `npm ci --ignore-scripts --prefix runtime` installs them for local bridge testing.
 
-Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only the check groups their paths need (see [GitHub workflows](../release/README.md#github-workflows)). A separate CLI job uses a self-hosted Windows x64 runner for its native boundary flows; its clipboard fixture writes the runner's current clipboard. Release builds use separate GitHub-hosted VMs matching each target OS and CPU. See the [runner setup and release matrix](../release/README.md#runner-setup).
+Full-workspace CI uses self-hosted macOS ARM64 runners; pull requests run only the check groups their paths need (see [GitHub workflows](../release/README.md#github-workflows)). The separate `windows-cli` job runs native boundary flows on a self-hosted Windows x64 runner, where its fixture writes to the clipboard. Release builds use GitHub-hosted VMs matching each target OS and CPU. See the [runner setup and release matrix](../release/README.md#runner-setup).
 
 The macOS clipboard flows use private pasteboards and serialize access to the shared pasteboard server; other tests remain parallel.
+
+The confined Apple Vision PNG recognition test is manual on macOS ARM64. Use it to reproduce or verify [#1446](https://github.com/arcships/dim/issues/1446).
+
+```sh
+cargo test --locked -p dimcode --test ocr_helper_flow an_image_is_recognized_under_the_confinement -- --ignored --exact
+```
 
 Each runner's OS/libc baseline must be recorded and verified before declaring that platform supported. Cross-built executables are checked for the target architecture during staging, but installation and runtime acceptance still require the corresponding target system.
 
@@ -32,3 +38,30 @@ Public Node provider and MCP interoperability fixtures use development dependenc
 Evaluation-tool tests are opt-in: `cargo test --locked -p xtask --features eval-tests`. CI enables them for `xtask/` changes, main pushes and manual runs. The real 30-second background handoff is also opt-in locally: `cargo test --locked -p dim-agent-integration-tests --test local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds -- --ignored --exact`; CI runs it for execution-related paths, main pushes and manual runs. Ordinary workspace tests retain execution cancellation, cleanup and recovery flows.
 
 `npm run build --prefix web` type-checks and bundles the frontend. Run its component and projection flows separately with `npm test --prefix web`.
+
+## Bundled provider catalog
+
+The App Server embeds the checked-in `crates/dim-app-server/resources/default-catalog.json`.
+It also serves as the starting catalog for maintenance. Use the Node version in `.node-version`.
+
+```sh
+node scripts/update-provider-catalog.ts                       # Validate the checked-in catalog offline
+node scripts/update-provider-catalog.ts --sync kimi-for-coding # Sync one provider from PublicProviderConf
+node scripts/update-provider-catalog.ts --sync                # Sync all configured remote sources
+```
+
+The bundled catalog owns provider settings such as authentication, adapter, and
+`remoteModelList`. Upstream supplies model descriptors and the API base URL. Sync derives
+the default model from the refreshed model list. The script's `remoteProviders` table can
+keep a provider's base URL, default model, and curated models local. When onboarding an
+upstream-backed provider, add its definition to the catalog and its policy to that table.
+The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus subscribers.
+The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+
+Sync applies the existing reasoning overrides and replaces the complete catalog after
+validation. A sync must supply at least one usable upstream model for a provider whose
+bundled catalog includes models outside its local policy. A sync that produces the same
+content preserves the file and its timestamp.
+A fetch or validation failure leaves the catalog as it was. Review and commit the complete
+catalog after a sync. Model entries occupy individual lines for review. Upstream responses
+and intermediate model lists stay in memory.

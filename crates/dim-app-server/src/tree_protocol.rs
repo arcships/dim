@@ -199,6 +199,11 @@ impl BranchState {
 #[derive(Debug, Serialize)]
 pub struct CreateResult {
     pub branch: BranchInfo,
+    /// Work the submit checks did not do, for the caller to show (Hooks
+    /// A.6.2). Only this reply carries them: a branch's first input is its
+    /// prompt, so no check's warning enters it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
 }
 #[derive(Debug, Serialize)]
 pub struct BarrierResult {
@@ -443,10 +448,11 @@ pub struct ApprovalCancelled {
     pub request_id: String,
     pub reason: String,
 }
-/// A committed `approval/respond`. Approval accepts the first response it
-/// consumes, in sequence order, so the first notice per `requestId` carries the
-/// accepted decision; a later one was answered `Unknown`. A following
-/// `approval.cancelled` means the call did not start.
+/// A committed `approval/respond`, including losing responses answered `Unknown`.
+/// A notice after `approval.cancelled` for the same `requestId` is a losing
+/// response, even if it is the first resolved notice. Clients retire the question
+/// on its first terminal notice; this notice does not confirm acceptance or start.
+/// An `approval.cancelled` after an accepted allow means the call did not start.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalResolved {

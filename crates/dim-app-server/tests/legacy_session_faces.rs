@@ -1,7 +1,3 @@
-//! The App Server's legacy Session port whose content is data: Collaboration's
-//! factory configuration. The owner binds its read on the port type; this test
-//! pins that the Rust binding and the face answer the same
-//! ([service faces §4.8](../../docs/design/service-faces.md#48-旧主机端口agentconfig-等六个)).
 use dim_app_server::collaboration::{CollaborationConfig, CollaborationConfigReply};
 use rutis::Ctx;
 use rutis::host::CtxHost;

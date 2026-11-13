@@ -26,8 +26,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Nachrichten mit Anhängen bleiben in der Warteschlange; mit /queue steuern oder löschen"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue verwalten · shift+← letzte bearbeiten · ctrl+s jetzt steuern"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue verwalten · Shift+← letzte bearbeiten · bei leerem Entwurf mit {key} steuern"
         }
         "+{count} more · {hint}" => "+{count} weitere · {hint}",
         "steer or delete queued messages" => {
@@ -133,6 +133,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Dieser Daemon unterstützt das Umbenennen von Sitzungen nicht"
         }
         "Renaming failed" => "Umbenennen fehlgeschlagen",
+        "Delete \"{name}\"?" => "Sitzung „{name}“ löschen?",
+        "Deleted {name}." => "{name} gelöscht.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Es wurde nichts entfernt: keine gespeicherte Sitzung {name}."
+        }
+        "Delete failed" => "Löschen fehlgeschlagen",
+        "This daemon does not support deleting Sessions" => {
+            "Dieser Daemon unterstützt das Löschen von Sitzungen nicht"
+        }
         "Starting" => "Startet",
         "Delegation result" => "Delegationsergebnis",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -245,6 +254,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Getrennt; Entwurf behalten. Beenden und Session fortsetzen."
         }
+        "Cannot open this Session; draft kept." => {
+            "Diese Session lässt sich nicht öffnen; Entwurf behalten."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Getrennt; Entwurf behalten. Beenden und ausführen: {command}"
         }
@@ -317,7 +329,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Fehler: {message}",
         "working…  {elapsed}" => "arbeitet…  {elapsed}",
         "thinking…  {elapsed}" => "denkt…  {elapsed}",
-        "Ask anything..." => "Frage stellen…",
+        "Ask anything... · Ctrl+J newline" => "Frage stellen… · Ctrl+J neue Zeile",
         "Earlier history · {id} · {count} messages" => {
             "Früherer Verlauf · {id} · {count} Nachrichten"
         }
@@ -385,9 +397,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "beenden",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter wählen · ←/→ Aufwand · Ctrl+X Gespeichertes löschen · Esc leeren/schließen"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter wählen + Standard · ←/→ Aufwand · Ctrl+X Gespeichertes löschen · Esc leeren/schließen"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Standardmodell für neue Sitzungen in {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Standardmodell für neue Sitzungen: {model}",
         "Enter select · Esc clear/close" => "Enter wählen · Esc leeren/schließen",
         "esc close" => "esc schließen",
         "Suggestions" => "Vorschläge",
@@ -395,6 +411,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill geladen: {name}",
         "Hook context · {count} line" => "Hook-Kontext · {count} Zeile",
         "Hook context · {count} lines" => "Hook-Kontext · {count} Zeilen",
+        "Stop hook follow-up · {count} line" => "Stop-Hook-Folgeeingabe · {count} Zeile",
+        "Stop hook follow-up · {count} lines" => "Stop-Hook-Folgeeingabe · {count} Zeilen",
         "Commands" => "Befehle",
         "Command Palette" => "Befehlspalette",
         "No matches" => "Keine Treffer",
@@ -414,6 +432,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Theme",
         "Language" => "Sprache",
         "Startup UI form" => "Start-Oberfläche",
+        "Default send mode" => "Standard-Sendemodus",
         "fullscreen" => "Vollbild",
         "scrollback" => "Scrollback",
         "Tool details" => "Tool-Details",
@@ -451,8 +470,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Noch keine gespeicherten Sessions in diesem Arbeitsbereich. Ctrl+S zeigt mehr."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter öffnen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter öffnen · Ctrl+X löschen · Ctrl+S Bereich · Ctrl+R aktualisieren · Esc schließen"
         }
         "Loading sessions..." => "Lade Sessions…",
         "No saved sessions yet." => "Noch keine gespeicherten Sessions.",
@@ -553,11 +572,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "Tastenbelegung anzeigen",
         "Application keys" => "Anwendungstasten",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter senden oder einreihen · leerer Entwurf: erste eingereihte steuern · Shift+Enter/Ctrl+J neue Zeile · ↑↓ Verlauf"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter sendet im Leerlauf · Shift+Enter / Alt+Enter / Ctrl+J neue Zeile · ↑↓ Verlauf"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen, eingereihte Nachrichten kommen zurück · Ctrl+S Entwurf oder erste eingereihte steuern · Shift+← letzte eingereihte bearbeiten"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Lauf aktiv, mit Entwurf: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Leerer Entwurf: {keys} steuert mit der ersten Nachricht in der Warteschlange"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P Befehle · Esc unterbrechen, eingereihte Nachrichten kommen zurück · Shift+← letzte eingereihte bearbeiten"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C leeren, zweimal beenden · Ctrl+D beendet bei leerem Entwurf"
@@ -609,6 +634,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden; dieser {client}-Client nutzt ihn ebenfalls. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden, und er spricht Protokoll v{protocol}, das dieser {client}-Client nicht nutzen kann. Es wurde keine Sitzung gestartet. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden (Verbindungen: {connections}, angehängte Sitzungen: {attached}, laufende Turns: {running}), und er spricht Protokoll v{protocol}, das dieser {client}-Client nicht nutzen kann. Es wurde keine Sitzung gestartet. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "Der App Server ist weiterhin {server}, weil andere Clients ihn verwenden (Verbindungen: {connections}, angehängte Sitzungen: {attached}, laufende Turns: {running}); dieser {client}-Client nutzt ihn ebenfalls. Führe `dimcode daemon stop` aus, wenn sie fertig sind; der nächste Start führt {client} aus."

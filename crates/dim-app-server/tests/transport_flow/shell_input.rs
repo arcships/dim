@@ -100,6 +100,29 @@ async fn background_exec_output_is_live_bounded_and_scoped() {
         }
     };
     session.idle("main").await.unwrap();
+    assert_ok(
+        &shell
+            .client
+            .rpc("session.detach", json!({"sessionId":shell.sid}))
+            .await,
+    );
+    let refused = shell
+        .client
+        .rpc("daemon.shutdown", json!({"ifIdle":true}))
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "daemon_busy",
+        "detached execution must survive an idle shutdown: {refused}"
+    );
+    assert_eq!(refused["error"]["data"]["running"], 1, "{refused}");
+    assert_eq!(refused["error"]["data"]["connections"], 0, "{refused}");
+    assert_eq!(refused["error"]["data"]["attachedSessions"], 0, "{refused}");
+    assert_ok(
+        &shell
+            .client
+            .rpc("session.attach", json!({"sessionId":shell.sid}))
+            .await,
+    );
     let params = json!({"sessionId":shell.sid,"branchId":"main","taskId":task});
     let child = session
         .branch(

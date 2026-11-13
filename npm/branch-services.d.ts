@@ -551,6 +551,21 @@ export interface CollaborationConfig {
   get(): Promise<CollaborationConfigReply>
 }
 
+/**
+ * Admission for process-owned work, including work accepted before a Session
+ * exists. A hold starts before acceptance and ends after the last owned effect.
+ */
+export interface ProcessActivity {
+  /**
+   * Admits work unless admission is paused. Release the returned id after
+   * settlement. A lost owner leaves admission busy until process shutdown;
+   * an unload or crash is not evidence that its accepted work settled.
+   */
+  hold(): Promise<number | bigint | null>
+  /** Releases a settled operation's hold. Already released holds return false. */
+  release(id: number | bigint): Promise<boolean>
+}
+
 export type WorkflowRoot = { project: string } | { package: string }
 
 export interface WorkflowReadRequest {
@@ -677,6 +692,7 @@ export interface Services {
   partRegistry: PartRegistry
   sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
+  processActivity: ProcessActivity
   workflowFiles: WorkflowFiles
   uiResources: UiResources
 }

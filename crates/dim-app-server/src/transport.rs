@@ -734,6 +734,7 @@ async fn run_connection(
                                                 methods.push("session.catalog.origins");
                                                 methods.push("session.catalog.workspaces");
                                                 methods.push("session.catalog.includeClosed");
+                                                methods.push("session.catalog.automation");
                                             }
                                             methods
                                         } else {
@@ -760,11 +761,19 @@ async fn run_connection(
                                             "session.create.origin",
                                             "session.language",
                                         ]);
+                                        if hub.config().database_path.is_some()
+                                            && hub.config().product_home.is_some()
+                                        {
+                                            features.push("session.create.worktree");
+                                        }
                                         if params.protocol_version >= 3 {
                                             features.extend([
                                                 "session.history.display",
                                                 "session.history.detail",
                                             ]);
+                                        }
+                                        if local {
+                                            features.push("session.model.preview");
                                         }
                                         if local && hub.config().product_home.is_some() {
                                             features.push("session.create.modelFromSession");

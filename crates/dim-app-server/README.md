@@ -55,6 +55,33 @@ the checks again. This guarantee is specific to `session.submit`, not a retry
 policy for other methods or an assertion that a rejected request will succeed
 unchanged.
 
+### Submit check warnings
+
+A reply field, not an error. `session.submit` and `session.branch_create` carry an
+optional `warnings: [{check, message}]`, and `session.input.withdraw` carries the
+same list beside `status` and `steer`. Each element names the submit check that
+raised it (`check`, the registration name) and the sentence a client shows
+(`message`), for work the check did not do while the input was written: a
+`UserPromptSubmit` hook that failed with `onFailure: continue`, or a run the
+Hooks unload terminated (Hooks A.6.2).
+
+The field is an **additive interface change**: it is absent when empty, so a
+reply without one is byte-identical to the one before this field existed, and no
+protocol version is added. A built-in served to a frozen encoding fills none:
+`session.submit` on protocol v1 and v2, and `session.branch_create` on v2, which
+`validate_call` admits from v2 on; `session.input.withdraw` is a Session method,
+served from v3 on. The withdraw reply carries the list only beside the `steer`
+receipt of the replacement this call wrote; a withdrawal that wrote no
+replacement carries neither. The list is never model context: it enters no
+`user` content, and a client that does not know the field ignores it. A block
+discards it — the `input_blocked` error already names the hook that stopped the
+input.
+This repository's clients: the native CLI draws one warning row per element
+(`Update::Report { warning: true }` in the terminal UI, `Display::record` in the
+line client, stderr in `exec`); the ACP gateway and the Web workspace ignore it;
+Desktop receives the field in the published client types and shows it once it
+renders `warnings`, which is Desktop's remaining UI work.
+
 After commit, failure to confirm publication remains uncertain even on a live
 connection: `submission_unknown`, an opaque `-32603` publication/storage error,
 and every error outside the guaranteed set do not prove rejection. Transport
@@ -432,9 +459,19 @@ Unix endpoint directories must be private (0700), sockets use 0600, and cleanup 
 
 For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed` and `daemon.shutdown.ifIdle`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
 
-`daemon.shutdown {ifIdle: true}` stops the daemon only while it is idle: no other client connection is open, no Session has an attached client, and no turn is running; the requesting connection is not counted in the connection total. The decision is atomic with hello and Session attach admission: a concurrent client is either counted before the decision or refused as shutting down, so none joins a daemon the call is closing. A daemon in use answers the app error `daemon_busy` carrying the `connections`, `attachedSessions` and `running` counts and changes nothing. Without `ifIdle` the method behaves as above; the CLI uses it to replace a daemon of another build only when replacing it disturbs no one.
+`daemon.shutdown {ifIdle: true}` stops the daemon only while it is idle: no other client connection is open, no Session has an attached client, and no Session reports accepted work on any branch or a runtime activity hold; the requesting connection is not counted in the connection total. Detached background execution counts as work even after its main turn ends and its client leaves. The decision excludes hello/attach admission, process activity admission and branch writes together. An admitted operation refuses shutdown; a successful decision prevents new admission until cleanup completes. A failed Session pause releases earlier pauses and restores process admission without cancelling work.
+
+A daemon in use answers `daemon_busy`. Connection and Session refusals carry `connections`, `attachedSessions` and `running`; `running` counts Sessions with accepted work or an activity hold. Process-work and concurrent Session-pause refusals carry an explanation without counts. A refusal changes nothing. Without `ifIdle` the method behaves as above. This is a cooperative process contract, not an installation-wide barrier: it does not prove that another home or a legacy/nonparticipating consumer is idle.
 
 The requesting connection hands only its final-response writer to the existing process coordinator before leaving the plugin graph. The coordinator sends successful completion after `root.shutdown()`; no graph-owned RPC task waits on its own disposal. Shutdown first stops RPC admission and joins admitted shutdown handlers, including force acknowledgement writes. If an admitted force request wins, the coordinator joins connection handoffs and returns `shutdown_failed` to pending graceful callers without waiting for business cleanup. Reply writes are bounded by the transport write deadline. Client disconnect does not cancel accepted cleanup. Clients must check the feature before relying on this completion contract from an older daemon.
+
+### Process activity
+
+`processActivity` is the App Server's process-scoped data service. Its shared catalog name and generated host dispatcher expose `hold() → id | null` and `release(id) → boolean`; the generated declarations are in `npm/branch-services.d.ts`. The owner releases a hold explicitly after settlement, including during its normal cleanup. A lost owner or failed release leaves the process busy until an explicit shutdown: row unload or runtime death does not prove that all accepted native effects settled. The native binding also offers an RAII hold; native handles do not cross the data face.
+
+An owner acquires a hold **before accepting work**, including before a durable acceptance record or an asynchronous handoff, and retains it through the last owned effect. The hold vetoes idle shutdown, not explicit shutdown, and neither cancels nor owns the operation. `null` means idle shutdown has closed admission; the owner must not accept the operation. A successful idle shutdown permanently closes this service's admission. Future timer deadlines alone need no hold: a due pass acquires one before doing work, and a temporarily refused pass remains eligible after a rolled-back idle decision.
+
+RPC requests other than shutdown hold admission through their owned response work. Agents retains it through Session acquisition/creation and transfers it into detached launch/input tasks. A process producer also holds its own acceptance-to-settlement interval; per-call `sessions` holds cannot cover gaps between its calls. This service records no business state and adds no Timeline facts. It does not certify plugins that do not follow this contract.
 
 ### Process logs
 

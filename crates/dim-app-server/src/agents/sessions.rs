@@ -86,6 +86,31 @@ pub struct LaunchRequest {
     /// Session defaults.
     #[serde(default)]
     pub starter: Option<SessionRef>,
+    /// The class of work the launch runs; absent: the caller's own work, which
+    /// makes the Session `internal`.
+    #[serde(default)]
+    pub origin: Option<LaunchOrigin>,
+    /// The title the caller knows for the Session before its first input
+    /// (#1421). Agents only checks that it is a string; SessionTitle applies
+    /// its text rules and writes it as the first manual title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+/// The creation origins a `sessions.launch` caller may declare: work a saved
+/// configuration runs with no person present. A closed enum, so a caller
+/// names a purpose the App Server owns rather than a free-form visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchOrigin {
+    Automation,
+}
+impl LaunchOrigin {
+    /// The stored origin this declared class names.
+    pub const fn session_origin(self) -> SessionOrigin {
+        match self {
+            Self::Automation => SessionOrigin::Automation,
+        }
+    }
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -330,6 +355,10 @@ impl AgentIndex {
         self: &Arc<Self>,
         request: LaunchRequest,
     ) -> Result<LaunchReply, SessionsError> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| SessionsError::reloading("process admission"))?;
         let (host, config, policy) = self
             .until_unloaded(async {
                 if request.policy.as_ref().is_some_and(|policy| {
@@ -374,6 +403,7 @@ impl AgentIndex {
                 config.cwd = cwd;
                 config.permission_policy = policy.clone();
                 config.interactive = false;
+                config.initial_title = request.title;
                 if self.selects_models {
                     let selection = self
                         .model_selection()
@@ -401,15 +431,18 @@ impl AgentIndex {
                 Ok((host, config, policy))
             })
             .await?;
+        let origin = request.origin.map(LaunchOrigin::session_origin);
         let index = self.clone();
         let session = tokio::spawn(async move {
+            let _activity = activity;
             let session = index
                 .create_session(
                     &host,
                     config,
                     PROTOCOL_VERSION,
                     None,
-                    SessionOrigin::Internal,
+                    origin.unwrap_or(SessionOrigin::Internal),
+                    None,
                 )
                 .await?;
             index.retain_versions();
@@ -611,13 +644,11 @@ impl AgentIndex {
             let (withdrawal, _) = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
-                .withdraw(
-                    InputWithdrawData {
-                        input_id: request.input_id,
-                        reason: request.reason,
-                    },
-                    None,
-                )
+                .withdraw(InputWithdrawData {
+                    input_id: request.input_id,
+                    reason: request.reason,
+                    steer: None,
+                })
                 .await?;
             if let Withdrawal::Deleted { sequence } = withdrawal {
                 published(&publication, sequence).await?;

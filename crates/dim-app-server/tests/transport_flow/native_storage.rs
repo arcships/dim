@@ -769,6 +769,13 @@ async fn damaged_native_records_do_not_hide_healthy_agents_or_sessions() {
                 result["error"]["data"]["appError"], "session_protocol_version",
                 "{result}"
             );
+            assert_eq!(
+                result["error"]["message"],
+                format!(
+                    "Session was created by protocol version 3; this connection speaks {version}"
+                ),
+                "{result}"
+            );
         }
     }
     for id in [&default_agent, &damaged_agent] {

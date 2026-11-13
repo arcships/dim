@@ -8493,6 +8493,7 @@ mod tests {
                             total_tokens: 385_000.,
                             cache_read_tokens: None,
                             cache_write_tokens: None,
+                            reasoning_tokens: None,
                             cost: None,
                             currency: None,
                         },
@@ -10356,56 +10357,6 @@ mod tests {
             assert_eq!(record["judgeOutcome"], "judged", "{record}");
         }
         assert!(options.out.join("current/case/run-0/workspace").is_dir());
-    }
-
-    /// A question is declined rather than awaited: the run's next request
-    /// carries the refusal, and the run ends its turn instead of sitting on
-    /// its wall-clock budget.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_question_is_declined_and_the_run_ends() {
-        /// The judge's verdict, and an `ask_user` call for a run request that
-        /// does not carry the refusal yet.
-        fn asks_a_question(text: &str) -> Option<Value> {
-            judged(text).or_else(|| {
-                (!text.contains("User declined to answer")).then(|| {
-                    tool_call(
-                        "ask_user",
-                        r#"{"questions":[{"question":"Where to deploy?","options":[{"label":"production"},{"label":"staging"}]}]}"#,
-                    )
-                })
-            })
-        }
-        let fixture = Fixture::start(
-            "question",
-            asks_a_question,
-            json!({
-                "message": "Ask me where to deploy.",
-                "budget": {"turns": 4, "seconds": 120, "window": 24000},
-                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
-            }),
-            &[],
-        )
-        .await;
-        let options = fixture.options(fixture.directory.join("out"));
-        let report = fixture.evaluate(&options).await.unwrap();
-        assert!(
-            report.contains("candidate is inconclusive: no comparison is a regression"),
-            "{report}"
-        );
-        let records = fixture.records(&options.out);
-        assert_eq!(records.len(), 2, "one run per arm");
-        for record in &records {
-            assert_eq!(record["stop"], "idle", "{record}");
-            assert_eq!(record["judgeOutcome"], "judged", "{record}");
-        }
-        for arm in ["current", "candidate"] {
-            let requests = fixture.arm(arm);
-            assert_eq!(requests.len(), 2, "{arm}: the question and the answer");
-            assert!(
-                requests[1].contains("User declined to answer. Proceed without these answers."),
-                "{arm}: the model reads the refusal"
-            );
-        }
     }
 
     /// A line that stays busy across many checks is asked once: its request

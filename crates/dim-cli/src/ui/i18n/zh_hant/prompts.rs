@@ -22,29 +22,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y 離開 · n 留下 · ←→ 移動 · enter 確認"
         }
-        "Restart dimcode?" => "重新啟動 dimcode？",
-        "Restart" => "重新啟動",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y 重新啟動 · n 留下 · ←→ 移動 · enter 確認"
-        }
         // upgrade_dialog.rs
         "Update available" => "有新版本",
         "Version {latest} is available (you have {current})." => {
             "{latest} 已推出（目前 {current}）。"
         }
-        "Will run: {command}" => "將執行：{command}",
         "To update, run: {command}" => "更新請執行：{command}",
-        "Update now" => "立即更新",
         "Skip this version" => "略過此版本",
         "Skipped {version}." => "已略過 {version}。",
-        "Later" => "稍後",
         "Close" => "關閉",
-        "Restart now" => "立即重新啟動",
-        "Updating to {version}..." => "正在更新至 {version}…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "已更新至 {version}，重新啟動 DimCode 後生效。"
-        }
-        "Update failed: {error}" => "更新失敗：{error}",
         "←→ move · Enter confirm · Esc close" => "←→ 移動 · Enter 確認 · Esc 關閉",
         // prompts.rs: permission request
         "Permission required" => "需要授權",

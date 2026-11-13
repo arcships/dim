@@ -13,7 +13,7 @@ use crate::ui::text::{
 };
 use crate::ui::theme::Palette;
 use crate::ui::theme::ansi::fg;
-use crate::ui::transcript::block::{Block, Tone};
+use crate::ui::transcript::block::{Block, HookRow, Tone};
 use crate::ui::transcript::tool_group::render_group;
 
 pub(crate) const SHELL_PREVIEW_LINES: usize = 10;
@@ -119,6 +119,46 @@ pub(crate) fn live_thinking(text: &str, expanded: bool, width: usize, p: &Palett
     rows
 }
 
+pub(crate) fn streamed_thinking(
+    text: &str,
+    elapsed_ms: Option<u64>,
+    width: usize,
+    p: &Palette,
+) -> Vec<String> {
+    let mut rows = settled_thinking(text, None, true, width, p);
+    if let Some(ms) = elapsed_ms {
+        rows.push(thinking_row("", width, p));
+        rows.push(thinking_title(
+            &tf("Thought for {duration}", &[("duration", &duration(ms))]),
+            width,
+            p,
+        ));
+    }
+    rows
+}
+
+/// The immutable prefix of a running thought. The last two wrapped rows
+/// remain live while words, graphemes and emphasis markers are incomplete.
+pub(crate) fn thinking_prefix(text: &str, width: usize) -> String {
+    let body = thinking_body(text, width);
+    let mut stable = body.len().saturating_sub(2);
+    while stable > 0 && body[stable - 1].is_empty() {
+        stable -= 1;
+    }
+    let characters = body[..stable]
+        .iter()
+        .flat_map(|row| row.chars())
+        .filter(|c| !c.is_whitespace())
+        .count();
+    let end = text
+        .char_indices()
+        .filter(|(_, c)| !c.is_whitespace())
+        .take(characters)
+        .last()
+        .map_or(0, |(at, c)| at + c.len_utf8());
+    text[..end].to_owned()
+}
+
 /// A settled thought: one row with its duration and the start of its last
 /// paragraph (the conclusion), or the whole text behind the bar when
 /// expanded.
@@ -205,11 +245,16 @@ fn thinking_row(text: &str, width: usize, p: &Palette) -> String {
     format!("{}{}", fg(&bar, &p.border), fg(text, &p.muted))
 }
 
-/// A hook's context: one muted status row naming how many lines it holds, and
-/// with the detail setting expanded, those lines under a blank gutter. The body
-/// is the hook's own words for the model, so it is drawn as text, not Markdown.
-fn hook_context(body: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
-    let label = crate::projection::hook_context_label(body.trim().lines().count().max(1));
+/// A runtime block a hook wrote: one muted status row naming how many lines it
+/// holds, and with the detail setting expanded, those lines under a blank
+/// gutter. The body is the hook's own words for the model, so it is drawn as
+/// text, not Markdown.
+fn hook_row(row: HookRow, body: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
+    let lines = body.trim().lines().count().max(1);
+    let label = match row {
+        HookRow::Context => crate::projection::hook_context_label(lines),
+        HookRow::FollowUp => crate::projection::hook_follow_up_label(lines),
+    };
     let summary = if expanded {
         format!("{label} ▾")
     } else {
@@ -408,12 +453,13 @@ pub(crate) fn render_shell(
 }
 
 /// A compaction row shows its state and any failure reason or insufficient-space
-/// mark, with only the summary body behind the `▸`/`▾` disclosure.
+/// mark. Interactive rows show a disclosure for the summary body.
 fn render_compaction(
     state: CompactionState,
     text: &str,
     insufficient: &[CompactionPartSize],
     expanded: bool,
+    interactive: bool,
     width: usize,
     p: &Palette,
 ) -> Vec<String> {
@@ -448,7 +494,9 @@ fn render_compaction(
                 &[("parts", &sizes.join(", "))],
             ));
         }
-        header.push_str(if expanded { " ▾" } else { " ▸" });
+        if interactive {
+            header.push_str(if expanded { " ▾" } else { " ▸" });
+        }
     } else if !text.is_empty() {
         header.push_str(" · ");
         header.push_str(text);
@@ -507,12 +555,13 @@ pub(crate) fn boundary_line(label: &str, width: usize) -> String {
 }
 
 /// Draws one block as rows at `width` columns, without the spacing row and
-/// the document pad that a commit adds.
+/// the document pad that a commit adds. `interactive` enables compaction disclosures.
 pub(crate) fn render_block(
     block: &Block,
     width: usize,
     p: &Palette,
     markdown: &MarkdownRenderer,
+    interactive: bool,
 ) -> Vec<String> {
     match block {
         Block::Banner => Vec::new(),
@@ -530,18 +579,24 @@ pub(crate) fn render_block(
             },
         ),
         Block::Assistant(text) => markdown.render(&crate::sanitize::safe(text), width, 0),
-        Block::HookContext { body, expanded } => hook_context(body, *expanded, width, p),
+        Block::Hook {
+            row,
+            body,
+            expanded,
+        } => hook_row(*row, body, *expanded, width, p),
         Block::Thinking {
             text,
             elapsed_ms,
             expanded,
-        } => settled_thinking(
-            &crate::sanitize::safe(text),
-            *elapsed_ms,
-            *expanded,
-            width,
-            p,
-        ),
+            streamed,
+        } => {
+            let text = crate::sanitize::safe(text);
+            if *streamed && *expanded {
+                streamed_thinking(&text, *elapsed_ms, width, p)
+            } else {
+                settled_thinking(&text, *elapsed_ms, *expanded, width, p)
+            }
+        }
         Block::ToolGroup(group) => render_group(group, width, p, RUNNING_MARK),
         Block::Compaction {
             state,
@@ -567,7 +622,15 @@ pub(crate) fn render_block(
                     _ => crate::sanitize::safe(text),
                 }
             };
-            render_compaction(*state, &shown, insufficient, *expanded, width, p)
+            render_compaction(
+                *state,
+                &shown,
+                insufficient,
+                *expanded,
+                interactive,
+                width,
+                p,
+            )
         }
         Block::Shell(run) => {
             let shown = run.output.len().saturating_sub(SHELL_PREVIEW_LINES);

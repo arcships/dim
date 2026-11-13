@@ -9,7 +9,7 @@
 //!   Other provider / model    low
 //!   Edit models
 //!   Subagent models: Agent choice
-//! Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+//! Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close
 //!
 //! Subagent models
 //!   Agent choice (default)
@@ -24,8 +24,9 @@
 //! read after the catalog changed included — keeps the choices whose model is
 //! still listed and still advertises that effort, and drops the others; Ctrl+X
 //! drops the highlighted row's choice with its saved preferences. Enter adopts
-//! the model; a cycled effort is saved as its `reasoningEffort` and sent with
-//! the model's other saved preferences. A model with no advertised effort
+//! the model and writes it as the default the next Session in the launch
+//! workspace reads; a cycled effort is saved as its `reasoningEffort` and sent
+//! with the model's other saved preferences. A model with no advertised effort
 //! ignores the arrows. Typing in the filter keeps ←/→ for the cursor.
 //!
 //! Choosing a policy writes only `collaboration.set_model_policy`; the leader's
@@ -44,7 +45,7 @@ use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
 use crate::ui::theme::Palette;
 use dim_agent_types::ModelId;
 
-const HINT: &str = "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close";
+const HINT: &str = "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close";
 const POLICY_HINT: &str = "Enter select · Esc back";
 const EDIT_MODELS: &str = "__edit_models__";
 const SUBAGENT_MODELS: &str = "__subagent_models__";
@@ -336,7 +337,7 @@ impl ModelsPanel {
                 self.open(View::Policy, Some(FIXED));
                 Effect::None
             }
-            (View::Models, Event::Pick(id)) if id.starts_with(EDIT_MODELS) => {
+            (View::Models, Event::Pick { id, .. }) if id.starts_with(EDIT_MODELS) => {
                 match id
                     .strip_prefix(EDIT_MODELS)
                     .and_then(|rest| rest.strip_prefix("::"))
@@ -350,19 +351,19 @@ impl ModelsPanel {
                     None => Effect::None,
                 }
             }
-            (View::Models, Event::Pick(id)) if id == SUBAGENT_MODELS => {
+            (View::Models, Event::Pick { id, .. }) if id == SUBAGENT_MODELS => {
                 self.open(View::Policy, None);
                 Effect::None
             }
-            (View::Policy, Event::Pick(id)) if id == FIXED => {
+            (View::Policy, Event::Pick { id, .. }) if id == FIXED => {
                 self.open(View::Fixed, None);
                 Effect::None
             }
-            (View::Policy, Event::Pick(id)) if id == INHERIT => {
+            (View::Policy, Event::Pick { id, .. }) if id == INHERIT => {
                 self.choose(SubagentModelPolicy::Inherit)
             }
-            (View::Policy, Event::Pick(_)) => self.choose(SubagentModelPolicy::Agent),
-            (view, Event::Pick(id)) => match id.split_once("::") {
+            (View::Policy, Event::Pick { .. }) => self.choose(SubagentModelPolicy::Agent),
+            (view, Event::Pick { id, label }) => match id.split_once("::") {
                 Some((provider, model)) if view == View::Fixed => {
                     self.choose(SubagentModelPolicy::Fixed {
                         model: ModelId {
@@ -375,6 +376,7 @@ impl ModelsPanel {
                     provider_id: provider.to_owned(),
                     model_id: model.to_owned(),
                     reasoning_effort: self.chosen.get(&id).cloned(),
+                    label,
                 },
                 None => Effect::None,
             },
@@ -430,7 +432,7 @@ fn list(view: View) -> ListPanel {
     let models = |title, hint| {
         ListPanel::new(
             title,
-            hint,
+            t(hint),
             "Loading models...",
             "No models available. Connect a provider first.",
             "No matching models.",
@@ -441,7 +443,7 @@ fn list(view: View) -> ListPanel {
         View::Models => models("Select a model", HINT),
         View::Fixed => models("Fixed subagent model", POLICY_HINT),
         View::Policy => {
-            ListPanel::new("Subagent models", POLICY_HINT, "", "", "", false).without_filter()
+            ListPanel::new("Subagent models", t(POLICY_HINT), "", "", "", false).without_filter()
         }
     }
 }
@@ -769,6 +771,7 @@ mod tests {
                 ref provider_id,
                 ref model_id,
                 ref reasoning_effort,
+                ..
             } if provider_id == "dim" && model_id == "flash" && reasoning_effort.as_deref() == Some("high")
         ));
     }
@@ -796,6 +799,17 @@ mod tests {
         assert_eq!(panel.handle_key(key_of(KeyCode::Left)), Effect::None);
         assert!(drawn(&panel).contains("‹ low ›"), "{}", drawn(&panel));
         assert!(drawn(&panel).contains("> f"));
+    }
+
+    /// Enter carries the row's drawn text to the confirmation, so the notice
+    /// names the model the way the row does rather than by its ids.
+    #[test]
+    fn enter_carries_the_rows_label() {
+        let mut panel = panel();
+        assert!(matches!(
+            panel.handle_key(key_of(KeyCode::Enter)),
+            Effect::SelectModel { ref label, .. } if label == "Dim OAuth / flash"
+        ));
     }
 
     /// A re-read replaces the list while the picker is open; the effort the

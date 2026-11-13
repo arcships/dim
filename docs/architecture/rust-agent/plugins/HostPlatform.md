@@ -53,6 +53,10 @@ has members. Dropping a `ProcessTree` signals only when the tree was neither
 confirmed terminated nor reaped on its own; otherwise a recycled pid or reused
 group could receive `SIGKILL`.
 
+`ProcessTree::spawn` also accepts a host-built Tokio command without a platform
+instance. It pipes stdout/stderr and preserves the caller's stdin, environment,
+arguments and working directory, using the same tree supervision as platform spawn.
+
 `exec_root()` is `<home>/.dim/exec`, the persistent shell's own directory.
 `remove_exec_directory(path)` removes one directory below it and syncs the
 parent on Unix; it never reads ownership rows. SessionStore calls it during a

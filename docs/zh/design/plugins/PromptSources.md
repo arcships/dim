@@ -18,6 +18,8 @@ PromptSources 提供 Session 的具名提示词来源和 Session 的提示词注
 | `dim/environment/date` | State（`<dim-state>`） | 210 | PromptSources | 事实 |
 | `dim/language` | State（`<dim-state>`） | 220 | PromptSources | 事实（已设计，§3） |
 
+投递方式决定变更在哪里生效。`System` 来源组成 system 提示词：另一条线经前缀的配置继承它，在找到该事实处应用。`Context` 与 `State` 来源以 Append 输入块交付，与该 `prompt/changed` 写在同一批次，变更通过 `inputs` 命名该块的 id；一条线继承了该变更、但投递输入还没有在它的前缀里被消费时，不把该变更算作已采用，而是按来源的当前值自行采用，块在本线自己的消费位置到达模型。`Initialize` 变更同样如此：决定的是投递方式，不是变更被写入的原因。
+
 ### 1.1 策略
 
 `dim/base` 是策略：身份那句话和各项规则——安全、语气、客观、工程、git、工作方法、结束回合，以及链接约定。它是关于怎样工作的指引；无论它说什么，运行时都一样。

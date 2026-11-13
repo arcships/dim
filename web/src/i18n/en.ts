@@ -260,6 +260,7 @@ const en = {
   "timeline.copy": "Copy",
   "timeline.final": "final",
   "timeline.fromLine": "◂ from {id}",
+  "timeline.hookFollowUp": "Stop hook follow-up · {count} line | Stop hook follow-up · {count} lines",
   "timeline.lineEnded": "◂ {id} ended",
   "timeline.lineEndedByOperation": "This line ended (an operation)",
   "timeline.lineEndedItself": "This line ended (itself)",

@@ -734,6 +734,51 @@ fn session_delete_reports_a_daemon_without_the_method() {
     );
 }
 
+/// #1421: a launched Session belongs to its plugin, so cleanup never selects
+/// an origin it does not know — `automation` included.
+#[test]
+fn session_cleanup_never_selects_a_launched_session() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.summaries", "session.delete"]);
+        let listed = wire.read("session.summaries");
+        let mut sessions = three_sessions();
+        for (index, class) in ["automation", "internal", "acp"].iter().enumerate() {
+            sessions.as_array_mut().unwrap().push(origin(
+                summary(
+                    &format!("{class}-{index}"),
+                    Some("Hidden"),
+                    4 * 24 * HOUR + HOUR,
+                ),
+                class,
+            ));
+        }
+        wire.reply(&listed, sessions);
+        // The conversation is the only row selected: a run that selected a
+        // launched class asks to delete one of those ids first.
+        let delete = wire.read("session.delete");
+        assert_eq!(delete["params"], require_inactive("a"));
+        wire.reply(&delete, json!({}));
+    });
+    let output = home
+        .command()
+        .args(["session", "cleanup", "--older-than", "2d", "--yes"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["a\t-\t3d ago", "Deleted a"],
+        "only the conversation is selected and deleted, so the launched rows survive"
+    );
+}
+
 #[test]
 fn session_cleanup_selects_by_age_and_keeps_nothing_without_a_terminal() {
     let home = Home::new();

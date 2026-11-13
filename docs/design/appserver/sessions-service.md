@@ -162,7 +162,9 @@ are the contract's ([A.1](../contracts/session-access.md#a1-the-sessions-service
   "cwd": "string",                                     // absolute
   "model?": { "providerId": "string", "modelId": "string" },
   "policy?": { /* PermissionPolicy */ },
-  "starter?": { "sessionId": "string", "branchId": "string" } }
+  "starter?": { "sessionId": "string", "branchId": "string" },
+  "origin?": "automation",                             // absent: the caller's own work, `internal`
+  "title?": "string" }                                  // absent: none; SessionTitle writes it
 // reply
 { "sessionId": "string", "policy": { /* the effective PermissionPolicy */ } }
 ```
@@ -207,17 +209,19 @@ side's preset.
 | `permissionPolicy` | The effective policy |
 | `interactive` | `false` |
 | `collaborationRole` | The default (leader) |
-| `origin` | `internal`: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `origin` | `internal`, or `automation` when the request declares it: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list, and an automation Session is one a saved configuration launched with no person present, so a picker lists it only when the client asks for that class ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `initialTitle` | The request's `title`, kept in the Session's fixed configuration. SessionTitle is the title's one writer: on `apply`, for a Session whose title revision is still 0, it applies `session.rename`'s text rule and the operator's `maxLength`, then writes it as the first manual title. A `Conflict`, or a text the rule refuses, writes nothing |
 | Protocol version | `PROTOCOL_VERSION` (3): written to the record, and registered with `insert_version` after creation, as `session.create` and Collaboration do. Rpc serves a loaded Session only once its version is registered, and current clients list it. Creation and registration run in one task, so they finish together even if the caller stops waiting |
 | Record | Prepared creation (`AgentIndex::create_session`): project authorization, then the owned record, as for `session.create` |
 
-Errors: `rejected` (shape, `cwd`, empty tool names in `policy`), `agent_unknown`, `session_closed` or
-`branch_missing` (the starter), `reloading` (also while the starter's Permission reloads), `failed` (model
-resolution, project authorization, storage, an unavailable stored Agent, a starter that cannot be restored, Session
-build).
+Errors: `rejected` (shape, `cwd`, empty tool names in `policy`, an `origin` other than `automation`, a `title` that
+is not a string), `agent_unknown`, `session_closed` or `branch_missing` (the starter), `reloading` (also while the
+starter's Permission reloads), `failed` (model resolution, project authorization, storage, an unavailable stored
+Agent, a starter that cannot be restored, Session build).
 
 A launch is not idempotent. If the reply is lost, the result can be an empty Session that no caller knows about. It
-is non-interactive and listed like any other Session. No launch lookup is added for this harmless case.
+is non-interactive and listed like any other Session — by `session.summaries`, and by `session.catalog` under the
+filter of the class it was created in. No launch lookup is added for this harmless case.
 
 ### 6.2 input
 
@@ -413,7 +417,7 @@ the same turn. Errors: `session_closed`, `branch_missing`, `reloading`, and `fai
 `{sessionId, branchId, inputId, reason?}` → `{status: "deleted", sequence}` or `{status: "notHeld"}`.
 
 Agents gets S1's InputQueue with `Session::service::<InputQueue>` on that branch, calls
-`withdraw(InputWithdrawData { input_id, reason }, None)` and returns its decision. S1 replies once it has written
+`withdraw(InputWithdrawData { input_id, reason, steer: None })` and returns its decision. S1 replies once it has written
 `input/deleted`, which is then committed but not necessarily published, so for `deleted` Agents waits for that
 publication before replying, as `input` does (D8); a branch that closes or fails first replies `publication_unknown`.
 S2 adds no semantics: no ownership check, since a caller withdraws by the `input_id` it received (contract §9.3), no

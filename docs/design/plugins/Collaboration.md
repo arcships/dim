@@ -36,7 +36,7 @@ The `agent` tool's coordination text is policy in the sentences §1 marks: the g
 
 **How the configuration reaches the part.** `install_with_config` registers the configuration's Session name as a shared instance and provides the value; the part declares and reads that key only then, as [rutis usage A.2](../rutis-usage.md#a2-the-binding) has a configuration-enabled dependency. The name is also the `collaborationConfig` data face: `get` answers `{leaderDescription?, memberDescription?}` for a part of another language, and `null` means the built-in text. `serve` registers the parts for every assembly, so a profile that requires them without an install has no name to declare and keeps the built-in descriptions, rather than waiting for a configuration nobody provides; the flow tests cover both paths.
 
-`collaborationSession` stays Rust-only: it is the per-branch state machine that writes each operation event and settles it in dispatch order, so it has no data read to expose ([service faces §3.5](../service-faces.md#35-热路径与顺序契约上-internal)).
+`collaborationSession` owns operation settlement in dispatch order. Its public operations or private implementation role follow [the service migration rule](../service-faces.md#26-migration-rule); exposing configuration does not change that settlement contract.
 
 ## 4. Rule check
 
