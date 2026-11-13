@@ -11,7 +11,7 @@ use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
         EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, HostPlatform, ISOLATION_SUMMARY,
-        Isolation, Os, ProcessTree, ShellKind, TemporaryDirectory,
+        Isolation, Os, ProcessTree, ShellEdition, ShellKind, TemporaryDirectory,
     },
     tool_registry::definition,
 };
@@ -261,8 +261,75 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
     })
 }
 
-/// Detects an unquoted POSIX background `&`.
-fn has_unquoted_posix_background_ampersand(script: &str) -> bool {
+/// Detects a POSIX `&` that the shell reads as a background marker.
+///
+/// The shell reads `&` as a list terminator except inside quotes, a comment, a
+/// heredoc body, arithmetic, `${...}`, a backslash escape, or as the second half
+/// of `&&`, `<&`, `>&` or `;;&`. A command substitution runs a shell of its own
+/// wherever the shell runs it: in plain text, in `" "`, in `${...}` and in a
+/// heredoc body whose delimiter is unquoted, so its `&` is a marker. A quoted or
+/// backslashed heredoc delimiter runs none, and its `&` is text.
+///
+/// A few contexts differ by edition, and [`ShellReading`] holds them: whether
+/// `((` is an arithmetic command, whether `|&` is a pipe or a ksh coprocess
+/// marker, and whether `&>` and `&>>` are redirects or markers.
+///
+/// A command this scan cannot read to the end falls back to
+/// [`quote_only_marker`], which refuses any `&` outside quotes, and `&>` and
+/// `&>>` in an edition without that redirect.
+fn has_unquoted_posix_background_ampersand(script: &str, edition: ShellEdition) -> bool {
+    let reading = ShellReading::of(edition);
+    let mut scan = ShellScan::new(script, reading);
+    scan.text(None);
+    scan.marker || (scan.unclosed && quote_only_marker(script, reading))
+}
+
+/// How the running edition reads the constructs that differ between shells.
+#[derive(Clone, Copy)]
+struct ShellReading {
+    /// `(( ... ))` at a command start is arithmetic, not two subshells: bash,
+    /// zsh and ksh have it, dash and sh do not.
+    arithmetic_command: bool,
+    /// `|&` is an ordinary pipe: bash and zsh. Elsewhere it is a ksh coprocess,
+    /// which runs in the background, or a syntax error.
+    pipe_ampersand: bool,
+    /// `&>` and `&>>` are redirects: bash and zsh. Elsewhere they are a marker
+    /// followed by a redirect.
+    amp_redirect: bool,
+}
+
+impl ShellReading {
+    fn of(edition: ShellEdition) -> Self {
+        match edition {
+            ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh => Self {
+                arithmetic_command: true,
+                pipe_ampersand: true,
+                amp_redirect: true,
+            },
+            ShellEdition::Ksh => Self {
+                arithmetic_command: true,
+                pipe_ampersand: false,
+                amp_redirect: false,
+            },
+            // `sh` is bash in POSIX mode on one host and dash on another, so it
+            // takes the stricter reading of the two.
+            ShellEdition::Sh | ShellEdition::Dash => Self {
+                arithmetic_command: false,
+                pipe_ampersand: false,
+                amp_redirect: false,
+            },
+            // Never read: the guard runs only when the edition is POSIX.
+            ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => Self {
+                arithmetic_command: true,
+                pipe_ampersand: true,
+                amp_redirect: true,
+            },
+        }
+    }
+}
+
+/// An `&` outside `' '` and `" "`, when neither neighbour makes it inert.
+fn quote_only_marker(script: &str, reading: ShellReading) -> bool {
     let chars: Vec<char> = script.chars().collect();
     let (mut single, mut double) = (false, false);
     let mut i = 0;
@@ -279,7 +346,8 @@ fn has_unquoted_posix_background_ampersand(script: &str) -> bool {
                 i += 2;
                 continue;
             }
-            if previous != Some('&') && next != Some('>') && previous != Some('>') {
+            let redirect = reading.amp_redirect && next == Some('>');
+            if previous != Some('&') && !redirect && previous != Some('>') && !single && !double {
                 return true;
             }
         }
@@ -289,6 +357,505 @@ fn has_unquoted_posix_background_ampersand(script: &str) -> bool {
 }
 
 const HEAVY_SEARCH_COMMANDS: [&str; 7] = ["rg", "grep", "ag", "find", "fd", "tree", "du"];
+
+/// The deepest nesting read before the rest of the command is left to
+/// [`quote_only_marker`]. A model-written command can nest substitutions without
+/// bound, and this scan recurses.
+const SHELL_SCAN_DEPTH: usize = 64;
+
+struct Heredoc {
+    delimiter: String,
+    strip_tabs: bool,
+    expand: bool,
+}
+
+/// Walks a POSIX command and records whether an `&` in it is a list terminator.
+struct ShellScan {
+    chars: Vec<char>,
+    index: usize,
+    marker: bool,
+    unclosed: bool,
+    heredocs: Vec<Heredoc>,
+    depth: usize,
+    reading: ShellReading,
+}
+
+impl ShellScan {
+    fn new(script: &str, reading: ShellReading) -> Self {
+        Self {
+            chars: script.chars().collect(),
+            index: 0,
+            marker: false,
+            unclosed: false,
+            heredocs: Vec::new(),
+            depth: 0,
+            reading,
+        }
+    }
+
+    fn peek(&self, offset: usize) -> Option<char> {
+        self.chars.get(self.index + offset).copied()
+    }
+
+    fn skip(&mut self, count: usize) {
+        self.index = (self.index + count).min(self.chars.len());
+    }
+
+    fn enter(&mut self) -> bool {
+        if self.depth == SHELL_SCAN_DEPTH {
+            self.unclosed = true;
+            self.skip(self.chars.len());
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    /// Shell text, up to `close` where that ends an enclosing substitution.
+    fn text(&mut self, close: Option<char>) {
+        if !self.enter() {
+            return;
+        }
+        let mut done = false;
+        let mut word_start = true;
+        let mut parens = 0_usize;
+        while !done {
+            let Some(ch) = self.peek(0) else { break };
+            match ch {
+                '\n' => {
+                    self.skip(1);
+                    word_start = true;
+                    self.read_heredocs();
+                }
+                ' ' | '\t' => {
+                    self.skip(1);
+                    word_start = true;
+                }
+                '#' if word_start => self.comment(),
+                '\\' => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '\'' => {
+                    self.single_quoted();
+                    word_start = false;
+                }
+                '"' => {
+                    self.skip(1);
+                    self.double_quoted();
+                    word_start = false;
+                }
+                '`' => {
+                    self.skip(1);
+                    if close == Some('`') {
+                        done = true;
+                    } else {
+                        self.text(Some('`'));
+                    }
+                    word_start = false;
+                }
+                '$' => {
+                    self.dollar();
+                    word_start = false;
+                }
+                '(' => {
+                    if self.peek(1) == Some('(') && word_start && self.reading.arithmetic_command {
+                        self.arithmetic(2);
+                    } else {
+                        self.skip(1);
+                        parens += 1;
+                    }
+                    word_start = true;
+                }
+                ')' if parens > 0 => {
+                    parens -= 1;
+                    self.skip(1);
+                    word_start = false;
+                }
+                ')' if close == Some(')') => {
+                    self.skip(1);
+                    done = true;
+                }
+                '}' if close == Some('}') => {
+                    self.skip(1);
+                    done = true;
+                }
+                ')' => {
+                    self.skip(1);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('<') && self.peek(2) != Some('<') => {
+                    self.heredoc_opener();
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('<') => {
+                    self.skip(3);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('&') => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('(') => {
+                    self.skip(2);
+                    self.text(Some(')'));
+                    word_start = false;
+                }
+                '>' if self.peek(1) == Some('&') => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '>' if self.peek(1) == Some('(') => {
+                    self.skip(2);
+                    self.text(Some(')'));
+                    word_start = false;
+                }
+                '<' | '>' => {
+                    self.skip(1);
+                    word_start = false;
+                }
+                '|' => {
+                    if self.peek(1) == Some('&') && !self.reading.pipe_ampersand {
+                        self.marker = true;
+                        self.skip(2);
+                    } else {
+                        let width = if matches!(self.peek(1), Some('&') | Some('|')) {
+                            2
+                        } else {
+                            1
+                        };
+                        self.skip(width);
+                    }
+                    word_start = true;
+                }
+                ';' => {
+                    let width = if self.peek(1) == Some(';') && self.peek(2) == Some('&') {
+                        3
+                    } else if matches!(self.peek(1), Some(';') | Some('&')) {
+                        2
+                    } else {
+                        1
+                    };
+                    self.skip(width);
+                    word_start = true;
+                }
+                '&' => {
+                    let redirect = self.reading.amp_redirect && self.peek(1) == Some('>');
+                    let width = if self.peek(1) == Some('&') {
+                        2
+                    } else if redirect {
+                        if self.peek(2) == Some('>') { 3 } else { 2 }
+                    } else {
+                        self.marker = true;
+                        1
+                    };
+                    self.skip(width);
+                    word_start = true;
+                }
+                _ => {
+                    self.skip(1);
+                    word_start = false;
+                }
+            }
+        }
+        if !done && close.is_some() {
+            self.unclosed = true;
+        }
+        self.depth -= 1;
+    }
+
+    fn comment(&mut self) {
+        while let Some(ch) = self.peek(0) {
+            if ch == '\n' {
+                return;
+            }
+            self.skip(1);
+        }
+    }
+
+    fn single_quoted(&mut self) {
+        self.skip(1);
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                return;
+            };
+            self.skip(1);
+            if ch == '\'' {
+                return;
+            }
+        }
+    }
+
+    /// `" "`, where the shell runs substitutions and reads every other `&` as
+    /// text.
+    fn double_quoted(&mut self) {
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                return;
+            };
+            match ch {
+                '\\' => self.skip(2),
+                '"' => {
+                    self.skip(1);
+                    return;
+                }
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                '$' => self.dollar(),
+                _ => self.skip(1),
+            }
+        }
+    }
+    /// `$((...))` and `((...))`, where `&` is bitwise and, when the context
+    /// closes with `))` as arithmetic must.
+    ///
+    /// A context that closes its own level with a single `)` is not arithmetic:
+    /// the shell reads `((` as a subshell of a subshell, or `$((` as a
+    /// substitution around a subshell, and an `&` inside is then a marker. Such
+    /// a context is rewound to its opener and read as shell text instead.
+    fn arithmetic(&mut self, opener: usize) {
+        let start = self.index;
+        if let Some(end) = self.arithmetic_end(opener) {
+            self.index = end;
+            return;
+        }
+        self.index = start;
+        self.nested(opener);
+    }
+
+    /// Reads the arithmetic context to its `))` and answers where it ends, or
+    /// resets the index and answers nothing when it closes with one `)`.
+    fn arithmetic_end(&mut self, opener: usize) -> Option<usize> {
+        if !self.enter() {
+            return Some(self.index);
+        }
+        self.skip(opener);
+        let mut parens = 0_usize;
+        let end = loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                break Some(self.index);
+            };
+            match ch {
+                '(' => {
+                    parens += 1;
+                    self.skip(1);
+                }
+                ')' if parens == 0 && self.peek(1) == Some(')') => {
+                    self.skip(2);
+                    break Some(self.index);
+                }
+                ')' if parens == 0 => {
+                    self.index -= opener;
+                    break None;
+                }
+                ')' => {
+                    parens -= 1;
+                    self.skip(1);
+                }
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        };
+        self.depth -= 1;
+        end
+    }
+
+    /// A `$(` or `(` that turned out to hold a subshell rather than arithmetic,
+    /// read as the shell reads it, up to the `)` that closes it.
+    ///
+    /// Only the outer opener is skipped, one `(` of `((` and the `$(` of `$((`:
+    /// the `(` that follows it is an ordinary subshell opener, which `text`'s
+    /// `'('` arm counts, so the scan stops at the outer `)` instead of reading to
+    /// the end of the command.
+    fn nested(&mut self, opener: usize) {
+        self.skip(opener - 1);
+        self.text(Some(')'));
+    }
+
+    /// `${...}`, where `&` is part of the word unless a substitution runs.
+    fn parameter(&mut self) {
+        if matches!(
+            self.peek(2),
+            Some(' ') | Some('\t') | Some('\n') | Some('|')
+        ) {
+            self.skip(2);
+            self.text(Some('}'));
+            return;
+        }
+        if !self.enter() {
+            return;
+        }
+        self.skip(2);
+        let mut braces = 0_usize;
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                break;
+            };
+            match ch {
+                '\\' => self.skip(2),
+                '{' => {
+                    braces += 1;
+                    self.skip(1);
+                }
+                '}' if braces == 0 => {
+                    self.skip(1);
+                    break;
+                }
+                '}' => {
+                    braces -= 1;
+                    self.skip(1);
+                }
+                '"' => {
+                    self.skip(1);
+                    self.double_quoted();
+                }
+                '\'' => self.single_quoted(),
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        }
+        self.depth -= 1;
+    }
+
+    fn dollar(&mut self) {
+        match (self.peek(1), self.peek(2)) {
+            (Some('('), Some('(')) => self.arithmetic(3),
+            (Some('('), _) => {
+                self.skip(2);
+                self.text(Some(')'));
+            }
+            (Some('{'), _) => self.parameter(),
+            _ => self.skip(1),
+        }
+    }
+
+    fn heredoc_opener(&mut self) {
+        self.skip(2);
+        let strip_tabs = self.peek(0) == Some('-');
+        if strip_tabs {
+            self.skip(1);
+        }
+        while matches!(self.peek(0), Some(' ') | Some('\t')) {
+            self.skip(1);
+        }
+        let mut delimiter = String::new();
+        let mut expand = true;
+        while let Some(ch) = self.peek(0) {
+            match ch {
+                '\'' | '"' => {
+                    expand = false;
+                    self.skip(1);
+                    while let Some(inner) = self.peek(0) {
+                        self.skip(1);
+                        if inner == ch {
+                            break;
+                        }
+                        delimiter.push(inner);
+                    }
+                }
+                '\\' => {
+                    expand = false;
+                    self.skip(1);
+                    if let Some(inner) = self.peek(0) {
+                        delimiter.push(inner);
+                        self.skip(1);
+                    }
+                }
+                ch if ch.is_whitespace()
+                    || matches!(ch, ';' | '|' | '&' | '<' | '>' | '(' | ')') =>
+                {
+                    break;
+                }
+                ch => {
+                    delimiter.push(ch);
+                    self.skip(1);
+                }
+            }
+        }
+        self.heredocs.push(Heredoc {
+            delimiter,
+            strip_tabs,
+            expand,
+        });
+    }
+
+    /// Reads the heredoc bodies queued on the line that just ended.
+    fn read_heredocs(&mut self) {
+        while !self.heredocs.is_empty() {
+            let heredoc = self.heredocs.remove(0);
+            let mut body = String::new();
+            loop {
+                let start = self.index;
+                if start >= self.chars.len() {
+                    self.unclosed = true;
+                    break;
+                }
+                let mut end = start;
+                while end < self.chars.len() && self.chars[end] != '\n' {
+                    end += 1;
+                }
+                let line: String = self.chars[start..end].iter().collect();
+                let terminated = end < self.chars.len();
+                self.index = if terminated { end + 1 } else { end };
+                let candidate = if heredoc.strip_tabs {
+                    line.trim_start_matches('\t')
+                } else {
+                    line.as_str()
+                };
+                if candidate == heredoc.delimiter {
+                    break;
+                }
+                body.push_str(&line);
+                body.push('\n');
+                if !terminated {
+                    self.unclosed = true;
+                    break;
+                }
+            }
+            if heredoc.expand {
+                let mut inner = ShellScan::new(&body, self.reading);
+                inner.expansions();
+                self.marker |= inner.marker;
+                self.unclosed |= inner.unclosed;
+            }
+        }
+    }
+
+    /// `${ command; }` and `${|command; }` hold shell text rather than a
+    /// parameter name. bash 5.3 and ksh93 run the command in the current shell;
+    /// an edition without the form rejects it as a bad substitution and starts
+    /// nothing, so reading it as command text loses nothing real.
+    /// A heredoc body under an unquoted delimiter: only expansions run, and
+    /// every other character, `&` and quotes included, is text.
+    fn expansions(&mut self) {
+        while let Some(ch) = self.peek(0) {
+            match ch {
+                '\\' => self.skip(2),
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        }
+    }
+}
+
 const HIGH_COST_BASENAMES: [&str; 5] = ["node_modules", ".git", "dist", "build", "target"];
 
 fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult> {
@@ -1271,7 +1838,9 @@ pub(super) async fn execute(
         Err(error) => return Ok(failed(error.reason, error.code)),
     };
     let kind = shell.edition.kind();
-    if kind == ShellKind::Posix && has_unquoted_posix_background_ampersand(&input.command) {
+    if kind == ShellKind::Posix
+        && has_unquoted_posix_background_ampersand(&input.command, shell.edition)
+    {
         return Ok(failed(
             "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later.",
             "exec_invalid_request",
@@ -1661,5 +2230,215 @@ fn termination_failure_keeps_captured_output() {
         } else {
             assert!(!fields.contains_key("outputPath"));
         }
+    }
+}
+
+/// An `&` that every POSIX edition reads as a background marker.
+#[cfg(test)]
+const ALWAYS_REFUSED: &[&str] = &[
+    "sleep 5 &",
+    "sleep 5 & echo done",
+    "sleep 5 & sleep 6; wait",
+    "for i in 1 2; do sleep 1 & done; wait",
+    "nohup python3 app.py &",
+    "( sleep 5 & )",
+    "{ sleep 5 & }",
+    "cat <<'EOF'\nx\nEOF\nsleep 5 &",
+    "# a & b\nsleep 5 &",
+    "cmd1 && cmd2 &",
+    "cmd 2>&1 &",
+    "cat <<'EOF' | wc -l\na & b\nEOF\nsleep 5 &",
+    "echo $((1&1)) &",
+    "x=$(echo a & echo b)",
+    "x=`echo a & echo b`",
+    "sleep 5 & # start it\nwait",
+    "python3 - <<'PY' &\nimport time\nPY",
+    "echo \"$(sleep 5 &)\"",
+    "echo \"`sleep 5 &`\"",
+    "x=\"${v:-$(sleep 5 &)}\"",
+    "cat <<EOF\n$(sleep 5 &)\nEOF",
+    "echo \"$(sleep 5 > /dev/null &)\"",
+    "python3 -c \"print(\"x\")\" ; sleep 5 &",
+    "((sleep 5 &) )",
+    "echo $((sleep 5 &) )",
+    "((true) && (sleep 5 &))",
+    "echo ${ sleep 5 & }",
+    "echo ${| sleep 5 & }",
+    "sleep 5 &!",
+    "sleep 5 &|",
+    "echo \"$((true) )\"; sleep 5 &",
+    "echo \"$((true) )\" \"a & b\"; sleep 5 &",
+];
+
+/// An `&` whose reading depends on the edition, with the editions that refuse
+/// it.
+#[cfg(test)]
+const MARKERS: &[(ShellEdition, &str)] = &[
+    // `(( cmd & ))` under dash and sh: no arithmetic command, so two
+    // subshells.
+    (ShellEdition::Dash, "(( sleep 5 & ))"),
+    (ShellEdition::Sh, "(( sleep 5 & ))"),
+    // `|&` under ksh is a coprocess, which runs in the background.
+    (ShellEdition::Ksh, "sleep 5 |& cat"),
+    // `&>` and `&>>` are a marker plus a redirect outside bash and zsh.
+    (ShellEdition::Ksh, "sleep 5 &> /dev/null"),
+    (ShellEdition::Ksh, "sleep 5 &>> /dev/null"),
+    (ShellEdition::Dash, "sleep 5 &> /dev/null"),
+    (ShellEdition::Dash, "sleep 5 &>> /dev/null"),
+    (ShellEdition::Sh, "sleep 5 &> /dev/null"),
+    (ShellEdition::Sh, "sleep 5 &>> /dev/null"),
+    // `sh` takes the stricter reading of bash and dash, so `((` is two
+    // subshells there even where the program behind `sh` is bash.
+    (ShellEdition::Sh, "(( a & b ))"),
+    (ShellEdition::Sh, "(( (1 & 2) ))"),
+    (ShellEdition::Sh, "sleep 5 |& cat"),
+];
+
+/// An `&` that no edition reads as a background marker.
+#[cfg(test)]
+const INERT: &[&str] = &[
+    "# a & b",
+    "echo hi # a & b",
+    "echo hi; # a & b",
+    "python3 - <<'PY'\nmask = a & b\nprint(mask)\nPY",
+    "cat <<EOF\na & b\nEOF",
+    "cat <<-EOF\n\ta & b\n\tEOF",
+    "cat <<\\EOF\na & b\nEOF",
+    "cat <<\"EOF\"\na & b\nEOF",
+    "cat <<A <<B\nx & y\nA\na & b\nB",
+    "v=$(cat <<'EOF'\na & b\nEOF\n)",
+    "cat <<'EOF' | wc -l\na & b\nEOF",
+    "cat <<EOF\n# a & b\nEOF",
+    "cat <<'EOF'\n$(sleep 5 &)\nEOF",
+    "cat <<\"EOF\"\n$(sleep 5 &)\nEOF",
+    "cat <<\\EOF\n$(sleep 5 &)\nEOF",
+    "cat <<EOF\n$(echo 'a & b')\nEOF",
+    "while read -r l; do echo \"$l\"; done <<'EOF'\na & b\nEOF",
+    "cat <<'EOF' > out.txt\na & b\nEOF",
+    "x=`cat <<'EOF'\na & b\nEOF\n`",
+    "echo $(( 6 & 3 ))",
+    "v=$(( (n & 1) + 2 ))",
+    "echo $(( (1 & 2) ))",
+    "${v/&/-}",
+    "echo a \\& b",
+    "# don't do this & that\nls",
+    "echo \"a & b\"",
+    "echo 'a & b'",
+    "python3 -c \"print('a & b')\"",
+    "python3 -c \"print(\\\"a & b\\\")\"",
+    "x=$(grep 'a & b' file.txt)",
+    "x=`grep \"a & b\" file.txt`",
+    "echo \"$(python3 - <<'PY'\nprint(1 & 2)\nPY\n)\"",
+    "echo $(echo \"a & b\")",
+    "echo \"$((true) )\" \"a & b\"",
+    "echo ${v:-$(echo 'a & b')}",
+    "case x in a) echo 1 ;& b) echo 2 ;; esac",
+    "case x in a) echo 1 ;;& b) echo 2 ;; esac",
+    "exec 3<&0",
+    "cat <&3",
+    "cmd 2>&1",
+    "cmd1 && cmd2",
+    "cmd1 || cmd2",
+    "cat <<-EOF\n\t$(echo 'a & b')\n\tEOF",
+];
+
+/// `(( ))` is arithmetic wherever the edition has the command; `|&` and
+/// `&>` are a pipe and a redirect only in bash and zsh.
+#[cfg(test)]
+const ARITHMETIC_COMMAND: &[&str] = &["(( a & b ))", "(( (1 & 2) ))"];
+
+#[cfg(test)]
+const BASH_PIPE_AND_REDIRECT: &[&str] = &["cmd1 |& cmd2", "cmd &> out.log", "cmd &>> out.log"];
+
+/// Every POSIX edition exec can run.
+#[cfg(test)]
+const EDITIONS: &[ShellEdition] = &[
+    ShellEdition::Bash,
+    ShellEdition::GitBash,
+    ShellEdition::Zsh,
+    ShellEdition::Sh,
+    ShellEdition::Dash,
+    ShellEdition::Ksh,
+];
+
+#[cfg(test)]
+fn refuses(script: &str, edition: ShellEdition) -> bool {
+    has_unquoted_posix_background_ampersand(script, edition)
+}
+
+#[cfg(test)]
+#[test]
+fn the_shell_decides_which_ampersands_start_a_background_job() {
+    for edition in EDITIONS {
+        for script in INERT {
+            assert!(
+                !refuses(script, *edition),
+                "{edition:?} accepts: {script:?}"
+            );
+        }
+        for script in ARITHMETIC_COMMAND {
+            let arithmetic = matches!(
+                edition,
+                ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh | ShellEdition::Ksh
+            );
+            assert_eq!(
+                refuses(script, *edition),
+                !arithmetic,
+                "{edition:?} on (( )): {script:?}"
+            );
+        }
+        for script in BASH_PIPE_AND_REDIRECT {
+            let bash_syntax = matches!(
+                edition,
+                ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh
+            );
+            assert_eq!(
+                refuses(script, *edition),
+                !bash_syntax,
+                "{edition:?} on a bash construct: {script:?}"
+            );
+        }
+    }
+    for edition in EDITIONS {
+        for script in ALWAYS_REFUSED {
+            assert!(refuses(script, *edition), "{edition:?} refuses: {script:?}");
+        }
+    }
+    for (edition, script) in MARKERS {
+        assert!(refuses(script, *edition), "{edition:?} refuses: {script:?}");
+    }
+    for script in [
+        "echo \"$((true) )\"; sleep 5 &",
+        "echo \"$((true) )\" \"a & b\"; sleep 5 &",
+        "echo \"$((true) )\" \"a & b\"",
+    ] {
+        for edition in EDITIONS {
+            let mut scan = ShellScan::new(script, ShellReading::of(*edition));
+            scan.text(None);
+            assert!(
+                !scan.unclosed,
+                "{edition:?} reads the arithmetic rewind to the end: {script:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_unreadable_command_keeps_the_quote_only_verdict() {
+    for (script, refused) in [
+        ("echo \"a & b", false),
+        ("echo 'a & b", false),
+        ("echo $(echo 'a & b'", false),
+        ("cat <<'EOF'\na & b", true),
+        ("x=$(sleep 5 &", true),
+        ("echo ${v &", true),
+        ("x=`sleep 5 &", true),
+    ] {
+        assert_eq!(
+            has_unquoted_posix_background_ampersand(script, ShellEdition::Bash),
+            refused,
+            "{script:?}"
+        );
     }
 }
