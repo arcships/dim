@@ -11,6 +11,8 @@ pub const HELP: &str = r#"dimcode [OPTIONS]
 Pure Rust scrollback client. With redirected stdin, run one prompt and exit.
 
 Commands:
+  update [--confirm-legacy-exited]
+                                  Install the latest version on this channel
   tui [-p TEXT] [--image PATH ...]
                                   Open the interactive scrollback client;
                                   -p sends TEXT as its first message
@@ -25,6 +27,19 @@ Commands:
   session cleanup (--older-than DURATION | --keep N) [--yes]
                                   Show the Sessions that will go, then
                                   delete them after confirmation
+  worktree list                   List the managed worktrees under the
+                                  product home; a row names TASK_ID, ROOT,
+                                  BRANCH, HEAD, CHANGED, UNTRACKED,
+                                  LAST USED, SESSIONS and STATE
+  worktree remove TASK_ID [--force]
+                                  Remove one managed worktree and its
+                                  record; --force removes uncommitted or
+                                  untracked content too
+  worktree prune (--older-than DURATION | --keep N) [--yes] [--force]
+                                  Show the unused worktrees that will go
+                                  and why the rest stay, then remove them
+                                  after confirmation; --json prints the
+                                  preview, and with --yes the applied reply
   export SESSION_ID [--output PATH] [--database PATH]
                                   Write a Session's whole Timeline as JSONL;
                                   it holds prompts, code and tool output.
@@ -217,6 +232,13 @@ Options:
   --permission PRESET             read-only, workspace-write or full-access
                                   for a new session, or for the resumed main
                                   branch
+  --worktree                      Start a new Session in a managed worktree
+                                  of the workspace's repository, under the
+                                  product home's worktrees directory
+  --worktree-base REF             The commit that worktree starts from
+                                  (default: HEAD)
+  --worktree-branch NAME          The branch its creation makes (default:
+                                  dim/TASK_ID); an existing branch is refused
   -h, --help                      Show this help without starting a daemon
   -V, --version                   Show version without starting a daemon
 
@@ -351,6 +373,9 @@ pub enum Action {
     Chat,
     Tui,
     Exec,
+    Update {
+        legacy_exited: bool,
+    },
     Migration(crate::migration_command::Command),
     Acp {
         agent_id: Option<String>,
@@ -380,6 +405,9 @@ pub enum Action {
         /// Delete without asking.
         yes: bool,
     },
+    /// `worktree ...`: one command over the managed worktrees under the
+    /// product home (#1451).
+    Worktree(crate::worktree_command::Command),
     /// `export`: the Session's whole Timeline (ADR 005 D3).
     Timeline {
         session_id: String,
@@ -552,6 +580,13 @@ pub struct Options {
     pub effort: Option<String>,
     pub startup: Option<serde_json::Value>,
     pub permission: Option<PermissionPreset>,
+    /// `--worktree`: start the new Session in a managed worktree of the
+    /// workspace's repository (#1451).
+    pub worktree: bool,
+    /// `--worktree-base REF`: the commit the worktree starts from.
+    pub worktree_base: Option<String>,
+    /// `--worktree-branch NAME`: the branch its creation makes.
+    pub worktree_branch: Option<String>,
     pub directory: Option<String>,
     pub device: bool,
     /// Use the scrollback client instead of the full terminal UI.
@@ -595,6 +630,9 @@ impl Options {
             effort: None,
             startup: None,
             permission: None,
+            worktree: false,
+            worktree_base: None,
+            worktree_branch: None,
             directory: None,
             device: false,
             no_tui: false,
@@ -620,6 +658,12 @@ impl Options {
                     .ok_or_else(|| format!("{arg} requires a value").into())
             };
             match arg.as_str() {
+                "--confirm-legacy-exited" => {
+                    let Action::Update { legacy_exited } = &mut options.action else {
+                        return Err("--confirm-legacy-exited requires update".into());
+                    };
+                    *legacy_exited = true;
+                }
                 "-h" | "--help" => {
                     options.action = Action::Help;
                     return Ok(options);
@@ -760,27 +804,67 @@ impl Options {
                     options.modality.after = Some(value(&mut args)?);
                 }
                 "--older-than" => {
-                    let value = parse_age(&value(&mut args)?)?;
-                    let Action::SessionCleanup { older_than, .. } = &mut options.action else {
-                        return Err("--older-than requires session cleanup".into());
-                    };
-                    if older_than.replace(value).is_some() {
-                        return Err("Supply --older-than only once".into());
+                    let age = value(&mut args)?;
+                    match &mut options.action {
+                        Action::SessionCleanup { older_than, .. } => {
+                            if older_than.replace(parse_age(&age)?).is_some() {
+                                return Err("Supply --older-than only once".into());
+                            }
+                        }
+                        // The daemon parses the same grammar, so the text the
+                        // flag was given is what it receives.
+                        Action::Worktree(crate::worktree_command::Command::Prune {
+                            older_than,
+                            ..
+                        }) => {
+                            parse_age(&age)?;
+                            if older_than.replace(age).is_some() {
+                                return Err("Supply --older-than only once".into());
+                            }
+                        }
+                        _ => {
+                            return Err(
+                                "--older-than requires session cleanup or worktree prune".into()
+                            );
+                        }
                     }
                 }
                 "--keep" => {
                     let count = parse_count("--keep", &value(&mut args)?)?;
-                    let Action::SessionCleanup { keep, .. } = &mut options.action else {
-                        return Err("--keep requires session cleanup".into());
-                    };
-                    if keep.replace(count).is_some() {
-                        return Err("Supply --keep only once".into());
+                    match &mut options.action {
+                        Action::SessionCleanup { keep, .. } => {
+                            if keep.replace(count).is_some() {
+                                return Err("Supply --keep only once".into());
+                            }
+                        }
+                        Action::Worktree(crate::worktree_command::Command::Prune {
+                            keep, ..
+                        }) => {
+                            if keep.replace(count).is_some() {
+                                return Err("Supply --keep only once".into());
+                            }
+                        }
+                        _ => return Err("--keep requires session cleanup or worktree prune".into()),
                     }
                 }
                 "--yes" => match &mut options.action {
                     Action::SessionCleanup { yes, .. } => *yes = true,
+                    Action::Worktree(crate::worktree_command::Command::Prune { yes, .. }) => {
+                        *yes = true;
+                    }
                     Action::McpImport(import) => import.yes = true,
-                    _ => return Err("--yes requires session cleanup or mcp import".into()),
+                    _ => {
+                        return Err(
+                            "--yes requires session cleanup, worktree prune or mcp import".into(),
+                        );
+                    }
+                },
+                "--force" => match &mut options.action {
+                    Action::Worktree(
+                        crate::worktree_command::Command::Remove { force, .. }
+                        | crate::worktree_command::Command::Prune { force, .. },
+                    ) => *force = true,
+                    _ => return Err("--force requires worktree remove or worktree prune".into()),
                 },
                 "--discover" => {
                     let Action::McpImport(import) = &mut options.action else {
@@ -844,6 +928,17 @@ impl Options {
                     let preset = permission::parse_preset(&value(&mut args)?)?;
                     if options.permission.replace(preset).is_some() {
                         return Err("Supply --permission only once".into());
+                    }
+                }
+                "--worktree" => options.worktree = true,
+                "--worktree-base" => {
+                    if options.worktree_base.replace(value(&mut args)?).is_some() {
+                        return Err("Supply --worktree-base only once".into());
+                    }
+                }
+                "--worktree-branch" => {
+                    if options.worktree_branch.replace(value(&mut args)?).is_some() {
+                        return Err("Supply --worktree-branch only once".into());
                     }
                 }
                 "--directory" => options.directory = Some(value(&mut args)?),
@@ -919,6 +1014,11 @@ impl Options {
                 }
                 "tui" if matches!(options.action, Action::Chat) => options.action = Action::Tui,
                 "exec" if matches!(options.action, Action::Chat) => options.action = Action::Exec,
+                "update" if matches!(options.action, Action::Chat) => {
+                    options.action = Action::Update {
+                        legacy_exited: false,
+                    }
+                }
                 "resume" if matches!(options.action, Action::Exec) => {
                     if options.resume.replace(value(&mut args)?).is_some() {
                         return Err("Supply the Session only once".into());
@@ -963,6 +1063,23 @@ impl Options {
                         }
                         _ => return Err(USAGE_SESSION.into()),
                     }
+                }
+                "worktree" if matches!(options.action, Action::Chat) => {
+                    use crate::worktree_command::Command;
+                    options.action = match args.next().as_deref() {
+                        Some("list") => Action::Worktree(Command::List),
+                        Some("remove") => Action::Worktree(Command::Remove {
+                            task_id: value(&mut args)?,
+                            force: false,
+                        }),
+                        Some("prune") => Action::Worktree(Command::Prune {
+                            older_than: None,
+                            keep: None,
+                            yes: false,
+                            force: false,
+                        }),
+                        _ => return Err(crate::worktree_command::USAGE.into()),
+                    };
                 }
                 "export" if matches!(options.action, Action::Chat) => {
                     options.action = Action::Timeline {
@@ -1630,17 +1747,32 @@ impl Options {
                 || model_is_chat_option
                 || options.effort.is_some()
                 || autocompact.is_some()
-                || options.permission.is_some())
+                || options.permission.is_some()
+                || options.worktree
+                || options.worktree_base.is_some()
+                || options.worktree_branch.is_some())
         {
             return Err("Commands cannot be combined with chat options".into());
+        }
+        if (options.worktree_base.is_some() || options.worktree_branch.is_some())
+            && !options.worktree
+        {
+            return Err("--worktree-base and --worktree-branch require --worktree".into());
+        }
+        if options.worktree && options.resume.is_some() {
+            return Err(
+                "--worktree creates a new Session and cannot be combined with --resume".into(),
+            );
         }
         if options.json
             && !matches!(
                 options.action,
-                Action::Exec | Action::Migration(_) | Action::Modality(_)
+                Action::Exec | Action::Migration(_) | Action::Modality(_) | Action::Worktree(_)
             )
         {
-            return Err("--json requires exec, migration or a modality command".into());
+            return Err(
+                "--json requires exec, migration, a modality command or a worktree command".into(),
+            );
         }
         let images_for_tui = matches!(options.action, Action::Tui) && options.prompt.is_some();
         if !options.images.is_empty() && !matches!(options.action, Action::Exec) && !images_for_tui
@@ -1671,6 +1803,13 @@ impl Options {
             return Err(
                 "Use session cleanup --older-than DURATION or session cleanup --keep N".into(),
             );
+        }
+        if let Action::Worktree(crate::worktree_command::Command::Prune {
+            older_than, keep, ..
+        }) = &options.action
+            && older_than.is_some() == keep.is_some()
+        {
+            return Err(crate::worktree_command::SELECTOR_USAGE.into());
         }
         if options.clear_preferences.is_some()
             && (!matches!(options.action, Action::Models(_)) || options.refresh)
@@ -1927,6 +2066,23 @@ impl Options {
         }
         saved
     }
+
+    /// The `worktree` member `--worktree` asks for: `base` and `branch` only
+    /// when their flags named them, and nothing at all without `--worktree`,
+    /// so a creation that asks for no worktree sends none (#1451).
+    pub(crate) fn creation_worktree(&self) -> Option<serde_json::Value> {
+        if !self.worktree {
+            return None;
+        }
+        let mut request = serde_json::Map::new();
+        if let Some(base) = &self.worktree_base {
+            request.insert("base".into(), serde_json::json!(base));
+        }
+        if let Some(branch) = &self.worktree_branch {
+            request.insert("branch".into(), serde_json::json!(branch));
+        }
+        Some(serde_json::Value::Object(request))
+    }
 }
 
 fn startup_env(name: &str) -> Result<Option<String>> {
@@ -2006,6 +2162,7 @@ impl Options {
             | Action::SessionRename { .. }
             | Action::SessionDelete { .. }
             | Action::SessionCleanup { .. }
+            | Action::Worktree(_)
             | Action::Timeline { .. }
             | Action::DaemonVacuum { .. }
             | Action::Login(_)
@@ -2017,6 +2174,7 @@ impl Options {
             | Action::RuntimeList
             | Action::RuntimeInstall(_)
             | Action::RuntimeConfig { .. }
+            | Action::Update { .. }
             | Action::DaemonStop
             | Action::Web { .. }
             | Action::WebInstall
@@ -2474,5 +2632,231 @@ mod prompt_tests {
         let options = parse(&["exec", "-p", "hello"]).unwrap();
         assert!(matches!(options.action, Action::Exec));
         assert_eq!(options.prompt.as_deref(), Some("hello"));
+    }
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Result<Options> {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().canonicalize().unwrap();
+        let directory = directory.to_str().unwrap();
+        let args = ["--home", directory, "--cwd", directory]
+            .into_iter()
+            .chain(arguments.iter().copied())
+            .map(str::to_owned);
+        Options::parse(args)
+    }
+
+    fn command(arguments: &[&str]) -> crate::worktree_command::Command {
+        match parse(arguments).unwrap().action {
+            Action::Worktree(command) => command,
+            other => panic!("expected a worktree command, not {other:?}"),
+        }
+    }
+
+    /// `worktree list`, `remove TASK_ID [--force]` and
+    /// `prune (--older-than DURATION | --keep N) [--yes] [--force]` reach
+    /// their commands, and no other command takes their flags.
+    #[test]
+    fn the_worktree_commands_parse_to_their_own_fields() {
+        assert!(matches!(
+            command(&["worktree", "list"]),
+            crate::worktree_command::Command::List
+        ));
+        match command(&["worktree", "remove", "4f2abc"]) {
+            crate::worktree_command::Command::Remove { task_id, force } => {
+                assert_eq!(task_id, "4f2abc");
+                assert!(!force);
+            }
+            other => panic!("expected a removal, not {other:?}"),
+        }
+        match command(&["worktree", "remove", "4f2abc", "--force"]) {
+            crate::worktree_command::Command::Remove { force, .. } => assert!(force),
+            other => panic!("expected a removal, not {other:?}"),
+        }
+        // The prune selector keeps the flag's own text, which the daemon
+        // parses with the same grammar.
+        match command(&[
+            "worktree",
+            "prune",
+            "--older-than",
+            "12h",
+            "--yes",
+            "--force",
+        ]) {
+            crate::worktree_command::Command::Prune {
+                older_than,
+                keep,
+                yes,
+                force,
+            } => {
+                assert_eq!(older_than.as_deref(), Some("12h"));
+                assert_eq!(keep, None);
+                assert!(yes);
+                assert!(force);
+            }
+            other => panic!("expected a prune, not {other:?}"),
+        }
+        match command(&["worktree", "prune", "--keep", "3"]) {
+            crate::worktree_command::Command::Prune {
+                older_than, keep, ..
+            } => {
+                assert_eq!(older_than, None);
+                assert_eq!(keep, Some(3));
+            }
+            other => panic!("expected a prune, not {other:?}"),
+        }
+        assert_eq!(
+            parse(&["worktree", "prune", "--older-than", "soon"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--older-than takes a number and a unit d, h or m, such as 30d"
+        );
+        // A word the namespace does not have, and the namespace alone, are
+        // the same usage error.
+        for arguments in [vec!["worktree"], vec!["worktree", "show"]] {
+            assert_eq!(
+                parse(&arguments).err().unwrap().to_string(),
+                crate::worktree_command::USAGE,
+                "{arguments:?}"
+            );
+        }
+        // `--force` and `--yes` belong to worktree commands alone.
+        assert_eq!(
+            parse(&["session", "cleanup", "--keep", "1", "--force"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--force requires worktree remove or worktree prune"
+        );
+        assert_eq!(
+            parse(&["worktree", "list", "--yes"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--yes requires session cleanup, worktree prune or mcp import"
+        );
+    }
+
+    /// `worktree prune` takes exactly one selector, as `session cleanup`
+    /// does: neither is a list, and both are refused.
+    #[test]
+    fn prune_takes_exactly_one_selector() {
+        for arguments in [
+            vec!["worktree", "prune"],
+            vec!["worktree", "prune", "--older-than", "30d", "--keep", "2"],
+        ] {
+            assert_eq!(
+                parse(&arguments).err().unwrap().to_string(),
+                crate::worktree_command::SELECTOR_USAGE,
+                "{arguments:?}"
+            );
+        }
+        assert_eq!(
+            parse(&[
+                "worktree",
+                "prune",
+                "--older-than",
+                "30d",
+                "--older-than",
+                "12h"
+            ])
+            .err()
+            .unwrap()
+            .to_string(),
+            "Supply --older-than only once"
+        );
+        assert!(parse(&["worktree", "prune", "--older-than", "30d"]).is_ok());
+        assert!(parse(&["worktree", "prune", "--keep", "0"]).is_ok());
+    }
+
+    /// `--json` prints a worktree command's reply, and stays a chat or
+    /// command flag everywhere else.
+    #[test]
+    fn json_belongs_to_the_worktree_commands() {
+        assert!(parse(&["worktree", "list", "--json"]).unwrap().json);
+        assert!(
+            parse(&["worktree", "remove", "4f2abc", "--json"])
+                .unwrap()
+                .json
+        );
+        assert_eq!(
+            parse(&["skills", "list", "--json"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--json requires exec, migration, a modality command or a worktree command"
+        );
+    }
+
+    /// `--worktree`, `--worktree-base REF` and `--worktree-branch NAME` ask
+    /// for a managed worktree at creation, and no other command takes them.
+    #[test]
+    fn creation_flags_ask_for_a_managed_worktree() {
+        let options = parse(&["tui", "--worktree"]).unwrap();
+        assert!(options.worktree);
+        assert_eq!(options.creation_worktree(), Some(serde_json::json!({})));
+        // The bare chat entry is where the tui options live too.
+        let options = parse(&["--worktree"]).unwrap();
+        assert_eq!(options.creation_worktree(), Some(serde_json::json!({})));
+        let options = parse(&[
+            "exec",
+            "-p",
+            "hello",
+            "--worktree",
+            "--worktree-base",
+            "main",
+            "--worktree-branch",
+            "dim/fix",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.creation_worktree(),
+            Some(serde_json::json!({"base": "main", "branch": "dim/fix"}))
+        );
+        // A creation that asks for no worktree sends none.
+        assert_eq!(
+            parse(&["exec", "-p", "hello"]).unwrap().creation_worktree(),
+            None
+        );
+        assert_eq!(
+            parse(&["--worktree-base", "main"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--worktree-base and --worktree-branch require --worktree"
+        );
+        assert_eq!(
+            parse(&["tui", "--worktree", "--resume", "session"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "--worktree creates a new Session and cannot be combined with --resume"
+        );
+        assert_eq!(
+            parse(&["skills", "list", "--worktree"])
+                .err()
+                .unwrap()
+                .to_string(),
+            "Commands cannot be combined with chat options"
+        );
+        assert_eq!(
+            parse(&[
+                "tui",
+                "--worktree",
+                "--worktree-base",
+                "a",
+                "--worktree-base",
+                "b"
+            ])
+            .err()
+            .unwrap()
+            .to_string(),
+            "Supply --worktree-base only once"
+        );
     }
 }

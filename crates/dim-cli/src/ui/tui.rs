@@ -174,28 +174,10 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// How the interface ended.
-pub enum Leave {
-    Exit(i32),
-    /// "Restart now" after an update: start the updated CLI on the session.
-    Restart(Restart),
-}
-
-/// What starts the updated CLI where this one leaves off.
-pub struct Restart {
-    pub relaunch: PathBuf,
-    pub session_id: Option<String>,
-    pub fullscreen: bool,
-}
-
-pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> Leave {
-    let mut restart = None;
-    let code = run_terminal(host, surroundings, &mut restart);
+pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
+    let code = run_terminal(host, surroundings);
     history::flush();
-    match restart {
-        Some(restart) => Leave::Restart(restart),
-        None => Leave::Exit(code),
-    }
+    code
 }
 
 /// Where the Web workspace is, as `dimcode web` reports it.
@@ -244,11 +226,7 @@ fn write_notifications(
     Ok(())
 }
 
-fn run_terminal(
-    host: Box<dyn SessionPort>,
-    surroundings: Env,
-    restart: &mut Option<Restart>,
-) -> i32 {
+fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
         Err(TerminalError::NotATerminal) => {
@@ -735,14 +713,6 @@ fn run_terminal(
                     app.host.send(Command::ToggleWeb);
                     dirty = true;
                 }
-                Outcome::Restart(relaunch) => {
-                    *restart = Some(Restart {
-                        relaunch,
-                        session_id: app.session_active().then(|| app.session_id.clone()),
-                        fullscreen: app.fullscreen,
-                    });
-                    break 0;
-                }
             },
         }
     };
@@ -754,11 +724,9 @@ fn run_terminal(
         }
         None => screen.leave(),
     };
-    if restart.is_none() {
-        let resume =
-            (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
-        bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
-    }
+    let resume =
+        (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
+    bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
     let _ = terminal.write(&bytes);
     terminal.leave();
     app.host.shutdown();
@@ -801,8 +769,6 @@ enum Outcome {
     },
     /// `/web`: flip the daemon-owned Web entry switch without leaving.
     Web,
-    /// Start the updated CLI from this path on the session.
-    Restart(PathBuf),
     Exit(i32),
 }
 
@@ -2806,14 +2772,6 @@ impl App {
                 self.upgrade = Some(UpgradeDialog::new(offer));
                 self.reopen_upgrade();
             }
-            Update::UpgradeInstalled { version, result } => {
-                match (&mut self.prompt, &mut self.upgrade) {
-                    (Some(Prompt::Upgrade(dialog)), _) | (_, Some(dialog)) => {
-                        dialog.installed(result)
-                    }
-                    _ => self.notices.push(UpgradeDialog::outcome(&version, &result)),
-                }
-            }
             Update::ApprovalPending {
                 branch_id,
                 request_id,
@@ -3639,19 +3597,6 @@ impl App {
                 }
             }
             Effect::Exit => return Outcome::Exit(130),
-            Effect::Restart { confirmed } => {
-                if let Some(Prompt::Upgrade(dialog)) = self.prompt.take() {
-                    self.upgrade = Some(dialog);
-                }
-                if !confirmed && let Some(reason) = self.busy_reason() {
-                    self.prompt = Some(Prompt::Exit(ExitConfirm::restart(reason)));
-                    return Outcome::Continue;
-                }
-                if let Some(install) = self.upgrade.take().and_then(|dialog| dialog.offer.install) {
-                    return Outcome::Restart(install.relaunch);
-                }
-            }
-            Effect::UpgradeInstall(install) => self.host.send(Command::UpgradeInstall(install)),
             Effect::UpgradeSkip(version) => {
                 self.prompt = None;
                 match crate::update::skip(&self.home, &version) {
@@ -8605,55 +8550,13 @@ mod tests {
                     let offer = crate::update::Offer {
                         current: "0.12.0-alpha.123".into(),
                         version: "0.12.0-alpha.124".into(),
-                        manual: "npm install -g --prefer-online dimcode-alpha@0.12.0-alpha.124"
-                            .into(),
-                        install: Some(crate::update::Install {
-                            version: "0.12.0-alpha.124".into(),
-                            program: "npm".into(),
-                            args: vec![
-                                "install".into(),
-                                "-g".into(),
-                                "dimcode-alpha@0.12.0-alpha.124".into(),
-                            ],
-                            relaunch: "dima".into(),
-                        }),
+                        manual: "dima update".into(),
                     };
                     drawn.app.apply(Update::Upgrade(offer.clone()));
-                    for label in ["Update now", "Skip this version", "Later"] {
-                        assert!(shown(&mut drawn).contains(&format!("› {}", t(label))));
-                        drawn.key(KeyCode::Tab);
-                    }
-                    drawn.key(KeyCode::Enter);
-                    assert!(
-                        matches!(sent.borrow().last(), Some(Command::UpgradeInstall(install)) if Some(install) == offer.install.as_ref())
-                    );
-                    assert!(shown(&mut drawn).contains(t("Close")));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Err("npm EACCES: permission denied in /usr/local/lib/node_modules/dimcode-alpha\n请检查安装目录权限，然后重新尝试 END-OF-ERROR".into()),
-                    });
-                    assert!(
-                        shown(&mut drawn).contains(&tf("Update failed: {error}", &[("error", "")]))
-                    );
-                    for _ in 0..30 {
-                        drawn.key(KeyCode::Down);
-                        shown(&mut drawn);
-                    }
-                    assert!(shown(&mut drawn).contains("END-OF-ERROR"));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Ok(()),
-                    });
-                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Restart now"))));
-                    drawn.key(KeyCode::Right);
+                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Skip this version"))));
+                    drawn.key(KeyCode::Tab);
                     assert!(shown(&mut drawn).contains(&format!("› {}", t("Close"))));
-                    drawn.key(KeyCode::Enter);
-                    assert!(drawn.app.prompt.is_none());
-
-                    drawn.app.apply(Update::Upgrade(crate::update::Offer {
-                        install: None,
-                        ..offer.clone()
-                    }));
+                    drawn.key(KeyCode::Tab);
                     let mut details = String::new();
                     for _ in 0..30 {
                         details.push_str(&shown(&mut drawn));
@@ -8664,12 +8567,15 @@ mod tests {
                         .filter(|c| !c.is_whitespace() && *c != '│')
                         .collect();
                     assert!(details.contains(&offer.current));
-                    assert!(details.contains("dimcode-alpha@0.12.0-alpha.124"));
+                    assert!(details.contains("dimaupdate"));
                     drawn.size = (80, 24);
                     assert!(shown(&mut drawn).contains(&offer.current));
                     drawn.size = size;
                     drawn.key(KeyCode::Enter);
-                    assert_eq!(sent.borrow().len(), 1, "only the explicit install is sent");
+                    assert!(
+                        sent.borrow().is_empty(),
+                        "the dialog sends nothing to install"
+                    );
                     assert_eq!(
                         drawn.app.notice.as_ref().unwrap().0,
                         tf("Skipped {version}.", &[("version", &offer.version)])
@@ -8695,8 +8601,7 @@ mod tests {
                     drawn.app.apply(Update::Upgrade(crate::update::Offer {
                         current: "1.0.0".into(),
                         version: "2.0.0".into(),
-                        install: None,
-                        manual: "npm install -g dimcode@2.0.0".into(),
+                        manual: "dima update".into(),
                     }));
                     let frame = drawn.app.frame(size);
                     assert!(
@@ -16449,6 +16354,181 @@ mod tests {
             if !offered {
                 assert!(notice.contains("Cannot open this Session"), "{notice}");
             }
+        }
+    }
+
+    /// #1474: `/resume` in a repository with several worktrees must draw one
+    /// page. The panel opens on the exact launch workspace and asks for its
+    /// first page; the git probe answers later with the repository's
+    /// worktrees, and that answer may not clear a page already drawn.
+    ///
+    /// The git read itself is covered where it lives
+    /// (`session_host::tests::the_git_read_answers_one_worktree_several_and_nothing_outside_git`);
+    /// this drives the client's state sequence, which is what the operator
+    /// sees, and injects the set that read publishes.
+    #[test]
+    fn resume_draws_one_page_in_a_repository_with_several_worktrees() {
+        use crate::model::session::{SessionItem, SessionsScope};
+
+        let root = tempfile::tempdir().unwrap();
+        let launch = root.path().join("main");
+        let sibling = root.path().join("fix");
+        std::fs::create_dir_all(&launch).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let set = vec![
+            launch.to_string_lossy().into_owned(),
+            sibling.to_string_lossy().into_owned(),
+        ];
+
+        let item = |id: &str, title: &str, cwd: &std::path::Path| SessionItem {
+            id: id.into(),
+            title: Some(title.into()),
+            preview: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            updated_at: u64::MAX,
+            model: "p/m".into(),
+            origin: None,
+        };
+        let here = item("s-here", "Fix the failing test", &launch);
+        let also = item("s-also", "Retry the flaky test", &launch);
+        let there = item("s-there", "Update the cache", &sibling);
+
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut drawn = Drawn::new((100, 30), None, true);
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+
+        // What the operator sees, in reading order: the panel's title, its
+        // loading line, and its rows.
+        const MARKS: [&str; 6] = [
+            "Sessions · This workspace",
+            "Sessions · This repository",
+            "Loading sessions...",
+            "Fix the failing test",
+            "Retry the flaky test",
+            "Update the cache",
+        ];
+        let states = |drawn: &mut Drawn| -> Vec<&'static str> {
+            drawn.draw();
+            let text = drawn.emu.rows_text().join("\n");
+            MARKS
+                .iter()
+                .copied()
+                .filter(|mark| text.contains(mark))
+                .collect()
+        };
+        // The first-page reads asked for since the last call: their id and
+        // their scope, which is `None` for a cursor-less first page.
+        let reads = |sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            let mut commands = sent.borrow_mut();
+            let reads: Vec<(String, SessionsScope)> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::ListSessions {
+                        id, scope, cursor, ..
+                    } => {
+                        assert!(cursor.is_none(), "a first page carries no cursor");
+                        Some((id.clone(), scope.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            commands.clear();
+            reads
+        };
+        // Pressing Enter resumes the selected row: the id it picks.
+        let pressed = |drawn: &mut Drawn, sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            sent.borrow_mut().clear();
+            drawn.key(KeyCode::Enter);
+            let picked = sent.borrow_mut().iter().find_map(|command| match command {
+                Command::Resume(id) => Some(id.clone()),
+                _ => None,
+            });
+            sent.borrow_mut().clear();
+            picked.expect("Enter resumes the selected row")
+        };
+
+        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
+        for open in 1..=2 {
+            typed(&mut drawn.app, "/resume");
+            drawn.key(KeyCode::Enter);
+            sequence.push(("opened", states(&mut drawn)));
+
+            let asked = reads(&sent);
+            assert_eq!(
+                asked.len(),
+                1,
+                "open {open}: one read is asked for at open: {asked:?}"
+            );
+            assert!(
+                matches!(asked[0].1, SessionsScope::Local(None)),
+                "open {open}: the opening read lists the exact launch workspace: {asked:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: asked[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), also.clone()], None)),
+            });
+            sequence.push(("first page", states(&mut drawn)));
+
+            // The operator moves to the second row before git answers, and the
+            // wider page lists that row third: the selection must stay on it,
+            // not on the same index.
+            drawn.key(KeyCode::Down);
+            drawn.app.apply(Update::RepositoryWorkspaces(set.clone()));
+            let answered = states(&mut drawn);
+            assert!(
+                !answered.contains(&"Loading sessions..."),
+                "open {open}: the git answer does not clear the drawn page: {answered:?}"
+            );
+            sequence.push(("git answer", answered));
+
+            drawn.app.tick();
+            let widened = reads(&sent);
+            assert!(
+                matches!(
+                    widened.as_slice(),
+                    [(_, SessionsScope::Local(Some(asked)))] if *asked == set
+                ),
+                "open {open}: the wider scope reads its first page: {widened:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: widened[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), there.clone(), also.clone()], None)),
+            });
+            sequence.push(("wider page", states(&mut drawn)));
+            assert_eq!(
+                pressed(&mut drawn, &sent),
+                "s-also",
+                "open {open}: the selection stays on its row, now the third"
+            );
+        }
+
+        for open in 1..=2 {
+            let state = |label: &str| -> &Vec<&'static str> {
+                sequence
+                    .iter()
+                    .filter_map(|(recorded, states)| (*recorded == label).then_some(states))
+                    .nth(open - 1)
+                    .unwrap_or_else(|| {
+                        panic!("open {open} {label} was not recorded: {sequence:#?}")
+                    })
+            };
+            assert_eq!(
+                state("opened"),
+                &["Sessions · This workspace", "Loading sessions..."],
+                "open {open} opens on the launch workspace"
+            );
+            assert_eq!(
+                state("wider page"),
+                &[
+                    "Sessions · This repository",
+                    "Fix the failing test",
+                    "Retry the flaky test",
+                    "Update the cache",
+                ],
+                "open {open} ends on the repository's page without a second loading line"
+            );
         }
     }
 }

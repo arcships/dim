@@ -343,6 +343,7 @@ impl Collaboration {
                 version,
                 Some(leader_id),
                 SessionOrigin::Internal,
+                None,
             )
             .await
         {

@@ -10,6 +10,7 @@ use tokio::sync::Notify;
 #[derive(Default)]
 pub struct Holds {
     disable: Mutex<Option<Arc<DisableHold>>>,
+    launch: Mutex<Option<Arc<Notify>>>,
     fail_release: AtomicBool,
     lose_input_reply: AtomicBool,
 }
@@ -41,6 +42,21 @@ impl DisableHold {
 }
 
 impl Holds {
+    /// Holds the next accepted launch before it calls the Session service.
+    /// Notify the returned handle to let the launch proceed.
+    pub fn hold_next_launch(&self) -> Arc<Notify> {
+        let release = Arc::new(Notify::new());
+        *self.launch.lock().unwrap() = Some(release.clone());
+        release
+    }
+
+    pub(crate) async fn before_launch(&self) {
+        let release = self.launch.lock().unwrap().take();
+        if let Some(release) = release {
+            release.notified().await;
+        }
+    }
+
     /// Holds the next disables between their read and their write until the
     /// returned hold is released.
     pub fn hold_next_disable(&self) -> Arc<DisableHold> {

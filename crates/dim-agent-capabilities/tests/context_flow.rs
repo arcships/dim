@@ -986,6 +986,7 @@ impl ModelDriver for UsageModel {
                 total_tokens: 125.,
                 cache_read_tokens: Some(0.),
                 cache_write_tokens: Some(0.),
+                reasoning_tokens: None,
                 cost: None,
                 currency: None,
             };

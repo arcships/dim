@@ -334,6 +334,16 @@ impl Connection {
             }
             let guard = self.admit(&request)?;
             self.admit_entry(rpc, &request.call)?;
+            let activity = if matches!(request.call, Call::Shutdown(_)) {
+                None
+            } else {
+                Some(
+                    rpc.control
+                        .activity
+                        .take_hold()
+                        .ok_or_else(RpcError::reloading)?,
+                )
+            };
             let this = self.clone();
             let Request { id, call } = request;
             if let Call::Contributed { method, params } = call {
@@ -351,6 +361,7 @@ impl Connection {
                         closed: this.closed.clone(),
                     };
                     rpc.commands.clone().spawn(async move {
+                        let _activity = activity;
                         match this
                             .session_method(&rpc, method, params, site, progress)
                             .await
@@ -393,13 +404,17 @@ impl Connection {
                     rpc.unloading.clone(),
                     progress,
                 )?;
-                rpc.commands.spawn(this.answer(id, guard, accepted, sink));
+                rpc.commands.spawn(async move {
+                    let _activity = activity;
+                    this.answer(id, guard, accepted, sink).await;
+                });
                 return Ok(());
             }
             let rpc = rpc.clone();
             let shutdown =
                 matches!(call, Call::Shutdown(_)).then(|| self.hub.shutdown_requests.token());
             rpc.commands.clone().spawn(async move {
+                let _activity = activity;
                 let _guard = guard;
                 let _shutdown = shutdown;
                 let result = this.handle(&rpc, id.clone(), call).await;
@@ -961,7 +976,20 @@ impl Connection {
                         if connections > 0 || attached_sessions > 0 || running > 0 {
                             Some((connections, attached_sessions, running))
                         } else {
+                            let Some(pause) = rpc.control.activity.pause() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "The daemon has accepted process work; retry after it settles",
+                                )));
+                            };
+                            let Some(sessions) = rpc.index.pause_sessions() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "A Session is not quiescent; retry after its work settles",
+                                )));
+                            };
                             admission.closing_for_idle = true;
+                            rpc.control.keep_paused(pause, sessions);
                             None
                         }
                     };
@@ -993,7 +1021,7 @@ impl Connection {
                 rpc.control.shutdown().cancel();
                 return None;
             }
-            Call::Create(params) => self.create(rpc, params).await,
+            Call::Create(params) => self.create(rpc, *params).await,
             Call::ModelPreview(params) => rpc.preview_model(params).await,
             Call::CatalogCancel(params) => {
                 if let Some(Some(cancel)) = self
@@ -1758,11 +1786,52 @@ impl Connection {
                 ));
             }
         };
-        let session = rpc
+        let managed = rpc.ctx.get::<crate::worktrees::ManagedWorktrees>();
+        let worktree = match (params.worktree, &managed) {
+            (Some(request), Some(managed)) => Some(
+                managed
+                    .create(
+                        std::path::Path::new(&cwd),
+                        request.base.as_deref(),
+                        request.branch.as_deref(),
+                        &self.closed,
+                    )
+                    .await
+                    .map_err(|error| error.rpc())?,
+            ),
+            (Some(_), None) => {
+                return Err(RpcError::app(
+                    -32000,
+                    "worktree_unavailable",
+                    "This daemon has no managed worktree root",
+                ));
+            }
+            (None, _) => None,
+        };
+        if let Some(created) = &worktree {
+            config.cwd = created.prepared.subtree.to_string_lossy().into_owned();
+        }
+        let session = match rpc
             .index
-            .create_session(&host, config, self.protocol_version(), None, origin)
+            .create_session(
+                &host,
+                config,
+                self.protocol_version(),
+                None,
+                origin,
+                worktree.as_ref().map(|created| created.prepared.clone()),
+            )
             .await
-            .map_err(RpcError::from)?;
+        {
+            Ok(session) => session,
+            Err(error) => {
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
+                return Err(RpcError::from(error));
+            }
+        };
         if startup_admission.is_some() || source.is_some() {
             let retained = rpc
                 .ctx
@@ -1778,6 +1847,10 @@ impl Connection {
                     .delete(session.id())
                     .await
                     .map_err(RpcError::from)?;
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
                 return Err(error);
             }
         }
@@ -1793,6 +1866,7 @@ impl Connection {
                 session.config().model.metadata.as_ref(),
             ),
             sequence: session.sequence("main").map_err(RpcError::from)?,
+            worktree: worktree.as_ref().map(|created| created.reply()),
         }))
     }
 
@@ -1845,6 +1919,22 @@ pub(crate) fn configuration_outcome(
             "Configuration was superseded by another update",
         )),
     }
+}
+
+/// A failed creation after the Session transaction removed its rows: the
+/// directory record it wrote stays a candidate, so drop it when nothing
+/// associates it. A cleanup failure is visible in the next `worktree list`.
+async fn clear_worktree_record(
+    rpc: &RpcService,
+    worktree: Option<&crate::worktrees::CreatedWorktree>,
+) {
+    let (Some(created), Some(store)) = (worktree, rpc.ctx.get::<crate::storage::SessionStore>())
+    else {
+        return;
+    };
+    let _ = store
+        .remove_worktree_directory(created.prepared.directory.clone())
+        .await;
 }
 
 /// Session operations wait for the product execution profile.

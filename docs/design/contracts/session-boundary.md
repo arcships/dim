@@ -489,6 +489,12 @@ The protocol decision is accepted: the v2/v3 payloads are the shared event types
 built and shipped with the daemon, the field is the only way a declaration can travel with the
 result it describes, and v1's frozen shape does not change.
 
+`Usage.reasoningTokens` is an optional field of `model/usage`, and neither the store nor the v1
+projection widens for it. The native store takes v46, marker only, because an older daemon cannot
+decode a `Usage` carrying it ([v46](../appserver/native-storage-format.md#v46modelusage-携带推理-token-数)).
+v1 connections receive `model/usage` without it, so v1's frozen shape does not change; v2 and later
+carry the native event whole, and the frozen fixtures stay unchanged.
+
 ## Appendix B. Full conflict table
 
 | Scenario | Sequence order | Outcome | Owner of the decision |

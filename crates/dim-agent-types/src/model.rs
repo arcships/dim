@@ -419,6 +419,17 @@ pub struct Usage {
     )]
     #[serde(serialize_with = "crate::finite_number::serialize_optional")]
     pub cache_write_tokens: Option<f64>,
+    /// The part of `completion_tokens` spent thinking, already inside the
+    /// completion and the total. It is the count the protocol adapter gives:
+    /// absent when the adapter gives none, and zero when Gemini or a Responses
+    /// adapter reads a missing field as zero, as it does for the cached count.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    pub reasoning_tokens: Option<f64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

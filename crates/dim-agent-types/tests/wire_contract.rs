@@ -279,6 +279,50 @@ fn failure_chain_roundtrips_and_rejects_invalid_contracts() {
 }
 
 #[test]
+fn reasoning_tokens_are_optional_and_absent_when_unreported() {
+    // A `model/usage` record written before the field still decodes and
+    // re-encodes without it; the frozen fixtures stay unchanged.
+    let old = fixture("model/usage", None);
+    let old_event: AgentEvent = serde_json::from_value(old.clone()).unwrap();
+    equal_json(&serde_json::to_value(old_event).unwrap(), &old);
+
+    let mut event = old;
+    event["data"]["usage"]["reasoningTokens"] = json!(2.0);
+    let decoded: AgentEvent = serde_json::from_value(event.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &event);
+    // v1 still decodes that record; the projection drops the field, which
+    // `a_v1_connection_receives_usage_without_its_reasoning_count` covers.
+    let decoded_v1: v1::AgentEvent = serde_json::from_value(event).unwrap();
+    assert!(
+        matches!(
+            &decoded_v1.kind,
+            v1::EventKind::Model(v1::ModelEvent::ModelUsage(data))
+                if data.usage.reasoning_tokens == Some(2.0)
+        ),
+        "{decoded_v1:?}"
+    );
+
+    // A reported zero is a count; an absent one is unreported, and explicit
+    // null is not a count.
+    let mut zero = fixture("model/usage", None);
+    zero["data"]["usage"]["reasoningTokens"] = json!(0.0);
+    let decoded: AgentEvent = serde_json::from_value(zero.clone()).unwrap();
+    equal_json(&serde_json::to_value(&decoded).unwrap(), &zero);
+    let mut null = fixture("model/usage", None);
+    null["data"]["usage"]["reasoningTokens"] = Value::Null;
+    assert!(
+        serde_json::from_value::<AgentEvent>(null.clone()).is_err(),
+        "{null}"
+    );
+    let mut non_finite = fixture("model/usage", None);
+    non_finite["data"]["usage"]["reasoningTokens"] = json!("2");
+    assert!(
+        serde_json::from_value::<AgentEvent>(non_finite.clone()).is_err(),
+        "{non_finite}"
+    );
+}
+
+#[test]
 fn retry_forbidden_roundtrips_and_rejects_invalid_contracts() {
     use std::sync::Arc;
     let old = fixture("step/model-output-end", Some("failed"));
@@ -683,6 +727,54 @@ fn a_v1_connection_receives_a_tool_result_without_its_effects() {
     assert!(result.get("effects").is_none(), "{value}");
     assert_eq!(result["content"], "Wrote /work/dim/src/lib.rs");
     assert!(result.get("isError").is_none(), "{value}");
+}
+
+#[test]
+fn a_v1_connection_receives_usage_without_its_reasoning_count() {
+    let event = AgentEvent {
+        id: "event-1".into(),
+        sequence: 1,
+        create_at: 0,
+        tags: None,
+        parent_call_id: None,
+        kind: EventKind::ModelUsage(ModelUsageData {
+            turn_id: "turn-1".into(),
+            request_id: "request-1".into(),
+            usage: Usage {
+                prompt_tokens: 100.0,
+                completion_tokens: 20.0,
+                total_tokens: 120.0,
+                cache_read_tokens: Some(30.0),
+                cache_write_tokens: Some(10.0),
+                reasoning_tokens: Some(2.0),
+                cost: Some(0.001),
+                currency: Some("USD".into()),
+            },
+        }),
+    };
+    let shared = v1::SharedEvent::new(std::sync::Arc::new(event)).expect("a usage fact");
+    let value = serde_json::to_value(&shared).unwrap();
+    assert!(
+        value["data"]["usage"].get("reasoningTokens").is_none(),
+        "{value}"
+    );
+    // Every other field keeps the v1 shape and value.
+    equal_json(
+        &value["data"],
+        &json!({
+            "turn_id": "turn-1",
+            "request_id": "request-1",
+            "usage": {
+                "promptTokens": 100,
+                "completionTokens": 20,
+                "totalTokens": 120,
+                "cacheReadTokens": 30,
+                "cacheWriteTokens": 10,
+                "cost": 0.001,
+                "currency": "USD"
+            }
+        }),
+    );
 }
 
 #[test]

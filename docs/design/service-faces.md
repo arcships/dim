@@ -295,24 +295,24 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
 
 ```text
-credentialVariablesHost.variables {} -> {variables: [string]}
+credentialVariablesHost.variables() -> {variables: [string]}
   -- 只给变量名，永不给凭据值
 sessionClientsHost.presences {sessionId} -> {presences: [{channel, label?}]}
   -- channel 是 tui/cli/web/acp/remote/desktop/unknown；label 是 hello.clientName，不是身份
-listenAddresses.read {} -> {unixPath?, pipeName?, websocketAddress?}
+listenAddresses.read() -> {unixPath?, pipeName?, websocketAddress?}
   -> error {code: invalid_path, message}
   -- 路径按 §1 是 UTF-8 字符串；非 UTF-8 的 unix socket 路径是 invalid_path
 reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]}
   -> {} | error {code: reserved, message}
   -- interruption/progress 只属于真实注册，不属于这个问题
-collaborationDirectory.relations {} -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
+collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
   -- 只读：Team 关系的写入仍由 Collaboration 的准入决定，数据面不提供第二个写入者
-eventSubscriptions.sources {} -> sources
+eventSubscriptions.sources() -> sources
 eventSubscriptions.subscribe {sessionId, branchId?, types, match?, mode?} -> reply
 eventSubscriptions.unsubscribe {sessionId, subscriptionId} -> reply
 eventSubscriptions.list {sessionId} -> reply
   -> error {code, message}
-  -- 形状与 EventHub A.3 的管理方法相同；sessionId 是值，不是授权
+  -- subscribe 将 EventHub A.3 的 target.sessionId/branchId 展开到请求顶层；sessionId 是值，不是授权
 ```
 
 `eventSubscriptions` 的 `sources`、`list` 在 dispatcher 里是 sync，其余是 async。测试：`crates/dim-agent-capabilities/tests/legacy_port_faces.rs`、`crates/dim-app-server/tests/legacy_port_faces.rs` 和 EventHub 的 `fixture_flow.rs` 证明 typed binding 与 wire 返回同一结果。

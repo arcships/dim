@@ -435,7 +435,7 @@ The fixed list covers the model provider, cloud, proxy, code hosting and package
 variables the daemon knows by name; its prefixes are `DIM_` and `DIMCODE_` plus the exact names
 `DIM` and `DIMCODE`, so an unrelated name such as `DIMENSION` is not caught, and matching ignores
 case. The live set arrives through the process data face `credentialVariablesHost` in the
-capabilities host, provided by the assembly root in `serve`: `variables {} -> {variables: [string]}`,
+capabilities host, provided by the assembly root in `serve`: `variables() -> {variables: [string]}`,
 the names and never a value ([service faces §4.8](../service-faces.md#48-旧主机端口credentialvariableshost-等六个)).
 The owner binds its read into `CredentialVariablesHost`, so a Rust consumer calls the same operation
 in process and no second public contract exists. The model-config profile serves `AimuxModels::api_key_envs()`; the product

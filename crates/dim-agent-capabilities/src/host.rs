@@ -979,6 +979,7 @@ pub(crate) fn add_usage(total: &mut Option<Usage>, usage: Usage) {
             };
             sum.cache_read_tokens = cache(sum.cache_read_tokens, usage.cache_read_tokens);
             sum.cache_write_tokens = cache(sum.cache_write_tokens, usage.cache_write_tokens);
+            sum.reasoning_tokens = cache(sum.reasoning_tokens, usage.reasoning_tokens);
         }
     }
 }

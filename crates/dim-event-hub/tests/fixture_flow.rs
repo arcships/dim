@@ -579,9 +579,6 @@ async fn a_host_without_session_files_truncates() {
     assert_eq!(calls[0].mode, "queue");
 }
 
-/// The `eventSubscriptions` face (service faces #1292): the Rust binding calls
-/// the service's own operations and a part of another language calls the same
-/// operations by name, so both answer the same.
 #[tokio::test]
 async fn the_subscription_service_answers_the_same_through_the_binding_and_the_face() {
     use dim_event_hub::{EventSubscriptions, ListCall, SubscriptionCall, UnsubscribeCall};
@@ -600,12 +597,68 @@ async fn the_subscription_service_answers_the_same_through_the_binding_and_the_f
     let call = SubscriptionCall {
         session_id: "session".into(),
         types: vec!["im.*".into()],
-        matches: None,
+        matches: Some(std::collections::BTreeMap::from([(
+            "channel".into(),
+            "review".into(),
+        )])),
         mode: Some(InputMode::Queue),
         branch_id: Some("main".into()),
     };
-    let subscribed = binding.subscribe(call).await.unwrap();
+    let subscribed: Value = call_service(&fixture.root, "eventSubscriptions", "subscribe", (call,))
+        .await
+        .unwrap();
     let id = subscribed["subscriptionId"].as_str().unwrap().to_owned();
+
+    let other: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "subscribe",
+        (SubscriptionCall {
+            session_id: "other-session".into(),
+            types: vec!["im.*".into()],
+            matches: None,
+            mode: Some(InputMode::Queue),
+            branch_id: Some("main".into()),
+        },),
+    )
+    .await
+    .unwrap();
+    let other_list: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "list",
+        (ListCall {
+            session_id: "other-session".into(),
+        },),
+    )
+    .await
+    .unwrap();
+    assert!(
+        other_list["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == other["subscriptionId"])
+    );
+    assert!(
+        fixture
+            .sessions
+            .calls()
+            .iter()
+            .any(|call| call.session_id == "other-session")
+    );
+    let removed: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "unsubscribe",
+        (UnsubscribeCall {
+            session_id: "other-session".into(),
+            subscription_id: other["subscriptionId"].as_str().unwrap().into(),
+        },),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, json!({}));
 
     let list = ListCall {
         session_id: "session".into(),
@@ -615,6 +668,10 @@ async fn the_subscription_service_answers_the_same_through_the_binding_and_the_f
             .await
             .unwrap();
     assert_eq!(binding.list(list), through_face);
+    assert_eq!(
+        through_face["subscriptions"][0]["match"],
+        json!({"channel": "review"})
+    );
     assert!(
         through_face["subscriptions"]
             .as_array()
