@@ -876,6 +876,17 @@ async fn notifications_preserve_original_close_boundaries_tails_and_task_identit
                 "resume-format upgrades preserve existing member relationships"
             );
         }
+        for index in ["approval/v1", "collaboration-delivery/v1"] {
+            let populated: i64 = connection.query_row(
+                "SELECT count(*) FROM timeline_member_roots WHERE session_id='pending-upgrade' AND branch_id='main' AND index_id=?1 AND root_id IS NOT NULL",
+                [index],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(
+                populated, 2,
+                "source={source} resume={resume} index={index}: both pending openings must have persisted roots"
+            );
+        }
         drop(connection);
         if source == 43 && !resume {
             let restored = store.read(&key("steer", "main"), 1..=1).await.unwrap();
@@ -948,7 +959,15 @@ async fn notifications_preserve_original_close_boundaries_tails_and_task_identit
             for through in 1..=6 {
                 let scope = read_scope("pending-upgrade", through);
                 let query = pending(family);
+                store.record_query_statistics();
                 let actual = store.query(&scope, &query, Some(&page)).await.unwrap();
+                assert!(
+                    store
+                        .take_query_statistics()
+                        .iter()
+                        .any(|statement| statement.stage == "member_root"),
+                    "source={source} resume={resume} family={family} through={through}: pending reads must use the upgraded member index"
+                );
                 let expected = memory.query(&scope, &query, Some(&page)).await.unwrap();
                 assert_eq!(
                     serde_json::to_value(actual).unwrap(),
