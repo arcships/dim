@@ -63,7 +63,9 @@ model, or curated model list, name the upstream file when it differs from the pr
 or declare its bundled rows authoritative. `model-overrides.json` holds field patches per
 provider and model, re-applied after every sync. A patch merges key by key into the
 upstream row, so a `limit` patch keeps the output cap upstream states, and a patch that no
-longer matches a model fails the run instead of disappearing.
+longer matches a model fails the run instead of disappearing. Both tables are read by the
+sync alone: the binary embeds `default-catalog.json` and `reasoning-off-overrides.json`
+and reads neither table.
 
 The offline validation checks the tables against the catalog: every provider has a policy,
 no policy names a provider the catalog lacks, a `local` policy states a reason, every model
