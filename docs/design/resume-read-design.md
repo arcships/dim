@@ -2,6 +2,7 @@
 
 Status: Draft.
 Scope: #1320 的跨模块读取、业务恢复和客户端打开流程。
+读取清单与六组历史增长对照见[检查报告](appserver/resume-read-audit.md)。
 Issue: [#1320](https://github.com/arcships/dim/issues/1320)、[#1147](https://github.com/arcships/dim/issues/1147)。
 
 本文件规定本轮修改边界及模块关系，具体字段和算法由各 owner 文档唯一规定。目标是消除正常状态读取和客户端首屏对已处理历史的重算。InputQueue直接查询当前输入；Prompt保存有效引用与采用版本；ContextUsage保存已算出的数字。Goal恢复目标定义，未结束执行在内存中暂停，不恢复运行进度。不改模型请求构造、压缩质量或迁移内容。
@@ -108,7 +109,7 @@ attach -> 固定窗口 -> 显示首批内容并接受输入
 较早 -> 原范围下一页
 ~~~
 
-CLI/ACP 首开只显示第一张含可见消息的 64 位置页；空页最多四张。较早内容由用户请求，沿用 100 行/四页预算；保留上限仍为 300 身份。缺 turn/start 不改 done 的含义，不把整条分支读完。历史页、usage 和用户输入不能被同一个串行 await 相互阻塞。
+CLI/ACP/Web 首开按可显示事件的 kind 索引取有界窗口；首张、续读及显式较早读取的页尺寸由[显示读取合同](appserver/session-display-read.md)统一规定。较早内容由用户请求。缺 turn/start 不改 done 的含义，不把整条分支读完。历史页、usage 和用户输入不能被同一个串行 await 相互阻塞。
 
 [显示设计](appserver/session-display-read.md)规定 summary、实时协商、类型化 detail 和超限错误。首屏 replacement 传输为零；内联大事件的 SQLite 解析仍计费。详情一次读取/编码，不按字节 offset 反复重读。超出既有回复帧预算明确报错并保留导出路径。
 
