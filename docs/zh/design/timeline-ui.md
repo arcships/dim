@@ -128,7 +128,7 @@ Timeline 的点就是它的用户消息。Tab 从最新一条起逐条走；`/ti
 - `Enter` 打开操作列表，写明所选消息，列出跳转、编辑为新草稿、引用、创建分支、派生会话；派生选项说明切点在该消息之前。↑↓ 和 Enter 选择，数字 1–5 直接执行；原有 `e`、`q`、`b`、`f` 在两个列表都可用。Esc 返回消息列表，保留所选消息和列表位置，再按 Esc 关闭。scrollback 在 live 交互区显示，fullscreen 显示为 overlay，均不提交到历史。
 - 跳转会关闭面板。全屏选中这条消息，与 Tab 选中一样，之后可用选取的按键。scrollback 不能往上走：还没画出的消息从它开始作为一页更早历史画出；已经画出的给出提示，`/tui` 可直接跳到它。
 
-恢复会话时只画最新 100 条。全屏在 transcript 顶部放一行加载按钮（`↑ 130 earlier messages · Enter or click to load`）：点击，或用 Tab 走到它再按 `Enter`，就在上方画出前 100 条，并让原来最早的那条消息留在视图顶部。scrollback 没有这一行，更早的历史由 `/timeline` 跳转画出。它取代了 `/history`：后者把更早的消息接在最新消息之后翻页画出。
+恢复会话时只画最新 100 条。全屏在 transcript 顶部放一行加载按钮（`↑ 130 earlier messages · Enter or click to load`）。点击它（或用 Tab 走到它再按 `Enter`）、在画出的顶部按 PageUp、或输入 `/earlier`，都会在已画出的消息上方画出前 100 条，没有加载过的就向 daemon 读取，并让原来最早的那条消息留在视图顶部。scrollback 没有这一行，更早的历史由 `/timeline` 跳转画出。它取代了 `/history`：后者把更早的消息接在最新消息之后翻页画出。
 
 ### 4.7 `/branch <prompt>` 与侧面板
 

@@ -1415,7 +1415,8 @@ $ dimcode exec -p 'Explain this project' --json > run.jsonl
 退出码为 3。它不改变 `SessionConfig.interactive`。以非交互方式创建的
 Session 保留 Approval 现有的所有者侧策略（#98 D10）。`--permission` 选择包含文件范围和风险判定的旧策略；
 仍需审批的调用照样被拒绝（[无头执行](#无头执行)）。其他退出码保持原生 CLI 合同，包括回合失败为 2、
-中断为 130。传输失败不重试提交。重复的 `--image` 参数遵循无头附件合同：先文本，再按参数顺序放入
+中断为 130。运行的结局就是回合的结局：回合从失败步骤中续接成功，以及以 `output_limit` 为 reason 结算
+为已完成的回合，都退出 0，同时仍然打印该步骤的失败行。传输失败不重试提交。重复的 `--image` 参数遵循无头附件合同：先文本，再按参数顺序放入
 经过校验的原始图片字节，路径相对于调用进程。只有图片的调用是有效的。连接仍在时，提交错误保持
 "结果不确定"的诊断/退出路径，除非其 `error.data.appError` 是七种
 [保证在提交前拒绝](../../../crates/dim-app-server/README.md#session-submission-errors)之一：
