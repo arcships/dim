@@ -93,6 +93,8 @@ updates do not invalidate a press on the same stable header.
 
 Hover highlights only the actionable title, pressed feedback is stronger without
 moving its text, and a successful click retains a subtle position indication.
+Tool-title feedback uses normal text on a neutral gray background, with bold
+text for pressed and keyboard-focused titles instead of accent colors.
 Neither feedback nor new output changes expansion. A click requires release on
 the same still-valid target without a drag. Text selection, safe links and the
 explicit member-conversation entry keep separate actions; the member's tool

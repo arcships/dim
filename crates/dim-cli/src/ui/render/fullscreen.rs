@@ -980,37 +980,17 @@ impl FullScreen {
                                     && self.press.as_ref().is_some_and(|p| {
                                         p.target == target && self.hovered == target
                                     });
-                                if pressed || focused {
+                                if pressed
+                                    || focused
+                                    || target.is_some()
+                                        && (self.hovered == target || self.clicked == target)
+                                {
                                     header_feedback(
                                         &row,
                                         Paint {
-                                            fg: Some(&palette.on_accent),
-                                            bg: Some(&palette.accent),
-                                            bold: true,
-                                            ..Paint::default()
-                                        },
-                                    )
-                                } else if target.is_some() && self.hovered == target {
-                                    header_feedback(
-                                        &row,
-                                        Paint {
-                                            fg: Some(&palette.highlight),
-                                            bg: palette
-                                                .surface
-                                                .as_deref()
-                                                .or(palette.tool_hover.as_deref()),
-                                            ..Paint::default()
-                                        },
-                                    )
-                                } else if target.is_some() && self.clicked == target {
-                                    header_feedback(
-                                        &row,
-                                        Paint {
-                                            fg: Some(&palette.text_soft),
-                                            bg: palette
-                                                .surface
-                                                .as_deref()
-                                                .or(palette.tool_hover.as_deref()),
+                                            fg: Some(&palette.text),
+                                            bg: palette.tool_hover.as_deref(),
+                                            bold: pressed || focused,
                                             ..Paint::default()
                                         },
                                     )
@@ -1925,8 +1905,8 @@ mod tests {
             bytes.contains(&paint(
                 " child",
                 Paint {
-                    fg: Some(&palette.highlight),
-                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
+                    fg: Some(&palette.text),
+                    bg: palette.tool_hover.as_deref(),
                     ..Paint::default()
                 }
             )),
@@ -1950,8 +1930,8 @@ mod tests {
             bytes.contains(&paint(
                 " child",
                 Paint {
-                    fg: Some(&palette.on_accent),
-                    bg: Some(&palette.accent),
+                    fg: Some(&palette.text),
+                    bg: palette.tool_hover.as_deref(),
                     bold: true,
                     ..Paint::default()
                 }
@@ -1971,8 +1951,8 @@ mod tests {
             bytes.contains(&paint(
                 " child",
                 Paint {
-                    fg: Some(&palette.text_soft),
-                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
+                    fg: Some(&palette.text),
+                    bg: palette.tool_hover.as_deref(),
                     ..Paint::default()
                 }
             )),
