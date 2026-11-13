@@ -381,10 +381,15 @@ impl Loops {
 
     /// Records a loop whose first round is due now, so `/loop` starts through
     /// the delivery path rather than a plain user message (§12.2).
+    ///
+    /// Takes `shared.loops` for the record write and the live-loop flag
+    /// refresh, as `change` and the pass do, so the refresh can never store a
+    /// snapshot read before another holder's write.
     pub async fn start(&self, request: StartRequest) -> Result<Loop, SchedulerError> {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
+        let _hold = self.shared.loops.lock().await;
         let now = Utc::now();
         let cadence = match request.every_seconds {
             Some(seconds) => Cadence::Every {

@@ -786,3 +786,135 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
         "the deadline is the 600 seconds the next chose, got {delta}"
     );
 }
+
+/// A `start` that races a pass expiring the line's last live loop waits for it,
+/// so its record write and its live-loop refresh land after the pass settled:
+/// the flag stores the file no later write supersedes, and the new loop's round
+/// 1 goes out on the next pass instead of waiting for another mutation.
+///
+/// An expiry writes no input, so the pass is held at the input write of a
+/// second Session's due loop in the same snapshot: it has read the snapshot,
+/// holds the loop lock and has the expiry change uncommitted while it waits on
+/// the held store connection. That is the seam
+/// `a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline` uses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+    let other = create_session(&mut client, home.path(), &[], true).await;
+
+    let created: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": "old"}),
+        )
+        .await
+        .unwrap();
+    let old = created["loop"]["loopId"].as_str().unwrap().to_owned();
+    wait_for("the first loop to wait after round 1", || {
+        stored_loops(home.path())
+            .iter()
+            .any(|record| record["loop_id"] == json!(old) && record["state"] == json!("waiting"))
+    })
+    .await;
+
+    client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": other, "prompt": "other"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the second loop's round 1", || {
+        stored_loops(home.path())
+            .iter()
+            .any(|record| record["session_id"] == json!(other) && record["round"] == json!(2))
+    })
+    .await;
+
+    // The first loop is past its expiry, and the second is due again, so one
+    // pass both expires the first and reaches an input write for the second.
+    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    edit_loops(home.path(), |loops| {
+        for record in loops.iter_mut() {
+            if record["loop_id"] == json!(old) {
+                record["expires_at"] = json!(past);
+            }
+            if record["session_id"] == json!(other) {
+                record["state"] = json!("running");
+                record["next_at"] = json!(due);
+                record["delivering_round"] = Value::Null;
+            }
+        }
+    });
+
+    let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
+    lock.busy_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    // The pass has read the snapshot with the loop lock taken, marked the
+    // second loop's round delivering, and waits on the held connection with
+    // the expiry change still uncommitted.
+    wait_for("the pass to reach its input write", || {
+        stored_loops(home.path()).iter().any(|record| {
+            record["session_id"] == json!(other) && record["delivering_round"] == json!(2)
+        })
+    })
+    .await;
+
+    let id = client
+        .send(
+            "session.loop.start",
+            json!({"sessionId": session, "branchId": "main", "prompt": "new"}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), client.response(id))
+            .await
+            .is_err(),
+        "the start waits for the pass's loop lock"
+    );
+
+    lock.execute_batch("COMMIT").unwrap();
+    drop(lock);
+    let started: Value = client.response(id).await.unwrap();
+    let started = &started["loop"];
+    assert_eq!(started["state"], json!("running"), "{started}");
+    let new_id = started["loopId"].as_str().unwrap().to_owned();
+
+    let records = stored_loops(home.path());
+    assert!(
+        records
+            .iter()
+            .any(|record| record["loop_id"] == json!(old) && record["state"] == json!("expired")),
+        "the pass settled the expired loop: {records:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record["loop_id"] == json!(new_id)),
+        "the start stored its record after the settle: {records:?}"
+    );
+
+    // The refresh left the flag true, so the next pass delivers the new loop's
+    // round 1 rather than taking the early return.
+    let marker =
+        format!("<dim-scheduler kind=\"loop\" loop=\"{new_id}\" round=\"1\"></dim-scheduler>");
+    wait_for("the new loop's round 1", || {
+        stored_loops(home.path())
+            .iter()
+            .any(|record| record["loop_id"] == json!(new_id) && record["round"] == json!(2))
+    })
+    .await;
+    let rounds = loop_rounds(&history(&mut client, &session).await);
+    assert!(
+        rounds.iter().any(|event| marker_of(event) == marker),
+        "the next pass delivered the new loop's round 1: {rounds:?}"
+    );
+}
