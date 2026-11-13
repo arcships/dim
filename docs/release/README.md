@@ -72,6 +72,23 @@ The public host does not migrate or rewrite the account-owned `auth.json` when r
 
 Release cloning supplies its Git authentication header through process-local Git environment configuration, with shell tracing disabled. The credential is absent from Git arguments and is unset before checkout and build commands. Each release job runs on a fresh GitHub-hosted VM.
 
+## Plugin configuration type compatibility
+
+The `agentConfig.get()` data face returns the owner's configuration directly.
+The exported `AgentConfigReply` type is removed without a compatibility alias.
+Rust plugins use `AgentConfig`. TypeScript plugins replace imports of
+`AgentConfigReply` with
+`Awaited<ReturnType<Services['agentConfig']['get']>>`, importing `Services` from
+the same generated service declarations. The generator currently calls the data
+record `AgentConfig2` because `AgentConfig` names the service interface; the
+return-type expression avoids depending on that generated collision name.
+
+The JSON fields remain `name`, `systemPrompt` and
+`model: {providerId, modelId}`. Deserializing the Rust reply now uses
+`AgentConfig`'s existing rules, which accept unknown fields; consumers must not
+rely on the removed reply type's rejection of unknown fields. There is no
+App Server protocol, event or persistence-format change.
+
 ## File access
 
 Under `read-only` and `workspace-write`, a file tool read (`read`, `grep` or `glob`) whose
