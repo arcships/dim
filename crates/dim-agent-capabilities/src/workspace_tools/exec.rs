@@ -279,6 +279,10 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
 /// [`quote_only_marker`], which refuses any `&` outside quotes, and `&>` and
 /// `&>>` in an edition without that redirect.
 fn background_marker(script: &str, edition: ShellEdition) -> Option<BackgroundMarker> {
+    let kind = edition.kind();
+    if kind != ShellKind::Posix {
+        return None;
+    }
     readings(edition)
         .iter()
         .find_map(|reading| scan_marker(script, *reading))
@@ -337,8 +341,7 @@ fn readings(edition: ShellEdition) -> &'static [ShellReading] {
         ShellEdition::Dash => &[DASH],
         ShellEdition::Ksh => &[KSH],
         ShellEdition::Sh => &[BASH, DASH],
-        // Never read: the guard runs only when the edition is POSIX.
-        ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => &[BASH],
+        ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => &[],
     }
 }
 
@@ -2079,10 +2082,7 @@ pub(super) async fn execute(
         }
         Err(error) => return Ok(failed(error.reason, error.code)),
     };
-    let kind = shell.edition.kind();
-    if kind == ShellKind::Posix
-        && let Some(marker) = background_marker(&input.command, shell.edition)
-    {
+    if let Some(marker) = background_marker(&input.command, shell.edition) {
         let (line, column) = marker.position(&input.command);
         let token = marker.token;
         return Ok(failed(
