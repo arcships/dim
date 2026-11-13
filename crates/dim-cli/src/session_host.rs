@@ -1499,6 +1499,7 @@ impl Worker {
             Command::Rename(title) => self.rename(title).await,
             Command::Earlier => self.earlier(),
             Command::Goal(request) => self.goal(request).await,
+            Command::Loop(request) => self.loop_command(request).await,
             Command::ToggleWeb => {
                 let result: crate::Result<WebToggled> =
                     self.client.typed("web.toggle", json!({})).await;
@@ -2314,6 +2315,85 @@ impl Worker {
         match result {
             Ok(report) => self.report(report, false),
             Err(error) => self.report(format!("Goal: {error}"), true),
+        }
+    }
+
+    /// `/loop`: show the shown line's loops, start one, or stop one, and print
+    /// the owner's answer into the transcript. The pattern is `goal` above:
+    /// the command calls a session method and the report is one transcript
+    /// line.
+    async fn loop_command(&mut self, request: crate::loop_view::Request) {
+        if self.session_id.is_empty() {
+            self.report(format!("Loop: {NO_SESSION}"), true);
+            return;
+        }
+        if !crate::loop_command::available(&mut self.client, &self.session_id).await {
+            self.report(crate::loop_view::NOT_AVAILABLE.into(), true);
+            return;
+        }
+        let branch = self.focus.clone();
+        let result = async {
+            match request {
+                crate::loop_view::Request::Show => {
+                    let loops =
+                        crate::loop_command::list(&mut self.client, &self.session_id, &branch)
+                            .await?;
+                    Ok::<_, crate::Error>(crate::loop_view::report(&branch, &loops).join("\n"))
+                }
+                crate::loop_view::Request::Start {
+                    prompt,
+                    every_seconds,
+                } => {
+                    let created = self
+                        .client
+                        .rpc(
+                            "session.loop.start",
+                            crate::loop_command::start_request(
+                                &self.session_id,
+                                &branch,
+                                &prompt,
+                                every_seconds,
+                            ),
+                        )
+                        .await?;
+                    let id = created["loop"]["loopId"].as_str().unwrap_or_default();
+                    Ok(format!(
+                        "Loop {id} started on {branch} ({}).",
+                        crate::loop_view::cadence_text(every_seconds)
+                    ))
+                }
+                crate::loop_view::Request::Stop(loop_id) => {
+                    let loop_id = match loop_id {
+                        Some(id) => id,
+                        None => match crate::loop_command::only_live(
+                            &mut self.client,
+                            &self.session_id,
+                            &branch,
+                        )
+                        .await?
+                        {
+                            Some(id) => id,
+                            None => {
+                                return Ok(format!(
+                                    "No single live loop on {branch}; name one with /loop stop ID."
+                                ));
+                            }
+                        },
+                    };
+                    self.client
+                        .rpc(
+                            "session.loop.stop",
+                            json!({"sessionId": self.session_id, "loopId": loop_id}),
+                        )
+                        .await?;
+                    Ok(format!("Loop {loop_id} stopped."))
+                }
+            }
+        }
+        .await;
+        match result {
+            Ok(report) => self.report(report, false),
+            Err(error) => self.report(format!("Loop: {error}"), true),
         }
     }
 
