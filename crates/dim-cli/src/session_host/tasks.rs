@@ -17,10 +17,22 @@ pub(super) struct BranchHistory {
     inventory_index: usize,
     inventory_cursor: Option<serde_json::Value>,
     goal_stale: bool,
-    earlier: bool,
+    earlier: EarlierRead,
     pub running: Option<bool>,
     pub latest_reply: u64,
     pub seen_reply: u64,
+}
+
+/// The earlier read a branch is recorded as waiting for: none, one queued or
+/// in flight, or one that failed while the window still holds the older
+/// request it was asked for. Only `Reading` folds the page that lands as older
+/// history; `Failed` is there to be read again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum EarlierRead {
+    #[default]
+    None,
+    Reading,
+    Failed,
 }
 
 pub(super) struct HistoryRequest {
@@ -107,6 +119,7 @@ impl Worker {
             history.window_complete = false;
             history.inventory_index = 0;
             history.inventory_cursor = None;
+            history.earlier = EarlierRead::None;
             if let Some(request) = &mut self.task_history_request
                 && request.branch_id == branch_id
             {
@@ -194,6 +207,9 @@ impl Worker {
     pub(super) fn retry_task_history(&mut self) {
         for (id, history) in &mut self.task_history {
             if history.error.take().is_some() {
+                if history.earlier == EarlierRead::Failed {
+                    history.earlier = EarlierRead::Reading;
+                }
                 self.task_history_queue.push_back(id.clone());
             }
         }
@@ -207,14 +223,14 @@ impl Worker {
         let Some(history) = self.task_history.get_mut(&self.focus) else {
             return;
         };
-        if !history.done || history.earlier {
+        if !history.done || history.earlier == EarlierRead::Reading {
             return;
         }
         if history.window.before.is_none() {
             self.send(Update::Notice("Beginning of conversation".into()));
             return;
         }
-        history.earlier = true;
+        history.earlier = EarlierRead::Reading;
         history.window_complete = false;
         history.error = None;
         self.task_history_queue.push_back(self.focus.clone());
@@ -230,7 +246,7 @@ impl Worker {
         self.task_history
             .get(&self.focus)
             .map_or(Earlier::AtStart, |history| {
-                if history.earlier {
+                if history.earlier == EarlierRead::Reading {
                     Earlier::Reading
                 } else if history.window.before.is_some() {
                     Earlier::Unread
@@ -505,7 +521,9 @@ impl Worker {
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
-                history.earlier = false;
+                if history.earlier == EarlierRead::Reading {
+                    history.earlier = EarlierRead::Failed;
+                }
                 let fatal = request.branch_id == "main" && !history.done;
                 let report = crate::report::Captured::observed(
                     crate::report::Operation::SessionRead,
@@ -521,8 +539,8 @@ impl Worker {
                 let events = history.window.take();
                 let missing_prefix = history.window.before.is_some();
                 history.window_complete = true;
-                if history.earlier {
-                    history.earlier = false;
+                if history.earlier == EarlierRead::Reading {
+                    history.earlier = EarlierRead::None;
                     let mut older = Projection::for_branch(&request.branch_id);
                     for event in events {
                         older.replay(&request.branch_id, &event);
@@ -745,10 +763,61 @@ mod tests {
     use super::*;
     use crate::client::Message;
 
+    /// One `step/text` event, as the daemon sends it on the wire and in a page.
+    fn text(sequence: u64, request: &str, delta: &str) -> serde_json::Value {
+        json!({
+            "id": format!("text-{sequence}"), "sequence": sequence, "create_at": 2000,
+            "type": "step", "name": "text",
+            "data": {"turn_id": "t2", "request_id": request, "delta": delta}
+        })
+    }
+
+    /// The same event, decoded as the live stream decodes it.
+    fn event(sequence: u64, request: &str, delta: &str) -> Event {
+        serde_json::from_value(text(sequence, request, delta)).expect("a text event")
+    }
+
+    /// Answers the outstanding history read with the daemon's failure.
+    async fn fail(worker: &mut Worker, what: &str) {
+        let id = worker
+            .task_history_request
+            .as_ref()
+            .unwrap_or_else(|| panic!("{what} was sent"))
+            .id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Err(client::RpcError {
+                    code: -32603,
+                    message: "the daemon dropped the read".into(),
+                    data: None,
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Answers the outstanding history read with a page.
+    async fn answer(worker: &mut Worker, page: serde_json::Value) {
+        let id = worker
+            .task_history_request
+            .as_ref()
+            .expect("the read in flight")
+            .id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Ok(page),
+            })
+            .await
+            .unwrap();
+    }
+
     /// A branch whose earlier read failed reports `Unread` and reads again on
-    /// the next press. Without the failure arm clearing its flag, `earlier_view`
-    /// reports `Reading` with nothing in flight and `earlier` returns at its own
-    /// flag: PageUp, the load-more row and `/earlier` never read that line again.
+    /// the next press. A failure that kept the read recorded as in flight makes
+    /// `earlier_view` report `Reading` with nothing sent, and `earlier` returns
+    /// at its own state: PageUp, the load-more row and `/earlier` never read
+    /// that line again.
     #[tokio::test]
     async fn a_failed_earlier_read_returns_the_branch_to_unread_and_reads_again() {
         let (mut worker, _receiver, _sent) =
@@ -773,22 +842,7 @@ mod tests {
             "the earlier read is in flight"
         );
         worker.poll_task_history().await.unwrap();
-        let id = worker
-            .task_history_request
-            .as_ref()
-            .expect("the earlier read was sent")
-            .id;
-        worker
-            .message(Message::Response {
-                id,
-                result: Err(client::RpcError {
-                    code: -32603,
-                    message: "the daemon dropped the read".into(),
-                    data: None,
-                }),
-            })
-            .await
-            .unwrap();
+        fail(&mut worker, "the earlier read").await;
 
         assert_eq!(
             worker.earlier_view(),
@@ -796,8 +850,9 @@ mod tests {
             "a failed earlier read leaves the older history to read"
         );
         worker.earlier();
-        assert!(
+        assert_eq!(
             worker.task_history["main"].earlier,
+            EarlierRead::Reading,
             "the next press records another earlier read"
         );
         assert!(
@@ -806,11 +861,13 @@ mod tests {
         );
     }
 
-    /// A read that lands after a failed earlier read folds a first window.
-    /// A failure that kept its flag set would make the next page take the
-    /// older-page branch: prepended, and the line never read on.
+    /// A `/tasks` retry of a failed earlier read reads the same older request
+    /// the window still holds, and the rows it brings go ahead of the ones
+    /// already loaded. A retry that records no earlier read folds the page as a
+    /// first window instead: every event in it is at or below the line's
+    /// cutoff, so none of them reach the transcript.
     #[tokio::test]
-    async fn a_read_after_a_failed_earlier_read_folds_a_first_window() {
+    async fn a_retried_earlier_read_prepends_the_rows_it_reads() {
         let (mut worker, _receiver, _sent) =
             crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
         worker.session_id = "s1".into();
@@ -822,24 +879,14 @@ mod tests {
         {
             let history = worker.task_history.get_mut("b-7c").unwrap();
             history.done = true;
-            history.window.before = Some(7);
-            history.window.through = Some(9);
+            history.window.before = Some(200);
+            history.window.through = Some(300);
         }
+        worker.apply("b-7c", event(300, "r-loaded", "the answer loaded first"));
 
         worker.earlier();
         worker.poll_task_history().await.unwrap();
-        let id = worker.task_history_request.as_ref().expect("sent").id;
-        worker
-            .message(Message::Response {
-                id,
-                result: Err(client::RpcError {
-                    code: -32603,
-                    message: "the daemon dropped the read".into(),
-                    data: None,
-                }),
-            })
-            .await
-            .unwrap();
+        fail(&mut worker, "the earlier read").await;
 
         worker
             .command(crate::model::session::Command::TaskHistory {
@@ -848,21 +895,122 @@ mod tests {
             .await
             .unwrap();
         worker.poll_task_history().await.unwrap();
-        let id = worker.task_history_request.as_ref().expect("retried").id;
+        assert!(
+            worker.task_history_request.is_some(),
+            "the retried read is in flight"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].window.before,
+            Some(200),
+            "the retry is the older request the window still holds"
+        );
         worker.task_history_queue.clear();
+        let older: Vec<_> = (2..=101)
+            .map(|sequence| text(sequence, &format!("r-older-{sequence}"), "older "))
+            .collect();
+        answer(
+            &mut worker,
+            json!({"events": older, "through": 300, "nextBefore": 2, "nextAfter": 101}),
+        )
+        .await;
+
+        let rows = worker.lines["b-7c"].projection.rows();
+        assert_eq!(rows.len(), 101, "every row of the page joined the line");
+        assert_eq!(
+            rows[0].text, "older ",
+            "the page's first row is ahead of everything loaded"
+        );
+        assert_eq!(
+            rows[100].text, "the answer loaded first",
+            "the loaded rows follow the older page"
+        );
+        assert!(
+            !worker.task_history_queue.contains(&"b-7c".to_owned()),
+            "the page was an older page, not a first window"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "the window still starts after the event before the page"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].window.before,
+            Some(2),
+            "the window holds the older request the page ended at"
+        );
+    }
+
+    /// Opening a branch's line after its earlier read failed starts the line
+    /// over: the window that read was asked for is gone with the reset. A
+    /// failure left in place outlives the window it belonged to, and a retry
+    /// from the tasks panel then folds the line's first window as an older
+    /// page, which prepends rows below the cutoff and never reads it on.
+    #[tokio::test]
+    async fn a_line_opened_after_a_failed_earlier_read_records_no_read() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(7);
+            history.window.through = Some(9);
+            history.earlier = EarlierRead::Failed;
+        }
+
         worker
-            .message(Message::Response {
-                id,
-                result: Ok(json!({
-                    "events": [], "through": 9, "nextBefore": null, "nextAfter": 9
-                })),
-            })
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
             .await
             .unwrap();
 
+        assert_eq!(
+            worker.task_history["b-7c"].earlier,
+            EarlierRead::None,
+            "the line starts over, so nothing earlier is recorded against it"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "the line's window starts from nothing, so it reports its start"
+        );
+    }
+
+    /// A retried earlier read is an earlier read again: the line reports
+    /// `Reading` while it is in flight, and a press during it queues nothing.
+    #[tokio::test]
+    async fn a_tasks_retry_of_an_earlier_read_reports_reading() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.focus = "main".into();
+        worker.discover_branch("main");
+        {
+            let history = worker.task_history.get_mut("main").unwrap();
+            history.done = true;
+            history.window.before = Some(7);
+            history.window.through = Some(9);
+        }
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        fail(&mut worker, "the earlier read").await;
+
+        worker
+            .command(crate::model::session::Command::TaskHistory {
+                projection_id: worker.projection_id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the retried read is the earlier read the window still holds"
+        );
+        worker.task_history_queue.clear();
+        worker.earlier();
         assert!(
-            worker.task_history_queue.contains(&"b-7c".to_owned()),
-            "the read that landed is a first window, so the line is read on"
+            worker.task_history_queue.is_empty(),
+            "a press during the retried read queues nothing"
         );
     }
 }

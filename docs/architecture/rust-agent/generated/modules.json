@@ -4767,7 +4767,9 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
-        "json"
+        "format",
+        "json",
+        "panic"
       ]
     },
     {
@@ -39541,8 +39543,16 @@
       "from": "dim_cli::session_host::tasks::tests",
       "to": "dim_cli::session_host",
       "references": [
+        "path Worker",
         "path crate::session_host::TEST_FEATURES",
         "path crate::session_host::test_worker"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_cli::session_host::tasks",
+      "references": [
+        "path EarlierRead::Failed"
       ]
     },
     {
@@ -39552,6 +39562,13 @@
         "path Message::Response",
         "path client::RpcError",
         "use crate::client::Message"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_client::wire",
+      "references": [
+        "path Event"
       ]
     },
     {
