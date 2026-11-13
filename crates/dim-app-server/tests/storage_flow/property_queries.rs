@@ -2748,3 +2748,68 @@ async fn optional_physical_properties_keep_typed_boolean_semantics() {
     store.close().await.unwrap();
     db.close().await.unwrap();
 }
+
+/// A membership list on a physical column binds its members once per statement
+/// role, and a role compiled only to learn whether a physical form exists must
+/// not leave its parameters behind. A statement numbers every parameter it
+/// binds, so a surplus over the roles that reach the SQL is a leak.
+#[tokio::test]
+async fn a_discarded_physical_check_leaves_no_parameter_behind() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("properties", &SessionConfig::default())
+        .await
+        .unwrap();
+    let members = 996;
+    let values: Vec<Value> = (0..members)
+        .map(|index| json!(format!("probe/absent-{index}")))
+        .collect();
+    let mut records = Vec::new();
+    for sequence in 1..=3 {
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": "alpha"})).unwrap(),
+            ),
+        ));
+    }
+    append(&store, key("properties", "main"), records)
+        .await
+        .unwrap();
+    let mut query = fields(&["position.sequence"]);
+    query.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values,
+    });
+    // A row query binds the members twice, once in the physical list and once
+    // in the filter, plus four scope values, a session, a property path and the
+    // page limit. The count path needs only the physical list plus the same
+    // fixed values. A discarded check used to add two more copies to the row
+    // statement, which is the surplus this pins.
+    let mut count = query.clone();
+    count.select = QuerySelect::Count;
+    for (label, query, page, expected) in [
+        ("selection", query.clone(), Some(page(2)), 2 * members + 7),
+        ("count", count, None, members + 5),
+    ] {
+        store.record_query_statistics();
+        store.query(&scope(3), &query, page.as_ref()).await.unwrap();
+        let statements = store.take_query_statistics();
+        let statement = statements
+            .iter()
+            .find(|statement| {
+                statement.stage == label || (label == "count" && statement.stage == "scalar")
+            })
+            .unwrap_or_else(|| panic!("{label} prepares a statement"));
+        assert_eq!(
+            statement.parameters, expected,
+            "{label} binds {expected} parameters for {members} members"
+        );
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}

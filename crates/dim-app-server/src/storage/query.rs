@@ -21,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 pub struct QueryStatementStats {
     pub stage: &'static str,
     pub plan: Vec<String>,
+    /// Placeholders the statement declares. The compiler numbers every parameter
+    /// it binds, so this counts the roles that reached the SQL.
+    pub parameters: usize,
     pub full_scan_steps: i32,
     pub vm_steps: i32,
     pub sorts: i32,
@@ -77,6 +80,7 @@ pub(super) fn record_statement(
     statistics.push(QueryStatementStats {
         stage,
         plan,
+        parameters: parameters.len(),
         full_scan_steps: statement.get_status(StatementStatus::FullscanStep),
         vm_steps: statement.get_status(StatementStatus::VmStep),
         sorts: statement.get_status(StatementStatus::Sort),
@@ -724,6 +728,17 @@ impl<'a> Compiler<'a> {
 
     fn physical_filter(&mut self, filter: &QueryFilter, partial: bool) -> Option<String> {
         self.physical_filter_for(filter, partial, None)
+    }
+
+    /// Compiles a physical form only to learn whether one exists. Its result is
+    /// dropped, so the parameters it bound are dropped with it: a discarded
+    /// check leaves the binder exactly as it found it, both the vector and the
+    /// numbering of the parameters that follow.
+    fn physical_form_exists(&mut self, filter: &QueryFilter, partial: bool) -> bool {
+        let bound = self.parameters.len();
+        let form = self.physical_filter(filter, partial);
+        self.parameters.truncate(bound);
+        form.is_some()
     }
 
     fn physical_filter_for(
@@ -1708,7 +1723,7 @@ fn sources<'a>(
         || query
             .filter
             .as_ref()
-            .is_some_and(|filter| compiler.physical_filter(filter, false).is_none())
+            .is_some_and(|filter| !compiler.physical_form_exists(filter, false))
     {
         compiler.candidate_limit = None;
     }
@@ -2322,7 +2337,7 @@ pub(super) fn execute(
             || query
                 .filter
                 .as_ref()
-                .is_none_or(|filter| compiler.physical_filter(filter, false).is_some()))
+                .is_none_or(|filter| compiler.physical_form_exists(filter, false)))
     {
         let descending = match query.pick {
             Some(QueryPick::Last) => true,
@@ -2359,7 +2374,7 @@ pub(super) fn execute(
             .is_some_and(|values| values.len() == 1 && values[0].is_string())
         && equality_values(filter, "data.current.at.branch")
             .is_some_and(|values| values.len() == 1 && values[0].as_u64().is_some())
-        && compiler.physical_filter(filter, false).is_some()
+        && compiler.physical_form_exists(filter, false)
     {
         let descending = first.direction == TimelineQueryDirection::Descending;
         compiler.candidate_limit = Some((
