@@ -191,7 +191,9 @@ exec cwd=/repo-wt        -> Known root     -> Existing command approval
 - **Existing mechanisms:** Session grants 没有仓库身份和全局候选记录；Session-owned 输出的
   删除语义不适用于用户代码。两者均不能直接作为 worktree 记录使用。
 - **Needed:** SessionStore 拥有目录记录、原子去重关联写入和 Session 删除时的解除关联；
-  目录候选不因最后一条使用关联被删而消失。通过所有者的类型化操作使用，不直接读写表。
+  目录候选不因最后一条使用关联被删而消失。它把写暴露为进程数据面
+  `worktreeAssociations.associate {sessionId, repository, root, subtree}`，路径是 UTF-8
+  字符串；Rust 消费者调用同一个方法，不直接读写表。
 - **Ordering impact:** 关联写入不产生 Timeline 事实；与删除串行协调，已删除或正在删除的
   Session 不能被迟到写入重新关联。native 格式改变须由存储所有者作独立格式决定，遵守
   [存储兼容性契约](appserver/native-storage-format.md)，不在本文预占版本号。

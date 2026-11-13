@@ -547,6 +547,8 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 
 把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
 
+`scheduleJobs`、`wakeups` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
+
 ### A.3 管理方法
 
 命名空间 `schedule`，用 `managementMethods` 注册：其声明列出下面的方法(除 `list`、`history` 与 `watch` 外都是 `mutating`)；其 `call(MethodCall, cancelled, progress): async -> MethodReply` 分发它们。参数与结果是 JSON 对象；错误是带附录 C 业务代码的 `{code, message}`。Rpc 负责它们的 JSON-RPC 错误映射。`schedule.watch` 声明 `progress` 而不声明通知(§11.2)。
@@ -757,7 +759,7 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | --- | --- |
 | 注册到 `toolRegistry` 的工具 `schedule` | Session 部分经 `names.key()` 取得 `ToolRegistry`，并在 `apply` 中调用 `tools.register(ctx, ToolContribution {definition, handler})`，与 `dim-agent-questions` 相同 |
 | 注册到 `managementMethods` 的命名空间 `schedule` | 进程部分取得 `ManagementMethods` 并调用 `methods.register(ctx, "schedule", declarations, handler)`；Rpc 每次调用查找它，不持有对 Scheduler 的依赖 |
-| `scheduleJobs` | 用 `names::register::<ScheduleJobs>(catalog, None)` 注册的进程组名称；Session 部分用 `names.key()` 读取它，因此没有 wiring 部分或转发插件 |
+| `scheduleJobs`、`wakeups` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明两项依赖并直接调用；wire 投影仅在 bridge 边界发生 |
 | `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFileTransactions`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
 | 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |

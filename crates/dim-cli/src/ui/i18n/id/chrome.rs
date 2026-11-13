@@ -7,21 +7,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "Tidak ada pesan dalam antrean.",
         "Held · awaiting application" => "Ditahan · menunggu penerapan",
-        "Incorporating · awaiting model consumption" => {
-            "Sedang dimasukkan · menunggu pemrosesan oleh model"
-        }
         "Held" => "Ditahan",
-        "Incorporating" => "Sedang dimasukkan",
         "Unread" => "Belum dibaca",
-        "Unread · waiting for your next message" => {
-            "Belum dibaca · menunggu pesan Anda berikutnya"
-        }
-        "/queue view · awaiting model consumption" => {
-            "/queue lihat · menunggu pemrosesan oleh model"
-        }
-        "/queue view · waiting for your next message" => {
-            "/queue lihat · menunggu pesan Anda berikutnya"
-        }
         "Enter export · Esc cancel" => "Enter ekspor · Esc batal",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Pesan dengan lampiran tetap dalam antrean; gunakan /queue untuk steer atau menghapusnya"

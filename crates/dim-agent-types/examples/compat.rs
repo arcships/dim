@@ -139,6 +139,7 @@ fn native_events() -> Vec<AgentEvent> {
                 total_tokens: 47.0,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                reasoning_tokens: None,
                 cost: None,
                 currency: None,
             },

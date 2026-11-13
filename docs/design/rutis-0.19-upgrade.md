@@ -449,7 +449,7 @@ daemon root (LocalId dim-daemon)                 dimcode leaf root
       `sessionPermissions`, `settings`, `workflowFiles`;
     - `sessions`, whose methods `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and
       `delete` act on Sessions;
-    - the default plugins' `scheduleJobs` and `workflowRuns`.
+    - the enabled Scheduler's `scheduleJobs` and `wakeups`, and optional Workflow's `workflowRuns`.
   - **What the leaf could therefore do.** It could act on any Session, register management methods,
     and register Session parts whose copies run in the leaf.
   - **Why this is accepted.** The leaf is reached only through a private address that a local

@@ -84,7 +84,7 @@ impl DynPlugin for SessionLanguagePlugin {
 async fn read(tree: &TreeCommands) -> Result<Value, RpcError> {
     let language = cell(tree)?.language();
     let _guard = language.gate().await;
-    Ok(language_value(language.get()))
+    Ok(language_value(language.get().language))
 }
 
 /// `session.language.update`: writes the record, replaces the live cell and

@@ -21,6 +21,9 @@ use tokio_util::sync::CancellationToken;
 pub struct QueryStatementStats {
     pub stage: &'static str,
     pub plan: Vec<String>,
+    /// Placeholders the statement declares. The compiler numbers every parameter
+    /// it binds, so this counts the roles that reached the SQL.
+    pub parameters: usize,
     pub full_scan_steps: i32,
     pub vm_steps: i32,
     pub sorts: i32,
@@ -77,6 +80,7 @@ pub(super) fn record_statement(
     statistics.push(QueryStatementStats {
         stage,
         plan,
+        parameters: parameters.len(),
         full_scan_steps: statement.get_status(StatementStatus::FullscanStep),
         vm_steps: statement.get_status(StatementStatus::VmStep),
         sorts: statement.get_status(StatementStatus::Sort),
@@ -86,6 +90,41 @@ pub(super) fn record_statement(
     });
     Ok(())
 }
+
+/// Joins `parts` as a balanced binary tree, so the parser's depth grows with
+/// the logarithm of the count instead of the count.
+fn balanced(mut parts: Vec<String>, operator: &str) -> String {
+    if parts.is_empty() {
+        return "0".into();
+    }
+    while parts.len() > 1 {
+        let mut next = Vec::with_capacity(parts.len().div_ceil(2));
+        let mut iter = parts.into_iter();
+        while let Some(left) = iter.next() {
+            next.push(match iter.next() {
+                Some(right) => format!("({left}{operator}{right})"),
+                None => left,
+            });
+        }
+        parts = next;
+    }
+    format!("({})", parts.remove(0))
+}
+
+/// The set key a member binds, or `None` when it is not a scalar and so can
+/// never match.
+fn match_key(value: &Value) -> Option<Vec<u8>> {
+    let value = QueryValue::Value {
+        value: value.clone(),
+    };
+    matches!(value.scalar_kind(), Some(1..=4))
+        .then(|| value.scalar_key().ok())
+        .flatten()
+}
+
+/// The widest physical `IN` list bound one parameter per member. A longer list
+/// contributes no physical clause and the filter still decides the row.
+const PHYSICAL_MEMBERS: usize = 1000;
 
 fn property(text: Option<String>) -> rusqlite::Result<QueryValue> {
     text.map_or(Ok(QueryValue::Missing), |text| {
@@ -135,10 +174,10 @@ pub(super) fn register(connection: &Connection) -> Result<()> {
     connection
         .create_scalar_function("query_match_key", 1, flags, |ctx| {
             let value = property(ctx.get(0)?)?;
-            Ok(match value.scalar_kind() {
-                Some(1..=4) => Some(value.scalar_key().expect("a match key is scalar")),
-                _ => None,
-            })
+            matches!(value.scalar_kind(), Some(1..=4))
+                .then(|| value.scalar_key())
+                .transpose()
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
         })
         .map_err(error)?;
     connection
@@ -472,18 +511,16 @@ impl<'a> Compiler<'a> {
             }
             QueryFilter::In { value, values } => {
                 let value = self.operand(value, row, outer, element);
-                let comparisons: Vec<_> = values
+                let keys = values
                     .iter()
-                    .map(|candidate| {
-                        let candidate = self.bind(candidate.to_string());
-                        format!("query_compare({value},{candidate},0)")
-                    })
-                    .collect();
-                if comparisons.is_empty() {
-                    "0".into()
-                } else {
-                    format!("({})", comparisons.join(" OR "))
+                    .filter_map(match_key)
+                    .map(|key| self.bind(SqlValue::Blob(key)))
+                    .collect::<Vec<_>>();
+                if keys.is_empty() {
+                    return "0".into();
                 }
+                let compare = format!("query_match_key({value}) IN ({})", keys.join(","));
+                format!("ifnull({compare},0)")
             }
             QueryFilter::Present { value } => {
                 format!("({} IS NOT NULL)", self.operand(value, row, outer, element))
@@ -515,7 +552,7 @@ impl<'a> Compiler<'a> {
                     .iter()
                     .map(|f| self.filter(f, row, outer, element))
                     .collect();
-                format!("({})", conditions.join(if and { " AND " } else { " OR " }))
+                balanced(conditions, if and { " AND " } else { " OR " })
             }
             QueryFilter::Not { condition } => {
                 format!("NOT ({})", self.filter(condition, row, outer, element))
@@ -724,6 +761,17 @@ impl<'a> Compiler<'a> {
 
     fn physical_filter(&mut self, filter: &QueryFilter, partial: bool) -> Option<String> {
         self.physical_filter_for(filter, partial, None)
+    }
+
+    /// Compiles a physical form only to learn whether one exists. Its result is
+    /// dropped, so the parameters it bound are dropped with it: a discarded
+    /// check leaves the binder exactly as it found it, both the vector and the
+    /// numbering of the parameters that follow.
+    fn physical_form_exists(&mut self, filter: &QueryFilter, partial: bool) -> bool {
+        let bound = self.parameters.len();
+        let form = self.physical_filter(filter, partial);
+        self.parameters.truncate(bound);
+        form.is_some()
     }
 
     fn physical_filter_for(
@@ -942,6 +990,9 @@ impl<'a> Compiler<'a> {
                     return Some("e.kind='input/message'".into());
                 }
                 if path == "id" && partial {
+                    if values.len() > PHYSICAL_MEMBERS {
+                        return None;
+                    }
                     let ids = values
                         .iter()
                         .filter_map(|value| value.as_str().map(|value| self.bind(value.to_owned())))
@@ -980,6 +1031,9 @@ impl<'a> Compiler<'a> {
                     return None;
                 }
                 let (column, boolean) = column(path)?;
+                if values.len() > PHYSICAL_MEMBERS {
+                    return None;
+                }
                 let values = values
                     .iter()
                     .filter_map(|value| match (boolean, value) {
@@ -1025,7 +1079,7 @@ impl<'a> Compiler<'a> {
                 Some(if clauses.is_empty() {
                     "1".into()
                 } else {
-                    format!("({})", clauses.join(" AND "))
+                    balanced(clauses, " AND ")
                 })
             }
             QueryFilter::Or { conditions } => {
@@ -1036,7 +1090,7 @@ impl<'a> Compiler<'a> {
                 Some(if clauses.is_empty() {
                     "0".into()
                 } else {
-                    format!("({})", clauses.join(" OR "))
+                    balanced(clauses, " OR ")
                 })
             }
             QueryFilter::Not { condition } => self
@@ -1708,7 +1762,7 @@ fn sources<'a>(
         || query
             .filter
             .as_ref()
-            .is_some_and(|filter| compiler.physical_filter(filter, false).is_none())
+            .is_some_and(|filter| !compiler.physical_form_exists(filter, false))
     {
         compiler.candidate_limit = None;
     }
@@ -2322,7 +2376,7 @@ pub(super) fn execute(
             || query
                 .filter
                 .as_ref()
-                .is_none_or(|filter| compiler.physical_filter(filter, false).is_some()))
+                .is_none_or(|filter| compiler.physical_form_exists(filter, false)))
     {
         let descending = match query.pick {
             Some(QueryPick::Last) => true,
@@ -2359,7 +2413,7 @@ pub(super) fn execute(
             .is_some_and(|values| values.len() == 1 && values[0].is_string())
         && equality_values(filter, "data.current.at.branch")
             .is_some_and(|values| values.len() == 1 && values[0].as_u64().is_some())
-        && compiler.physical_filter(filter, false).is_some()
+        && compiler.physical_form_exists(filter, false)
     {
         let descending = first.direction == TimelineQueryDirection::Descending;
         compiler.candidate_limit = Some((
