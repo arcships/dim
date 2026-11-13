@@ -5218,6 +5218,95 @@ fn runtime_calls(action: &RuntimeAction) -> Vec<(&'static str, serde_json::Value
     }
 }
 
+/// The methods every test worker's daemon advertises: enough for `hello`, and
+/// a bounded window read.
+#[cfg(all(test, unix))]
+const TEST_FEATURES: [&str; 3] = [
+    "session.create",
+    "session.history",
+    "session.history.latestTurn",
+];
+
+/// A worker on a daemon that advertises `features` and answers nothing: the
+/// test supplies each reply itself, through `Worker::message`. Every request
+/// the worker sends is recorded, in order, for the tests that assert on one.
+#[cfg(all(test, unix))]
+async fn test_worker(
+    features: &[&str],
+) -> (
+    Worker,
+    mpsc::Receiver<Update>,
+    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    use rutis::host::CtxHost;
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let home = tempfile::tempdir().unwrap();
+    let endpoint = home.path().join("daemon.sock");
+    let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+    std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let options =
+        Options::parse(["--home".into(), home.path().to_str().unwrap().to_owned()].into_iter())
+            .unwrap();
+    let advertised: Vec<String> = features
+        .iter()
+        .map(|feature| (*feature).to_owned())
+        .collect();
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = std::sync::Arc::clone(&sent);
+    tokio::spawn(async move {
+        let _home = home;
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let (reader, mut writer) = stream.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+                return;
+            };
+            if request["method"] != "hello" {
+                recorded.lock().unwrap().push(request);
+                continue;
+            }
+            let reply = json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                "instanceId":"earlier-test","serverVersion":"test","protocolVersion":4,
+                "features":advertised,"daemonProfile":{"kind":"product"}
+            }});
+            if writer
+                .write_all(format!("{reply}\n").as_bytes())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let client = Client::connect(&dim_client::ConnectionConfig {
+        endpoint,
+        server: dim_client::Server {
+            program: std::env::current_exe().unwrap(),
+            embedded: false,
+        },
+        profile: None,
+        client_kind: "cli",
+        client_name: "dim-cli-test",
+        protocol_version: 4,
+    })
+    .await
+    .unwrap();
+    let (updates, receiver) = mpsc::channel();
+    let worker = Worker::new(
+        options,
+        client,
+        updates,
+        rutis::Ctx::root().unwrap(),
+        tokio::sync::oneshot::channel().0,
+    );
+    (worker, receiver, sent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
