@@ -160,7 +160,6 @@ struct Prompt {
     cancel_uncertain: bool,
     consumed: HashMap<String, String>,
     ended: HashMap<String, TurnOutcome>,
-    max_tokens: HashSet<String>,
     deleted: HashSet<String>,
 }
 impl Prompt {
@@ -174,34 +173,24 @@ impl Prompt {
         self.consumed.clear();
         let outcome = self.turn.as_ref().and_then(|turn| self.ended.remove(turn));
         self.ended.clear();
-        self.max_tokens
-            .retain(|turn| Some(turn) == self.turn.as_ref());
         if deleted {
             Some(Ok(json!({"stopReason":"cancelled"})))
         } else {
-            let max_tokens = self
-                .turn
-                .as_ref()
-                .is_some_and(|turn| self.max_tokens.contains(turn));
-            outcome.map(|outcome| prompt_outcome(self.cancelled, max_tokens, &outcome))
+            outcome.map(|outcome| prompt_outcome(self.cancelled, &outcome))
         }
     }
 }
-fn prompt_outcome(
-    cancelled: bool,
-    max_tokens: bool,
-    outcome: &TurnOutcome,
-) -> Result<Value, Error> {
+fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<Value, Error> {
     if cancelled {
         return Ok(json!({"stopReason":"cancelled"}));
     }
-    // An output-limit stop ends its turn Completed, so the stop reason is read
-    // from the turn's own output-limit fact rather than from its outcome: a
-    // client that asked for a stop reason still gets the one it must act on.
-    if max_tokens {
-        return Ok(json!({"stopReason":"max_tokens"}));
-    }
+    // The turn's own end decides: an output-limit stop completes with that
+    // reason, and a turn whose earlier step hit the limit but then continued
+    // to a normal end did not stop at its limit.
     match outcome {
+        TurnOutcome::Completed { reason } if reason == "output_limit" => {
+            Ok(json!({"stopReason":"max_tokens"}))
+        }
         TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
         TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
         TurnOutcome::Failed { error } => {
@@ -817,7 +806,6 @@ impl Gateway {
                     cancel_uncertain: false,
                     consumed: HashMap::new(),
                     ended: HashMap::new(),
-                    max_tokens: HashSet::new(),
                     deleted: HashSet::new(),
                 });
                 let mcp = self.mcp.clone();
@@ -2220,30 +2208,8 @@ impl Gateway {
                 EventContent::InputDeleted(data) if prompt.input.is_none() => {
                     prompt.deleted.insert(data.input_id.clone());
                 }
-                EventContent::ModelEnd(data)
-                    if prompt.input.is_none() || prompt.turn.as_deref() == Some(&data.turn_id) =>
-                {
-                    let output_limit = match &data.outcome {
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            failure: Some(failure),
-                            ..
-                        } => failure.kind == dim_agent_types::ModelFailureKind::OutputLimit,
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            presentation: Some(presentation),
-                            ..
-                        } => presentation.reason == "max_tokens",
-                        _ => false,
-                    };
-                    if output_limit {
-                        prompt.max_tokens.insert(data.turn_id.clone());
-                    }
-                }
                 EventContent::TurnEnd(data) if prompt.turn.as_deref() == Some(&data.turn_id) => {
-                    finish = Some(prompt_outcome(
-                        prompt.cancelled,
-                        prompt.max_tokens.contains(&data.turn_id),
-                        &data.outcome,
-                    ));
+                    finish = Some(prompt_outcome(prompt.cancelled, &data.outcome));
                 }
                 EventContent::TurnEnd(data) if prompt.input.is_none() => {
                     prompt
