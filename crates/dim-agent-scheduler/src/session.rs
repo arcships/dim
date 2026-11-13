@@ -46,7 +46,7 @@ const LOOP_UNAVAILABLE: &str = "loop is available only in interactive leader Ses
 const LOOP_CANCELLED_BEFORE_HANDOVER: &str = "loop: cancelled before handover";
 /// The `loop` tool's declaration (design §12.4). The description sentences
 /// that say when to continue and when to stop are policy text.
-const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop with delay_seconds until its first round is due (default 300).\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days or when it reaches its round limit; a loop whose Session or branch is gone stops.";
+const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop with delay_seconds until its first round is due (default 300).\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
 
 fn declaration(description: &str) -> ToolDefinition {
     let mut tool = definition(
@@ -386,7 +386,6 @@ fn wire_loop(record: &loops::Loop) -> Value {
         "branchId": record.branch_id,
         "state": record.state.name(),
         "round": record.round,
-        "maxRounds": record.max_rounds,
         "nextAt": record.next_at,
         "lastRoundAt": record.last_round_at,
         "expiresAt": record.expires_at,

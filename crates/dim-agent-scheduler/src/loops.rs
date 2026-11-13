@@ -26,8 +26,6 @@ pub const LOOPS_FILE: &str = "scheduler/loops.json";
 const FORMAT_VERSION: u32 = 1;
 /// At most this many live loops per Session (§12.5).
 pub const MAX_LOOPS_PER_SESSION: usize = 8;
-/// `max_rounds` when a start names none.
-pub const DEFAULT_MAX_ROUNDS: u32 = 200;
 /// A fixed cadence: at least a minute, at most seven days (design 12.2).
 pub const MIN_EVERY_SECONDS: u64 = 60;
 pub const MAX_EVERY_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -49,8 +47,6 @@ pub enum LoopState {
     Waiting,
     /// The user or the model stopped it, or its target is gone.
     Stopped,
-    /// `max_rounds` was reached.
-    Completed,
     /// `expires_at` passed.
     Expired,
 }
@@ -62,14 +58,13 @@ impl LoopState {
             Self::Running => "running",
             Self::Waiting => "waiting",
             Self::Stopped => "stopped",
-            Self::Completed => "completed",
             Self::Expired => "expired",
         }
     }
 
     /// A terminal state is never delivered again and carries `settled_at`.
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Stopped | Self::Completed | Self::Expired)
+        matches!(self, Self::Stopped | Self::Expired)
     }
 
     /// A state that may still deliver a round.
@@ -157,7 +152,6 @@ pub struct Loop {
     /// effect and cleared once the delivery settles (A.5, §12.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivering_round: Option<u64>,
-    pub max_rounds: u32,
     pub expires_at: String,
     pub created_at: String,
     /// The input id of the last delivered round, while it may still be
@@ -219,8 +213,8 @@ impl Loop {
         {
             return Err(format!("loop {} runs without a next_at", self.loop_id));
         }
-        if self.round == 0 || self.max_rounds == 0 {
-            return Err(format!("loop {} has a zero bound", self.loop_id));
+        if self.round == 0 {
+            return Err(format!("loop {} has a zero round", self.loop_id));
         }
         if let Cadence::Every {
             every_seconds,
@@ -410,7 +404,6 @@ impl Loops {
             next_at: Some(stamp(now)),
             round: 1,
             delivering_round: None,
-            max_rounds: DEFAULT_MAX_ROUNDS,
             expires_at: stamp(now + LIFETIME),
             created_at: stamp(now),
             last_round_at: None,
@@ -602,13 +595,8 @@ impl Change {
     /// round is still pending (design 12.2, 12.3).
     fn delivered(record: &Loop, round: u64, input_id: Option<String>, now: DateTime<Utc>) -> Self {
         let done = round.saturating_add(1);
-        let finished = done > u64::from(record.max_rounds);
-        let next_at = (!finished)
-            .then(|| record.cadence.next_window_at(now))
-            .flatten();
-        let state = if finished {
-            LoopState::Completed
-        } else if next_at.is_some() {
+        let next_at = record.cadence.next_window_at(now);
+        let state = if next_at.is_some() {
             LoopState::Running
         } else {
             LoopState::Waiting

@@ -6,7 +6,7 @@ Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-
 
 **Run reporting.** Scheduler owns its delivery history; `schedule.history` is the durable read path. A run's outcome is its record. Scheduler writes no report input to any Session, and no notification path is required (A.6).
 
-A loop is a second record kind beside the jobs and the wakeups (§12): a session-scoped rhythm whose rounds are ordinary queued inputs, bounded to 200 rounds and seven days.
+A loop is a second record kind beside the jobs and the wakeups (§12): a session-scoped rhythm whose rounds are ordinary queued inputs, bounded to seven days.
 
 Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `sessions.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
 
@@ -551,14 +551,14 @@ Loops live in `scheduler/loops.json`: one inner v1 JSON document inside the host
 | `session_id`, `branch_id` | The target; a record never changes them |
 | `prompt` | The text each round delivers (non-empty, at most 32 KiB as a job prompt) |
 | `cadence` | `self_paced`, or `every_seconds` rounded up to whole minutes with its `anchor` |
-| `state` | `running`, `waiting`, `stopped`, `completed` or `expired` |
+| `state` | `running`, `waiting`, `stopped` or `expired` |
 | `next_at?` | The next due round; absent while `waiting` and after a terminal state |
 | `round` | The round the next delivery carries, 1-based |
 | `delivering_round?` | The round whose input may be unsettled, persisted before the write |
-| `max_rounds`, `expires_at` | The bounds: 200 rounds and creation + 7 days unless named |
+| `expires_at` | The bound: creation + 7 days |
 | `created_at`, `last_round_at?`, `stopped_reason?`, `settled_at?` | Canonical UTC timestamps; `stopped_reason` names the code when a target is gone |
 
-`running` is a loop with a round due or outstanding; `waiting` is a self-paced loop whose last round named no following one. Only `stopped`, `completed` and `expired` are terminal, and only they carry `settled_at`. A terminal record is removed once seven days have passed since it settled.
+`running` is a loop with a round due or outstanding; `waiting` is a self-paced loop whose last round named no following one. Only `stopped` and `expired` are terminal, and only they carry `settled_at`. A terminal record is removed once seven days have passed since it settled.
 
 ### 12.2 A round is a delivery
 
@@ -585,7 +585,6 @@ A fixed cadence needs no such rule: its window is in the record, and a busy bran
 | A round's input was published | `round` advanced, nothing outstanding | The branch accepted the round once |
 | A self-paced round named no following one | `waiting` | `next` resumes it |
 | `stop`, from the tool or a client | `stopped` | A second stop reports the settled record and writes nothing |
-| `max_rounds` reached | `completed` | No further round is delivered |
 | `expires_at` passed | `expired` | Nothing is replayed |
 | The target is gone (`session_closed`, `branch_missing`, `branch_ended`) | `stopped` with `stopped_reason` | The write failed; the loop needs a new target |
 | A round's turn failed | unchanged | The loop is time, not a judge of the round's work: the next round arrives and the model decides whether to stop |

@@ -147,7 +147,7 @@ pub(crate) async fn only_live(
     let live: Vec<loop_view::Loop> = list(client, session_id, branch_id)
         .await?
         .into_iter()
-        .filter(|record| !matches!(record.state.as_str(), "stopped" | "completed" | "expired"))
+        .filter(|record| !matches!(record.state.as_str(), "stopped" | "expired"))
         .collect();
     Ok((live.len() == 1).then(|| live[0].loop_id.clone()))
 }

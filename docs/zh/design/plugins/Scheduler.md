@@ -513,14 +513,14 @@ Loop 存在 `scheduler/loops.json`：内层 v1 JSON 文档放在宿主的 `{vers
 | `session_id`, `branch_id` | 目标；记录从不改变它们 |
 | `prompt` | 每轮投递的文本（非空，至多 32 KiB，同 job prompt） |
 | `cadence` | `self_paced`，或向上取整到整分钟的 `every_seconds` 及其 `anchor` |
-| `state` | `running`、`waiting`、`stopped`、`completed` 或 `expired` |
+| `state` | `running`、`waiting`、`stopped` 或 `expired` |
 | `next_at?` | 下一轮的到期时刻；`waiting` 与终态时缺失 |
 | `round` | 下一次投递携带的轮次，从 1 开始 |
 | `delivering_round?` | 输入可能尚未结算的那一轮，写外部效果之前先持久化 |
-| `max_rounds`, `expires_at` | 边界：未指定时为 200 轮与创建 + 7 天 |
+| `expires_at` | 边界：创建 + 7 天 |
 | `created_at`, `last_round_at?`, `stopped_reason?`, `settled_at?` | 规范 UTC 时刻；目标消失时 `stopped_reason` 写入错误码 |
 
-`running` 是有轮次到期或未结算的 loop；`waiting` 是上一轮没有安排下一轮的自定节奏 loop。只有 `stopped`、`completed` 与 `expired` 是终态，也只有它们带 `settled_at`。终态记录在结算满七天后被删除。
+`running` 是有轮次到期或未结算的 loop；`waiting` 是上一轮没有安排下一轮的自定节奏 loop。只有 `stopped` 与 `expired` 是终态，也只有它们带 `settled_at`。终态记录在结算满七天后被删除。
 
 ### 12.2 每一轮都是一次投递
 
@@ -547,7 +547,6 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | 一轮的输入已发布 | `round` 前进，无未结算项 | 分支接受了这一轮一次 |
 | 自定节奏的一轮没有安排下一轮 | `waiting` | `next` 恢复它 |
 | `stop`，来自工具或客户端 | `stopped` | 第二次 stop 报送已结算记录且不写入 |
-| 达到 `max_rounds` | `completed` | 不再投递 |
 | 过了 `expires_at` | `expired` | 不重放 |
 | 目标消失（`session_closed`、`branch_missing`、`branch_ended`） | `stopped` 并带 `stopped_reason` | 写入失败；loop 需要新目标 |
 | 一轮的 turn 失败 | 不变 | loop 是时间安排，不是这一轮工作成果的裁判：下一轮照常到达，由模型决定是否停止 |
