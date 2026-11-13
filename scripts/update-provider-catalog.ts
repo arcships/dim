@@ -101,9 +101,12 @@ const POLICY_FIELDS = [
 ]
 
 async function main() {
-  const [command, providerId, ...extra] = process.argv.slice(2)
+  const args = process.argv.slice(2)
+  const full = args.includes("--full")
+  const rest = args.filter((argument) => argument !== "--full")
+  const [command, providerId, ...extra] = rest
   if (extra.length || (command !== undefined && command !== "--sync")) {
-    throw new Error("Usage: node scripts/update-provider-catalog.ts [--sync [provider-id]]")
+    throw new Error("Usage: node scripts/update-provider-catalog.ts [--sync [provider-id]] [--full]")
   }
 
   const previous = await readFile(catalogOutput, "utf8")
@@ -148,7 +151,7 @@ async function main() {
   }
   const candidate = { ...catalog, updatedAt: new Date().toISOString(), providers }
   validateCatalog(candidate)
-  console.log(summarize(catalog.providers, providers, policies, selected, notes, report))
+  console.log(summarize(catalog.providers, providers, policies, selected, notes, report, full))
   await writeCatalog(previous, candidate)
   console.log(`Updated catalog: ${requested.join(", ")}`)
 }
@@ -324,12 +327,16 @@ const SUMMARY_FIELDS = [
 ]
 
 /// What a reviewer reads instead of the catalog diff. The changes a reviewer
-/// must judge come first: the model counts, the curated capability lines, and
-/// then every other changed leaf. Then every override with upstream's own value
-/// beside it, and the local providers last, since nothing there changed. A
-/// provider counts as unchanged only when its whole entry is equal, so a change
-/// outside the curated fields cannot hide in the count.
-function summarize(before, after, policies, synced, notes, report) {
+/// must judge come first: the model counts, the curated capability lines, the
+/// read paths with both values, and then the unread paths that moved one or
+/// two models. An unread path that moved more models than `FOLD_THRESHOLD` is
+/// one line with its count, since a value nothing reads only needs to be
+/// visible, not compared. `--full` prints every value. Every override follows
+/// with upstream's own value beside it, and the local providers come last,
+/// since nothing there changed. A provider counts as unchanged only when its
+/// whole entry is equal, so a change outside the curated fields cannot hide in
+/// the count.
+function summarize(before, after, policies, synced, notes, report, full) {
   const changed = []
   let changedProviders = 0
   for (const provider of after) {
@@ -364,7 +371,7 @@ function summarize(before, after, policies, synced, notes, report) {
     if (added.length > 0) changed.push(`  + ${listPreview(added)}`)
     if (removed.length > 0) changed.push(`  - ${listPreview(removed)}`)
     changed.push(...details)
-    for (const line of leafLines(old, provider, oldModels, newModels)) changed.push(line)
+    for (const line of leafLines(old, provider, oldModels, newModels, full)) changed.push(line)
   }
   const locals = Object.entries(policies).filter(([, policy]) => policy.source === "local")
   const head = [`Synced ${synced.size} providers (${synced.size - changedProviders} unchanged, ${changedProviders} changed)`]
@@ -373,18 +380,35 @@ function summarize(before, after, policies, synced, notes, report) {
   return [...head, "", ...changed, "", ...report, "", ...tail].join("\n")
 }
 
+/// The unread paths a sync folds into a count line. A path that moved on more
+/// models than this prints once, since no reader compares its values.
+const FOLD_THRESHOLD = 3
+
 /// Every leaf the curated lines above did not print, so the summary carries a
 /// change wherever it happens. A model only in the new or the old entry is
 /// already named by its `+` or `-` line, and its entry is not walked.
-function leafLines(before, after, oldModels, newModels) {
+function leafLines(before, after, oldModels, newModels, full) {
   const lines = []
   for (const leaf of changedLeaves(entryWithoutModels(before), entryWithoutModels(after), PROVIDER_REPORTED_LEAVES)) {
     lines.push(`  ~ ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`)
   }
+  const folded = new Map()
   for (const id of [...newModels.keys()].filter((modelId) => oldModels.has(modelId)).sort()) {
     for (const leaf of changedLeaves(oldModels.get(id), newModels.get(id), MODEL_REPORTED_LEAVES)) {
-      lines.push(`  ~ ${pad(id)} ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`)
+      const line = `  ~ ${pad(id)} ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`
+      if (full || isReadPath(leaf.path)) {
+        lines.push(line)
+        continue
+      }
+      const entry = folded.get(leaf.path) ?? { count: 0, lines: [] }
+      entry.count += 1
+      entry.lines.push(line)
+      folded.set(leaf.path, entry)
     }
+  }
+  for (const [path, entry] of [...folded].sort(([a], [b]) => a.localeCompare(b))) {
+    if (entry.count > FOLD_THRESHOLD) lines.push(`  ~ * ${path} changed on ${entry.count} models`)
+    else lines.push(...entry.lines)
   }
   return lines
 }
@@ -400,6 +424,46 @@ const MODEL_REPORTED_LEAVES = new Set([
 ])
 
 const PROVIDER_REPORTED_LEAVES = new Set(["metadata.defaultModelId", "metadata.raw.defaultModelId"])
+
+/// Every catalog path a Rust or `web/src` reader dereferences, so a change to
+/// one prints with both values. A path nothing reads only has to be visible,
+/// so it folds into a count once it moves more than `FOLD_THRESHOLD` models.
+/// The readers are listed in the pull request, not here: a reader moving is a
+/// change to this table, and the reason belongs where a reviewer reads it.
+const READ_PATHS = [
+  "modelId",
+  "displayName",
+  "status",
+  "modelGuidePrompt",
+  "capabilities",
+  "metadata.description",
+  "metadata.releaseDate",
+  "metadata.pricing",
+  "metadata.rateLimit",
+  "metadata.reasoning",
+  "metadata.serviceTier",
+  "metadata.capabilityOverrideFields",
+  "metadata.raw.type",
+  "metadata.raw.reasoning_options",
+  "metadata.raw.extra_capabilities",
+  "metadata.raw.serviceTier",
+  "metadata.raw.service_tier",
+  "metadata.raw.experimental",
+  "metadata.raw.pricing",
+  "metadata.raw.limit",
+  "metadata.raw.modalities",
+  "metadata.raw.modalityCapabilities",
+  "metadata.raw.modality_capabilities",
+  "metadata.raw.typeHints",
+  "metadata.raw.type_hints",
+  "metadata.raw.imageGeneration",
+  "metadata.raw.realtime",
+  "metadata.raw.canonical_model_id",
+]
+
+function isReadPath(path) {
+  return READ_PATHS.some((read) => path === read || path.startsWith(`${read}.`))
+}
 
 function entryWithoutModels(provider) {
   const entry = { ...provider }

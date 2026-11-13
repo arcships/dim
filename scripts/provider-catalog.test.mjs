@@ -553,6 +553,75 @@ test("a canonical id the upstream replaces is written and both values are printe
   assert.equal(updated.metadata.raw.canonical_model_id, replacement);
 });
 
+test("an unread leaf changed on five models is one count line", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const google = previous.providers.find((provider) => provider.providerId === "google");
+  const touched = google.models.slice(0, 5).map((model) => model.modelId);
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models.map((model) => touched.includes(model.modelId)
+      ? { ...model.metadata.raw, last_updated: "1999-01-01" }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "google"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /~ \* metadata\.raw\.last_updated changed on 5 models/);
+  for (const id of touched) {
+    assert.doesNotMatch(summary, new RegExp(`~ ${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +metadata\\.raw\\.last_updated`),
+      `${id} must be folded into the count line, not printed on its own`);
+  }
+});
+
+test("--full prints a value line for every one of the five", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const google = previous.providers.find((provider) => provider.providerId === "google");
+  const touched = google.models.slice(0, 5).map((model) => model.modelId);
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models.map((model) => touched.includes(model.modelId)
+      ? { ...model.metadata.raw, last_updated: "1999-01-01" }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "google", "--full"], { cwd, env, encoding: "utf8" });
+  assert.doesNotMatch(summary, /changed on 5 models/);
+  assert.equal(summary.split("\n").filter((line) => line.includes("metadata.raw.last_updated")).length, 5);
+  assert.match(summary, /metadata\.raw\.last_updated "[0-9-]+" -> "1999-01-01"/);
+});
+
+test("a read path changed on five models keeps five value lines", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const google = previous.providers.find((provider) => provider.providerId === "google");
+  const touched = google.models.slice(0, 5);
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models.map((model) => touched.includes(model)
+      ? { ...model.metadata.raw, canonical_model_id: `google/rewritten-${model.modelId}` }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "google"], { cwd, env, encoding: "utf8" });
+  assert.doesNotMatch(summary, /canonical_model_id changed on/);
+  assert.equal(summary.split("\n").filter((line) => line.includes("metadata.raw.canonical_model_id")).length, 5);
+  assert.match(summary, /metadata\.raw\.canonical_model_id "[^"]*" -> "google\/rewritten-/);
+});
+
+test("an unread leaf changed on two models keeps both value lines", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const google = previous.providers.find((provider) => provider.providerId === "google");
+  const touched = google.models.slice(0, 2).map((model) => model.modelId);
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models.map((model) => touched.includes(model.modelId)
+      ? { ...model.metadata.raw, last_updated: "1999-01-01" }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "google"], { cwd, env, encoding: "utf8" });
+  assert.doesNotMatch(summary, /changed on 2 models/);
+  assert.equal(summary.split("\n").filter((line) => line.includes("metadata.raw.last_updated")).length, 2);
+});
+
 test("the summary prints an override beside upstream's value", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);
