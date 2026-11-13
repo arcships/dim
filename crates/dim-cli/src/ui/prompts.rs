@@ -699,14 +699,7 @@ impl PermissionPrompt {
                 ),
                 truncate_cells(&decision, width),
             ],
-            3 => bordered(
-                &[decision],
-                width,
-                None,
-                &p.border,
-                Some(title),
-                Some(hint),
-            ),
+            3 => bordered(&[decision], width, None, &p.border, Some(title), Some(hint)),
             _ => bordered(
                 &[
                     first.map_or_else(String::new, |line| {
@@ -766,7 +759,14 @@ impl PermissionPrompt {
             .flat_map(|line| wrap_cells(&crate::sanitize::safe(line), inner))
             .collect();
         if height < 5 {
-            return self.compact(width, height, title, wrapped.first().map(String::as_str), hint, p);
+            return self.compact(
+                width,
+                height,
+                title,
+                wrapped.first().map(String::as_str),
+                hint,
+                p,
+            );
         }
         let budget = height.saturating_sub(5).max(1);
         let offset = window_offset(&self.offset, wrapped.len(), budget);
@@ -783,14 +783,7 @@ impl PermissionPrompt {
             .map(|action| action.label().to_owned())
             .collect();
         content.push(choices(&labels, self.selected, p));
-        bordered(
-            &content,
-            width,
-            None,
-            &p.border,
-            Some(title),
-            Some(hint),
-        )
+        bordered(&content, width, None, &p.border, Some(title), Some(hint))
     }
 
     /// The grant a prompt may offer. `read`, `write` and `edit` all name a
@@ -2210,7 +2203,11 @@ mod tests {
                 .map(|r| strip(r))
                 .collect()
         };
-        assert!(rows(0).is_empty(), "no row is drawn in none: {:#?}", rows(0));
+        assert!(
+            rows(0).is_empty(),
+            "no row is drawn in none: {:#?}",
+            rows(0)
+        );
         assert!(
             rows(1).iter().any(|row| row.contains("Allow once")),
             "one row is the choices: {:#?}",
@@ -2222,7 +2219,10 @@ mod tests {
         let three = rows(3);
         assert!(three[0].contains("Permission required"), "{three:#?}");
         assert!(three[1].contains("Allow once"), "{three:#?}");
-        assert!(three[2].contains("y allow"), "the hint survives: {three:#?}");
+        assert!(
+            three[2].contains("y allow"),
+            "the hint survives: {three:#?}"
+        );
         let four = rows(4);
         assert!(four[0].contains("Permission required"), "{four:#?}");
         assert!(
