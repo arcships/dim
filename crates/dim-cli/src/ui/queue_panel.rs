@@ -44,34 +44,19 @@ impl QueuePanel {
         let items = snapshot
             .queued
             .iter()
+            .filter(|input| input.held)
             .map(|input| {
                 let text = input.display.as_deref().unwrap_or(&input.text);
                 Item::new(
                     input.id.clone(),
                     safe(&text.split_whitespace().collect::<Vec<_>>().join(" ")),
-                    t(if input.held {
-                        "Held · awaiting application"
-                    } else if snapshot.running {
-                        "Incorporating · awaiting model consumption"
-                    } else {
-                        "Unread · waiting for your next message"
-                    }),
+                    t("Held · awaiting application"),
                 )
             })
             .collect();
         self.list.set_items(Ok(items), selected.as_deref());
-        self.set_hint(snapshot);
-    }
-
-    fn set_hint(&mut self, snapshot: &ViewSnapshot) {
-        let held = self.list.selected_id().is_some_and(|id| {
-            snapshot
-                .queued
-                .iter()
-                .any(|input| input.id == id && input.held)
-        });
         self.list.set_hint(
-            t(if held {
+            t(if self.list.selected_id().is_some() {
                 "Enter steer · x delete held · Esc close"
             } else {
                 "Esc close"
@@ -80,7 +65,7 @@ impl QueuePanel {
         );
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent, snapshot: &ViewSnapshot) -> Effect {
+    pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
         if key.code == KeyCode::Char('x') && key.mods == Modifiers::NONE {
             return self
                 .list
@@ -90,16 +75,14 @@ impl QueuePanel {
                     action: "delete",
                 });
         }
-        let effect = match self.list.handle_key(key) {
+        match self.list.handle_key(key) {
             Event::Pick { id: input_id, .. } => Effect::InputControl {
                 input_id,
                 action: "steer",
             },
             Event::Close => Effect::Close,
             Event::None | Event::Refresh => Effect::None,
-        };
-        self.set_hint(snapshot);
-        effect
+        }
     }
 
     pub fn cursor(&self, width: usize) -> Option<(usize, usize)> {

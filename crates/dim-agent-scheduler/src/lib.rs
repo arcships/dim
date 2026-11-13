@@ -88,8 +88,10 @@ fn install_inner(
     + 'static,
 ) -> Result<(), String> {
     let texts = std::sync::Arc::new(texts);
-    dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
-    dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<ScheduleJobs>())
+        .register_shared(dim_agent_runtime::names::name_of::<Wakeups>());
     dim_agent_runtime::names::register::<Loops>(builder.catalog_mut(), None);
     let deliveries = methods::DeliveryHolds::default();
     builder.optional_plugin(move |names| {

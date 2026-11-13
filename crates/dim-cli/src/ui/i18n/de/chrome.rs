@@ -7,21 +7,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "Keine Nachrichten in der Warteschlange.",
         "Held · awaiting application" => "Zurückgehalten · wartet auf Anwendung",
-        "Incorporating · awaiting model consumption" => {
-            "Wird eingebunden · wartet auf Verarbeitung durch das Modell"
-        }
         "Held" => "Zurückgehalten",
-        "Incorporating" => "Wird eingebunden",
         "Unread" => "Ungelesen",
-        "Unread · waiting for your next message" => {
-            "Ungelesen · wartet auf Ihre nächste Nachricht"
-        }
-        "/queue view · awaiting model consumption" => {
-            "/queue ansehen · wartet auf Verarbeitung durch das Modell"
-        }
-        "/queue view · waiting for your next message" => {
-            "/queue ansehen · wartet auf Ihre nächste Nachricht"
-        }
         "Enter export · Esc cancel" => "Enter exportieren · Esc abbrechen",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Nachrichten mit Anhängen bleiben in der Warteschlange; mit /queue steuern oder löschen"

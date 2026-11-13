@@ -228,30 +228,30 @@ impl DynPlugin for SchedulerSession {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateParams {
-    session_id: String,
-    branch_id: String,
-    at: String,
-    prompt: String,
+pub(crate) struct CreateParams {
+    pub(crate) session_id: String,
+    pub(crate) branch_id: String,
+    pub(crate) at: String,
+    pub(crate) prompt: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListParams {
-    session_id: String,
+pub(crate) struct ListParams {
+    pub(crate) session_id: String,
     #[serde(default)]
-    branch_id: Option<String>,
+    pub(crate) branch_id: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CancelParams {
-    session_id: String,
-    wakeup_id: String,
+pub(crate) struct CancelParams {
+    pub(crate) session_id: String,
+    pub(crate) wakeup_id: String,
 }
 
 /// The non-empty-string check the neighbouring Session methods use.
-fn nonempty(text: &str, field: &str) -> Result<(), RpcError> {
+pub(crate) fn nonempty(text: &str, field: &str) -> Result<(), RpcError> {
     if text.is_empty() {
         return Err(RpcError::invalid(format!("{field} must not be empty")));
     }
@@ -421,8 +421,27 @@ struct LoopStopParams {
     loop_id: String,
 }
 
+pub(crate) fn wakeup_request(
+    session_id: String,
+    branch_id: String,
+    at: &str,
+    prompt: String,
+) -> Result<WakeupRequest, RpcError> {
+    nonempty(&session_id, "sessionId")?;
+    nonempty(&branch_id, "branchId")?;
+    nonempty(&prompt, "prompt")?;
+    prompt_size(&prompt).map_err(RpcError::invalid)?;
+    let at = parse_at(at)?;
+    Ok(WakeupRequest {
+        session_id,
+        branch_id,
+        at,
+        prompt,
+    })
+}
+
 /// The created record as the wire spells it (design §10).
-fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
+pub(crate) fn wire_scheduled(wakeup: &crate::wakeups::Wakeup) -> Value {
     json!({
         "wakeupId": wakeup.wakeup_id,
         "at": wakeup.at,
@@ -445,19 +464,8 @@ fn wakeup_handler(wakeups: Arc<Wakeups>) -> dim_agent_capabilities::methods::Han
             match method.as_str() {
                 "session.wakeup.create" => {
                     let p: CreateParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    nonempty(&p.branch_id, "branchId")?;
-                    nonempty(&p.prompt, "prompt")?;
-                    prompt_size(&p.prompt).map_err(RpcError::invalid)?;
-                    let at = parse_at(&p.at)?;
-                    let created = wakeups
-                        .create(WakeupRequest {
-                            session_id: p.session_id,
-                            branch_id: p.branch_id,
-                            at,
-                            prompt: p.prompt,
-                        })
-                        .await?;
+                    let request = wakeup_request(p.session_id, p.branch_id, &p.at, p.prompt)?;
+                    let created = wakeups.create(request).await?;
                     reply(json!({ "wakeupId": created.wakeup_id }))
                 }
                 "session.wakeup.list" => {

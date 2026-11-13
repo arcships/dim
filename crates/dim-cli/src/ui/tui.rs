@@ -2958,9 +2958,7 @@ impl App {
                 Prompt::Tasks(p) => p.handle_key(key),
                 Prompt::Lines(p) => p.handle_key(key),
                 Prompt::Timeline(p) => p.handle_key(key),
-                Prompt::Queue(p) => {
-                    p.handle_key(key, self.snapshot.as_ref().expect("attached queue"))
-                }
+                Prompt::Queue(p) => p.handle_key(key),
                 Prompt::Export(p) => match p.handle_key(key) {
                     ListEvent::Pick { id: format, .. } => Effect::Export(if format == "markdown" {
                         crate::export::Format::Markdown
@@ -5407,18 +5405,13 @@ impl App {
                 .as_ref()
                 .into_iter()
                 .flat_map(|snapshot| &snapshot.queued)
+                .filter(|input| input.held)
                 .map(|input| {
                     (
                         input.id.clone(),
                         format!(
                             "{} · {}",
-                            t(if input.held {
-                                "Held"
-                            } else if self.running() {
-                                "Incorporating"
-                            } else {
-                                "Unread"
-                            }),
+                            t("Held"),
                             input.display.as_deref().unwrap_or(&input.text)
                         ),
                     )
@@ -5432,17 +5425,11 @@ impl App {
                 self.queue_rows.max(queued.len().min(QUEUE_ROWS))
             };
             if self.queue_rows > 0 {
-                let hint = if !self.queued().is_empty() {
-                    let key = match self.default_send_mode {
-                        SubmitMode::Queue => "Ctrl+S",
-                        SubmitMode::Steer => "Enter",
-                    };
-                    tf(QUEUE_HINT, &[("key", key)])
-                } else if self.running() {
-                    t("/queue view · awaiting model consumption").to_owned()
-                } else {
-                    t("/queue view · waiting for your next message").to_owned()
+                let key = match self.default_send_mode {
+                    SubmitMode::Queue => "Ctrl+S",
+                    SubmitMode::Steer => "Enter",
                 };
+                let hint = tf(QUEUE_HINT, &[("key", key)]);
                 live.extend(queue_strip(
                     &queued,
                     self.queue_rows,
@@ -14527,6 +14514,67 @@ mod tests {
             ..ViewSnapshot::default()
         })));
         (app, sent, home)
+    }
+
+    #[test]
+    fn queue_display_keeps_applied_inputs_only_in_the_transcript() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for locale in [i18n::Locale::En, i18n::Locale::ZhCn] {
+            i18n::set(locale);
+            for fullscreen in [false, true] {
+                for width in [44, 100] {
+                    let (mut app, _sent, _home) = session_with_queue(
+                        true,
+                        &[("applied", "find the leak"), ("held", "then add a test")],
+                    );
+                    app.fullscreen = fullscreen;
+                    let mut snapshot = app.snapshot.as_ref().unwrap().clone();
+                    snapshot.rows = vec![message(true)];
+                    snapshot.queued[0].held = false;
+                    snapshot.queued[0].recallable = false;
+                    let mut draw = |snapshot: &ViewSnapshot| {
+                        app.apply(Update::Snapshot(Box::new(snapshot.clone())));
+                        let frame = app.frame((width, 30));
+                        let rendered = app.reflow_history(width as usize).join("\n")
+                            + "\n"
+                            + &frame.live.join("\n");
+                        strip_escapes(&rendered)
+                    };
+                    let mixed = draw(&snapshot);
+                    assert!(
+                        mixed.contains(&tf("Queue ({count})", &[("count", "1")])),
+                        "{mixed}"
+                    );
+                    assert_eq!(mixed.matches("find the leak").count(), 1, "{mixed}");
+                    assert!(mixed.contains("then add a test"), "{mixed}");
+                    snapshot.queued.pop();
+                    let applied = draw(&snapshot);
+                    assert!(!applied.contains(t("Queue")), "{applied}");
+                    assert!(!applied.contains(t("Unread")), "{applied}");
+                    assert_eq!(applied.matches("find the leak").count(), 1, "{applied}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.rows.push(stopped());
+                    let idle = draw(&snapshot);
+                    assert!(!idle.contains(t("Queue")), "{idle}");
+                    assert_eq!(idle.matches("find the leak").count(), 1, "{idle}");
+                    assert!(!idle.contains(t("Unread")), "{idle}");
+                    snapshot.running = true;
+                    snapshot.main_running = true;
+                    let resumed = draw(&snapshot);
+                    assert!(!resumed.contains(t("Unread")), "{resumed}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.queued.clear();
+                    snapshot.rows[0] = message(false);
+                    let consumed = draw(&snapshot);
+                    assert!(!consumed.contains(t("Unread")), "{consumed}");
+                    assert_eq!(consumed.matches("find the leak").count(), 1, "{consumed}");
+                }
+            }
+        }
+        i18n::set(i18n::Locale::En);
     }
 
     #[test]
