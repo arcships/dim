@@ -3,7 +3,9 @@ pub mod read;
 use crate::{
     context_policy::{CompactionStep, ContextPolicy, configured_request},
     history::HistoryRenderer,
-    host::{CompactionStrategyHost, ContextModelHost, HostError, PrepareModelHost},
+    host::{
+        CompactionStrategyHost, ContextModelHost, HostError, PrepareModelHost, ToolExecutionContext,
+    },
     steer::REPLACED_BY_STEER,
     tool_binding::ToolBinding,
 };
@@ -1693,6 +1695,16 @@ impl AgentLoop {
                         } else if let Some(reason) = turn.interrupted.clone() {
                             self.end(turn, TurnOutcome::Cancelled { reason })?;
                         } else if !request.calls.is_empty() {
+                            // Claims must precede the append.
+                            self.binding.claim(
+                                &request.id,
+                                &request.calls,
+                                &ToolExecutionContext {
+                                    turn_id: turn.id.clone(),
+                                    request_id: request.id.clone(),
+                                    branch_id: self.branch.clone(),
+                                },
+                            );
                             let event = self.timeline.append(
                                 EventKind::ToolCall(ToolCallData {
                                     turn_id: turn.id.clone(),

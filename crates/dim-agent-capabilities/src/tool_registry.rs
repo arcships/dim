@@ -56,12 +56,37 @@ pub trait ToolHandler: Send + Sync + 'static {
     fn risk(&self, _: &ToolCall) -> Option<&'static str> {
         None
     }
+    /// Takes whatever a client must be able to reach once the call is
+    /// published, before Loop publishes it. The default takes nothing: a
+    /// handler whose effects begin at [`Self::execute`] needs no claim.
+    ///
+    /// ToolBinding holds the claim with the request's tool snapshot, so a path
+    /// that never dispatches releases it by drop. [`ToolClaim::dispatch`]
+    /// receives the call as resolved and approved.
+    fn claim(&self, _: &ToolCall, _: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
+        None
+    }
     fn execute(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> HostFuture<'_, ToolResult>;
+}
+
+/// What a handler registered for one call before it was published.
+///
+/// Dropping it releases the registration, which is how every path between the
+/// claim and dispatch ends.
+pub trait ToolClaim: Send + Sync {
+    /// Runs `call` as resolved and approved, keeping the registration until it
+    /// settles or the cancel token fires.
+    fn dispatch(
+        self: Box<Self>,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ToolResult>;
 }
 /// A tool and its handler: a host tool, or one a part registers with
 /// [`ToolRegistry::register`].
