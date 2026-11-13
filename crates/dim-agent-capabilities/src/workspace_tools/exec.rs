@@ -261,7 +261,7 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
     })
 }
 
-/// Detects a POSIX `&` that the shell reads as a background marker.
+/// The POSIX `&` that the shell reads as a background marker, if any.
 ///
 /// The shell reads `&` as a list terminator except inside quotes, a comment, a
 /// heredoc body, arithmetic, `${...}`, a backslash escape, or as the second half
@@ -278,17 +278,51 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
 /// A command this scan cannot read to the end falls back to
 /// [`quote_only_marker`], which refuses any `&` outside quotes, and `&>` and
 /// `&>>` in an edition without that redirect.
-fn has_unquoted_posix_background_ampersand(script: &str, edition: ShellEdition) -> bool {
+fn background_marker(script: &str, edition: ShellEdition) -> Option<BackgroundMarker> {
     readings(edition)
         .iter()
-        .any(|reading| scan_marker(script, *reading))
+        .find_map(|reading| scan_marker(script, *reading))
 }
 
-/// Whether one reading refuses `script`.
-fn scan_marker(script: &str, reading: ShellReading) -> bool {
+/// The marker one reading refuses, if that reading refuses one.
+fn scan_marker(script: &str, reading: ShellReading) -> Option<BackgroundMarker> {
     let mut scan = ShellScan::new(script, reading);
     scan.text(None);
-    scan.marker || (scan.unclosed && quote_only_marker(script, reading))
+    match scan.marker {
+        Some(marker) => Some(marker),
+        None if scan.unclosed => quote_only_marker(script, reading),
+        None => None,
+    }
+}
+
+/// The `&` the running shell reads as a background marker.
+#[derive(Clone, Copy)]
+struct BackgroundMarker {
+    /// Character index into the command as given.
+    index: usize,
+    /// The marker as written there.
+    token: &'static str,
+}
+
+impl BackgroundMarker {
+    /// The 1-based line and column, counted in characters of the command as
+    /// given.
+    fn position(&self, script: &str) -> (usize, usize) {
+        let before: String = script.chars().take(self.index).collect();
+        let line = before.matches('\n').count() + 1;
+        let column = before.chars().rev().take_while(|ch| *ch != '\n').count() + 1;
+        (line, column)
+    }
+}
+
+/// The marker written at `at`.
+fn marker_at(chars: &[char], at: usize) -> &'static str {
+    match (chars.get(at), chars.get(at + 1)) {
+        (Some('|'), _) => "|&",
+        (_, Some('!')) => "&!",
+        (_, Some('|')) => "&|",
+        _ => "&",
+    }
 }
 
 /// The readings a command may run under.
@@ -367,10 +401,15 @@ const KSH: ShellReading = ShellReading {
     ansi_c_quote: true,
 };
 
-/// An `&` outside `' '` and `" "`, when neither neighbour makes it inert.
-fn quote_only_marker(script: &str, reading: ShellReading) -> bool {
+/// The last `&` outside `' '` and `" "` that neither neighbour makes inert.
+///
+/// This is the fallback for a command [`ShellScan`] gives up on, so it reads no
+/// continuations: a scan that stopped early may have stopped inside a quote
+/// whose extent joining would move.
+fn quote_only_marker(script: &str, reading: ShellReading) -> Option<BackgroundMarker> {
     let chars: Vec<char> = script.chars().collect();
     let (mut single, mut double) = (false, false);
+    let mut found = None;
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
@@ -398,13 +437,16 @@ fn quote_only_marker(script: &str, reading: ShellReading) -> bool {
                 continue;
             }
             let redirect = reading.amp_redirect && next == Some('>');
-            if previous != Some('&') && !redirect && previous != Some('>') && !single && !double {
-                return true;
+            if previous != Some('&') && !redirect && previous != Some('>') {
+                found = Some(BackgroundMarker {
+                    index: i,
+                    token: marker_at(&chars, i),
+                });
             }
         }
         i += 1;
     }
-    false
+    found
 }
 
 const HEAVY_SEARCH_COMMANDS: [&str; 7] = ["rg", "grep", "ag", "find", "fd", "tree", "du"];
@@ -424,7 +466,7 @@ struct Heredoc {
 struct ShellScan {
     chars: Vec<char>,
     index: usize,
-    marker: bool,
+    marker: Option<BackgroundMarker>,
     unclosed: bool,
     heredocs: Vec<Heredoc>,
     depth: usize,
@@ -441,7 +483,7 @@ impl ShellScan {
         Self {
             chars: script.chars().collect(),
             index: 0,
-            marker: false,
+            marker: None,
             unclosed: false,
             heredocs: Vec::new(),
             depth: 0,
@@ -477,6 +519,16 @@ impl ShellScan {
 
     fn skip(&mut self, count: usize) {
         self.index = self.at(count).unwrap_or(self.chars.len());
+    }
+
+    /// Records the marker at `at`, keeping the first one found.
+    fn mark(&mut self, at: usize) {
+        if self.marker.is_none() {
+            self.marker = Some(BackgroundMarker {
+                index: at,
+                token: marker_at(&self.chars, at),
+            });
+        }
     }
 
     fn enter(&mut self) -> bool {
@@ -600,7 +652,7 @@ impl ShellScan {
                 }
                 '|' => {
                     if self.peek(1) == Some('&') && !self.reading.pipe_ampersand {
-                        self.marker = true;
+                        self.mark(self.index);
                         self.skip(2);
                     } else {
                         let width = if matches!(self.peek(1), Some('&') | Some('|')) {
@@ -630,7 +682,7 @@ impl ShellScan {
                     } else if redirect {
                         if self.peek(2) == Some('>') { 3 } else { 2 }
                     } else {
-                        self.marker = true;
+                        self.mark(self.index);
                         1
                     };
                     self.skip(width);
@@ -935,25 +987,35 @@ impl ShellScan {
         while !self.heredocs.is_empty() {
             let heredoc = self.heredocs.remove(0);
             let mut body = String::new();
+            let mut origin = Vec::new();
             loop {
+                let start = self.index;
                 let Some((first, terminated)) = self.physical_line() else {
                     self.unclosed = true;
                     break;
                 };
-                let mut logical = if heredoc.strip_tabs {
-                    first.trim_start_matches('\t').to_owned()
+                let strip = if heredoc.strip_tabs {
+                    first.len() - first.trim_start_matches('\t').len()
                 } else {
-                    first
+                    0
                 };
+                let mut logical = first[strip..].to_owned();
+                let mut origin_of_line: Vec<usize> = (0..first.len())
+                    .map(|offset| start + offset)
+                    .skip(strip)
+                    .collect();
                 let mut joined = false;
                 let mut last_terminated = terminated;
                 while heredoc.expand && last_terminated && ends_in_continuation(&logical) {
                     logical.pop();
+                    origin_of_line.pop();
+                    let next_start = self.index;
                     let Some((next, terminated)) = self.physical_line() else {
                         last_terminated = false;
                         break;
                     };
                     logical.push_str(&next);
+                    origin_of_line.extend((0..next.len()).map(|offset| next_start + offset));
                     joined = true;
                     last_terminated = terminated;
                 }
@@ -962,6 +1024,8 @@ impl ShellScan {
                 }
                 body.push_str(&logical);
                 body.push('\n');
+                origin.extend(origin_of_line);
+                origin.push(start);
                 if !last_terminated {
                     self.unclosed = true;
                     break;
@@ -970,7 +1034,10 @@ impl ShellScan {
             if heredoc.expand {
                 let mut inner = ShellScan::new(&body, self.reading);
                 inner.expansions();
-                self.marker |= inner.marker;
+                if let Some(marker) = inner.marker {
+                    let at = origin.get(marker.index).copied().unwrap_or(marker.index);
+                    self.mark(at);
+                }
                 self.unclosed |= inner.unclosed;
             }
         }
@@ -1999,10 +2066,14 @@ pub(super) async fn execute(
     };
     let kind = shell.edition.kind();
     if kind == ShellKind::Posix
-        && has_unquoted_posix_background_ampersand(&input.command, shell.edition)
+        && let Some(marker) = background_marker(&input.command, shell.edition)
     {
+        let (line, column) = marker.position(&input.command);
+        let token = marker.token;
         return Ok(failed(
-            "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later.",
+            format!(
+                "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later. The {token} at line {line}, column {column} starts a background job."
+            ),
             "exec_invalid_request",
         ));
     }
@@ -2576,7 +2647,7 @@ const EDITIONS: &[ShellEdition] = &[
 
 #[cfg(test)]
 fn refuses(script: &str, edition: ShellEdition) -> bool {
-    has_unquoted_posix_background_ampersand(script, edition)
+    background_marker(script, edition).is_some()
 }
 
 #[cfg(test)]
@@ -2632,11 +2703,7 @@ fn an_unreadable_command_keeps_the_quote_only_verdict() {
         ("echo ${v &", true),
         ("x=`sleep 5 &", true),
     ] {
-        assert_eq!(
-            has_unquoted_posix_background_ampersand(script, ShellEdition::Bash),
-            refused,
-            "{script:?}"
-        );
+        assert_eq!(refuses(script, ShellEdition::Bash), refused, "{script:?}");
     }
 }
 
@@ -2653,5 +2720,32 @@ fn every_inert_script_leaves_the_scan_at_the_top_level() {
                 "{edition:?} still accepts after a marker: {script:?}"
             );
         }
+    }
+}
+
+/// The refusal names the marker that decided: the first one a reading refuses,
+/// as written, counted in characters of the command as given.
+#[cfg(test)]
+#[test]
+fn the_refusal_names_the_marker_that_decided() {
+    for (script, edition, token, line, column) in [
+        ("sleep 5 &", ShellEdition::Bash, "&", 1, 9),
+        ("sleep 5 &! ", ShellEdition::Bash, "&!", 1, 9),
+        ("sleep 5 &|", ShellEdition::Bash, "&|", 1, 9),
+        ("sleep 5 |& cat", ShellEdition::Ksh, "|&", 1, 9),
+        ("echo hi\nsleep 5 &", ShellEdition::Bash, "&", 2, 9),
+        (
+            "cat <<EOF\n$(sleep 5 &)\nEOF",
+            ShellEdition::Bash,
+            "&",
+            2,
+            11,
+        ),
+        ("cat <<'EOF'\na & b", ShellEdition::Bash, "&", 2, 3),
+    ] {
+        let marker = background_marker(script, edition)
+            .unwrap_or_else(|| panic!("{edition:?} refuses {script:?}"));
+        assert_eq!(marker.token, token, "{script:?}");
+        assert_eq!(marker.position(script), (line, column), "{script:?}");
     }
 }

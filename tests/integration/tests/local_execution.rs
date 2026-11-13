@@ -1132,7 +1132,7 @@ async fn exec_reads_background_markers_by_shell_syntax() {
     assert_eq!(code(&results[2]), Some("exec_invalid_request"));
     assert!(
         text(&results[2]).contains(
-            "exec manages background tasks; remove shell background markers such as & and set runInBackground to true"
+            "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later. The & at line 1, column 29 starts a background job."
         ),
         "{}",
         text(&results[2])
