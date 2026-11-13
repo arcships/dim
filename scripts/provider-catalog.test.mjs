@@ -209,6 +209,40 @@ test("a media entry the upstream dropped keeps its bundled canonical id and limi
   assert.equal(kept.capabilities.maxOutputTokens, 8192);
 });
 
+test("a surviving model keeps its canonical id when upstream omits it", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const original = await readFile(path, "utf8");
+  const deepseek = JSON.parse(original).providers.find((provider) => provider.providerId === "deepseek");
+  const row = deepseek.models.find((model) => model.modelId === "deepseek-v4-flash").metadata.raw;
+  const { canonical_model_id: canonical, ...withoutCanonical } = row;
+  assert.equal(canonical, "deepseek/deepseek-v4.1-flash-1017");
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: deepseek.metadata.raw.api,
+    models: deepseek.models.map((model) => model.modelId === "deepseek-v4-flash" ? withoutCanonical : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /= deepseek-v4-flash +canonical_model_id deepseek\/deepseek-v4\.1-flash-1017 kept; upstream omits it/);
+  assert.equal(await readFile(path, "utf8"), original);
+});
+
+test("a media entry with an upstream row keeps its canonical id when the row omits it", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const original = await readFile(path, "utf8");
+  const google = JSON.parse(original).providers.find((provider) => provider.providerId === "google");
+  const row = google.models.find((model) => model.modelId === "veo-3.1-generate-preview").metadata.raw;
+  const { canonical_model_id: canonical, ...withoutCanonical } = row;
+  assert.equal(canonical, "google/veo-3.1-generate-preview");
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models.map((model) => model.modelId === "veo-3.1-generate-preview" ? withoutCanonical : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "google"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /= veo-3\.1-generate-preview +canonical_model_id google\/veo-3\.1-generate-preview kept; upstream omits it/);
+  assert.equal(await readFile(path, "utf8"), original);
+});
+
 test("sync refreshes upstream metadata and keeps the catalog's local media declarations", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);

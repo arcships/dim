@@ -128,10 +128,11 @@ async function main() {
   const reasoningOff = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile), policies)
   const applied = loadSelectedOverrides(overrides, selected)
   const notes = []
+  const kept = []
   const providers = []
   for (const provider of catalog.providers) {
     providers.push(selected.has(provider.providerId)
-      ? await syncProvider(provider, policies[provider.providerId], reasoningOff.get(provider.providerId), applied, notes)
+      ? await syncProvider(provider, policies[provider.providerId], reasoningOff.get(provider.providerId), applied, notes, kept)
       : provider)
   }
   for (const [providerId, pending] of applied) {
@@ -139,7 +140,7 @@ async function main() {
       throw new Error(`Model overrides target missing models for provider ${providerId}: ${[...pending.keys()].join(", ")}`)
     }
   }
-  const report = overrideReport(notes)
+  const report = [...overrideReport(notes), ...keptReport(kept)]
   if (isDeepStrictEqual(providers, catalog.providers)) {
     console.log("Catalog is up to date")
     if (report.length > 0) console.log(report.join("\n"))
@@ -152,7 +153,7 @@ async function main() {
   console.log(`Updated catalog: ${requested.join(", ")}`)
 }
 
-async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patches, notes) {
+async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patches, notes, kept) {
   const id = provider.providerId
   const raw = { ...provider.metadata.raw }
   const sourceId = policy.upstreamId ?? id
@@ -190,7 +191,8 @@ async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patc
   }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
-  const result = { ...provider, models: applyReasoningOffOverrides(id, [...models.values()], reasoningOff).map(toCatalogModel), metadata }
+  const rows = carryCanonicalIds(id, [...models.values()], previous, kept)
+  const result = { ...provider, models: applyReasoningOffOverrides(id, rows, reasoningOff).map(toCatalogModel), metadata }
   if (!policy.keepBaseUrl) {
     const api = normalizeProviderApi(remote.api, metadata.adapter)
     if (api !== undefined) {
@@ -439,6 +441,38 @@ function mediaOverlay(providerId, bundled, upstream) {
   const declared = Object.fromEntries(fields.filter((key) => Object.hasOwn(bundled, key)).map((key) => [key, bundled[key]]))
   const base = isRecord(upstream) ? upstream : bundled
   return mergePatch(base, declared)
+}
+
+/// `canonical_model_id` is not upstream's to omit: the matching step reads it,
+/// so a surviving row keeps the bundled value when upstream states none. An
+/// upstream value wins, and a kept one is reported so a reviewer can retire it
+/// by removing it from the bundled entry by hand.
+function carryCanonicalIds(providerId, models, previous, kept) {
+  return models.map((model) => {
+    const id = model.id.trim()
+    const bundled = previous.get(id)?.canonical_model_id
+    if (bundled === undefined) return model
+    const value = model.canonical_model_id
+    if (value !== undefined) return model
+    kept.push({ providerId, modelId: id, canonicalId: bundled })
+    return { ...model, canonical_model_id: bundled }
+  })
+}
+
+/// Every canonical id a sync carried over because upstream omitted it, so the
+/// summary says which entry a reviewer has to edit to let go of one.
+function keptReport(kept) {
+  if (kept.length === 0) return []
+  const lines = []
+  let providerId
+  for (const note of kept) {
+    if (note.providerId !== providerId) {
+      providerId = note.providerId
+      lines.push(`${pad(providerId, 24)} carried`)
+    }
+    lines.push(`  = ${pad(note.modelId)} canonical_model_id ${note.canonicalId} kept; upstream omits it`)
+  }
+  return lines
 }
 
 function createReasoningOffOverrideState(overrides, policies) {
