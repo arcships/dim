@@ -368,10 +368,7 @@ impl ProviderService {
                 .and_then(|provider| provider.preferences.get(&selected.model_id))
                 .cloned()
                 .unwrap_or_default();
-            let prefs = ModelPreferences {
-                reasoning_effort: preferences.reasoning_effort.or(saved.reasoning_effort),
-                service_tier: preferences.service_tier.or(saved.service_tier),
-            };
+            let prefs = preferences::merge(&preferences, &saved);
             let protocol = provider_protocol(selected.metadata.as_ref())
                 .ok_or_else(|| failure("Missing adopted model protocol"))?;
             let config = preferences::configure(

@@ -39,6 +39,23 @@ pub(super) fn catalog_defaults(
     config
 }
 
+/// The preferences one adoption sends: the client's stated values, and for
+/// every field the client left unstated the model's saved value.
+///
+/// Per field, so a client that states an effort keeps the saved tier.
+pub(super) fn merge(stated: &ModelPreferences, saved: &ModelPreferences) -> ModelPreferences {
+    ModelPreferences {
+        reasoning_effort: stated
+            .reasoning_effort
+            .clone()
+            .or_else(|| saved.reasoning_effort.clone()),
+        service_tier: stated
+            .service_tier
+            .clone()
+            .or_else(|| saved.service_tier.clone()),
+    }
+}
+
 /// The model's declared default effort, when the picker would offer it.
 ///
 /// A declaration that states reasoning is off by default (#1376) names only a
