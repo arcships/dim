@@ -242,9 +242,9 @@ retired="$prefix/lib/node_modules/.dimcode-alpha.retired"
 rm -rf "$retired"
 if [ -d "$package" ]; then mv "$package" "$retired"; fi
 : > "$UPDATE_WAITING"
-# The gate lives in the test home. A home already deleted by a failed test
-# will never get one, so the wait ends with the home instead of spinning
-# forever.
+# The gate lives in the test's own home: a fresh directory made for this test
+# alone, removed only when this test ends. The loop can end only after its own
+# test has ended, so no other test's home can end it early.
 home=${UPDATE_GATE%/*}
 while [ ! -f "$UPDATE_GATE" ]; do
   [ -d "$home" ] || exit 1
@@ -787,8 +787,7 @@ directory=$(cd "$(dirname "$target")" && pwd) || exit 1
 while [ ! -f "$directory/package.json" ] && [ "$directory" != / ]; do directory=$(dirname "$directory"); done
 if [ -n "$UPDATE_SLOW" ]; then
   printf 'checking %s\n' "$directory" >> "$UPDATE_CHECKING"
-  # The loop ends when the test home is gone, so a failed test leaves no
-  # process behind either.
+  # The loop ends only at this test's own `Home` drop; see the gate loop in MOCK_NPM.
   sh -c 'echo $$ > "$UPDATE_CHECK_CHILD"; sleep 1; echo survived > "$UPDATE_CHECK_MARKER"; home=${UPDATE_CHECK_MARKER%/*}; while [ -d "$home" ]; do sleep 0.2; done' &
   wait
 fi

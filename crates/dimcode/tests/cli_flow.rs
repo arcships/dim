@@ -521,7 +521,13 @@ fn wait(mut child: Child) -> Output {
 struct OwnedChild(Option<Child>);
 impl OwnedChild {
     fn spawn(command: &mut Command) -> Self {
-        Self(Some(command.spawn().unwrap()))
+        Self(Some(command.spawn().unwrap_or_else(|error| {
+            panic!(
+                "could not start {:?} {:?}: {error}",
+                command.get_program(),
+                command.get_args().collect::<Vec<_>>()
+            )
+        })))
     }
     fn id(&self) -> u32 {
         self.0.as_ref().unwrap().id()
