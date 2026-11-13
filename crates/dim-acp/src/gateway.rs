@@ -2571,7 +2571,18 @@ async fn read_history(
             }
             params
         })
-        .await?;
+        .await
+        .map_err(|error| {
+            if error
+                .data
+                .as_ref()
+                .is_some_and(|data| data["nativeAppError"] == "session_closed")
+            {
+                Error::resource_not_found(Some(id.to_owned()))
+            } else {
+                error
+            }
+        })?;
     let model = attached.model.map(|model| Configuration {
         provider_id: model.provider_id,
         model_id: model.model_id,

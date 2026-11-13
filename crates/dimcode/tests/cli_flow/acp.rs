@@ -3245,3 +3245,35 @@ fn acp_stdio_does_not_offer_fork_without_the_native_turn_read() {
     peer.close();
     daemon.join().unwrap();
 }
+
+#[test]
+fn acp_load_and_resume_report_unavailable_sessions_without_listing_history() {
+    let home = Home::new();
+    let cwd = home.0.clone();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(METHODS);
+        for _ in 0..2 {
+            let attach = wire.read("session.attach");
+            assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
+            wire.send(json!({"jsonrpc":"2.0","id":attach["id"],"error":{"code":-32001,"message":"missing is closed","data":{"appError":"session_closed"}}}));
+            let detach = wire.read("session.detach");
+            wire.reply(&detach, json!({}));
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    for (id, method) in [(2, "session/load"), (3, "session/resume")] {
+        peer.send(
+            id,
+            method,
+            json!({"sessionId":"missing","cwd":home.0,"mcpServers":[]}),
+        );
+        let response = peer.response(id);
+        let expected =
+            serde_json::to_value(acp::Error::resource_not_found(Some("missing".into()))).unwrap();
+        assert_eq!(response["error"], expected);
+    }
+    peer.close();
+    daemon.join().unwrap();
+}

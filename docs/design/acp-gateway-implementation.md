@@ -26,6 +26,8 @@ ACP 协议版本固定为 1，不能把 SDK 包版本当成协议版本。[v2](h
 
 ACP load/resume 要求 daemon 声明 `session.attach.expectedCwd` 和 `session.history.latestTurn`；断线后关联输入的完成判定要求 `session.turn.get.inputId`。缺少能力时返回明确的 unavailable 错误，不能退回枚举所有 Session 或读取全部历史。ACP 与 daemon 应随同一发行版本升级；正在工作的旧 daemon 不被自动终止，需在其工作结束后重启升级。显示 kind 筛选仍按独立能力协商，可回退到有界原始窗口。
 
+load/resume 的 checked attach 返回 `session_closed` 时，Gateway 返回 ACP `resource_not_found`；不存在和当前不可附着的 Session 都不通过枚举 Session 或读取历史重新判断。其他原生错误保留原分类。
+
 ## 3. 模块、宿主与接线
 
 ```text
