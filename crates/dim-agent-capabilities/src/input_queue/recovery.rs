@@ -264,6 +264,44 @@ impl InputQueue {
                         }
                     }
                 }
+                let mut user_inputs = std::collections::HashSet::new();
+                if !handover {
+                    let missing: Vec<_> = rows
+                        .iter()
+                        .filter_map(|row| {
+                            let QueryValue::Value { value } = &row.values[0] else {
+                                unreachable!("current input identity")
+                            };
+                            let id = value.as_str().expect("current input id");
+                            (row.values[2] == QueryValue::Missing
+                                && !applied.contains_key(id)
+                                && !withdrawn.contains_key(id))
+                            .then(|| value.clone())
+                        })
+                        .collect();
+                    if !missing.is_empty() {
+                        let mut user = query(through, &["input/message"], &["id"]);
+                        user.query.filter = Some(QueryFilter::And {
+                            conditions: vec![
+                                field("id", missing),
+                                QueryFilter::Present {
+                                    value: QueryOperand::Field {
+                                        path: "data.user".into(),
+                                    },
+                                },
+                            ],
+                        });
+                        let QueryOutput::Rows { rows } = self.timeline.query(user).await?.result
+                        else {
+                            unreachable!("user identities")
+                        };
+                        for row in rows {
+                            user_inputs.insert(decode::<String>(
+                                row.values.into_iter().next().expect("input id"),
+                            )?);
+                        }
+                    }
+                }
                 for row in rows {
                     let [id, sequence, mode, target] =
                         <[_; 4]>::try_from(row.values).expect("input control fields");
@@ -333,25 +371,7 @@ impl InputQueue {
                     };
                     let mode = match mode {
                         QueryValue::Missing => {
-                            let mut user = query(through, &["input/message"], &[]);
-                            user.query.filter = Some(QueryFilter::And {
-                                conditions: vec![
-                                    field("id", vec![json!(id)]),
-                                    QueryFilter::Present {
-                                        value: QueryOperand::Field {
-                                            path: "data.user".into(),
-                                        },
-                                    },
-                                ],
-                            });
-                            user.query.select = QuerySelect::Exists;
-                            user.page = None;
-                            let QueryOutput::Exists { exists } =
-                                self.timeline.query(user).await?.result
-                            else {
-                                unreachable!("user presence")
-                            };
-                            if exists {
+                            if user_inputs.contains(&id) {
                                 InputMode::Queue
                             } else {
                                 InputMode::Append

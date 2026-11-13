@@ -9,11 +9,12 @@ use crate::model::view::{MemberTarget, TaskKind};
 
 #[derive(Default)]
 pub(super) struct BranchHistory {
-    window: dim_client::window::Window,
+    pub(super) window: dim_client::window::Window,
     pub done: bool,
+    pub ended: bool,
     pub error: Option<String>,
     live: Vec<Event>,
-    window_complete: bool,
+    pub(super) window_complete: bool,
     inventory_index: usize,
     inventory_cursor: Option<serde_json::Value>,
     goal_stale: bool,
@@ -62,9 +63,17 @@ pub(super) struct StopBatch {
     unavailable: usize,
 }
 
+impl HistoryRequest {
+    pub(super) fn is_tool_origin(&self, branch: &str, request: &str, call: &str) -> bool {
+        self.branch_id == branch
+            && matches!(&self.stage, ReadStage::ToolOrigin { request_id, call_id } if request_id == request && call_id == call)
+    }
+}
+
 impl Worker {
     /// The replacement releases this attachment after creating or finding its Session.
     pub(super) fn invalidate_projection(&mut self) -> String {
+        self.opening_reads.clear();
         self.compaction_targets(Default::default());
         self.release_members();
         self.projection_id += 1;
@@ -81,6 +90,7 @@ impl Worker {
         self.context_request = None;
         self.context_stale = false;
         self.cursors.clear();
+        self.tool_origins.clear();
         self.focus = "main".into();
         self.side = None;
         self.lines.clear();
@@ -148,6 +158,16 @@ impl Worker {
                     self.discover_branch(parent);
                 }
             }
+            EventContent::BranchEnded(data) => {
+                self.task_history
+                    .entry(data.branch.clone())
+                    .and_modify(|history| history.ended = true)
+                    .or_insert_with(|| BranchHistory {
+                        ended: true,
+                        done: true,
+                        ..Default::default()
+                    });
+            }
             EventContent::BranchCreateFailed(data) => {
                 let (branch, error) = match data {
                     BranchCreateFailedData::Failed { branch, error, .. } => (branch, error),
@@ -182,6 +202,7 @@ impl Worker {
             .task_history
             .get_mut(branch_id)
             .expect("discovered branch");
+        history.ended |= matches!(event.content, EventContent::BranchEnd(_));
         let mut unread_changed = false;
         if branch_id != "main"
             && event.sequence > applied.max(history.latest_reply)
@@ -289,38 +310,29 @@ impl Worker {
                 return Ok(());
             }
         }
-        let Some(branch_id) = self.task_history_queue.pop_front() else {
-            if self.methods.contains("session.tool.get") {
-                let mut shown = vec![self.focus.clone()];
-                if let Some(side) = &self.side
-                    && side != &self.focus
-                {
-                    shown.push(side.clone());
-                }
-                for branch in shown {
-                    if !self
-                        .task_history
-                        .get(&branch)
-                        .is_some_and(|history| history.done)
-                    {
-                        continue;
-                    }
-                    let missing = transcript_mut(&mut self.projection, &mut self.lines, &branch)
-                        .and_then(|projection| projection.missing_tool());
-                    if let Some((request_id, call_id)) = missing {
-                        if let Some(projection) =
-                            transcript_mut(&mut self.projection, &mut self.lines, &branch)
-                        {
-                            projection.tool_lookup(&request_id, &call_id, None);
-                        }
-                        match self.client.send("session.tool.get",json!({"sessionId":self.session_id,"branchId":branch,"requestId":request_id,"callId":call_id})).await {
-                            Ok(id)=>self.task_history_request=Some(HistoryRequest { id,session_id:self.session_id.clone(),branch_id:branch,current:true,stage:ReadStage::ToolOrigin { request_id,call_id } }),
-                            Err(error)=>self.send(Update::Notice(format!("Tool origin: {error}"))),
-                        }
-                        break;
-                    }
+        if let Some((branch_id, request_id, call_id)) = self.tool_origins.pop_front() {
+            if !transcript_mut(&mut self.projection, &mut self.lines, &branch_id).is_some_and(
+                |projection| {
+                    projection.rows().iter().any(|row| {
+                        row.batch.as_deref() == Some(&request_id)
+                            && row.call_id.as_deref() == Some(&call_id)
+                            && !row.tool_lookup_done
+                    })
+                },
+            ) {
+                return Ok(());
+            }
+            match self.client.send("session.tool.get", json!({"sessionId":self.session_id,"branchId":branch_id,"requestId":request_id,"callId":call_id})).await {
+                Ok(id) => self.task_history_request = Some(HistoryRequest { id, session_id:self.session_id.clone(), branch_id, current:true, stage:ReadStage::ToolOrigin { request_id,call_id } }),
+                Err(error) => {
+                    if let Some(projection) = transcript_mut(&mut self.projection,&mut self.lines,&branch_id) { projection.tool_lookup(&request_id,&call_id,None); }
+                    self.send(Update::Notice(format!("Tool origin: {error}")));
+                    self.changed();
                 }
             }
+            return Ok(());
+        }
+        let Some(branch_id) = self.task_history_queue.pop_front() else {
             return Ok(());
         };
         if !self.client.supports(&["session.history.latestTurn"]) {
@@ -338,6 +350,11 @@ impl Worker {
                 json!({"sessionId":self.session_id,"branchId":branch_id}),
             )
         } else if self.task_history[&branch_id].window_complete {
+            if self.task_history[&branch_id].ended {
+                self.finish_window(&branch_id);
+                self.changed();
+                return Ok(());
+            }
             for required in ["session.input.pending", "session.turn.get"] {
                 if !self.methods.contains(required) {
                     self.fail_inventory(
@@ -379,9 +396,12 @@ impl Worker {
                 } else {
                     "session.history"
                 },
-                self.task_history[&branch_id]
-                    .window
-                    .params(&self.session_id, &branch_id),
+                self.task_history[&branch_id].window.params_with_display(
+                    &self.session_id,
+                    &branch_id,
+                    self.client.offers("session.history.display.tail"),
+                    self.client.offers("session.history.display.transcript"),
+                ),
             )
         };
         match self.client.send(method, params).await {
@@ -436,8 +456,22 @@ impl Worker {
                         projection.tool_lookup(request_id, call_id, read.call);
                     }
                 }
-                Ok(_) => self.send(Update::Notice("Tool origin identity changed".into())),
-                Err(error) => self.send(Update::Notice(format!("Tool origin: {error}"))),
+                Ok(_) => {
+                    if let Some(projection) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &request.branch_id)
+                    {
+                        projection.tool_lookup(request_id, call_id, None);
+                    }
+                    self.send(Update::Notice("Tool origin identity changed".into()));
+                }
+                Err(error) => {
+                    if let Some(projection) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &request.branch_id)
+                    {
+                        projection.tool_lookup(request_id, call_id, None);
+                    }
+                    self.send(Update::Notice(format!("Tool origin: {error}")));
+                }
             }
             self.changed();
             return Ok(());
@@ -518,6 +552,8 @@ impl Worker {
             .map_err(|error| format!("Invalid history reply: {error}"))?;
             history.window.push(page).map_err(|error| error.to_string())
         });
+        let window_ready = matches!(result, Ok(true));
+        let earlier = history.earlier == EarlierRead::Reading;
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
@@ -534,7 +570,7 @@ impl Worker {
                     return Err(format!("Main branch history: {error}").into());
                 }
             }
-            Ok(false) => self.task_history_queue.push_back(request.branch_id),
+            Ok(false) => self.task_history_queue.push_back(request.branch_id.clone()),
             Ok(true) => {
                 let events = history.window.take();
                 let missing_prefix = history.window.before.is_some();
@@ -554,7 +590,9 @@ impl Worker {
                     for event in events {
                         self.replay(&request.branch_id, event);
                     }
-                    self.task_history_queue.push_back(request.branch_id.clone());
+                    if !self.task_history[&request.branch_id].ended {
+                        self.task_history_queue.push_back(request.branch_id.clone());
+                    }
                 }
                 if missing_prefix {
                     self.send(Update::Notice(
@@ -564,6 +602,12 @@ impl Worker {
             }
         }
         self.changed();
+        if window_ready {
+            if !earlier && self.task_history[&request.branch_id].ended {
+                self.finish_window(&request.branch_id);
+            }
+            self.publish();
+        }
         Ok(())
     }
 
@@ -600,7 +644,7 @@ impl Worker {
             projection.set_running(running);
         }
         for event in live {
-            if event.sequence > through {
+            if event.sequence > through || matches!(event.content, EventContent::Configuration(_)) {
                 self.task_event(branch, event);
             }
         }
@@ -937,6 +981,53 @@ mod tests {
             worker.task_history["b-7c"].window.before,
             Some(2),
             "the window holds the older request the page ended at"
+        );
+    }
+
+    /// A branch that ends while its older page is in flight does not finish
+    /// its window on that page: the page is history the window has not read
+    /// yet, not the branch's first window. Only a reply that answered no
+    /// earlier read finishes an ended branch.
+    #[tokio::test]
+    async fn an_ended_branch_does_not_finish_on_an_earlier_page() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        worker
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
+            .await
+            .unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(200);
+            history.window.through = Some(300);
+        }
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = false;
+            history.ended = true;
+        }
+        let older: Vec<_> = (2..=101)
+            .map(|sequence| text(sequence, &format!("r-older-{sequence}"), "older "))
+            .collect();
+        answer(
+            &mut worker,
+            json!({"events": older, "through": 300, "nextBefore": 2, "nextAfter": 101}),
+        )
+        .await;
+
+        assert!(
+            !worker.task_history["b-7c"].done,
+            "an earlier page leaves the ended branch's window unfinished"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].earlier,
+            EarlierRead::None,
+            "the earlier page settled the read it answered"
         );
     }
 

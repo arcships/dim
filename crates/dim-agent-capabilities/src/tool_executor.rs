@@ -15,6 +15,7 @@ use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
+    collections::BTreeMap,
     future::Future,
     num::NonZeroU64,
     panic::AssertUnwindSafe,
@@ -528,15 +529,24 @@ impl DynPlugin for ToolExecutorPlugin {
                             };
                             if unloading {
                                 let through = timeline.committed();
+                                let parents = results.iter()
+                                    .filter(|item| item.result.effects.is_none())
+                                    .map(|item| item.call_id.clone())
+                                    .collect::<Vec<_>>();
+                                let mut children = match child_effects(&timeline, &parents, &batch.request_id, through).await {
+                                    Ok(children) => children,
+                                    Err(error) => {
+                                        errors.push(error);
+                                        BTreeMap::new()
+                                    }
+                                };
                                 for item in &mut results {
                                     let mut effects = item.result.effects.take();
-                                    if effects.is_none() {
-                                        let (_, child) = child_effects(&timeline, &item.call_id, through)
-                                            .await
-                                            .unwrap_or_default();
-                                        if !child.is_empty() {
-                                            effects = Some(child);
-                                        }
+                                    if effects.is_none()
+                                        && let Some((_, child)) = children.remove(&item.call_id)
+                                        && !child.is_empty()
+                                    {
+                                        effects = Some(child);
                                     }
                                     item.result = reload_cancelled();
                                     item.result.effects = effects;
@@ -619,10 +629,13 @@ struct OpenBatch {
 
 async fn child_effects(
     timeline: &Timeline,
-    parent_call_id: &str,
+    parent_call_ids: &[String],
+    request_id: &str,
     through: u64,
-) -> dim_agent_runtime::Result<(usize, Vec<ToolEffect>)> {
-    let mut seen = 0usize;
+) -> dim_agent_runtime::Result<BTreeMap<String, (usize, Vec<ToolEffect>)>> {
+    if parent_call_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let mut request = TimelineQuery {
         scope: TimelineQueryScope::Branch,
         from: None,
@@ -642,17 +655,26 @@ async fn child_effects(
                     },
                     QueryFilter::Compare {
                         left: QueryOperand::Field {
-                            path: "parent_call_id".into(),
+                            path: "data.request_id".into(),
                         },
                         comparison: QueryComparison::Eq,
                         right: QueryOperand::Value {
-                            value: parent_call_id.into(),
+                            value: request_id.into(),
                         },
+                    },
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "parent_call_id".into(),
+                        },
+                        values: parent_call_ids.iter().cloned().map(Into::into).collect(),
                     },
                 ],
             }),
             select: QuerySelect::Fields {
-                fields: vec!["data".into()],
+                fields: vec![
+                    "parent_call_id".into(),
+                    "data.results[].result.effects".into(),
+                ],
             },
             group_by: Vec::new(),
             pick: None,
@@ -663,25 +685,33 @@ async fn child_effects(
             after: None,
         }),
     };
-    let mut effects = Vec::new();
+    let mut children: BTreeMap<String, (usize, Vec<ToolEffect>)> = BTreeMap::new();
     loop {
         let reply = timeline.query(request.clone()).await?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("tool effects selects result data")
         };
         for row in rows {
-            let Some(QueryValue::Value { value }) = row.values.into_iter().next() else {
-                return Err(AgentError::fault(
-                    "ToolExecutor",
-                    "a child result has no data",
-                ));
+            let [
+                QueryValue::Value {
+                    value: serde_json::Value::String(parent),
+                },
+                QueryValue::Elements { values },
+            ] = <[_; 2]>::try_from(row.values).unwrap()
+            else {
+                unreachable!("child effect projections")
             };
-            let data: ToolResultData = serde_json::from_value(value).map_err(|error| {
-                AgentError::fault("ToolExecutor", format!("invalid child result: {error}"))
-            })?;
-            for result in data.results {
-                seen += 1;
-                if let Some(child) = result.result.effects {
+            let (seen, effects) = children.entry(parent).or_default();
+            *seen += values.len();
+            for value in values {
+                if let QueryValue::Value { value } = value {
+                    let child: Vec<ToolEffect> =
+                        serde_json::from_value(value).map_err(|error| {
+                            AgentError::fault(
+                                "ToolExecutor",
+                                format!("invalid child effects: {error}"),
+                            )
+                        })?;
                     effects.extend(child);
                 }
             }
@@ -695,7 +725,7 @@ async fn child_effects(
             .expect("tool result queries are paged")
             .after = Some(next);
     }
-    Ok((seen, effects))
+    Ok(children)
 }
 
 /// A committed batch without results was left by a reload and settles as
@@ -891,38 +921,37 @@ async fn rebuild(owner: &ToolExecutor, timeline: &Timeline) -> dim_agent_runtime
             .expect("operation queries are paged")
             .after = Some(next);
     }
-    // Children settle first, so the outer aggregation can read their
-    // terminal results and copy the confirmed effects.
     batches.sort_by_key(|batch| batch.parent_call_id.is_none());
     for batch in batches {
-        let mut children = 0usize;
-        let mut effects = Vec::new();
-        if batch.parent_call_id.is_none() {
-            let through = timeline.committed();
-            for call_id in &batch.calls {
-                let (seen, child) = child_effects(timeline, call_id, through).await?;
-                children += seen;
-                effects.extend(child);
-            }
-        }
-        let mut result = if children > 0 {
-            reload_settled(ToolResult::error(
-                "Tool did not finish before Capability reload; an effect may have happened",
-            ))
+        let mut children = if batch.parent_call_id.is_none() {
+            child_effects(
+                timeline,
+                &batch.calls,
+                &batch.request_id,
+                timeline.committed(),
+            )
+            .await?
         } else {
-            reload_settled(ToolResult::error(format!(
-                "Tool was not executed: {CAPABILITY_RELOADING}"
-            )))
+            BTreeMap::new()
         };
-        if !effects.is_empty() {
-            result.effects = Some(effects);
-        }
         let results = batch
             .calls
             .into_iter()
-            .map(|call_id| ToolCallResult {
-                call_id,
-                result: result.clone(),
+            .map(|call_id| {
+                let (seen, effects) = children.remove(&call_id).unwrap_or_default();
+                let mut result = if seen > 0 {
+                    reload_settled(ToolResult::error(
+                        "Tool did not finish before Capability reload; an effect may have happened",
+                    ))
+                } else {
+                    reload_settled(ToolResult::error(format!(
+                        "Tool was not executed: {CAPABILITY_RELOADING}"
+                    )))
+                };
+                if !effects.is_empty() {
+                    result.effects = Some(effects);
+                }
+                ToolCallResult { call_id, result }
             })
             .collect();
         let event = EventDraft::from(EventKind::ToolResult(ToolResultData {

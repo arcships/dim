@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch } from "lucide-vue-next"
 import type { LineView } from "../../lines"
 import { useChatStore } from "../../stores/chat"
 import { useUiStore } from "../../stores/ui"
@@ -52,7 +51,7 @@ function parent(line: LineView): string {
 <template>
   <div class="lines-tree">
     <div v-if="!hasLines" class="lines-empty">
-      <span class="lines-empty-icon" aria-hidden="true"><GitBranch :size="28" /></span>
+      <span class="lines-empty-icon" aria-hidden="true"><UIcon name="i-lucide-git-branch" class="size-7" /></span>
       <strong>{{ t("lines.emptyTitle") }}</strong>
       <p>{{ t("lines.emptyHint") }}</p>
     </div>
@@ -81,9 +80,9 @@ function parent(line: LineView): string {
               <span> · {{ lineStateLabel(t, line.state) }}</span>
             </span>
           </button>
-          <button v-if="canEnd(line)" type="button" class="ui-button lines-end" data-variant="ghost" data-size="xs" :aria-label="t('lines.endLine', { name: lineName(t, line, line.id) })" @click="end(line)">
+          <UButton v-if="canEnd(line)" class="lines-end" color="neutral" variant="ghost" size="xs" :aria-label="t('lines.endLine', { name: lineName(t, line, line.id) })" @click="end(line)">
             {{ t("lines.end") }}
-          </button>
+          </UButton>
         </template>
       </li>
     </ol>
