@@ -515,6 +515,11 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             (39, "", false),
             (40, "", false),
             (41, "", false),
+            (42, "", false),
+            (43, "", false),
+            (44, "", false),
+            (45, "", false),
+            (46, "", false),
         ] {
             let older = directory.join(format!("copies/v{version}.sqlite"));
             let catalog = if version < 23 {
@@ -583,6 +588,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             } else { "" };
             changed(&database, &older, &format!("{catalog} {grants} {output} {dropped} {end_index} {worktrees} {worktree_time} {submission} {members} {text}
                 {identities}
+                DROP INDEX timeline_events_branch_interrupts;
                 DROP TABLE agent_store_format;
                 CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = {version}));
                 INSERT INTO agent_store_format VALUES ({version});"));
@@ -598,7 +604,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
             }
             if version < 30 {
                 without_origin_column(&older);
-            } else {
+            } else if version < 42 {
                 // Its text names the columns v26 adds, so it comes before the
                 // rebuild that removes them.
                 without_automation_origin(&older);

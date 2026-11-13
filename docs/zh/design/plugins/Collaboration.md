@@ -25,7 +25,7 @@ leader 的 `agent` request schema 要求新生成的调用带有字符串 `title
 
 为兼容不同 Provider，标题 schema 只使用 `type: string` 和 `minLength: 1`，不使用正则表达式；非空白、单行的合同由准入检查执行。
 
-`collaboration/request` 将 `title` 持久化为可选字符串，`session.collaboration.pending` 在每项的 `request` 中原样携带它。每次 request 都拥有自己的标题，包括向现有成员发起的 request。缺失标题保持缺失：没有此字段的旧调用和事实仍可读取，序列化时省略缺失值。持久化采用[原生格式 v47](../../../design/appserver/native-storage-format.md#v47-task-titles)，只升级格式标记、单向准入，使旧的严格读取器在启动时拒绝新库。schema 对标题的描述是此显示字段的 protocol；协调 policy、成员执行、取消与结算不变。既有 Collaboration 服务数据面不变，不新增服务。
+`collaboration/request` 将 `title` 持久化为可选字符串，`session.collaboration.pending` 在每项的 `request` 中原样携带它。每次 request 都拥有自己的标题，包括向现有成员发起的 request。缺失标题保持缺失：没有此字段的旧调用和事实仍可读取，序列化时省略缺失值。持久化采用[原生格式 v48](../../../design/appserver/native-storage-format.md#v48-task-titles)，只升级格式标记、单向准入，使旧的严格读取器在启动时拒绝新库。schema 对标题的描述是此显示字段的 protocol；协调 policy、成员执行、取消与结算不变。既有 Collaboration 服务数据面不变，不新增服务。
 
 ## 2. guide 条目
 

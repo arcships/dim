@@ -1816,3 +1816,7 @@ fn home() -> PathBuf {
     }
     home
 }
+
+pub fn goal_state(objective: Option<&str>, state: Value, evaluator: bool) -> EventKind {
+    EventKind::Extension(dim_agent_types::ExtensionEvent::new("goal", "state", serde_json::json!({"schema":"goal-state/v1", "operation":if objective.is_some(){"set"}else{"clear"}, "objective":objective, "state":state, "judge":if evaluator{"evaluator"}else{"model"}, "input_id":null})).unwrap())
+}

@@ -2947,6 +2947,7 @@ struct PageReads {
     /// reader's, such as a line's BranchLine reading its parent's activity
     /// through the same query.
     read_branch: std::sync::Mutex<Option<String>>,
+    read_inherited: std::sync::atomic::AtomicBool,
     /// The ids the pages returned in read order, while the pinned call runs.
     read: std::sync::Mutex<Option<Vec<String>>>,
 }
@@ -2963,7 +2964,14 @@ impl TimelineStore for PageReads {
             let result = self.memory.query(scope, query, page).await?;
             let recording = self.active.load(std::sync::atomic::Ordering::SeqCst)
                 && self.read_branch.lock().unwrap().as_deref()
-                    == Some(scope.key.branch_id.as_str());
+                    == Some(scope.key.branch_id.as_str())
+                && (!self
+                    .read_inherited
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    || scope
+                        .segments
+                        .iter()
+                        .any(|segment| segment.branch_id != scope.key.branch_id));
             if !recording {
                 return Ok(result);
             }
@@ -3089,6 +3097,13 @@ impl PageReads {
     }
     /// Writes once to `branch` of `session` after the next first page.
     fn pin_head(&self, session: &Session, branch: &str) {
+        self.read_inherited.store(
+            session
+                .branches()
+                .iter()
+                .any(|info| info.id == branch && info.parent.is_some()),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         *self.inject.lock().unwrap() = Some((session.clone(), branch.to_owned()));
         *self.injected.lock().unwrap() = None;
         self.cuts.lock().unwrap().clear();

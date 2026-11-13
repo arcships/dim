@@ -339,20 +339,12 @@ impl SqliteTimelineStore {
         if after > through {
             return Err(AgentError::InvalidInput("future Timeline cursor".into()));
         }
-        let session = key.session_id.clone();
-        self.segments(
-            &session,
-            vec![(key.branch_id.clone(), through..=through)],
-            request_bodies,
-        )
-        .await?;
+        if through > self.head(key).await? {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        self.batch_end(key, through).await?;
         if after > 0 && after != through {
-            self.segments(
-                &session,
-                vec![(key.branch_id.clone(), after..=after)],
-                request_bodies,
-            )
-            .await?;
+            self.batch_end(key, after).await?;
         }
         let mut end = through.min(after.saturating_add(limit as u64));
         if end <= after {
@@ -3139,14 +3131,6 @@ impl TimelineStore for SqliteTimelineStore {
 }
 
 fn directory_rows(connection: &Connection, session: &str) -> Result<Vec<StoredBranch>> {
-    let config: String = connection
-        .query_row(
-            "SELECT config FROM agent_sessions WHERE session_id=?1",
-            [session],
-            |row| row.get(0),
-        )
-        .map_err(error)?;
-    let _: SessionConfig = serde_json::from_str(&config).map_err(error)?;
     let rows = connection
         .prepare("SELECT branch_id, info, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
         .map_err(error)?

@@ -129,3 +129,7 @@ impl PromptSourcesPlugin {
 ```
 
 The language source's binding is one more arm of the source loader: name `dim/language`, delivery `State`, order 220, body from the operator's setting when one is carried and no entry when none is.
+
+## Reading and adopting current source values
+
+Opening loads the current sources once. The periodic branch checker starts after that initial opening interval; a checker mounted on an already active branch still checks immediately. Each instructions source reads only its own file body. The checker compares each loaded target through the existing state watch and hands changed values to the existing resolved-source adoption; it does not reload their names. Language adoption keeps the Session language gate through its final load and adoption. No file cache or additional persistent event is introduced.

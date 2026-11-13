@@ -55,9 +55,9 @@ read the store directly.
 
 ### 0.1 Fields read for one title attempt
 
-1. Select the first `input/applied` whose `data.input_id` names an `input/message` that has `data.user`, or is Goal's applied `goal:state` record stating an objective (A10). Return only `data.input_id`. The adoption's position defines “first”; creation order does not.
-2. Check that the triggering input id names such an `input/message` at T. Return only its id. Other raw-block inputs, including Goal's triggers and continuations, do not trigger generation.
-3. Read the selected first input's `data.user` by id, or its `data.blocks` when it is Goal's record; take the text blocks or the `<objective>` element. This is the only message body read. A text block after the first that starts with a runtime marker is context a capability appended, not the operator's words (Hooks A.6.2, Skills §9), so the title leaves it out; the first block is the operator's whatever it opens with.
+1. Check the triggering input by id and capture published T. It must be an `input/message` with `data.user`, or Goal's applied `goal:state` record stating an objective (A10). Return only its id. If it does not qualify, stop here without querying earlier inputs. Other raw-block inputs, including runtime notifications, Goal's triggers and continuations, do not trigger generation.
+2. At T, select the first `input/applied` whose `data.input_id` names such an eligible `input/message`. Return only `data.input_id`. The adoption's position defines “first”; creation order does not.
+3. Read the selected first input's `data.user` by id, or its `data.blocks` when it is Goal's record; take the text blocks or the `<objective>` element. This is the message body used for generation; eligibility predicates also inspect the referenced input. A text block after the first that starts with a runtime marker is context a capability appended, not the operator's words (Hooks A.6.2, Skills §9), so the title leaves it out; the first block is the operator's whatever it opens with.
 4. Select the last `context/configured` at T and read its adopted provider/model identifiers. With no adopted configuration, use the existing excerpt fallback.
 
 Each query returns at most one row. No full-history page or input map is retained. The user content or

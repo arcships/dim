@@ -20,7 +20,7 @@ This design changes no event format or search matching rule. The [native storage
 | Branch tool activity | Raw page endpoint from batch metadata, then display fields within that range. [Timeline branches](timeline-branches.md#activity-page-execution) owns rendering and cursor behavior. |
 | Recall search | Candidate positions/identity fields, then the required facts for small batches of candidates, then existing narrative rendering and exact matching. Search stops once the result page and continuation evidence are available. |
 | Context request preparation | Selected adopted inputs/tool results and required request components for that request. Rebuilding a concrete request may legitimately consume a large selected history. The request owns that memory. |
-| Restore integrity / explicit export | Their full-range reads serve integrity or an explicit full export; they do not define the default display or state-query path. |
+| Explicit integrity / export | Their full-range reads serve an explicitly requested integrity check or full export; they do not define the default display or state-query path. |
 
 ## Page execution
 
@@ -37,8 +37,10 @@ referenced content cannot use that early limit.
 Input ids use the event identity index. Request relations use the existing request identity index.
 A related disjunction can compile into separate indexed alternatives. Safe text predicates inside
 those relations test the text index by event identity or request partition; they do not rebuild a
-complete temporary text-candidate set for each output page. Ancestry concatenation and publishing
-tails keep the conservative existing candidate path when a direct index predicate cannot preserve it.
+complete temporary text-candidate set for each output page. A captured publishing tail
+that contains none of the related types does not disable the indexed relation. Relevant
+uncommitted related facts keep the conservative candidate path; ancestry and fixed
+terminal visibility remain unchanged.
 
 General grouping, unsupported relation shapes and content-dependent predicates retain their complete
 fixed scope. This design does not promise constant work for arbitrary query expressions.
@@ -117,3 +119,14 @@ temporary content tables belong only to one query.
 对少量明确类型的有序窗口，候选阶段分别使用 timeline_events_by_kind 的 session、branch、kind 和 sequence 范围。每个类型先取本页所需的候选上限，再按位置合并并限制总数；不能为满足 ORDER BY sequence 改扫整条分支。原范围仍用于关系判断，祖先切点、合并输出与 publishing tail 的语义不变。
 
 这项优化使用现有索引，不改数据库格式。大量类型或不能安全提前限量的表达式保留通用执行路径，成本另报。验收固定匹配对象数量，将无关历史从 100 增到 5,000；覆盖正反向所有页面、First/Last、重复类型，并统计全部选择与属性语句的累计 VM 指令。
+
+## Indexed position and identity selection
+
+A one-kind first/last query uses the same field index as a multi-kind query: a known turn ID drives the turn index, a known request ID drives the request index. Position-only ordering does not justify choosing the whole sequence range before applying the identity predicate. The Store excludes the packed-output expansion when neither the origin nor any related kind can be text/thinking. Related facts preserve their fixed scope.
+
+For inline non-output arrays, related predicates can test the selected event's own elements
+inside the existing identity seek. This avoids materializing every historical tool result
+just to test a known request/call. Predicates that require referenced content retain their
+existing execution path. Position-limited non-output candidate reads apply the exact
+predicate and ordered limit before projecting fields; limiting an incomplete predicate is
+not allowed.

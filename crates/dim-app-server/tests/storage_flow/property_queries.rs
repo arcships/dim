@@ -7,6 +7,348 @@ use serde_json::{Value, json};
 use std::num::NonZeroU64;
 
 #[tokio::test]
+async fn position_projection_returns_inline_and_packed_coordinates_without_a_second_body_query() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let records = vec![
+        record(
+            1,
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "summary",
+                    "saved",
+                    json!({"payload": "x".repeat(64 * 1024)}),
+                )
+                .unwrap(),
+            ),
+        ),
+        text(2, "first"),
+        text(3, "second"),
+    ];
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let query = fields(&["position", "position.sequence", "position.branch_id"]);
+    parity(&store, &memory, &scope(3), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &query, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("position rows")
+    };
+    assert_eq!(rows.len(), 3);
+    assert!(
+        store
+            .take_query_statistics()
+            .iter()
+            .all(|statement| statement.stage != "selected_properties")
+    );
+    let mut selected = fields(&[]);
+    selected.select = QuerySelect::Events;
+    selected.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "position.sequence".into(),
+        },
+        values: vec![json!(3), json!(1), json!(3)],
+    });
+    parity(&store, &memory, &scope(3), &selected).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &selected, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Events { events } = result.result else {
+        panic!("point events")
+    };
+    assert_eq!(
+        events
+            .iter()
+            .map(|row| row.position.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    let statistics = store.take_query_statistics();
+    assert_eq!(
+        statistics
+            .iter()
+            .filter(|statement| statement.stage == "selected_events")
+            .count(),
+        1
+    );
+    assert!(
+        statistics
+            .iter()
+            .all(|statement| statement.stage != "selection")
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn indexed_input_controls_do_not_compare_every_selected_identity_against_every_row() {
+    let mut costs = Vec::new();
+    for size in [16u64, 128] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..size {
+            let id = format!("input-{i}");
+            records.push(query_record(
+                2 * i + 1,
+                2 * i + 1,
+                &id,
+                EventKind::InputMessage(InputMessageData::text("input", Some(InputMode::Append))),
+            ));
+            records.push(query_record(
+                2 * i + 2,
+                2 * i + 2,
+                &format!("applied-{i}"),
+                EventKind::InputApplied(InputAppliedData {
+                    input_id: id.clone(),
+                    mode: Some(InputMode::Append),
+                }),
+            ));
+            ids.push(json!(id));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                eq("kind", json!("input/applied")),
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "data.input_id".into(),
+                    },
+                    values: ids,
+                },
+            ],
+        });
+        query.group_by = vec!["kind".into(), "data.input_id".into()];
+        query.pick = Some(QueryPick::Last);
+        parity(&store, &memory, &scope(size * 2), &query).await;
+        store.record_query_statistics();
+        let result = store
+            .query(&scope(size * 2), &query, Some(&page(128)))
+            .await
+            .unwrap();
+        let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+            panic!("input controls")
+        };
+        assert_eq!(rows.len(), size as usize);
+        let statistics = store.take_query_statistics();
+        assert!(statistics.iter().any(|statement| {
+            statement
+                .plan
+                .iter()
+                .any(|step| step.contains("timeline_events_inputs"))
+        }));
+        costs.push(
+            statistics
+                .iter()
+                .map(|statement| statement.vm_steps as u64)
+                .sum::<u64>(),
+        );
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 14,
+        "identity-list growth must not cause pairwise comparison: {costs:?}"
+    );
+}
+
+#[tokio::test]
+async fn scalar_projection_of_non_output_events_keeps_missing_and_null_without_output_expansion() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    let records = vec![record(
+        1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "summary",
+                "saved",
+                json!({"status":"completed","optional":null,"payload":"x".repeat(64 * 1024)}),
+            )
+            .unwrap(),
+        ),
+    )];
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let mut query = fields(&["id", "data.status", "data.optional", "data.absent"]);
+    query.filter = Some(eq("kind", json!("summary/saved")));
+    parity(&store, &memory, &scope(1), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(1), &query, Some(&page(1)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("selected fields")
+    };
+    assert_eq!(
+        rows[0].values[2],
+        dim_agent_runtime::QueryValue::Value { value: Value::Null }
+    );
+    assert_eq!(rows[0].values[3], dim_agent_runtime::QueryValue::Missing);
+    let statistics = store.take_query_statistics();
+    let projection = statistics
+        .iter()
+        .find(|statement| statement.stage == "selected_properties")
+        .unwrap();
+    assert!(
+        !projection.plan.iter().any(|step| step.contains("UNION")),
+        "a proven non-output kind must not open packed output rows: {statistics:?}"
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn alternative_text_candidates_seek_positions_without_scanning_unrelated_inputs() {
+    let mut costs = Vec::new();
+    for inputs in [100u64, 1_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let records: Vec<_> = (1..=inputs)
+            .map(|sequence| {
+                record(
+                    sequence,
+                    EventKind::InputMessage(InputMessageData::text(
+                        if sequence == 1 {
+                            "foundwordx foundwordy".into()
+                        } else {
+                            format!("Ordinary message {sequence}: {}", "content ".repeat(128))
+                        },
+                        None,
+                    )),
+                )
+            })
+            .collect();
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut measured = Vec::new();
+        for (terms, expected) in [
+            (["absentwordx", "absentwordy"], false),
+            (["foundwordx", "foundwordy"], true),
+        ] {
+            let alternatives = QueryFilter::Or {
+                conditions: terms
+                    .into_iter()
+                    .map(|term| QueryFilter::TextCandidate {
+                        field: "data".into(),
+                        partition_by: vec![],
+                        terms: vec![term.into()],
+                    })
+                    .collect(),
+            };
+            let mut query = fields(&["id"]);
+            query.select = QuerySelect::Exists;
+            query.filter = Some(QueryFilter::And {
+                conditions: vec![eq("kind", json!("input/message")), alternatives],
+            });
+            store.record_query_statistics();
+            let result = store.query(&scope(inputs), &query, None).await.unwrap();
+            assert!(
+                matches!(result.result, dim_agent_runtime::QueryOutput::Exists { exists } if exists == expected)
+            );
+            let statistics = store.take_query_statistics();
+            measured.push(statistics.iter().map(|stat| stat.vm_steps).sum::<i32>());
+            parity(&store, &memory, &scope(inputs), &query).await;
+            query.select = QuerySelect::Fields {
+                fields: vec!["id".into()],
+            };
+            parity(&store, &memory, &scope(inputs), &query).await;
+            let Some(QueryFilter::And { conditions }) = &mut query.filter else {
+                unreachable!()
+            };
+            let QueryFilter::Or { conditions } = &mut conditions[1] else {
+                unreachable!()
+            };
+            conditions.push(eq("id", json!(format!("event-{inputs}"))));
+            parity(&store, &memory, &scope(inputs), &query).await;
+        }
+        println!("Alternative text candidates inputs={inputs} VM={measured:?}");
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1]
+            .iter()
+            .zip(&costs[0])
+            .all(|(large, small)| large < &(small * 2)),
+        "10x more unrelated inputs must not cause a history scan: {costs:?}"
+    );
+}
+
+#[tokio::test]
 async fn recovery_relations_bound_all_physical_roles_before_projection() {
     let mut costs = Vec::new();
     for unrelated in [100, 5_000] {
@@ -175,61 +517,67 @@ async fn mixed_kind_identity_queries_seek_the_association_index() {
             .await
             .unwrap();
         let mut measured = Vec::new();
-        for (field, index, prefix) in [
-            ("data.request_id", "timeline_events_requests", "request"),
-            ("data.input_id", "timeline_events_inputs", "input"),
-        ] {
-            for present in [true, false] {
-                let mut query = fields(&["position.sequence"]);
-                query.filter = Some(QueryFilter::And {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
+        for single_kind in [true, false] {
+            for (field, index, prefix) in [
+                ("data.request_id", "timeline_events_requests", "request"),
+                ("data.input_id", "timeline_events_inputs", "input"),
+            ] {
+                for present in [true, false] {
+                    let mut query = fields(&["position.sequence"]);
+                    query.filter = Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: if single_kind {
+                                    vec![json!("owner/a")]
+                                } else {
+                                    vec![json!("owner/a"), json!("owner/b")]
+                                },
                             },
-                            values: vec![json!("owner/a"), json!("owner/b")],
-                        },
-                        QueryFilter::In {
-                            value: QueryOperand::Field { path: field.into() },
-                            values: vec![json!(format!(
-                                "{prefix}-{}",
-                                if present { 0 } else { size }
-                            ))],
-                        },
-                    ],
-                });
-                for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
-                    query.pick = pick;
-                    store.record_query_statistics();
-                    let reply = store
-                        .query(&scope(size * 2), &query, Some(&page(3)))
-                        .await
-                        .unwrap();
-                    let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
-                        panic!("selected identity positions")
-                    };
-                    assert_eq!(
-                        rows.len(),
-                        if present {
-                            if pick.is_some() { 1 } else { 2 }
-                        } else {
-                            0
-                        }
-                    );
-                    let stats = store.take_query_statistics();
-                    assert!(
-                        stats
-                            .iter()
-                            .flat_map(|stat| &stat.plan)
-                            .any(|line| line.contains(index) && line.contains("<expr>=?")),
-                        "identity constraints must select the association, not just kind: {stats:?}"
-                    );
-                    measured.push(
-                        stats
-                            .iter()
-                            .map(|stat| i64::from(stat.vm_steps))
-                            .sum::<i64>(),
-                    );
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: field.into() },
+                                values: vec![json!(format!(
+                                    "{prefix}-{}",
+                                    if present { 0 } else { size }
+                                ))],
+                            },
+                        ],
+                    });
+                    for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
+                        query.pick = pick;
+                        store.record_query_statistics();
+                        let reply = store
+                            .query(&scope(size * 2), &query, Some(&page(3)))
+                            .await
+                            .unwrap();
+                        let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
+                            panic!("selected identity positions")
+                        };
+                        assert_eq!(
+                            rows.len(),
+                            if present {
+                                if pick.is_some() || single_kind { 1 } else { 2 }
+                            } else {
+                                0
+                            }
+                        );
+                        let stats = store.take_query_statistics();
+                        assert!(
+                            stats
+                                .iter()
+                                .flat_map(|stat| &stat.plan)
+                                .any(|line| line.contains(index) && line.contains("<expr>=?")),
+                            "identity constraints must select the association, not just kind: {stats:?}"
+                        );
+                        measured.push(
+                            stats
+                                .iter()
+                                .map(|stat| i64::from(stat.vm_steps))
+                                .sum::<i64>(),
+                        );
+                    }
                 }
             }
         }
@@ -1696,7 +2044,7 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
                     sequence,
                     EventKind::InputMessage(InputMessageData::text(
                         if sequence == size {
-                            "uniqueneedle"
+                            "uniqueneedle op=\"set\""
                         } else {
                             "ordinary content"
                         },
@@ -1723,7 +2071,12 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
         .await
         .unwrap();
         let mut measured = Vec::new();
-        for (term, expected) in [("uniqueneedle", 1), ("absentwordxyz", 0)] {
+        for (term, expected) in [
+            ("uniqueneedle", 1),
+            ("absentwordxyz", 0),
+            ("op=", 1),
+            ("absent=", 0),
+        ] {
             for (related, through, expected) in [
                 (false, size, expected),
                 (true, size, expected),
@@ -2742,6 +3095,462 @@ async fn optional_physical_properties_keep_typed_boolean_semantics() {
                     query.select = select;
                     parity(&store, &memory, &scope(10), &query).await;
                 }
+            }
+        }
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn kind_pages_bound_index_work_and_preserve_packed_output_cursors() {
+    let mut costs = Vec::new();
+    for size in [100, 1000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db);
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        for sequence in 1..=size {
+            records.push(record(
+                sequence,
+                EventKind::Extension(
+                    ExtensionEvent::new("hidden", "saved", json!({"payload":"x".repeat(2048)}))
+                        .unwrap(),
+                ),
+            ));
+        }
+        for sequence in size + 1..=size * 2 {
+            records.push(text(sequence, &"y".repeat(512)));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec![
+                "input/message".into(),
+                "step/text".into(),
+                "step/thinking".into(),
+            ],
+        });
+        query.order_by = vec![QueryOrder {
+            key: QueryOrderKey::Position,
+            direction: TimelineQueryDirection::Descending,
+        }];
+        let scope = scope(size * 2);
+        let mut page = page(16);
+        let mut steps = 0;
+        for _ in 0..2 {
+            store.record_query_statistics();
+            let native = store.query(&scope, &query, Some(&page)).await.unwrap();
+            let stats = store.take_query_statistics();
+            steps += stats.iter().map(|s| i64::from(s.vm_steps)).sum::<i64>();
+            let expected = memory.query(&scope, &query, Some(&page)).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert!(
+                stats.iter().any(|s| s
+                    .plan
+                    .iter()
+                    .any(|line| line.contains("timeline_events_by_kind"))),
+                "{stats:?}"
+            );
+            assert!(
+                stats
+                    .iter()
+                    .all(|s| s.full_scan_steps == 0 && s.sorts == 0 && s.automatic_index_rows == 0),
+                "{stats:?}"
+            );
+            page.after = native.next;
+        }
+        eprintln!("kind page history={size} steps={steps}");
+        costs.push(steps);
+        let mut clipped = scope.clone();
+        clipped.segments[0].from = size + 7;
+        clipped.segments[0].through = size + 39;
+        query.select = QuerySelect::Fields {
+            fields: vec![
+                "position".into(),
+                "position.sequence".into(),
+                "position.branch_id".into(),
+            ],
+        };
+        for direction in [
+            TimelineQueryDirection::Ascending,
+            TimelineQueryDirection::Descending,
+        ] {
+            query.order_by[0].direction = direction;
+            parity(&store, &memory, &clipped, &query).await;
+        }
+        query.order_by.clear();
+        parity(&store, &memory, &clipped, &query).await;
+        store.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 3,
+        "fixed pages must not scan growing packed output: {costs:?}"
+    );
+}
+
+/// A membership list on a physical column binds its members once per statement
+/// role, and a role compiled only to learn whether a physical form exists must
+/// not leave its parameters behind. A statement numbers every parameter it
+/// binds, so a surplus over the roles that reach the SQL is a leak.
+#[tokio::test]
+async fn a_discarded_physical_check_leaves_no_parameter_behind() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("properties", &SessionConfig::default())
+        .await
+        .unwrap();
+    let members = 996;
+    let values: Vec<Value> = (0..members)
+        .map(|index| json!(format!("probe/absent-{index}")))
+        .collect();
+    let mut records = Vec::new();
+    for sequence in 1..=3 {
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": "alpha"})).unwrap(),
+            ),
+        ));
+    }
+    append(&store, key("properties", "main"), records)
+        .await
+        .unwrap();
+    let mut query = fields(&["position.sequence"]);
+    query.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values,
+    });
+    let mut count = query.clone();
+    count.select = QuerySelect::Count;
+    for (label, query, page, expected) in [
+        ("selection", query.clone(), Some(page(2)), members + 7),
+        ("count", count, None, members + 5),
+    ] {
+        store.record_query_statistics();
+        store.query(&scope(3), &query, page.as_ref()).await.unwrap();
+        let statements = store.take_query_statistics();
+        let statement = statements
+            .iter()
+            .find(|statement| {
+                statement.stage == label || (label == "count" && statement.stage == "scalar")
+            })
+            .unwrap_or_else(|| panic!("{label} prepares a statement"));
+        assert_eq!(
+            statement.parameters, expected,
+            "{label} binds {expected} parameters for {members} members"
+        );
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// Every value type and every size a membership list can carry must answer the
+/// same from storage and from the memory store, which has no list limit. The
+/// cases are grouped: which values match, the edges where an equality key and a
+/// comparison can disagree, the filter shapes around a membership, and the sizes
+/// where SQLite's expression depth and parameter count used to refuse the query.
+#[tokio::test]
+async fn membership_lists_match_the_memory_store_for_every_value_type_and_size() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("membership", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let mixed: Vec<Value> = vec![
+        json!("alpha"),
+        json!(1),
+        json!(1.0),
+        json!(true),
+        json!(null),
+        json!("beta"),
+        json!(2),
+        json!(-1),
+        json!(1.5),
+        json!(false),
+        json!(""),
+        json!("ünïcode"),
+        json!([1, 2]),
+        json!({"a": 1}),
+        json!(9007199254740993i64),
+        json!(9007199254740992.0),
+        json!(0),
+        json!(-0.0),
+    ];
+    let mut records = Vec::new();
+    for value in &mixed {
+        let sequence = records.len() as u64 + 1;
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": value})).unwrap(),
+            ),
+        ));
+    }
+    // A null tag, an array tag, and an event with no tag at all.
+    for data in [
+        json!({"tag": null}),
+        json!({"tag": ["alpha", "beta"]}),
+        json!({}),
+    ] {
+        records.push(record(
+            records.len() as u64 + 1,
+            EventKind::Extension(ExtensionEvent::new("probe", "saved", data).unwrap()),
+        ));
+    }
+    for (offset, kind) in ["probe/saved", "probe/other", "input/message"]
+        .into_iter()
+        .enumerate()
+    {
+        records.push(record(
+            records.len() as u64 + 1,
+            if kind == "input/message" {
+                EventKind::InputMessage(InputMessageData::text(format!("m{offset}"), None))
+            } else {
+                let name = kind.split('/').nth(1).unwrap();
+                EventKind::Extension(ExtensionEvent::new("probe", name, json!({})).unwrap())
+            },
+        ));
+    }
+    records.push(record(
+        records.len() as u64 + 1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "probe",
+                "saved",
+                json!({"items": [{"id": "yes", "ok": true}, {"id": 1}], "tag": "alpha"}),
+            )
+            .unwrap(),
+        ),
+    ));
+    let through = records.len() as u64;
+    append(&store, key("membership", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("membership", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let range = TimelineReadScope {
+        key: key("membership", "main"),
+        through,
+        segments: vec![TimelineReadSegment {
+            branch_id: "main".into(),
+            from: 1,
+            through,
+            stored_through: through,
+            tail: vec![],
+        }],
+    };
+    let in_list = |path: &str, values: Vec<Value>| QueryFilter::In {
+        value: QueryOperand::Field { path: path.into() },
+        values,
+    };
+    let eq = |path: &str, value: Value| QueryFilter::Compare {
+        left: QueryOperand::Field { path: path.into() },
+        comparison: QueryComparison::Eq,
+        right: QueryOperand::Value { value },
+    };
+
+    let mut cases: Vec<QueryFilter> = vec![
+        // The key and a comparison must agree on these pairs; the encoding of a
+        // member decides whether they do.
+        in_list("data.tag", vec![json!(1), json!(1.0)]),
+        in_list("data.tag", vec![json!(9007199254740993i64)]),
+        in_list("data.tag", vec![json!(9007199254740992.0)]),
+        in_list("data.tag", vec![json!(0)]),
+        in_list("data.tag", vec![json!(-0.0)]),
+        in_list("data.tag", vec![json!(true)]),
+        in_list("data.tag", vec![json!("1")]),
+        in_list("data.tag", vec![json!(null)]),
+        in_list("data.tag", mixed.clone()),
+        in_list("data.tag", vec![json!("alpha"), json!("alpha")]),
+        in_list("data.tag", Vec::new()),
+        in_list("data.tag", vec![json!(null), json!("alpha")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/absent")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/other")]),
+        QueryFilter::Or {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1)]),
+                in_list("data.tag", vec![json!(true), json!("beta")]),
+            ],
+        },
+        QueryFilter::Or {
+            conditions: mixed.iter().map(|v| eq("data.tag", v.clone())).collect(),
+        },
+        // A structured member can never match, and neither can an empty set.
+        in_list("data.tag", vec![json!([1, 2])]),
+        in_list("data.tag", vec![json!({"a": 1})]),
+        in_list("data.tag", vec![json!([1, 2]), json!({"a": 1})]),
+        // `Not` must keep a missing field, a null field and an array field.
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!("alpha"), json!(1)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!(null)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!([1, 2])])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("kind", vec![json!("probe/saved")])),
+        },
+        QueryFilter::And {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1), json!("beta")]),
+                QueryFilter::Not {
+                    condition: Box::new(in_list("data.tag", vec![json!(1)])),
+                },
+            ],
+        },
+        // Every operand form `In` accepts.
+        in_list("data.tag", vec![json!("alpha"), json!(1)]),
+        QueryFilter::Any {
+            field: "data.items".into(),
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Element { path: "id".into() },
+                values: vec![json!("yes"), json!(1), json!(null), json!(true)],
+            }),
+        },
+        QueryFilter::Exists {
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Outer {
+                    path: "data.tag".into(),
+                },
+                values: vec![json!("alpha"), json!(1)],
+            }),
+        },
+        QueryFilter::In {
+            value: QueryOperand::Value { value: json!(1) },
+            values: vec![json!(1), json!(1.0), json!("1")],
+        },
+    ];
+    // A long `Or` of comparisons stays a tree; a membership is what becomes a set.
+    for path in ["data.tag", "kind"] {
+        cases.push(QueryFilter::Or {
+            conditions: (0..997)
+                .map(|index| eq(path, json!(format!("absent-{index}"))))
+                .collect(),
+        });
+    }
+    // 12,000 members is past the old depth limit on every path. 20,000 on a
+    // physical column and on `id` is past the widest physical list the store
+    // binds: uncapped that list binds the members a second time and the
+    // statement exceeds SQLite's parameter count, so the cap is what keeps
+    // these cases answerable.
+    let wide = 12_000;
+    let capped = 20_000;
+    for (path, list) in [
+        (
+            "data.tag",
+            (0..wide).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+        (
+            "position.sequence",
+            (0..wide).map(|i| json!(9_000_000u64 + i as u64)).collect(),
+        ),
+        (
+            "id",
+            (0..wide).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+        (
+            "kind",
+            (0..capped)
+                .map(|i| json!(format!("probe/absent-{i}")))
+                .collect(),
+        ),
+        (
+            "id",
+            (0..capped).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+    ] {
+        cases.push(in_list(path, list));
+    }
+    for size in [997, 5_000] {
+        for path in ["data.tag", "kind", "position.sequence"] {
+            let member = |index: usize| match path {
+                "kind" => json!(format!("probe/absent-{index}")),
+                "position.sequence" => json!(9_000_000u64 + index as u64),
+                _ => json!(format!("absent-{index}")),
+            };
+            cases.push(in_list(path, (0..size).map(member).collect()));
+        }
+        // A known `kind` is what makes `position.sequence` a physical column.
+        cases.push(QueryFilter::And {
+            conditions: vec![
+                in_list("kind", vec![json!("probe/saved")]),
+                in_list(
+                    "position.sequence",
+                    (0..size)
+                        .map(|index| json!(9_000_000u64 + index as u64))
+                        .collect(),
+                ),
+            ],
+        });
+    }
+    for filter in cases {
+        for select in [
+            QuerySelect::Fields {
+                fields: vec!["position.sequence".into(), "data.tag".into()],
+            },
+            QuerySelect::Events,
+            QuerySelect::Count,
+            QuerySelect::Exists,
+        ] {
+            let query = QuerySpec {
+                filter: Some(filter.clone()),
+                select,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            };
+            let scalar = query.group_by.is_empty()
+                && matches!(query.select, QuerySelect::Count | QuerySelect::Exists);
+            let mut paging = (!scalar).then(|| page(50));
+            loop {
+                let actual = store.query(&range, &query, paging.as_ref()).await.unwrap();
+                let expected = memory.query(&range, &query, paging.as_ref()).await.unwrap();
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::to_value(&expected).unwrap(),
+                    "filter {query:?}"
+                );
+                let Some(after) = actual.next else { break };
+                paging.as_mut().unwrap().after = Some(after);
             }
         }
     }

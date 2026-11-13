@@ -8,25 +8,20 @@ pub struct DirectoryDisplay {
 }
 
 impl TreeCommands {
-    /// Reads one branch's creation purpose, inherited input count and end detail.
+    /// Reads one branch's creation purpose/source and end detail.
     /// Unknown branches and failed history reads return errors.
     pub async fn display(&self, id: String) -> Result<DirectoryDisplay> {
         let tree = self
             .tree
             .upgrade()
             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        let entry = tree
+        let mut entry = tree
             .directory()
             .into_iter()
             .find(|entry| entry.info.id == id)
             .ok_or(AgentError::UnknownBranch(id))?;
         let mut purpose = None;
-        let mut cut_messages = None;
-        if let (Some(parent), Some(anchor), Some(cut)) = (
-            &entry.info.parent,
-            entry.info.create_anchor,
-            entry.info.branch_point,
-        ) {
+        if let (Some(parent), Some(anchor)) = (&entry.info.parent, entry.info.create_anchor) {
             let point = self
                 .query(
                     parent.clone(),
@@ -41,7 +36,7 @@ impl TreeCommands {
                         query: QuerySpec {
                             filter: None,
                             select: QuerySelect::Fields {
-                                fields: vec!["data.prompt".into()],
+                                fields: vec!["data.prompt".into(), "data.source".into()],
                             },
                             group_by: vec![],
                             pick: None,
@@ -64,66 +59,12 @@ impl TreeCommands {
                     _ => None,
                 })
                 .map(|text| text.lines().next().unwrap_or_default().trim().to_owned());
-            let count = self
-                .prefix_query(
-                    parent.clone(),
-                    TimelineQuery {
-                        scope: dim_agent_runtime::TimelineQueryScope::Chain,
-                        from: None,
-                        through: Some(cut),
-                        include_publishing: false,
-                        query: QuerySpec {
-                            filter: Some(QueryFilter::And {
-                                conditions: vec![
-                                    QueryFilter::In {
-                                        value: QueryOperand::Field {
-                                            path: "kind".into(),
-                                        },
-                                        values: vec!["input/message".into()],
-                                    },
-                                    QueryFilter::Present {
-                                        value: QueryOperand::Field {
-                                            path: "data.user".into(),
-                                        },
-                                    },
-                                    QueryFilter::Not {
-                                        condition: Box::new(QueryFilter::Exists {
-                                            condition: Box::new(QueryFilter::And {
-                                                conditions: vec![
-                                                    QueryFilter::In {
-                                                        value: QueryOperand::Field {
-                                                            path: "kind".into(),
-                                                        },
-                                                        values: vec!["input/deleted".into()],
-                                                    },
-                                                    QueryFilter::Compare {
-                                                        left: QueryOperand::Field {
-                                                            path: "data.input_id".into(),
-                                                        },
-                                                        comparison: QueryComparison::Eq,
-                                                        right: QueryOperand::Outer {
-                                                            path: "id".into(),
-                                                        },
-                                                    },
-                                                ],
-                                            }),
-                                        }),
-                                    },
-                                ],
-                            }),
-                            select: QuerySelect::Count,
-                            group_by: vec![],
-                            pick: None,
-                            order_by: vec![],
-                        },
-                        page: None,
-                    },
-                )
-                .await?;
-            let QueryOutput::Count { count } = count.result else {
-                unreachable!("branch cut message count")
-            };
-            cut_messages = Some(count);
+            if let Some(row) = rows.first()
+                && let QueryValue::Value { value: source } = &row.values[1]
+            {
+                entry.info.source =
+                    Some(serde_json::from_value(source.clone()).expect("branch source contract"));
+            }
         }
         let end = if let Some(at) = entry.end_event.filter(|at| *at <= entry.head) {
             let result = self
@@ -168,53 +109,8 @@ impl TreeCommands {
         Ok(DirectoryDisplay {
             entry,
             purpose,
-            cut_messages,
+            cut_messages: None,
             end,
-        })
-    }
-
-    async fn prefix_query(
-        &self,
-        id: String,
-        query: TimelineQuery,
-    ) -> Result<dim_agent_runtime::TimelineQueryReply> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        if let Some(context) = tree.owned_context(&id) {
-            return context.timeline().query(query).await;
-        }
-        let head = tree
-            .ended_head(&id)
-            .ok_or_else(|| AgentError::UnknownBranch(id.clone()))?;
-        let through = query.through.unwrap_or(head);
-        if through > head {
-            return Err(AgentError::InvalidInput(
-                "directory prefix exceeds branch head".into(),
-            ));
-        }
-        let mut scope = tree.stored_scope(&id, 1, through);
-        let mut info = tree
-            .info(&id)
-            .ok_or_else(|| AgentError::UnknownBranch(id.clone()))?;
-        while let (Some(parent), Some(cut)) = (info.parent, info.branch_point) {
-            scope
-                .segments
-                .extend(tree.stored_scope(&parent, 1, cut).segments);
-            info = tree
-                .info(&parent)
-                .ok_or(AgentError::UnknownBranch(parent))?;
-        }
-        scope.segments.reverse();
-        let result = tree
-            .store
-            .query(&scope, &query.query, query.page.as_ref())
-            .await?;
-        Ok(dim_agent_runtime::TimelineQueryReply {
-            through,
-            result: result.result,
-            next: result.next,
         })
     }
 }
