@@ -113,7 +113,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<crate::PartRegistry>(&mut catalog, None);
     let session = Some(SESSION_GROUP);
     register::<SessionConfig>(&mut catalog, session);
-    register::<AgentConfig>(&mut catalog, session);
+    catalog.register_shared_instance(name_of::<AgentConfig>(), SESSION_GROUP);
     register::<SessionIdentity>(&mut catalog, session);
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);

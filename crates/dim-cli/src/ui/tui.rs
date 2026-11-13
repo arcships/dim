@@ -18,8 +18,8 @@ use crate::model::session::{
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    CompactionState, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome, TaskTarget,
-    ViewRow, ViewSnapshot,
+    CompactionState, Earlier, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome,
+    TaskTarget, ViewRow, ViewSnapshot,
 };
 use crate::ui::Env;
 use crate::ui::Initial;
@@ -282,6 +282,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     );
     app.fullscreen = full.is_some();
     app.initial = surroundings.initial;
+    app.awaiting_window = surroundings.resume;
     app.terminal_clipboard =
         terminal.clipboard_protocol() && crate::clipboard::terminal::native_unreachable();
     app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
@@ -473,7 +474,12 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
-            _ if app.running() => FRAME_INTERVAL,
+            _ if app.running()
+                || terminal.writing()
+                || app.failure.is_none() && app.awaiting_window =>
+            {
+                FRAME_INTERVAL
+            }
             _ => SESSION_POLL,
         };
         // The first message waits for the first frame so it follows the
@@ -637,12 +643,13 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             {
                 if let Some(full) = &mut full {
                     if key.code == KeyCode::PageUp && full.at_top() {
-                        app.host.send(Command::Earlier);
-                    }
-                    match key.code {
-                        KeyCode::Home => full.scroll_to_top(),
-                        KeyCode::End => full.follow(),
-                        code => full.page(code == KeyCode::PageDown),
+                        app.show_earlier();
+                    } else {
+                        match key.code {
+                            KeyCode::Home => full.scroll_to_top(),
+                            KeyCode::End => full.follow(),
+                            code => full.page(code == KeyCode::PageDown),
+                        }
                     }
                 }
                 dirty = true;
@@ -1065,6 +1072,10 @@ struct App {
     history_floor: usize,
     /// Fullscreen owes its load-more row before the next transcript commit.
     load_more: bool,
+    /// An earlier read whose page is to be revealed when it lands: set by
+    /// `show_earlier`, cleared once the page is shown or the read ends
+    /// without one.
+    reveal_pending: bool,
     /// The user message a `/timeline` jump or a loaded page lands on, once
     /// drawn: `(row id, pick it)`.
     landing: Option<(String, bool)>,
@@ -1463,6 +1474,7 @@ impl App {
             window_floor: 0,
             history_floor: 0,
             load_more: false,
+            reveal_pending: false,
             landing: None,
             awaiting_window: false,
             pending_boundary: None,
@@ -2087,9 +2099,13 @@ impl App {
                     }
                 }
                 self.runs.observe(&snapshot);
-                self.snapshot = Some(*snapshot);
+                let previous = self.snapshot.replace(*snapshot);
+                self.follow_floors(previous.as_ref());
+                self.apply_earlier(previous.as_ref());
                 self.refresh_compactions();
                 self.refresh_cards();
+                self.refresh_tool_origins();
+                self.sync_tool_origins();
                 if self.running() && !was_running {
                     self.run_started = Some(Instant::now());
                     self.last_pulse = 0;
@@ -2950,9 +2966,7 @@ impl App {
                 Prompt::Tasks(p) => p.handle_key(key),
                 Prompt::Lines(p) => p.handle_key(key),
                 Prompt::Timeline(p) => p.handle_key(key),
-                Prompt::Queue(p) => {
-                    p.handle_key(key, self.snapshot.as_ref().expect("attached queue"))
-                }
+                Prompt::Queue(p) => p.handle_key(key),
                 Prompt::Export(p) => match p.handle_key(key) {
                     ListEvent::Pick { id: format, .. } => Effect::Export(if format == "markdown" {
                         crate::export::Format::Markdown
@@ -4090,6 +4104,115 @@ impl App {
         }
     }
 
+    fn sync_tool_origins(&self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if row.kind != RowKind::ToolCall || !opens_group(&snapshot.rows, index) {
+                continue;
+            }
+            let rows = group_rows(&snapshot.rows, index);
+            if rows.iter().all(|call| {
+                call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+            }) {
+                continue;
+            }
+            let group = self.fullscreen.then(|| {
+                project_fullscreen_group(
+                    &rows,
+                    self.tool_detail,
+                    self.tool_choices.get(&self.tool_scope()),
+                )
+            });
+            if group.is_none() && self.tool_detail != Detail::Expanded {
+                continue;
+            }
+            let single_root = rows
+                .iter()
+                .filter(|call| call.parent_call_id.is_none())
+                .count()
+                == 1;
+            for call in rows {
+                if call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+                {
+                    continue;
+                }
+                if let Some(group) = &group {
+                    let node = if single_root
+                        && call.parent_call_id.is_none()
+                        && call.tool_name.as_deref() == Some("codemode")
+                    {
+                        group.id.clone()
+                    } else {
+                        format!("call:{}", call.row_id)
+                    };
+                    if !group.is_open(&node) {
+                        continue;
+                    }
+                }
+                if let (Some(request_id), Some(call_id)) = (&call.batch, &call.call_id) {
+                    self.host.send(Command::ToolOrigin {
+                        session_id: snapshot.session_id.clone(),
+                        projection_id: snapshot.projection_id,
+                        branch_id: snapshot.focus.clone(),
+                        request_id: request_id.clone(),
+                        call_id: call_id.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn refresh_tool_origins(&mut self) {
+        let choices = self.tool_choices.get(&self.tool_scope());
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (index, block) in self.history.iter_mut().enumerate() {
+            let Block::ToolGroup(group) = block else {
+                continue;
+            };
+            if !group.awaiting_origins {
+                continue;
+            }
+            let Some(source) = snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == group.source)
+            else {
+                continue;
+            };
+            let rows = group_rows(&snapshot.rows, source);
+            if rows
+                .iter()
+                .filter(|row| {
+                    row.tool_lookup_done || row.tool_name.is_some() && row.tool_input.is_some()
+                })
+                .count()
+                != group.known_origins
+            {
+                *group = if self.fullscreen {
+                    project_fullscreen_group(&rows, self.tool_detail, choices)
+                } else {
+                    project_group(&rows, group.detail)
+                };
+                changed.push(index + self.dropped);
+            }
+        }
+        if !changed.is_empty() {
+            for index in changed {
+                self.mark_rewritten(index);
+            }
+            self.request_reflow();
+        }
+    }
+
     fn release_compaction_details(&mut self) {
         if let Some((projection_id, _)) = self.compaction_targets.take() {
             self.host.send(Command::CompactionDetails {
@@ -4455,6 +4578,7 @@ impl App {
         self.refresh_tool_choices();
         self.request_reflow();
         self.sync_compaction_details();
+        self.sync_tool_origins();
         if let Some(error) =
             crate::ui::config::write(&self.home, TOOL_DETAILS_KEY, detail.label().into())
         {
@@ -4841,7 +4965,11 @@ impl App {
                 Outcome::Continue
             }
             "earlier" => {
-                self.host.send(Command::Earlier);
+                if self.fullscreen {
+                    self.show_earlier();
+                } else {
+                    self.host.send(Command::Earlier);
+                }
                 Outcome::Continue
             }
             "export" => {
@@ -5385,18 +5513,13 @@ impl App {
                 .as_ref()
                 .into_iter()
                 .flat_map(|snapshot| &snapshot.queued)
+                .filter(|input| input.held)
                 .map(|input| {
                     (
                         input.id.clone(),
                         format!(
                             "{} · {}",
-                            t(if input.held {
-                                "Held"
-                            } else if self.running() {
-                                "Incorporating"
-                            } else {
-                                "Unread"
-                            }),
+                            t("Held"),
                             input.display.as_deref().unwrap_or(&input.text)
                         ),
                     )
@@ -5410,17 +5533,11 @@ impl App {
                 self.queue_rows.max(queued.len().min(QUEUE_ROWS))
             };
             if self.queue_rows > 0 {
-                let hint = if !self.queued().is_empty() {
-                    let key = match self.default_send_mode {
-                        SubmitMode::Queue => "Ctrl+S",
-                        SubmitMode::Steer => "Enter",
-                    };
-                    tf(QUEUE_HINT, &[("key", key)])
-                } else if self.running() {
-                    t("/queue view · awaiting model consumption").to_owned()
-                } else {
-                    t("/queue view · waiting for your next message").to_owned()
+                let key = match self.default_send_mode {
+                    SubmitMode::Queue => "Ctrl+S",
+                    SubmitMode::Steer => "Enter",
                 };
+                let hint = tf(QUEUE_HINT, &[("key", key)]);
                 live.extend(queue_strip(
                     &queued,
                     self.queue_rows,
@@ -6329,6 +6446,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
+        self.reveal_pending = false;
         self.landing = None;
         self.window_info = (0, 0);
         self.history_request = None;
@@ -6409,6 +6527,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
+        self.reveal_pending = false;
         self.landing = None;
         self.window_info = (0, 0);
         self.history_request = None;
@@ -6515,6 +6634,76 @@ impl App {
         self.rebuild_window(start);
     }
 
+    /// Shows what comes before the drawn top, for PageUp at that top, the
+    /// load-more row and fullscreen `/earlier`: loaded rows first, a read from
+    /// the daemon when none are loaded, and nothing at the branch start.
+    fn show_earlier(&mut self) {
+        if self.hidden_messages() > 0 {
+            self.load_earlier();
+            return;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        match snapshot.earlier {
+            Earlier::Unread => {
+                self.host.send(Command::Earlier);
+                self.reveal_pending = true;
+            }
+            Earlier::Reading => self.reveal_pending = true,
+            Earlier::AtStart => {}
+        }
+    }
+
+    /// Message rows loaded above `window_floor`, which the drawn window hides.
+    fn hidden_messages(&self) -> usize {
+        let Some(snapshot) = &self.snapshot else {
+            return 0;
+        };
+        snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
+            .iter()
+            .filter(|row| row.kind.is_message())
+            .count()
+    }
+
+    /// Reveals the page an earlier read just prepended, keeping the oldest
+    /// drawn message at the top of the view.
+    fn reveal_prepended(&mut self) {
+        if self.hidden_messages() > 0 {
+            self.load_earlier();
+        }
+        self.reveal_pending = false;
+    }
+
+    /// The pending reveal, once a snapshot arrived. A prepended page is shown;
+    /// a read that ended without one drops the request, so a later unrelated
+    /// prepend is not revealed by it. A live-turn snapshot during the read
+    /// changes nothing, which is why `Earlier::Reading` keeps it.
+    fn apply_earlier(&mut self, previous: Option<&ViewSnapshot>) {
+        if !self.reveal_pending {
+            return;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        // Rows were prepended when the old first row now sits below the top: a
+        // front trim changes the first row too and must not count.
+        let prepended = previous.is_some_and(|previous| {
+            previous.rows.first().is_some_and(|first| {
+                snapshot
+                    .rows
+                    .iter()
+                    .position(|row| row.row_id == first.row_id)
+                    .is_some_and(|index| index > 0)
+            })
+        });
+        if prepended {
+            self.reveal_prepended();
+        } else if snapshot.earlier != Earlier::Reading {
+            self.reveal_pending = false;
+        }
+    }
+
     /// Entering fullscreen: the shown line is drawn again from its window,
     /// earlier history scrollback drew page by page in order under the
     /// load-more row, so nothing else scrollback committed (an earlier
@@ -6540,6 +6729,47 @@ impl App {
         self.dropped += self.history.len();
         self.history.clear();
         self.stream_block = None;
+    }
+
+    /// Keeps the drawn window on the rows it showed, after the handler has
+    /// stored a new snapshot: each floor takes the new index of the row it
+    /// named, a floor of 0 included. Identity covers a prepend, an append and a
+    /// page trimmed from the front by the same rule (timeline UI §4.6).
+    ///
+    /// Nothing moves while a window is not armed: a line or session switch
+    /// resets both floors and `arm_window` sets them from scratch, so an
+    /// unarmed floor belongs to no row of this snapshot.
+    ///
+    /// When the floor's row is gone, the first row after it that survives takes
+    /// over, which covers a front trim; when none survives, 0, which covers a
+    /// trim that removed the whole window and the rows after it.
+    fn follow_floors(&mut self, previous: Option<&ViewSnapshot>) {
+        if self.awaiting_window {
+            return;
+        }
+        let (Some(previous), Some(snapshot)) = (previous, &self.snapshot) else {
+            return;
+        };
+        let index_of = |id: &str| snapshot.rows.iter().position(|row| row.row_id == id);
+        let moved = |floor: usize| -> usize {
+            let Some(rows) = previous.rows.get(floor..).filter(|rows| !rows.is_empty()) else {
+                return floor.min(snapshot.rows.len());
+            };
+            if let Some(index) = index_of(&rows[0].row_id) {
+                return index;
+            }
+            let present: std::collections::HashSet<&str> = snapshot
+                .rows
+                .iter()
+                .map(|row| row.row_id.as_str())
+                .collect();
+            rows.iter()
+                .find(|row| present.contains(row.row_id.as_str()))
+                .and_then(|row| index_of(&row.row_id))
+                .unwrap_or(0)
+        };
+        self.window_floor = moved(self.window_floor.min(previous.rows.len()));
+        self.history_floor = moved(self.history_floor.min(previous.rows.len()));
     }
 
     /// The block id a drawn user message `row` became.
@@ -6587,6 +6817,7 @@ impl App {
                 .or_default()
                 .insert(node, !open);
             self.refresh_tool_choices();
+            self.sync_tool_origins();
             return true;
         }
         let Some(id) = block else { return false };
@@ -6859,7 +7090,7 @@ impl App {
     /// member, or the line a marker opened.
     fn open_card(&mut self, request_event_id: &str) {
         if request_event_id == LOAD_MORE {
-            self.load_earlier();
+            self.show_earlier();
             return;
         }
         let Some(snapshot) = &self.snapshot else {
@@ -12106,6 +12337,73 @@ mod tests {
         );
     }
 
+    /// The reviewer's case on a real 80x24 frame: thirty replacements keep the
+    /// target line and the choices on screen, and the keys reach the last entry,
+    /// in both renderers.
+    #[test]
+    fn a_long_edit_approval_fits_an_80x24_frame_and_reaches_its_last_entry() {
+        use crate::model::view::ApprovalView;
+
+        let size = (80, 24);
+        let edits: Vec<_> = (1..=30)
+            .map(|n| serde_json::json!({"oldText": format!("old {n}"), "newText": format!("new {n}")}))
+            .collect();
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new(size, None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                approvals: vec![ApprovalView {
+                    member: None,
+                    request_id: "approval-1".into(),
+                    branch_id: "main".into(),
+                    reason: "source: tool_rule".into(),
+                    tool_name: "edit".into(),
+                    tool_input: serde_json::json!({"path": "src/lib.rs", "edits": edits}),
+                    always: None,
+                }],
+                ..ViewSnapshot::default()
+            })));
+            let screen_text = |drawn: &mut Drawn| -> String {
+                if fullscreen {
+                    let frame = drawn.app.frame(size);
+                    let mut full = FullScreen::new(size, true);
+                    let bytes = full.render(&frame, size, &drawn.app.palette, &drawn.app);
+                    let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                    emu.feed(&bytes);
+                    emu.rows_text().join("\n")
+                } else {
+                    drawn.draw();
+                    drawn.emu.rows_text().join("\n")
+                }
+            };
+            let first = screen_text(&mut drawn);
+            for shown in [
+                "# source: tool_rule",
+                "$ edit 30 replacements in src/lib.rs",
+                "1 · old 1 → new 1",
+                "Allow once",
+            ] {
+                assert!(first.contains(shown), "{fullscreen}: {shown:?} in {first}");
+            }
+            for _ in 0..30 {
+                let _ = drawn
+                    .app
+                    .handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                        KeyCode::Down,
+                        Modifiers::NONE,
+                    )));
+            }
+            let last = screen_text(&mut drawn);
+            for shown in ["30 · old 30 → new 30", "# source: tool_rule", "Allow once"] {
+                assert!(
+                    last.contains(shown),
+                    "{fullscreen}: after scrolling, {shown:?} in {last}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_window_topic_stays_mains_message_while_a_line_is_shown() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -12516,6 +12814,40 @@ mod tests {
         toggle(&mut drawn.app, "Ran code · 2 tool calls", 80);
         assert!(text(&mut drawn.app, 80).contains("deep output"));
         assert!(!text(&mut drawn.app, 80).contains("second child"));
+
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+        let mut orphaned = vec![
+            call("lazy", "a", None, "alpha-tool", "alpha result"),
+            call("lazy", "b", None, "beta-tool", "beta result"),
+        ];
+        for row in &mut orphaned {
+            std::sync::Arc::make_mut(row).tool_input = None;
+        }
+        show(&mut drawn, orphaned.clone());
+        assert!(
+            sent.borrow().is_empty(),
+            "closed call details do not fetch origins"
+        );
+        toggle(&mut drawn.app, "Alpha-tool", 80);
+        assert!(matches!(sent.borrow().as_slice(), [Command::ToolOrigin {
+            request_id, call_id, ..
+        }] if request_id == "lazy" && call_id == "a"));
+        let resolved = std::sync::Arc::make_mut(&mut orphaned[0]);
+        resolved.tool_input = Some(serde_json::json!({"text": "loaded alpha argument"}));
+        resolved.tool_lookup_done = true;
+        sent.borrow_mut().clear();
+        show(&mut drawn, orphaned);
+        let visible = text(&mut drawn.app, 80);
+        assert!(visible.contains("loaded alpha argument"), "{visible}");
+        assert!(
+            !visible.contains("beta result"),
+            "origin arrival preserves sibling disclosure"
+        );
+        assert!(
+            sent.borrow().is_empty(),
+            "origin arrival does not fetch closed siblings"
+        );
     }
 
     #[test]
@@ -12711,8 +13043,8 @@ mod tests {
             let (block, row) = rows
                 .iter()
                 .find_map(|(block, row, line)| {
-                    strip_escapes(line)
-                        .contains("code")
+                    let line = strip_escapes(line);
+                    (line.contains("Ran code") || line.contains("Running code"))
                         .then_some((*block, *row))
                 })
                 .unwrap();
@@ -14392,6 +14724,67 @@ mod tests {
             ..ViewSnapshot::default()
         })));
         (app, sent, home)
+    }
+
+    #[test]
+    fn queue_display_keeps_applied_inputs_only_in_the_transcript() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for locale in [i18n::Locale::En, i18n::Locale::ZhCn] {
+            i18n::set(locale);
+            for fullscreen in [false, true] {
+                for width in [44, 100] {
+                    let (mut app, _sent, _home) = session_with_queue(
+                        true,
+                        &[("applied", "find the leak"), ("held", "then add a test")],
+                    );
+                    app.fullscreen = fullscreen;
+                    let mut snapshot = app.snapshot.as_ref().unwrap().clone();
+                    snapshot.rows = vec![message(true)];
+                    snapshot.queued[0].held = false;
+                    snapshot.queued[0].recallable = false;
+                    let mut draw = |snapshot: &ViewSnapshot| {
+                        app.apply(Update::Snapshot(Box::new(snapshot.clone())));
+                        let frame = app.frame((width, 30));
+                        let rendered = app.reflow_history(width as usize).join("\n")
+                            + "\n"
+                            + &frame.live.join("\n");
+                        strip_escapes(&rendered)
+                    };
+                    let mixed = draw(&snapshot);
+                    assert!(
+                        mixed.contains(&tf("Queue ({count})", &[("count", "1")])),
+                        "{mixed}"
+                    );
+                    assert_eq!(mixed.matches("find the leak").count(), 1, "{mixed}");
+                    assert!(mixed.contains("then add a test"), "{mixed}");
+                    snapshot.queued.pop();
+                    let applied = draw(&snapshot);
+                    assert!(!applied.contains(t("Queue")), "{applied}");
+                    assert!(!applied.contains(t("Unread")), "{applied}");
+                    assert_eq!(applied.matches("find the leak").count(), 1, "{applied}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.rows.push(stopped());
+                    let idle = draw(&snapshot);
+                    assert!(!idle.contains(t("Queue")), "{idle}");
+                    assert_eq!(idle.matches("find the leak").count(), 1, "{idle}");
+                    assert!(!idle.contains(t("Unread")), "{idle}");
+                    snapshot.running = true;
+                    snapshot.main_running = true;
+                    let resumed = draw(&snapshot);
+                    assert!(!resumed.contains(t("Unread")), "{resumed}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.queued.clear();
+                    snapshot.rows[0] = message(false);
+                    let consumed = draw(&snapshot);
+                    assert!(!consumed.contains(t("Unread")), "{consumed}");
+                    assert_eq!(consumed.matches("find the leak").count(), 1, "{consumed}");
+                }
+            }
+        }
+        i18n::set(i18n::Locale::En);
     }
 
     #[test]
@@ -16530,5 +16923,344 @@ mod tests {
                 "open {open} ends on the repository's page without a second loading line"
             );
         }
+    }
+
+    /// `count` message rows `u0..u{count-1}`, the way a loaded window holds them.
+    fn window_rows(count: usize) -> Vec<std::sync::Arc<ViewRow>> {
+        (0..count)
+            .map(|n| {
+                std::sync::Arc::new(ViewRow {
+                    row_id: format!("u{n}"),
+                    provisional_id: None,
+                    kind: RowKind::UserMessage,
+                    display: None,
+                    text: format!("ask {n}"),
+                    streaming: false,
+                    elapsed_ms: None,
+                    tone: None,
+                    call_id: None,
+                    tool_lookup_done: false,
+                    tool_name: None,
+                    tool_input: None,
+                    batch: None,
+                    parent_call_id: None,
+                    pending: false,
+                    parked: false,
+                    result_text: None,
+                    result_is_error: false,
+                    diff: None,
+                    exit_code: None,
+                    member: None,
+                    cut: Some(n as u64),
+                    line: None,
+                    parent_row: None,
+                    compaction: None,
+                    failure: None,
+                    reportable: false,
+                })
+            })
+            .collect()
+    }
+
+    /// Older rows `old0..old{count-1}`, distinct from `window_rows`.
+    fn older_rows(count: usize) -> Vec<std::sync::Arc<ViewRow>> {
+        (0..count)
+            .map(|n| {
+                let mut row = (*window_rows(1)[0]).clone();
+                row.row_id = format!("old{n}");
+                row.text = format!("older {n}");
+                std::sync::Arc::new(row)
+            })
+            .collect()
+    }
+
+    /// A fullscreen app showing one window of rows, armed, its floor at 0.
+    fn fullscreen_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<Command>>>) {
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            std::path::PathBuf::from("/tmp"),
+            "/work".into(),
+        );
+        app.fullscreen = true;
+        app.snapshot = Some(ViewSnapshot {
+            session_id: "s1".into(),
+            rows: window_rows(HISTORY_WINDOW),
+            focus: "main".into(),
+            history_complete: true,
+            ..ViewSnapshot::default()
+        });
+        app.window_floor = 0;
+        app.history_floor = 0;
+        (app, sent)
+    }
+
+    /// Publishes `rows` as `s1`'s snapshot. The first call arms the window
+    /// over the newest `HISTORY_WINDOW` messages, as a resume does.
+    fn show_window(drawn: &mut Drawn, rows: Vec<std::sync::Arc<ViewRow>>) {
+        // The host keeps publishing `earlier` until the read ends, so the
+        // fixture carries it from one snapshot to the next.
+        let earlier = drawn
+            .app
+            .snapshot
+            .as_ref()
+            .map_or(Earlier::AtStart, |snapshot| snapshot.earlier);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier,
+            ..ViewSnapshot::default()
+        })));
+    }
+
+    #[test]
+    fn follow_floors_keeps_each_floor_on_its_row_through_prepend_append_and_trim() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        // Two windows of rows; the next frame arms the floor on the first
+        // message of the newest window, hiding one window's worth above it.
+        show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
+        drawn.draw();
+        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
+        // A prepend of one window of older rows keeps the anchored row where
+        // it was relative to the rows that follow it.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW);
+        // An append moves no floor.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
+        // A front trim removes rows above the anchored one only: it keeps its
+        // identity and moves down by the number removed.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
+        let trimmed = HISTORY_WINDOW / 2;
+        show_window(&mut drawn, rows[trimmed..].to_vec());
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW - trimmed);
+        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW - trimmed);
+        // A floor of 0 names the first row: a prepend of N rows moves it to N.
+        show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
+        drawn.app.window_floor = 0;
+        drawn.app.history_floor = 0;
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
+    }
+
+    #[test]
+    fn follow_floors_leaves_an_unarmed_window_alone() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert!(drawn.app.awaiting_window, "no frame has armed the window");
+        assert_eq!(drawn.app.window_floor, 0, "an unarmed floor stays put");
+        assert_eq!(drawn.app.history_floor, 0);
+    }
+
+    #[test]
+    fn follow_floors_lands_on_the_first_surviving_row_when_the_floor_row_is_gone() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        drawn.draw();
+        let floor = drawn.app.window_floor;
+        assert_eq!(
+            floor,
+            2 * HISTORY_WINDOW,
+            "three windows of messages hide two of them"
+        );
+        // A trim removes the floor row and the rows after it, up to old3.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        // rows[floor + 3] is the first row that survives the trim.
+        show_window(&mut drawn, rows[floor + 3..].to_vec());
+        assert_eq!(
+            drawn.app.window_floor, 0,
+            "the first surviving row after the gone one takes over"
+        );
+        assert_eq!(
+            drawn.app.snapshot.as_ref().unwrap().rows[0].row_id,
+            rows[floor + 3].row_id
+        );
+    }
+
+    #[test]
+    fn show_earlier_requests_unread_history_and_does_nothing_at_the_start() {
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            std::path::PathBuf::from("/tmp"),
+            "/work".into(),
+        );
+        app.fullscreen = true;
+        app.snapshot = Some(ViewSnapshot {
+            session_id: "s1".into(),
+            rows: window_rows(2 * HISTORY_WINDOW),
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        });
+        // Every loaded row is drawn, so the request is the only way forward.
+        app.window_floor = 0;
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1, "an unread prefix is requested");
+        assert!(matches!(sent.borrow()[0], Command::Earlier));
+        assert!(app.reveal_pending, "the arriving page is to be revealed");
+        // A live-read snapshot keeps the request; it is still in flight.
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
+        app.apply_earlier(None);
+        assert!(
+            app.reveal_pending,
+            "a live snapshot must not drop the reveal"
+        );
+        // `Reading` asks for nothing new.
+        sent.borrow_mut().clear();
+        app.show_earlier();
+        assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
+        assert!(app.reveal_pending);
+        // At the start there is nothing to show and nothing is sent.
+        app.reveal_pending = false;
+        sent.borrow_mut().clear();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::AtStart;
+        let floor = app.window_floor;
+        app.show_earlier();
+        assert!(sent.borrow().is_empty(), "AtStart sends nothing");
+        assert!(!app.reveal_pending, "AtStart reveals nothing");
+        assert_eq!(app.window_floor, floor, "AtStart does not move the floor");
+    }
+
+    #[test]
+    fn a_pending_reveal_survives_a_live_snapshot_and_shows_the_page_that_lands() {
+        let (mut app, sent) = fullscreen_app();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Unread;
+        app.show_earlier();
+        assert!(matches!(sent.borrow().as_slice(), [Command::Earlier]));
+        assert!(app.reveal_pending);
+        // A live turn appends one row while the read is in flight.
+        let mut rows = window_rows(HISTORY_WINDOW);
+        let mut live = (*window_rows(1)[0]).clone();
+        live.row_id = "live".into();
+        live.text = "streamed".into();
+        rows.push(std::sync::Arc::new(live));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Reading,
+            ..ViewSnapshot::default()
+        })));
+        assert!(app.reveal_pending, "a live snapshot keeps the reveal");
+        assert_eq!(app.window_floor, 0, "a floor of 0 follows its row");
+        // The page lands above the drawn rows.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        let mut live = (*window_rows(1)[0]).clone();
+        live.row_id = "live".into();
+        rows.push(std::sync::Arc::new(live));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        })));
+        assert!(!app.reveal_pending, "the landed page was revealed");
+        assert_eq!(
+            app.window_floor, 0,
+            "the page is drawn, nothing left hidden"
+        );
+        assert_eq!(
+            app.landing.as_ref().map(|(id, _)| id.as_str()),
+            Some("u0"),
+            "the oldest drawn message stays at the top of the view"
+        );
+    }
+
+    #[test]
+    fn a_page_longer_than_one_window_leaves_the_rest_behind_the_load_more_row() {
+        let (mut app, sent) = fullscreen_app();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Unread;
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1);
+        // A page of one window plus ten messages lands.
+        let mut rows = older_rows(HISTORY_WINDOW + 10);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        })));
+        assert!(!app.reveal_pending);
+        assert_eq!(app.hidden_messages(), 10, "one window of the page is drawn");
+        assert_eq!(
+            app.landing.as_ref().map(|(id, _)| id.as_str()),
+            Some("u0"),
+            "the oldest drawn message stays at the top of the view"
+        );
+        // The next action draws the rest without reading again.
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1, "no second read is requested");
+        assert_eq!(app.hidden_messages(), 0, "the rest of the page is drawn");
+        assert_eq!(app.window_floor, 0);
+    }
+
+    #[test]
+    fn a_line_jump_to_a_message_that_earlier_read_prints_it() {
+        let (mut app, _sent) = fullscreen_app();
+        app.fullscreen = false;
+        // `/earlier` prepends a page of rows the scrollback has not printed.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            ..ViewSnapshot::default()
+        })));
+        assert_eq!(
+            app.history_floor, HISTORY_WINDOW,
+            "the scrollback floor followed its row below the prepended page"
+        );
+        app.jump_to(0);
+        assert_eq!(
+            app.history_request,
+            Some((0, HISTORY_WINDOW)),
+            "the jump schedules the page instead of saying it is already shown"
+        );
     }
 }

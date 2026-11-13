@@ -240,10 +240,30 @@ provider/management.rs 直接把其变体映射为下列代码。不扩展共享
 业务错误沿 JSON-RPC `code:-32000`、安全 message 和 data.appError：
 provider_not_found、provider_conflict、provider_invalid_config、provider_unsupported、
 provider_auth_required、provider_auth_failed、provider_transport_failed、provider_cancelled、
-provider_failed。按 owner 类型错误分类，不解析 message。已有 delete、models.edit/reset/
+provider_failed、provider_catalog_stale、provider_account_changed。按 owner 类型错误分类，不解析 message。已有 delete、models.edit/reset/
 set_enabled、select、refresh 的不存在、CAS/admitted-refresh 冲突、校验错误也分别映射这些
 类型；请求/回复和 JSON-RPC code 不变。未知方法和错误 RPC 参数保持通用边界错误。
 秘密、secret reference、header 值、代理认证和上游正文不进入错误、日志或诊断。
+
+托管 Provider 的 models.set_enabled、models.edit、models.reset 与 preferences.update
+先检查记录版本；版本不匹配仍返回 provider_conflict，即使账号同时变化，也应先重读。
+版本匹配但账号已退出，或目录来自另一账号 epoch/generation，返回 provider_catalog_stale，
+不修改记录。普通凭据刷新仅增加 credentialRevision，不使目录失效。
+
+provider_catalog_stale 在 data.appError 旁增加以下字段：
+
+| 字段 | 类型和含义 |
+| --- | --- |
+| providerId | 托管 Provider ID |
+| expectedVersion、currentVersion | 请求和拒绝时的记录版本；版本检查优先，所以二者相等 |
+| issuer、subject | 当前公开账号身份；已退出时均为 null；不包含资料、scope、凭据 epoch 或 generation |
+| requiredAction | 已登录时为 provider.refresh，包括身份变化；已退出时为 account.login |
+
+provider.refresh 表示刷新该 Provider，使用回复的版本重试原写入至多一次。
+account.login 表示完成账号所公布的登录流程，并在新写入前刷新目录。
+客户端不解析消息、不比较账号代次，也不因 provider_conflict 自动刷新。
+账号 owner 报告变化，或刷新进行期间检测到账号变化时，返回 provider_account_changed；
+先重读账号状态再决定后续动作，不把它当作记录版本冲突。
 
 新方法、endpoint 编辑和类型化 owner 错误随可发现的 provider.management 单元一起发布。
 create/update 替代 provider.save 并与 CLI 调用者一起移除旧方法，不回退 save/直接改库。
@@ -782,7 +802,7 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
 | §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，Migration 使用 §3.7 由 Provider 拥有的判断，不跨写其他 owner 引用 |
-| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.8](../../../design/service-faces.md#48-宿主端口executionsettingshost-等六个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
+| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.8](../../../design/service-faces.md#48-宿主端口executionsettingshost-等六个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |
@@ -790,6 +810,14 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | ADR 002 D3 | 可选账号失败只影响自身能力，不加 core 依赖；§3.7 是 Provider 模块函数 |
 | ADR 002 D4 | 业务配置归 owner，修改不 reload |
 | ADR 002 D5 | §3 明确字段、方法、mutating/interruption、错误，不只写 Rust trait；§3.6 以中立形式给出进程读取，core host 端口是消费方声明的绑定；§3.7 是 Rust-only 模块边界，因为输入是 Provider 已准入且携带凭据引用的记录，且没有跨语言消费方 |
+
+### 向机制所有者提出的需求
+
+- **问题：** §3.4 的恢复合同需要结构化错误数据，固定代码和安全消息无法携带版本和公开身份。
+- **既有机制：** 解析消息丢失类型合同，另行读取也无法分类被拒绝写入当时观察到的状态。
+- **通用能力：** 原生方法提供安全的 owner 自有错误字段，由[方法错误合同](../../../design/contracts/session-boundary.md#appendix-c-errors-and-recovery)保留，Rpc 不解释 Provider 字段。
+- **顺序影响：** 不影响序号、批次、中断或重载；被拒绝的写入不修改记录。
+- **owner/issue：** dim-agent-capabilities 方法错误与 App Server；[#1495](https://github.com/arcships/dim/issues/1495)。
 
 ## 9. 消融检查
 

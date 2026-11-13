@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { CircleHelp } from "lucide-vue-next"
 import type { AskQuestion, PendingQuestion, QuestionAnswer } from "../../rpc/protocol"
 import { RpcError } from "../../rpc/client"
 import { useChatStore } from "../../stores/chat"
@@ -88,14 +87,36 @@ async function send(decline: boolean): Promise<void> {
 <template>
   <article class="prompt-card question-card" data-inline-interaction-prompt>
     <header class="prompt-header">
-      <span class="prompt-icon" aria-hidden="true"><CircleHelp :size="12" :stroke-width="2.25" /></span>
+      <span class="prompt-icon" aria-hidden="true"><UIcon name="i-lucide-circle-help" class="size-3" /></span>
       <h2 class="prompt-title">{{ t("question.title") }}</h2>
-      <span class="ui-badge" data-tone="warning">{{ sent ? t("question.sent") : t("question.awaitingAnswer") }}</span>
+      <UBadge color="warning" variant="subtle">{{ sent ? t("question.sent") : t("question.awaitingAnswer") }}</UBadge>
     </header>
 
     <nav v-if="multiple" class="question-steps" :aria-label="t('question.steps')">
-      <button v-for="(question, index) in props.question.questions" :key="question.id" type="button" class="ui-button" data-size="sm" data-variant="ghost" :aria-current="step === index ? 'step' : undefined" :disabled="busy || sent" @click="go(index)">{{ index + 1 }}. {{ question.header || t('question.number', { number: index + 1 }) }}<span v-if="answered(question)" aria-hidden="true"> ✓</span></button>
-      <button type="button" class="ui-button" data-size="sm" data-variant="ghost" :aria-current="!current ? 'step' : undefined" :disabled="busy || sent" @click="go(props.question.questions.length)">{{ t('question.review') }}</button>
+      <UButton
+        v-for="(question, index) in props.question.questions"
+        :key="question.id"
+        color="neutral"
+        :variant="step === index ? 'soft' : 'ghost'"
+        size="sm"
+        class="shrink-0"
+        :aria-current="step === index ? 'step' : undefined"
+        :disabled="busy || sent"
+        @click="go(index)"
+      >
+        {{ index + 1 }}. {{ question.header || t('question.number', { number: index + 1 }) }}<span v-if="answered(question)" aria-hidden="true"> ✓</span>
+      </UButton>
+      <UButton
+        color="neutral"
+        :variant="!current ? 'soft' : 'ghost'"
+        size="sm"
+        class="shrink-0"
+        :aria-current="!current ? 'step' : undefined"
+        :disabled="busy || sent"
+        @click="go(props.question.questions.length)"
+      >
+        {{ t('question.review') }}
+      </UButton>
     </nav>
 
     <form class="question-form" @submit.prevent="advance">
@@ -108,6 +129,7 @@ async function send(decline: boolean): Promise<void> {
         </legend>
         <label v-for="option in current.options" :key="option.label" class="question-option">
           <input
+            class="question-choice"
             :type="current.multiSelect ? 'checkbox' : 'radio'"
             :name="radioGroup(current)"
             :checked="(selected[current.id] ?? []).includes(option.label)"
@@ -118,31 +140,30 @@ async function send(decline: boolean): Promise<void> {
             <small v-if="option.description" class="question-option-description">{{ option.description }}</small>
           </span>
         </label>
-        <input
+        <UInput
           v-if="current.allowCustom"
-          class="ui-field question-other"
-          data-size="md"
-          type="text"
-          :value="typed[current.id] ?? ''"
+          class="question-other"
+          size="md"
+          :model-value="typed[current.id] ?? ''"
           :placeholder="t('question.otherPlaceholder')"
           :aria-label="t('question.other')"
-          @input="typeAnswer(current, ($event.target as HTMLInputElement).value)"
-        >
+          @update:model-value="typeAnswer(current, String($event ?? ''))"
+        />
       </fieldset>
       <ol v-else class="question-review">
         <li v-for="(question, index) in props.question.questions" :key="question.id">
           <strong>{{ question.question }}</strong>
           <p>{{ [...(selected[question.id] ?? []), ...(typedAnswer(question) ? [typedAnswer(question)] : [])].join(', ') || t('question.unanswered') }}</p>
-          <button type="button" class="ui-button" data-size="sm" data-variant="ghost" :disabled="busy || sent" :aria-label="t('question.editAnswer', { question: question.question })" @click="go(index)">{{ t('question.edit') }}</button>
+          <UButton color="neutral" variant="ghost" size="sm" :disabled="busy || sent" :aria-label="t('question.editAnswer', { question: question.question })" @click="go(index)">{{ t('question.edit') }}</UButton>
         </li>
       </ol>
       </div>
       <p v-if="error" class="prompt-error" role="alert">{{ error }}</p>
       <div class="prompt-buttons">
-        <button type="button" class="ui-button question-decline" data-size="md" data-variant="ghost" :disabled="busy || sent" @click="send(true)">{{ t("question.decline") }}</button>
-        <button v-if="multiple && step > 0" type="button" class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || sent" @click="go(step - 1)">{{ t('question.previous') }}</button>
-        <button v-if="multiple && current" type="submit" class="ui-button" data-size="md" data-variant="primary" :disabled="busy || sent || !answered(current)">{{ step === props.question.questions.length - 1 ? t('question.review') : t('question.next') }}</button>
-        <button v-else type="submit" class="ui-button" data-size="md" data-variant="primary" :disabled="busy || sent || !complete">{{ t("question.submit") }}</button>
+        <UButton color="neutral" variant="ghost" size="md" class="question-decline" :disabled="busy || sent" @click="send(true)">{{ t("question.decline") }}</UButton>
+        <UButton v-if="multiple && step > 0" color="neutral" variant="soft" size="md" :disabled="busy || sent" @click="go(step - 1)">{{ t('question.previous') }}</UButton>
+        <UButton v-if="multiple && current" type="submit" color="primary" variant="solid" size="md" :disabled="busy || sent || !answered(current)">{{ step === props.question.questions.length - 1 ? t('question.review') : t('question.next') }}</UButton>
+        <UButton v-else type="submit" color="primary" variant="solid" size="md" :disabled="busy || sent || !complete">{{ t("question.submit") }}</UButton>
       </div>
     </form>
   </article>
@@ -152,8 +173,6 @@ async function send(decline: boolean): Promise<void> {
 .question-card { display: flex; min-height: 0; flex-direction: column; max-height: 56dvh; }
 .prompt-header, .question-steps, .prompt-buttons, .prompt-error { flex: none; }
 .question-steps { display: flex; gap: var(--space-1); overflow-x: auto; margin-top: var(--space-3); }
-.question-steps .ui-button { flex: none; }
-.question-steps [aria-current="step"] { background: var(--accent); color: var(--foreground); }
 .question-form { display: flex; flex-direction: column; min-height: 0; margin-top: var(--space-3); }
 .question-body { min-height: 0; overflow-y: auto; overflow-wrap: anywhere; }
 .question-body:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -166,6 +185,7 @@ async function send(decline: boolean): Promise<void> {
 .question-header { margin-right: var(--space-2); color: var(--muted-foreground); }
 .question-hint { margin-left: var(--space-2); color: var(--muted-foreground); font-weight: var(--weight-regular); }
 .question-option { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--text-sm); cursor: pointer; }
+.question-choice { margin-top: 2px; accent-color: var(--ui-primary); }
 .question-option-text { display: grid; min-width: 0; gap: 2px; }
 .question-option-description { color: var(--muted-foreground); }
 .question-other { margin-top: var(--space-2); width: 100%; }

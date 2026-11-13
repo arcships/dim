@@ -25,7 +25,7 @@ use dim_app_server::{
             ManagedLoginAttempt,
         },
     },
-    provider::{ProviderPlugin, ProviderService},
+    provider::{ProviderError, ProviderPlugin, ProviderService},
     storage::SqliteStoragePlugin,
 };
 use dim_oauth::{ClientIds, DimOAuthPlugin};
@@ -1133,6 +1133,112 @@ async fn provider_process(home: &Path) -> Process {
         active(view).await;
     }
     process
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_catalog_writes_distinguish_account_changes_from_version_conflicts() {
+    let fixture = oauth::start().await;
+    let home = home();
+    let Process { root, providers } = provider_process(&home).await;
+    let mut account = login(&providers, &fixture.base).await;
+    let provider = root.get::<ProviderService>().unwrap();
+    let catalog = provider.refresh(PROVIDER.into(), &cancel()).await.unwrap();
+    let mut version = catalog.version;
+
+    let revision = auth(&home)["dimAccountState"]["credentialRevision"]
+        .as_u64()
+        .unwrap();
+    let lease = providers
+        .credential(PROVIDER, "fixture-model", &cancel())
+        .await
+        .unwrap();
+    let rotated = providers.recover(&lease, &cancel()).await.unwrap();
+    assert_eq!(rotated.account, account);
+    assert_eq!(
+        auth(&home)["dimAccountState"]["credentialRevision"],
+        revision + 1
+    );
+    let written = provider
+        .set_enabled_models(PROVIDER.into(), version, vec![], &cancel())
+        .await
+        .unwrap();
+    version = written.version;
+    drop((lease, rotated));
+
+    for recover in [false, true] {
+        let next = if recover {
+            let mut doc = auth(&home);
+            doc["dimAccountState"]["tokenDigest"] = json!("0".repeat(64));
+            std::fs::write(home.join("auth.json"), serde_json::to_vec(&doc).unwrap()).unwrap();
+            let next = providers
+                .recover_account(PROVIDER, &cancel())
+                .await
+                .unwrap();
+            assert_ne!(next.credential_epoch, account.credential_epoch);
+            next
+        } else {
+            let next = login(&providers, &fixture.base).await;
+            assert_eq!(next.credential_epoch, account.credential_epoch);
+            assert_eq!(next.generation, account.generation + 1);
+            next
+        };
+        assert_eq!(next.account, account.account);
+        account = next;
+        assert!(matches!(
+            provider
+                .set_enabled_models(PROVIDER.into(), version - 1, vec![], &cancel())
+                .await,
+            Err(ProviderError::Conflict(_))
+        ));
+        let stale = provider
+            .set_enabled_models(PROVIDER.into(), version, vec![], &cancel())
+            .await
+            .unwrap_err();
+        match stale {
+            ProviderError::CatalogStale {
+                provider_id,
+                expected_version,
+                current_version,
+                issuer,
+                subject,
+            } => {
+                assert_eq!(provider_id, PROVIDER);
+                assert_eq!(expected_version, version);
+                assert_eq!(current_version, version);
+                let identity = account.account.as_ref().unwrap();
+                assert_eq!(issuer.as_deref(), Some(identity.issuer.as_str()));
+                assert_eq!(subject.as_deref(), Some(identity.subject.as_str()));
+            }
+            other => panic!("expected a stale catalog after account change: {other:?}"),
+        }
+        let refreshed = provider.refresh(PROVIDER.into(), &cancel()).await.unwrap();
+        assert_eq!(refreshed.version, version + 1);
+        let written = provider
+            .set_enabled_models(PROVIDER.into(), refreshed.version, vec![], &cancel())
+            .await
+            .unwrap();
+        assert_eq!(written.version, version + 2);
+        version = written.version;
+    }
+
+    providers.logout(PROVIDER, &cancel()).await.unwrap();
+    assert!(matches!(
+        provider
+            .set_enabled_models(PROVIDER.into(), version, vec![], &cancel())
+            .await,
+        Err(ProviderError::CatalogStale {
+            issuer: None,
+            subject: None,
+            ..
+        })
+    ));
+    let read = provider
+        .management(Some(PROVIDER.into()), &cancel())
+        .await
+        .unwrap();
+    assert_eq!(read.providers[0].version, Some(version));
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 /// A managed bundle's media model leases for its non-conversational use, and

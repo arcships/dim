@@ -1235,6 +1235,166 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
 }
 
 #[tokio::test]
+async fn restore_preserves_each_parent_tools_own_confirmed_child_effects() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    store
+        .create_session("effects", &SessionConfig::default())
+        .await
+        .unwrap();
+    let timeline = Timeline::new(
+        rutis::Ctx::root().unwrap(),
+        TimelineKey {
+            session_id: "effects".into(),
+            branch_id: "main".into(),
+        },
+        Vec::new(),
+        store.clone(),
+    );
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "turn".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::ModelStart(ModelStartData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    let parents = ["parent-a", "parent-b", "parent-unstarted"].map(|id| ToolCall {
+        id: id.into(),
+        name: "echo".into(),
+        input: serde_json::Map::new(),
+    });
+    for call in &parents {
+        timeline
+            .append(
+                EventKind::ToolUse(ToolUseData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    call: call.clone(),
+                })
+                .into(),
+            )
+            .unwrap();
+    }
+    timeline
+        .append(
+            EventKind::ModelOutputEnd(ModelOutputEndData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                outcome: ModelOutputOutcome::Completed {
+                    finish_reason: FinishReason::ToolUse,
+                },
+            })
+            .into(),
+        )
+        .unwrap();
+    let outer = timeline
+        .append(
+            EventKind::ToolCall(ToolCallData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                calls: parents.to_vec(),
+            })
+            .into(),
+        )
+        .unwrap();
+    for parent in &parents[..2] {
+        let child_id = format!("{}-child", parent.id);
+        let child = timeline
+            .append(
+                EventDraft::from(EventKind::ToolCall(ToolCallData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    calls: vec![ToolCall {
+                        id: child_id.clone(),
+                        name: "echo".into(),
+                        input: serde_json::Map::new(),
+                    }],
+                }))
+                .with_parent_call_id(parent.id.clone()),
+            )
+            .unwrap();
+        let mut result = ToolResult::text("completed child");
+        result.effects = Some(vec![ToolEffect::FileWritten {
+            path: format!("{}.txt", parent.id),
+        }]);
+        timeline
+            .append(
+                EventDraft::from(EventKind::ToolResult(ToolResultData {
+                    turn_id: "turn".into(),
+                    request_id: "request".into(),
+                    call_event_id: Some(child.id.clone()),
+                    results: vec![ToolCallResult {
+                        call_id: child_id,
+                        result,
+                    }],
+                }))
+                .with_parent_call_id(parent.id.clone()),
+            )
+            .unwrap();
+    }
+    let persisted = timeline.sequence();
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store);
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent.restore_session("effects".into()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
+        .await
+        .unwrap()
+        .unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let settled = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data)
+                if data.call_event_id.as_deref() == Some(outer.id.as_str()) =>
+            {
+                Some(data)
+            }
+            _ => None,
+        })
+        .expect("the unfinished outer batch settles");
+    assert_eq!(settled.results.len(), 3);
+    for result in &settled.results[..2] {
+        assert_eq!(
+            result.result.effects,
+            Some(vec![ToolEffect::FileWritten {
+                path: format!("{}.txt", result.call_id)
+            }])
+        );
+        assert_eq!(
+            result.result.content,
+            ToolContent::Text(
+                "Tool did not finish before Capability reload; an effect may have happened".into()
+            )
+        );
+    }
+    assert_eq!(settled.results[2].result.effects, None);
+    assert_eq!(
+        settled.results[2].result.content,
+        ToolContent::Text(format!("Tool was not executed: {CAPABILITY_RELOADING}"))
+    );
+    assert!(!events.iter().any(|event| event.sequence > persisted
+        && matches!(
+            &event.kind,
+            EventKind::ToolStart(_) | EventKind::ToolCall(_) | EventKind::ModelCall(_)
+        )));
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
     for boundary in [
         "input-consumed",

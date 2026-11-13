@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use dim_agent_types::{ApprovalCallData, ApprovalDecision, ModelId};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::args::Options;
@@ -30,7 +30,7 @@ use crate::model::session::{
     SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
-    LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
+    Earlier, LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
 };
 use crate::projection::Projection;
 use crate::wire::{
@@ -262,6 +262,7 @@ struct Worker {
     approval_details: std::collections::BTreeMap<u64, MemberDetailRead>,
     /// Highest event sequence applied; replayed or duplicate events are skipped.
     cursors: std::collections::HashMap<String, u64>,
+    tool_origins: std::collections::VecDeque<(String, String, String)>,
     projection_id: u64,
     focus: String,
     /// The line the side panel follows.
@@ -305,6 +306,7 @@ struct Worker {
     login: Option<Login>,
     /// Browser callbacks its local listener captured.
     login_callbacks: (UnboundedSender<McpCallback>, UnboundedReceiver<McpCallback>),
+    opening_reads: Vec<(u64, OpeningRead)>,
     /// The composer's context reading is out of date: a model request on main
     /// finished, a run on main ended, a compaction result arrived on main, or
     /// the session or its model changed.
@@ -342,6 +344,30 @@ struct MemberDetailRead {
 struct OutputWatch {
     target: TaskTarget,
     poll_at: Option<tokio::time::Instant>,
+}
+
+enum OpeningRead {
+    Catalog(ModelId),
+    Permissions,
+    Skills,
+}
+
+fn catalog_features(entry: Option<CatalogModel>) -> Update {
+    let images = entry.as_ref().is_none_or(|entry| {
+        entry.capabilities.vision || entry.capabilities.modalities.iter().any(|m| m == "image")
+    });
+    let service_tiers = entry
+        .and_then(|entry| entry.metadata?.service_tier)
+        .is_some_and(|tier| {
+            tier.supported
+                && ["priority", "default"]
+                    .iter()
+                    .all(|value| tier.options.iter().any(|option| option == value))
+        });
+    Update::ModelFeatures {
+        images,
+        service_tiers,
+    }
 }
 
 struct Login {
@@ -657,6 +683,7 @@ impl Worker {
             question_responses: Vec::new(),
             approval_details: Default::default(),
             cursors: Default::default(),
+            tool_origins: Default::default(),
             projection_id: 0,
             focus: "main".into(),
             side: None,
@@ -684,6 +711,7 @@ impl Worker {
             mcp_required: Default::default(),
             login: None,
             login_callbacks: unbounded_channel(),
+            opening_reads: Vec::new(),
             context_stale: false,
             context_request: None,
             last_usage: None,
@@ -937,6 +965,9 @@ impl Worker {
         self.mcp_required.clear();
         self.model = Some(configuration.clone());
         self.discover_branch("main");
+        if self.client.offers("session.history.display.transcript") {
+            self.task_history.get_mut("main").unwrap().window.through = Some(attached.sequence);
+        }
         if self.client.supports(&["session.branches"]) {
             let directory: dim_client::wire::BranchDirectory = self
                 .client
@@ -944,77 +975,113 @@ impl Worker {
                 .await?;
             for entry in directory.branches {
                 self.projection.directory(&entry);
-                self.discover_branch(&entry.branch_id);
+                if entry.state == "ended" {
+                    let history = self.task_history.entry(entry.branch_id).or_default();
+                    history.ended = true;
+                    history.done = true;
+                } else {
+                    self.discover_branch(&entry.branch_id);
+                }
             }
         }
         self.poll_task_history().await?;
-        let features = self.model_features(&model).await;
         self.send(Update::Ready(configuration));
-        self.send(features);
-        if self.client.supports(&permission::PRESET_METHODS) {
-            let policy = permission::read(&mut self.client, &session_id)
-                .await
-                .map(|state| state.policy)
-                .map_err(|error| format!("permission: unavailable ({error})"));
-            self.send(Update::Permissions(policy));
-        }
+        self.send(catalog_features(None));
+        self.send(Update::Skills(Vec::new()));
         self.send(Update::Switched {
-            session_id,
+            session_id: session_id.clone(),
             kind,
             cwd: self.session_cwd.clone(),
         });
-        self.refresh_skills().await;
+        let mut reads = Vec::new();
+        if self.client.offers("provider.catalog") {
+            reads.push((
+                "provider.catalog",
+                json!({"providerId":model.provider_id}),
+                OpeningRead::Catalog(model),
+            ));
+        }
+        if self.client.supports(&permission::PRESET_METHODS) {
+            reads.push((
+                "session.permission.get",
+                json!({"sessionId":session_id,"branchId":"main"}),
+                OpeningRead::Permissions,
+            ));
+        }
+        if self.client.offers("skills.catalog") {
+            match &self.session_cwd {
+                Some(cwd) => {
+                    reads.push(("skills.catalog", json!({"cwd":cwd}), OpeningRead::Skills))
+                }
+                None => self.send(Update::Notice(
+                    "Skills unavailable: the daemon did not report the Session workspace".into(),
+                )),
+            }
+        }
+        for (method, params, kind) in reads {
+            match self.client.send(method, params).await {
+                Ok(id) => self.opening_reads.push((id, kind)),
+                Err(error) => self.send(Update::Notice(format!("{method}: {error}"))),
+            }
+        }
         self.context_stale = true;
         self.publish();
         Ok(())
     }
 
-    async fn refresh_skills(&mut self) {
-        if !self.client.supports(&["skills.catalog"]) {
-            self.send(Update::Skills(Vec::new()));
-            return;
-        }
-        let Some(cwd) = self.session_cwd.clone() else {
-            self.send(Update::Notice(
-                "Skills unavailable: the daemon did not report the Session workspace".into(),
-            ));
-            return;
-        };
-        match crate::management::skills::catalog(&mut self.client, &cwd).await {
-            Ok(catalog) => self.send(Update::Skills(catalog.entries)),
-            Err(error)
-                if error.downcast_ref::<client::RpcError>().and_then(app_error)
-                    == Some("unknown_method") =>
-            {
-                self.send(Update::Skills(Vec::new()))
+    fn opening_reply(&mut self, kind: OpeningRead, result: Result<Value, client::RpcError>) {
+        match kind {
+            OpeningRead::Catalog(model) => {
+                if !self.model.as_ref().is_some_and(|current| {
+                    current.provider_id == model.provider_id && current.model_id == model.model_id
+                }) {
+                    return;
+                }
+                let entry = result
+                    .ok()
+                    .and_then(|value| serde_json::from_value::<ProviderCatalogSnapshot>(value).ok())
+                    .and_then(|snapshot| snapshot.catalog)
+                    .and_then(|catalog| {
+                        catalog
+                            .models
+                            .into_iter()
+                            .find(|entry| entry.id == model.model_id)
+                    });
+                self.send(catalog_features(entry));
             }
-            Err(error) => self.send(Update::Notice(format!("Skills unavailable: {error}"))),
+            OpeningRead::Permissions => {
+                let policy = result
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<permission::State>(value)
+                            .map_err(|error| error.to_string())
+                    })
+                    .map(|state| state.policy)
+                    .map_err(|error| format!("permission: unavailable ({error})"));
+                self.send(Update::Permissions(policy));
+            }
+            OpeningRead::Skills => {
+                if result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.code == -32601)
+                {
+                    self.send(Update::Skills(Vec::new()));
+                    return;
+                }
+                match result.map_err(|error| error.to_string()).and_then(|value| {
+                    serde_json::from_value::<crate::management::skills::Catalog>(value)
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(catalog) => self.send(Update::Skills(catalog.entries)),
+                    Err(error) => self.send(Update::Notice(format!("Skills unavailable: {error}"))),
+                }
+            }
         }
     }
 
-    /// Whether the model takes image input, from its catalog entry:
-    /// `vision`, or `image` among its modalities. `None` when the server
-    /// has no catalog or it does not answer in time.
-    /// The model's catalog entry as [`Update::ModelFeatures`]. Unknown
-    /// capabilities leave images as they are, sent as images, and offer
-    /// no service tiers.
     async fn model_features(&mut self, model: &ModelId) -> Update {
-        let entry = self.catalog_entry(model).await;
-        let images = entry.as_ref().is_none_or(|entry| {
-            entry.capabilities.vision || entry.capabilities.modalities.iter().any(|m| m == "image")
-        });
-        let service_tiers = entry
-            .and_then(|entry| entry.metadata?.service_tier)
-            .is_some_and(|tier| {
-                tier.supported
-                    && ["priority", "default"]
-                        .iter()
-                        .all(|value| tier.options.iter().any(|option| option == value))
-            });
-        Update::ModelFeatures {
-            images,
-            service_tiers,
-        }
+        catalog_features(self.catalog_entry(model).await)
     }
 
     async fn catalog_entry(&mut self, model: &ModelId) -> Option<CatalogModel> {
@@ -2039,6 +2106,35 @@ impl Worker {
             } => {
                 if projection_id == self.projection_id {
                     self.watch_task_output(target);
+                }
+            }
+            Command::ToolOrigin {
+                session_id,
+                projection_id,
+                branch_id,
+                request_id,
+                call_id,
+            } => {
+                if session_id == self.session_id
+                    && projection_id == self.projection_id
+                    && self.methods.contains("session.tool.get")
+                {
+                    let key = (branch_id.clone(), request_id.clone(), call_id.clone());
+                    let queued = self.tool_origins.contains(&key)
+                        || self.task_history_request.as_ref().is_some_and(|read| {
+                            read.is_tool_origin(&branch_id, &request_id, &call_id)
+                        });
+                    let needed = transcript_mut(&mut self.projection, &mut self.lines, &branch_id)
+                        .is_some_and(|projection| {
+                            projection.rows().iter().any(|row| {
+                                row.batch.as_deref() == Some(&request_id)
+                                    && row.call_id.as_deref() == Some(&call_id)
+                                    && !row.tool_lookup_done
+                            })
+                        });
+                    if needed && !queued {
+                        self.tool_origins.push_back(key);
+                    }
                 }
             }
             Command::CompactionDetails {
@@ -4046,6 +4142,15 @@ impl Worker {
         id: u64,
         result: Result<serde_json::Value, client::RpcError>,
     ) -> crate::Result<()> {
+        if let Some(index) = self
+            .opening_reads
+            .iter()
+            .position(|(request, _)| *request == id)
+        {
+            let (_, kind) = self.opening_reads.remove(index);
+            self.opening_reply(kind, result);
+            return Ok(());
+        }
         if self.owns_compaction(id) {
             self.compaction_reply(result);
             return Ok(());
@@ -4064,6 +4169,9 @@ impl Worker {
                     Some("context_not_configured") => {
                         "Context usage is known once a model has answered in this session"
                             .to_owned()
+                    }
+                    Some("context_usage_unavailable") => {
+                        "Context usage will be available after the next model request".into()
                     }
                     Some("context_model_failed") => {
                         "Context usage needs the model's capabilities; select the model again"
@@ -4365,6 +4473,8 @@ impl Worker {
         if branch_id == "main"
             && let EventContent::PermissionChanged(data) = &event.content
         {
+            self.opening_reads
+                .retain(|(_, kind)| !matches!(kind, OpeningRead::Permissions));
             self.send(Update::Permissions(Ok(data.policy.clone())));
         }
         if branch_id == "main"
@@ -4564,7 +4674,8 @@ impl Worker {
         snapshot.history_complete = self
             .task_history
             .get(&self.focus)
-            .is_some_and(|branch| branch.done);
+            .is_some_and(|branch| branch.window_complete);
+        snapshot.earlier = self.earlier_view();
         snapshot.task_history_loading = self
             .task_history
             .values()

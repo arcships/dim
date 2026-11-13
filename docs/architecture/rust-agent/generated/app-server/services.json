@@ -3635,6 +3635,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
+        "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#selectableModelsHost",
         "provider": 18,
         "generation": 1,
@@ -3671,8 +3677,20 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
+        "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#workflowFiles",
         "provider": 19,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#worktreeAssociations",
+        "provider": 8,
         "generation": 1,
         "removing": false
       },

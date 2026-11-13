@@ -367,12 +367,38 @@ Provider business errors use JSON-RPC code `-32000`, a safe message and
 `data.appError`: `provider_not_found`, `provider_conflict`,
 `provider_invalid_config`, `provider_unsupported`, `provider_auth_required`,
 `provider_auth_failed`, `provider_transport_failed`, `provider_cancelled`,
-`provider_failed`. Classify typed owner errors, not their message text. This also
+`provider_failed`, `provider_catalog_stale`, `provider_account_changed`.
+Classify typed owner errors, not their message text. This also
 maps not-found, CAS/admitted-refresh conflict and validation errors from retained
 `delete`, `models.edit`, `models.reset`, `models.set_enabled`, `select` and
 `refresh`; their requests/replies and JSON-RPC code do not change. Unknown methods
 and malformed RPC parameters retain their existing generic boundary errors.
 Never include tokens, secret references, headers, proxy auth or raw upstream bodies.
+
+Managed `models.set_enabled`, `models.edit`, `models.reset` and
+`preferences.update` check the record version first. A mismatch remains
+`provider_conflict`, even if the account also changed; reread before deciding
+whether to submit another write. A matching version with a signed-out account or
+a catalog from another account epoch/generation returns `provider_catalog_stale`
+without writing. A normal credential refresh that only advances the credential
+revision does not invalidate the catalog.
+
+`provider_catalog_stale` adds these fields beside `data.appError`:
+
+| Field | Type and meaning |
+| --- | --- |
+| `providerId` | Managed Provider ID |
+| `expectedVersion`, `currentVersion` | Requested and stored record versions at the rejected write; equal because the version check takes precedence |
+| `issuer`, `subject` | Current public account identity, or both `null` when signed out; no profile, scopes, credential epoch or generation |
+| `requiredAction` | `provider.refresh` when signed in, including a changed identity; `account.login` when signed out |
+
+For `provider.refresh`, clients refresh that Provider and may retry the intended
+write once using the returned version. For `account.login`, clients complete the
+account's advertised login flow and refresh before a new write. Clients do not
+parse messages, compare account generations or refresh on `provider_conflict`.
+An account change reported by the account owner or detected during an in-flight
+refresh returns `provider_account_changed`; reread account status before deciding
+the next action. It does not represent a record version conflict.
 
 New methods, endpoint editing and typed owner errors ship as the discoverable
 `provider.management` interface unit. `provider.save` is replaced by create/update
@@ -1136,7 +1162,7 @@ disposable database; see [the storage contract](native-storage-format.md#329-格
 | §4.5 | Owned related selections/models/preferences/routes commit together; existing adoption remains atomic |
 | §4.6 | Management data does not enter model context; only existing adoption paths change configuration |
 | §4.7 | Accounts use public methods; Modality reads selectable models through §3.6's core host port; Migration uses §3.7's Provider-owned judgment; other owners' references are not rewritten |
-| §4.8 | §5 raises no mechanism requirement; existing metadata and v19 top-level JSON suffice; §3.6's read is a data face ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)), so a non-Rust consumer calls it by name; §3.7 adds no requirement |
+| §4.8 | The error-data requirement below uses the method owner's generic error fields; §5 uses existing metadata and v19 top-level JSON; §3.6's read is a data face ([service faces §4.8](../service-faces.md#48-宿主端口executionsettingshost-等六个)), so a non-Rust consumer calls it by name; §3.7 adds no requirement |
 | §4.9 | No new Timeline event or pushed process notification |
 | §1 | Extend the existing process Provider; no Capability or wiring plugin |
 | ADR 002 D1 | Process records belong to Provider; adopted branch state to its owner; drafts to clients |
@@ -1144,6 +1170,20 @@ disposable database; see [the storage contract](native-storage-format.md#329-格
 | ADR 002 D3 | Optional account failure affects its own operations; no core dependency; §3.7 is a Provider module function |
 | ADR 002 D4 | Business configuration is owner state; updates do not reload |
 | ADR 002 D5 | §3 names fields, methods, mutability, interruption and errors independently of Rust bindings; §3.6 states the process read in neutral form, and its core host port is the binding a consumer declares; §3.7 is a Rust-only module boundary because its input is Provider's admitted record with a credential reference and it has no cross-language consumer |
+
+### Requirements raised to mechanism owners
+
+- **Problem:** §3.4 needs structured recovery data in a method error; a fixed
+  application code and safe message cannot carry a version and public identity.
+- **Existing mechanisms:** message parsing loses the typed contract, and another
+  management read cannot classify the state observed by the rejected write.
+- **Generic capability:** native methods supply safe owner-defined error fields,
+  preserved by the [method error contract](../contracts/session-boundary.md#appendix-c-errors-and-recovery).
+  Rpc does not interpret Provider fields.
+- **Ordering impact:** none on sequence, batches, interruption or reload; rejected
+  writes leave the record unchanged.
+- **Owner/issue:** method errors in `dim-agent-capabilities` and App Server;
+  [#1495](https://github.com/arcships/dim/issues/1495).
 
 ## 9. Ablation review
 

@@ -22,7 +22,7 @@ The delivery decides where a change takes effect. A `System` source is part of t
 
 ### 1.1 Policy
 
-`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says.
+`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says. The shape of a tool's input, and how its entries apply, is stated by the tool's own declaration rather than by `dim/base`.
 
 The shell guidance is policy too. It is the sentence the environment source carries for the operator's shell (`Use POSIX shell syntax. …`, or the PowerShell, cmd, Git Bash and other editions), plus the file-encoding guidance on Windows: how to quote, how to invoke a path with spaces, which legacy encodings to ask the read tool for. None of it states a runtime fact.
 
@@ -68,7 +68,7 @@ The body states the setting itself, and asks for nothing: a state block is read 
 
 **No selection, no block.** When the operator has chosen no language — the system default — the source produces no entry and the base sentence's rule stands.
 
-**The carrier.** The client carries the operator's choice into the Session: `session.create {language?}` seeds it and `session.language.update` changes it, and the value is `SessionConfig.language`, an optional member of the Session's config record. The daemon never reads the client's interface-locale file. The PromptSources Session part provides the Session's live value as the `SessionLanguage` cell and reads it on every load; the branch part re-exposes that cell on each branch for the Session methods that change it, as the Skill list is re-exposed. A Session created without a choice, including a record written by an older client, has no value and produces no entry. An update adopts the value on `main` and, before it replies, on every loaded branch, so that branch's next request carries it without a wake; a branch loaded later reads the current value when it loads, and each branch's periodic check remains the fallback.
+**The carrier.** The client carries the operator's choice into the Session: `session.create {language?}` seeds it and `session.language.update` changes it, and the value is `SessionConfig.language`, an optional member of the Session's config record. The daemon never reads the client's interface-locale file. The PromptSources Session part provides the Session's live value as the `SessionLanguage` cell and reads it on every load; the cell's `get` is the `sessionLanguage` data face, which other languages read by name, and the branch part re-exposes that cell on each branch for the Session methods that change it, as the Skill list is re-exposed. The face has no write: an update also writes the Session record and has Prompt adopt the source. A Session created without a choice, including a record written by an older client, has no value and produces no entry. An update adopts the value on `main` and, before it replies, on every loaded branch, so that branch's next request carries it without a wake; a branch loaded later reads the current value when it loads, and each branch's periodic check remains the fallback.
 
 ## 4. Dependencies
 
@@ -129,3 +129,7 @@ impl PromptSourcesPlugin {
 ```
 
 The language source's binding is one more arm of the source loader: name `dim/language`, delivery `State`, order 220, body from the operator's setting when one is carried and no entry when none is.
+
+## Reading and adopting current source values
+
+Opening loads the current sources once. The periodic branch checker starts after that initial opening interval; a checker mounted on an already active branch still checks immediately. Each instructions source reads only its own file body. The checker compares each loaded target through the existing state watch and hands changed values to the existing resolved-source adoption; it does not reload their names. Language adoption keeps the Session language gate through its final load and adoption. No file cache or additional persistent event is introduced.

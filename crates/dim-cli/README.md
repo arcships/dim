@@ -282,12 +282,13 @@ as `session-<unique-id>.md` or `.json`; success shows its absolute path and
 errors stay in the interface. The content matches `dimcode session export`'s
 fixed main-branch history. Existing files are never overwritten.
 
-`/queue` opens the shown line's unconsumed messages in either terminal mode.
-Up/Down selects a row; Enter steers a held message and `x` deletes it. Applied
-messages are labelled Incorporating while running, or Unread while idle with
-a hint that they wait for the next message, and cannot be withdrawn. Only a
-held selection advertises steer and delete; an applied-only strip offers viewing
-without edit or steer shortcuts. A raced operation
+`/queue` opens only the shown line's held messages in either terminal mode.
+Up/Down selects a row; Enter steers it and `x` deletes it. Applied messages
+appear only in the transcript, retaining their pending style until consumed.
+The strip counts only held messages and disappears when none remain, including
+after a stop. Unread applied messages use only the existing transcript styling;
+there is no extra status hint. An empty panel offers no actions.
+A raced operation
 reports that the input has already left the queue. Esc closes the panel.
 Shift+Left keeps messages with images or multiple content blocks queued with a
 notice rather than losing attachments. Esc interrupt withdraws every held message
@@ -298,7 +299,6 @@ blocks retain a newline separator. No held message starts another run.
 
 ```text
 Queue
-  first request       Incorporating · awaiting model consumption
 › follow-up           Held · awaiting application
 Enter steer · x delete held · Esc close
 ```
@@ -1046,6 +1046,7 @@ opens `/tasks` while it shows, once no held message is left to steer.
 | Fullscreen input | Effect |
 | --- | --- |
 | Mouse wheel, `PageUp` / `PageDown` | Scroll the transcript; new output does not move a scrolled view. A wheel notch scrolls three rows; a trackpad, once its dense reports are seen, one row per report; a fast streak speeds up to three (notch) or six (trackpad) times that |
+| Drag the scrollbar (last column) | Move the view with the thumb; a press on the track centres the thumb there first. Dragging to the bottom, or past it over the dock, follows new output again |
 | Sending a message | Follow the bottom again |
 | Mouse drag | Select transcript text; release copies it (OSC 52, plus `pbcopy` locally on macOS; inside tmux OSC 52 goes through passthrough, which needs `set -g allow-passthrough on`) |
 | Click a link | Opens it in the system browser (OSC 8 links, or a bare `http(s)://` URL); over SSH the status row shows the URL instead |

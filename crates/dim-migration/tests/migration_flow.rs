@@ -2564,7 +2564,15 @@ async fn migration_cancellation_settles_before_unload_and_a_new_load_can_retry()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries() {
-    for case in ["tools", "revert", "revert_before_summary", "retry"] {
+    for case in [
+        "tools",
+        "tools_orphan",
+        "tools_ambiguous",
+        "tools_unfinished",
+        "revert",
+        "revert_before_summary",
+        "retry",
+    ] {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(
             directory.path(),
@@ -2574,9 +2582,97 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
         let source = directory.path().join("source");
         let db = fixture(&source);
         match case {
-            "tools" => {
-                db.execute("UPDATE messages SET role='assistant',parts=?1 WHERE messageId='first'",[json!([{"type":"tool_use","id":"old-call","name":"echo","input":{"text":"never replay"}}]).to_string()]).unwrap();
-                db.execute("UPDATE messages SET role='tool_result',parts=?1 WHERE messageId='tail'",[json!([{"type":"tool_result","tool_use_id":"old-call","content":"historical output","structuredContent":{"exitCode":0}}]).to_string()]).unwrap();
+            case if case.starts_with("tools") => {
+                db.execute("DELETE FROM messages WHERE sessionId='old'", [])
+                    .unwrap();
+                for (id, role, parts, order) in [
+                    (
+                        "first",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"old-call","name":"echo","input":{}},
+                            {"type":"tool_use","id":"split-call","name":"echo","input":{}}
+                        ]),
+                        "a",
+                    ),
+                    (
+                        "split",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"split-call","content":"split output"}
+                        ]),
+                        "b",
+                    ),
+                    (
+                        "other",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"other-call","name":"echo","input":{}}
+                        ]),
+                        "c",
+                    ),
+                    (
+                        "mixed",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"old-call","content":"first output"},
+                            {"type":"tool_result","tool_use_id":"other-call","content":"other output","is_error":true}
+                        ]),
+                        "d",
+                    ),
+                    (
+                        "reuse",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"old-call","name":"echo","input":{"text":"never replay"}}
+                        ]),
+                        "e",
+                    ),
+                    (
+                        "tail",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"old-call","content":"historical output","structuredContent":{"exitCode":0}}
+                        ]),
+                        "f",
+                    ),
+                    (
+                        "final",
+                        "assistant",
+                        json!([{"type":"text","text":"final answer"}]),
+                        "g",
+                    ),
+                ] {
+                    db.execute(
+                        "INSERT INTO messages VALUES (?1,'old',?2,?3,'[]','{}',?4,'2026-01-01T00:00:00Z')",
+                        params![id, role, parts.to_string(), order],
+                    ).unwrap();
+                }
+                db.execute(
+                    "UPDATE compaction_states SET cursor='mixed',compactionSegments=?1 WHERE sessionId='old'",
+                    [json!([{"endMessageId":"mixed","summary":"retained summary","rawItems":[]}]).to_string()],
+                ).unwrap();
+                match case {
+                    "tools_orphan" => {
+                        db.execute("DELETE FROM messages WHERE messageId='other'", [])
+                            .unwrap();
+                    }
+                    "tools_ambiguous" => {
+                        db.execute(
+                            "UPDATE messages SET parts=?1 WHERE messageId='other'",
+                            [json!([
+                                {"type":"tool_use","id":"old-call","name":"echo","input":{}}
+                            ])
+                            .to_string()],
+                        )
+                        .unwrap();
+                    }
+                    "tools_unfinished" => {
+                        db.execute("DELETE FROM messages WHERE messageId='split'", [])
+                            .unwrap();
+                    }
+                    _ => {}
+                }
             }
             "revert" | "revert_before_summary" => {
                 db.execute(
@@ -2611,7 +2707,7 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
             .iter()
             .find(|r| r.kind == "session" && r.id == "old")
             .unwrap();
-        if case == "revert_before_summary" {
+        if case == "revert_before_summary" || case.starts_with("tools_") {
             assert_eq!(imported.outcome, Outcome::Deferred, "{report:?}");
             assert!(imported.target_id.is_none());
             assert_eq!(snapshot(&source), before);
@@ -2631,7 +2727,7 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
             ServerConfig {
                 startup_timeout: std::time::Duration::from_secs(60),
                 database_path: Some(target.join("rust/dimcode.sqlite")),
-                product_home: Some(target),
+                product_home: Some(target.clone()),
                 unix_path: Some(directory.path().join("native.sock")),
                 ..Default::default()
             },
@@ -2665,7 +2761,59 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
                 | EventKind::ToolStart(_)
         )));
         if case == "tools" {
-            assert!(history.iter().any(|event|matches!(&event.kind,EventKind::ToolResult(result) if result.results[0].result.structured_content.as_ref().and_then(|value|value.get("exitCode"))==Some(&json!(0)))));
+            let results = history
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::ToolResult(result) => Some(result),
+                    _ => None,
+                })
+                .flat_map(|event| {
+                    assert_eq!(event.turn_id, event.request_id);
+                    assert!(event.call_event_id.is_none());
+                    event.results.iter().map(|result| {
+                        (
+                            event.request_id.as_str(),
+                            result.call_id.as_str(),
+                            result.result.content.clone(),
+                            result.result.is_error,
+                            result.result.structured_content.clone().map(Value::Object),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results,
+                vec![
+                    (
+                        "import:first",
+                        "split-call",
+                        "split output".into(),
+                        None,
+                        None
+                    ),
+                    (
+                        "import:first",
+                        "old-call",
+                        "first output".into(),
+                        None,
+                        None
+                    ),
+                    (
+                        "import:other",
+                        "other-call",
+                        "other output".into(),
+                        Some(true),
+                        None
+                    ),
+                    (
+                        "import:reuse",
+                        "old-call",
+                        "historical output".into(),
+                        None,
+                        Some(json!({"exitCode":0}))
+                    ),
+                ]
+            );
         } else {
             assert!(history.iter().any(|event|matches!(&event.kind,EventKind::Text(text) if text.delta=="effective suffix")));
         }
@@ -2733,6 +2881,70 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
         drop(client);
         server.shutdown();
         server.join().await.unwrap();
+        if case == "tools" {
+            let stored = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
+            for message in ["split", "mixed", "tail"] {
+                assert!(
+                    stored
+                        .execute(
+                            "UPDATE timeline_events SET body=json_set(body,
+                        '$.record.event.data.request_id',?2,'$.record.event.data.turn_id',?2)
+                     WHERE session_id=?1 AND kind='step/tool-result' AND EXISTS (
+                        SELECT 1 FROM json_each(body,'$.record.event.tags') WHERE value=?3)",
+                            params![
+                                id,
+                                format!("import:{message}"),
+                                format!("legacy-message:{message}")
+                            ],
+                        )
+                        .unwrap()
+                        > 0
+                );
+            }
+            let history_sql = "SELECT json_group_array(body) FROM (
+                SELECT body FROM timeline_events WHERE session_id=?1 ORDER BY branch_id,sequence)";
+            let existing: String = stored
+                .query_row(history_sql, [&id], |row| row.get(0))
+                .unwrap();
+            drop(stored);
+            let root = rutis::Ctx::root().unwrap();
+            let plugin = root.plugin(MigrationPlugin::new(
+                target.clone(),
+                "rust".into(),
+                vec!["system".into()],
+            ));
+            (&plugin).await.unwrap();
+            for retry_of in [None, Some(report.task.id.clone())] {
+                let retried = root
+                    .get::<Migration>()
+                    .unwrap()
+                    .run(source.clone(), true, retry_of)
+                    .await
+                    .unwrap();
+                let existing_session = retried
+                    .objects
+                    .iter()
+                    .find(|object| object.kind == "session" && object.id == "old")
+                    .unwrap();
+                assert_eq!(
+                    existing_session.outcome,
+                    Outcome::AlreadyImported,
+                    "{retried:?}"
+                );
+                assert_eq!(existing_session.target_id.as_deref(), Some(id.as_str()));
+                let stored = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
+                let after: String = stored
+                    .query_row(history_sql, [&id], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    after, existing,
+                    "Run and retry must not repair existing imported history or overwrite subsequent native conversation"
+                );
+                assert_eq!(snapshot(&source), before);
+            }
+            plugin.dispose().await.unwrap();
+            root.shutdown().await.unwrap();
+        }
     }
 }
 

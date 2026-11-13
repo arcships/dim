@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch, LoaderCircle, RotateCcw } from "lucide-vue-next"
 import { MAIN_BRANCH, type DraftAttachments } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
@@ -98,7 +97,7 @@ function noModel(): void {
   <section class="line-conversation" :aria-label="t('lines.lineAria', { name: title })">
     <header class="line-crumb">
       <div class="line-crumb-main">
-        <GitBranch :size="14" aria-hidden="true" />
+        <UIcon name="i-lucide-git-branch" class="size-3.5 shrink-0" aria-hidden="true" />
         <strong>{{ title }}</strong>
         <code>{{ shortId(branchId) }}</code>
         <span class="line-state" :data-tone="lineStateTone(state)">{{ lineStateLabel(t, state) }}</span>
@@ -106,20 +105,20 @@ function noModel(): void {
       <div class="line-crumb-meta">
         <span v-if="parentName">{{ t("lines.from", { name: parentName }) }}<template v-if="cut"> · {{ cut }}</template></span>
         <span v-else>{{ t("lines.main") }}</span>
-        <button v-if="open && branch?.lastTurnEnd !== undefined" type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="newChild">{{ t("lines.newChild") }}</button>
-        <button v-if="open && line?.id !== 'main'" type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="end">{{ t("lines.end") }}</button>
+        <UButton v-if="open && branch?.lastTurnEnd !== undefined" color="neutral" variant="ghost" size="xs" @click="newChild">{{ t("lines.newChild") }}</UButton>
+        <UButton v-if="open && line?.id !== 'main'" color="neutral" variant="ghost" size="xs" @click="end">{{ t("lines.end") }}</UButton>
       </div>
     </header>
 
     <div v-if="!view || !branch || branch.status === 'loading'" class="line-loading" role="status">
-      <LoaderCircle :size="16" class="is-spinning" aria-hidden="true" />
+      <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin shrink-0" aria-hidden="true" />
       <span>{{ t("common.loading") }}</span>
     </div>
     <div v-else-if="branch.status === 'failed'" class="line-loading line-error" role="alert">
       <p>{{ branch.error || t("lines.loadFailed") }}</p>
-      <button type="button" class="ui-button" data-variant="secondary" data-size="sm" @click="retry">
-        <RotateCcw aria-hidden="true" />{{ t("lines.retry") }}
-      </button>
+      <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-rotate-ccw" @click="retry">
+        {{ t("lines.retry") }}
+      </UButton>
     </div>
     <template v-else>
       <TimelineView

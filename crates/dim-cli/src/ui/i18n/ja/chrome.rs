@@ -7,13 +7,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "キューにメッセージはありません。",
         "Held · awaiting application" => "保留中 · 適用待ち",
-        "Incorporating · awaiting model consumption" => "取り込み中 · モデルの読み取り待ち",
         "Held" => "保留中",
-        "Incorporating" => "取り込み中",
         "Unread" => "未読",
-        "Unread · waiting for your next message" => "未読 · 次のメッセージ待ち",
-        "/queue view · awaiting model consumption" => "/queue 表示 · モデルの読み取り待ち",
-        "/queue view · waiting for your next message" => "/queue 表示 · 次のメッセージ待ち",
         "Enter export · Esc cancel" => "Enter エクスポート · Esc キャンセル",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "添付ファイル付きのメッセージはキューに残ります。/queue で steer または削除してください"

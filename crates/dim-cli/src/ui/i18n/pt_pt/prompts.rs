@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Aprovar por mim",
         "Full access" => "Acesso total",
         "Run {tool}" => "Executar {tool}",
+        "edit {count} replacement in {path}" => "edit {count} substituição em {path}",
+        "edit {count} replacements in {path}" => "edit {count} substituições em {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Ainda não é possível mudar o modo de aprovações aqui"
         }
@@ -59,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 selecionar · Tab seguinte · / comandos · Esc recusar"
         }
         "Question" => "Pergunta",
+        "↑↓ scroll" => "↑↓ deslocar",
+        "replacements {from}-{to} of {count}" => "substituições {from}-{to} de {count}",
         "Question on branch {branch}" => "Pergunta no ramo {branch}",
         "Permission on branch {branch}" => "Permissão no ramo {branch}",
         "Sending answer…" => "A enviar resposta…",

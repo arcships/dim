@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn tui_shows_the_transcript_and_submits_input_before_owner_inventory_finishes() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let (proceed, control) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[
+            {"name":"session.input.pending","mutating":false},
+            {"name":"session.turn.get","mutating":false}
+        ]}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[fact("visible",1,1000,"input","message",json!({
+            "user":{"content":[{"type":"text","text":"first transcript before controls"}]},"mode":"append"
+        }))],"through":8,"nextAfter":8,"done":true}));
+        let inventory = loop {
+            let request = wire.frame();
+            match request["method"].as_str().unwrap() {
+                "session.input.pending" => break request,
+                "account.providers" => wire.reply(&request, json!([])),
+                "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                _ => assert!(wire.empty_state(&request)),
+            }
+        };
+        ready.send(()).unwrap();
+        loop {
+            let request = wire.frame();
+            match request["method"].as_str().unwrap() {
+                "session.submit" => {
+                    assert_eq!(request["params"]["text"], "draft while controls load");
+                    wire.reply(&request, json!({"event":{}}));
+                    ready.send(()).unwrap();
+                    break;
+                }
+                "account.providers" => wire.reply(&request, json!([])),
+                "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                _ => assert!(wire.empty_state(&request)),
+            }
+        }
+        control.recv_timeout(Duration::from_secs(10)).unwrap();
+        wire.reply(&inventory, json!({"branchId":"main","through":8,"inputs":[],"next":null}));
+        ready.send(()).unwrap();
+        wire.2 = true;
+        assert_eq!(wire.trailing_request(), None);
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    terminal.until("first transcript before controls");
+    terminal.write(b"draft while controls load");
+    terminal.until("draft while controls load");
+    terminal.write(b"\r");
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    proceed.send(()).unwrap();
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn opening_a_discovered_line_loads_its_transcript_through_the_task_history_queue() {
     let home = Home::new();
     let (ready, readiness) = std::sync::mpsc::channel();
@@ -50,7 +112,7 @@ fn opening_a_discovered_line_loads_its_transcript_through_the_task_history_queue
         assert_eq!(detail["params"], json!({"sessionId":"session","branchId":"child-a"}));
         wire.reply(&detail, json!({"branchId":"child-a","parentBranchId":"main","branchPoint":1,"state":"open","head":2,"purpose":"owner supplied purpose","cutMessages":0,"end":null}));
         let history = wire.read("session.history");
-        assert_eq!(history["params"], json!({"sessionId":"session","branchId":"child-a","latestTurn":true,"limit":256}));
+        assert_eq!(history["params"], json!({"sessionId":"session","branchId":"child-a","latestTurn":true,"limit":64}));
         wire.reply(&history, json!({"events":[fact("child-a-text",2,2000,"step","text",json!({
             "turn_id":"turn","request_id":"request","delta":"saved transcript of child-a",
         }))],"through":2,"nextAfter":2,"done":true}));
@@ -530,14 +592,14 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
                 let before = if page == 0 { 228 } else { 1 };
                 wire.reply(&request, json!({"events":events,"through":452,"nextAfter":last,"nextBefore":before,"done":page==1}));
                 if page == 0 {
+                    let submit = wire.read("session.submit");
+                    assert_eq!(submit["params"]["sessionId"], "paged");
+                    assert_eq!(submit["params"]["text"], "draft during history");
+                    wire.reply(&submit, json!({"event":{}}));
                     request = wire.read("session.history");
                     assert_eq!(request["params"]["through"], 452);
                 }
             }
-            let submit = wire.read("session.submit");
-            assert_eq!(submit["params"]["sessionId"], "paged");
-            assert_eq!(submit["params"]["text"], "draft during history");
-            wire.reply(&submit, json!({"event":{}}));
             assert_eq!(wire.trailing_request(), None, "earlier history is already loaded");
         });
         let mut command = home.command();
@@ -560,15 +622,15 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         proceed.send(()).unwrap();
         terminal.until("paged-message-150");
         terminal.until("resumed paged");
-        terminal.until("100 messages");
-        terminal.until("earlier history: /");
+        terminal.until("75 messages");
+        terminal.until("Earlier content not loaded");
         // The window title names the session's first message; only the
         // screen is windowed.
         let screen = terminal
             .transcript
             .replace("\x1b]0;DIM | paged-message-001\x07", "");
-        assert!(screen.contains("paged-message-051"));
-        assert!(!screen.contains("paged-message-050"));
+        assert!(screen.contains("paged-message-076"));
+        assert!(!screen.contains("paged-message-075"));
         assert!(!screen.contains("paged-message-001"));
         assert!(
             !terminal.transcript.contains("resumed paged · 0 messages"),
@@ -576,7 +638,8 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
             terminal.transcript
         );
         // A `/timeline` jump to the first message draws the earlier history.
-        terminal.write(b"\r/timeline\r");
+        terminal.write(b"\r/earlier\r");
+        terminal.write(b"/timeline\r");
         terminal.until("#150");
         terminal.write(b"\x1b[H\r");
         terminal.until("paged-message-001");
@@ -723,7 +786,7 @@ fn tui_task_inventory_discards_old_pages_and_queued_retries_after_resuming_the_s
         let main = wire.read("session.history");
         assert_eq!(
             main["params"],
-            json!({"sessionId":"session","branchId":"main","latestTurn":true,"limit":256})
+            json!({"sessionId":"session","branchId":"main","latestTurn":true,"limit":64})
         );
         wire.reply(
             &main,
@@ -1242,19 +1305,19 @@ fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
         assert_eq!(attach["params"], json!({"sessionId":"member"}));
         wire.reply(&attach, attach_record(&attach));
         let first = wire.read("session.history");
-        assert_eq!(first["params"], json!({"sessionId":"member","branchId":"main","latestTurn":true,"limit":256}));
-        wire.reply(&first, json!({"events":[fact("member-text",4,2000,"step","text",json!({"turn_id":"member-turn","request_id":"member-model","delta":"member original"}))],"through":4,"nextAfter":4,"nextBefore":4,"done":true}));
+        assert_eq!(first["params"], json!({"sessionId":"member","branchId":"main","latestTurn":true,"limit":64}));
+        wire.reply(&first, json!({"events":[fact("member-hidden",5,2000,"input","message",json!({"mode":"append","blocks":[{"type":"raw","text":"hidden runtime state"}]}))],"through":5,"nextAfter":5,"nextBefore":5,"done":true}));
         let second = wire.read("session.history");
-        assert_eq!(second["params"], json!({"sessionId":"member","branchId":"main","before":4,"through":4,"limit":256}));
+        assert_eq!(second["params"], json!({"sessionId":"member","branchId":"main","before":5,"through":5,"limit":64}));
         event(wire, "main", fact("leader-observation",3,3000,"input","message",json!({"mode":"append","user":{"content":[{"type":"text","text":"leader notice while reading"}]}})));
         event(wire, "main", fact("leader-observation-applied",4,3000,"input","applied",json!({"input_id":"leader-observation","mode":"append"})));
-        let text = fact("member-live",5,3000,"step","text",json!({"turn_id":"member-turn","request_id":"member-model","delta":" + live"}));
+        let text = fact("member-live",6,3000,"step","text",json!({"turn_id":"member-turn","request_id":"member-model","delta":" + live"}));
         wire.notice("session.event", json!({"sessionId":"member","branchId":"main","event":text}));
         wire.notice("session.event", json!({"sessionId":"member","branchId":"main","event":text}));
         wire.notice("session.event", json!({"sessionId":"member","branchId":"other","event":fact("other-member-branch",99,3000,"step","text",json!({"turn_id":"t","request_id":"wrong","delta":"wrong member branch"}))}));
         wire.notice("session.state", json!({"sessionId":"member","branchId":"main","running":true}));
         wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"child","requestId":"wrong-root","text":"","textOffset":0,"thinking":"wrong leader branch thought","thinkingOffset":0}));
-wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message",json!({"mode":"queue","user":{"content":[{"type":"text","text":"member user\u{1b}]52;c;never-copy\u{7}"}]}})),fact("member-applied",2,1000,"input","applied",json!({"input_id":"member-input","mode":"queue"})),fact("member-consumed",3,1000,"input","consumed",json!({"input_id":"member-input"}))],"through":4,"nextAfter":3,"nextBefore":3,"done":true,"nextBefore":1}));
+wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message",json!({"mode":"queue","user":{"content":[{"type":"text","text":"member user\u{1b}]52;c;never-copy\u{7}"}]}})),fact("member-applied",2,1000,"input","applied",json!({"input_id":"member-input","mode":"queue"})),fact("member-consumed",3,1000,"input","consumed",json!({"input_id":"member-input"})),fact("member-text",4,2000,"step","text",json!({"turn_id":"member-turn","request_id":"member-model","delta":"member original"}))],"through":5,"nextAfter":4,"done":true,"nextBefore":1}));
         wire.notice("session.model.progress", json!({"sessionId":"member","branchId":"main","requestId":"member-model","text":"","textOffset":0,"thinking":"live member thought","thinkingOffset":0}));
         let stop = wire.read("session.stop");
         assert_eq!(stop["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
@@ -1368,7 +1431,7 @@ fn tui_member_conversation_settles_old_attach_or_page_before_observing_a_replace
             assert_eq!(detach["method"], "session.detach");
             assert_eq!(detach["params"], json!({"sessionId":"member"}));
             wire.reply(&detach, json!({}));
-            assert_eq!(history["params"], json!({"sessionId":"member-b","branchId":"main","latestTurn":true,"limit":256}));
+            assert_eq!(history["params"], json!({"sessionId":"member-b","branchId":"main","latestTurn":true,"limit":64}));
             wire.reply(&history, json!({"events":[fact("new-text",1,1000,"step","text",json!({"turn_id":"new","request_id":"new","delta":"only the new member"}))],"through":1,"nextAfter":1,"done":true}));
             let detach = wire.read("session.detach");
             assert_eq!(detach["params"], json!({"sessionId":"member-b"}));
@@ -1424,7 +1487,7 @@ fn tui_member_conversation_keeps_errors_local_and_reopens_from_a_fresh_history()
                 control.recv_timeout(Duration::from_secs(10)).unwrap();
                 wire.notice("session.closed", json!({"sessionId":"member","reason":null}));
             } else {
-                wire.reply(&history, json!({"events":[fact("kept-prefix",2,1000,"input","message",json!({"mode":"queue","user":{"content":[{"type":"text","text":"retained member prefix"}]}})),fact("kept-prefix-applied",3,1000,"input","applied",json!({"input_id":"kept-prefix","mode":"queue"})),fact("kept-prefix-consumed",4,1000,"input","consumed",json!({"input_id":"kept-prefix"}))],"through":5,"nextAfter":4,"nextBefore":2,"done":false}));
+                wire.reply(&history, json!({"events":[fact("kept-prefix",2,1000,"input","message",json!({"mode":"append","blocks":[{"type":"raw","text":"retained member prefix"}]})),fact("kept-prefix-applied",3,1000,"input","applied",json!({"input_id":"kept-prefix","mode":"queue"})),fact("kept-prefix-consumed",4,1000,"input","consumed",json!({"input_id":"kept-prefix"}))],"through":5,"nextAfter":4,"nextBefore":2,"done":false}));
                 let page = wire.read("session.history");
                 if outcome == 1 {
                     wire.send(json!({"jsonrpc":"2.0","id":page["id"],"error":{"code":-32000,"message":"member page failed"}}));
@@ -1447,7 +1510,7 @@ fn tui_member_conversation_keeps_errors_local_and_reopens_from_a_fresh_history()
                 assert_eq!(attach["params"], json!({"sessionId":"member"}));
                 wire.reply(&attach, attach_record(&attach));
                 let history = wire.read("session.history");
-                assert_eq!(history["params"], json!({"sessionId":"member","branchId":"main","latestTurn":true,"limit":256}));
+                assert_eq!(history["params"], json!({"sessionId":"member","branchId":"main","latestTurn":true,"limit":64}));
                 wire.reply(&history, json!({"events":[fact("fresh-text",1,1000,"step","text",json!({"turn_id":"fresh","request_id":"fresh","delta":"fresh member after retry"}))],"through":1,"nextAfter":1,"done":true}));
                 let detach = wire.read("session.detach");
                 assert_eq!(detach["params"], json!({"sessionId":"member"}));
@@ -2504,4 +2567,275 @@ fn tui_new_creates_the_session_on_the_first_message() {
     daemon.join().unwrap();
     home.kill(&terminal);
     terminal.wait();
+}
+/// Reads whatever the CLI painted until it has been quiet for `quiet`.
+fn probe_1476_drain(terminal: &mut Terminal, quiet: Duration) {
+    let mut idle = Duration::ZERO;
+    loop {
+        let mut poll = libc::pollfd {
+            fd: terminal.master.as_ref().unwrap().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 40) } > 0 {
+            let mut bytes = [0u8; 8192];
+            match terminal.master.as_mut().unwrap().read(&mut bytes) {
+                Ok(0) | Err(_) => return,
+                Ok(size) => {
+                    terminal.record(&bytes[..size]);
+                    idle = Duration::ZERO;
+                    continue;
+                }
+            }
+        }
+        idle += Duration::from_millis(40);
+        if idle >= quiet {
+            return;
+        }
+    }
+}
+
+/// The topmost `paged-message-NNN` in the last painted frame: fullscreen
+/// repaints its viewport row by row, so the smallest number in the tail is the
+/// first drawn row.
+fn top_paged_message(text: &str) -> String {
+    let plain = strip_ansi(text);
+    let tail: String = plain
+        .chars()
+        .rev()
+        .take(6000)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let mut seen: Vec<u32> = Vec::new();
+    let mut rest = tail.as_str();
+    while let Some(at) = rest.find("paged-message-") {
+        let after = &rest[at + "paged-message-".len()..];
+        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(number) = digits.parse::<u32>()
+            && !seen.contains(&number)
+        {
+            seen.push(number);
+        }
+        rest = after;
+    }
+    seen.sort_unstable();
+    seen.first().map_or_else(
+        || "none".to_owned(),
+        |first| format!("paged-message-{first:03}"),
+    )
+}
+
+/// #1476.
+#[test]
+fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let (proceed, control) = std::sync::mpsc::channel();
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&reads);
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["sessionId"], "paged");
+        wire.reply(&attach, json!({"sessionId":"paged","cwd":"/workspace",
+            "model":{"providerId":"test","modelId":"restored-model"},"createdAt":1,
+            "running":false,"sequence":0,"attachedClients":1}));
+        let first = wire.read("session.history");
+        assert_eq!(first["params"]["latestTurn"], true);
+        assert_eq!(first["params"]["limit"], 64);
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        ready.send(()).unwrap();
+        control.recv_timeout(Duration::from_secs(10)).unwrap();
+        let page = |start: usize, count: usize| {
+            let mut events = Vec::new();
+            for index in start..start + count {
+                let sequence = index as u64 * 3;
+                events.push(fact(&format!("message-{index}"), sequence, sequence, "input", "message",
+                    json!({"mode":"append","user":{"content":[{"type":"text","text":format!("paged-message-{index:03}")}]}})));
+                events.push(fact(&format!("applied-{index}"), sequence + 1, sequence, "input", "applied",
+                    json!({"input_id": format!("message-{index}"), "mode": "append"})));
+                events.push(fact(&format!("consumed-{index}"), sequence + 2, sequence, "input", "consumed",
+                    json!({"input_id": format!("message-{index}")})));
+            }
+            events
+        };
+        wire.reply(&first, json!({"events":page(151, 21),"through":515,"nextAfter":515,
+            "nextBefore":453,"done":false}));
+        // Every earlier read the interface asks for, counted, in the order the
+        // branch holds them. A read past the start is still answered so the
+        // count can show it happened.
+        let mut served = 0;
+        loop {
+            let request = wire.read_any();
+            assert_eq!(request["method"], "session.history", "{request}");
+            assert_eq!(request["params"]["through"], 515);
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // A page covers every event of its messages: message `i` holds
+            // sequences `3i..3i+2`, so page(76, 75) ends at 452 and page(1, 75) at 227.
+            let reply = match served {
+                0 => json!({"events":page(76, 75),"through":515,"nextAfter":452,
+                    "nextBefore":228,"done":false}),
+                1 => json!({"events":page(1, 75),"through":515,"nextAfter":227,
+                    "nextBefore":1,"done":false}),
+                _ => json!({"events":[],"through":515,"nextAfter":1,
+                    "nextBefore":1,"done":false}),
+            };
+            served += 1;
+            wire.reply(&request, reply);
+        }
+    });
+    let mut command = home.command();
+    command.args(["--resume", "paged", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(command);
+    readiness.recv_timeout(Duration::from_secs(10)).unwrap();
+    terminal.until("test / restored-model");
+    proceed.send(()).unwrap();
+    terminal.until("resumed paged · 21 messages");
+    probe_1476_drain(&mut terminal, Duration::from_millis(600));
+    // Home puts the view at the drawn top; PageUp there shows what is before
+    // it, revealing loaded rows first and reading only when none are loaded.
+    let mut steps: Vec<String> = Vec::new();
+    let mut drawn = false;
+    for step in 1..=10 {
+        terminal.write(b"\x1b[H");
+        probe_1476_drain(&mut terminal, Duration::from_millis(300));
+        terminal.write(b"\x1b[5~");
+        probe_1476_drain(&mut terminal, Duration::from_millis(900));
+        let top = top_paged_message(&terminal.transcript);
+        steps.push(format!(
+            "  step {step}: reads={} top={top}",
+            reads.load(std::sync::atomic::Ordering::SeqCst)
+        ));
+        if strip_ansi(&terminal.transcript).contains("paged-message-001") {
+            drawn = true;
+            break;
+        }
+    }
+    if !drawn {
+        let plain = strip_ansi(&terminal.transcript);
+        let rows: Vec<&str> = plain
+            .lines()
+            .rev()
+            .take(14)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        home.kill(&terminal);
+        terminal.wait();
+        panic!(
+            "PageUp at the top never drew the branch's first message\n\
+             reads={} top={}\n{}\nlast frame:\n{}",
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            top_paged_message(&terminal.transcript),
+            steps.join("\n"),
+            rows.join("\n"),
+        );
+    }
+    let settled = reads.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(settled, 2, "the branch start needed two earlier pages");
+    // One more press at the top: the whole branch is loaded, so nothing is read.
+    terminal.write(b"\x1b[H");
+    probe_1476_drain(&mut terminal, Duration::from_millis(300));
+    terminal.write(b"\x1b[5~");
+    probe_1476_drain(&mut terminal, Duration::from_millis(1500));
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        settled,
+        "a press past the branch start reads nothing"
+    );
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods", "session.branch.get"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[{"name":"session.turn.get","mutating":false},{"name":"session.input.pending","mutating":false},{"name":"session.exec.pending","mutating":false}]}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[fact("child",1,1000,"branch","create",json!({
+            "branch":"child","at":{"kind":"create"},"source":{"kind":"host","operation_id":"child"},"prompt":"ended history"
+        }))],"through":2,"nextAfter":2,"done":true}));
+        let mut inventories = 0;
+        let mut context = false;
+        let mut accounts = false;
+        while inventories < 2 || !context || !accounts {
+            let request = wire.read_any();
+            match request["method"].as_str().unwrap() {
+                "session.context.usage" => {
+                    context = true;
+                    wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}}));
+                }
+                "account.providers" => { accounts = true; wire.reply(&request, json!([])); }
+                "session.input.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"inputs":[],"next":null})),
+                "session.exec.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"tasks":[],"next":null})),
+                "session.turn.get" => {
+                    inventories += usize::from(request["params"]["through"].is_number());
+                    wire.reply(&request, json!({"branchId":request["params"]["branchId"],"through":2,"turn":null,"output":null}));
+                }
+                method => panic!("Unexpected {method}"),
+            }
+        }
+        event(wire,"main",fact("child-ended",3,3000,"branch","ended",json!({"branch":"child","endEvent":640,"source":{"kind":"host","operation_id":"stop"}})));
+        wire.2 = true;
+        ready.send(()).unwrap();
+        let detail = wire.read("session.branch.get");
+        wire.reply(&detail,json!({"branchId":"child","parentBranchId":"main","branchPoint":1,"state":"ended","head":640,"purpose":"ended history","cutMessages":0,"end":null}));
+        let page = |start: u64, end: u64| -> Vec<Value> {
+            (start..=end).flat_map(|n| [
+                fact(&format!("m{n}"),n*2-1,n,"input","message",json!({"mode":"append","user":{"content":[{"type":"text","text":format!("ended-message-{n:03}")}]}})),
+                fact(&format!("a{n}"),n*2,n,"input","applied",json!({"input_id":format!("m{n}"),"mode":"append"})),
+            ]).collect()
+        };
+        let history = wire.read("session.history");
+        wire.reply(&history,json!({"events":page(289,320),"through":640,"nextAfter":640,"nextBefore":577,"done":false}));
+        for (start, end) in [(161,288),(33,160),(1,32)] {
+            let earlier = wire.read("session.history");
+            assert_eq!(earlier["params"]["before"],end*2+1);
+            assert_eq!(earlier["params"]["limit"],256);
+            wire.reply(&earlier,json!({"events":page(start,end),"through":640,"nextAfter":end*2,"nextBefore":start*2-1,"done":start==1}));
+        }
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("test / model");
+    readiness
+        .recv_timeout(PATIENCE)
+        .unwrap_or_else(|e| panic!("{e}: {}", terminal.transcript));
+    terminal.write(b"/lines\r");
+    terminal.until("the session itself");
+    terminal.write(b"\x1b[B\r");
+    terminal.until("ended-message-320");
+    terminal.write(b"/earlier\r");
+    for _ in 0..32 {
+        terminal.write(b"\x1b[H");
+        probe_1476_drain(&mut terminal, Duration::from_millis(100));
+        terminal.write(b"\x1b[5~");
+        probe_1476_drain(&mut terminal, Duration::from_millis(200));
+        if strip_ansi(&terminal.transcript).contains("ended-message-001") {
+            break;
+        }
+    }
+    let restored = strip_ansi(&terminal.transcript).contains("ended-message-001");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    assert!(
+        restored,
+        "earlier content was not retained: {}",
+        strip_ansi(&terminal.transcript)
+    );
 }

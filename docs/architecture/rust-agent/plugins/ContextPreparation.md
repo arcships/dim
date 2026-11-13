@@ -52,8 +52,10 @@ Recovery queries preparation identities without a matching model call or output
 end, and automatic compaction starts without a matching result, at one committed
 boundary. It reads only settlement and control fields, then writes terminal
 facts without reconstructing historical requests or rerunning host work.
-Preparation and policy retain only a weak reference and numeric evidence for the
-in-flight request. Validation reuses that estimate for the unchanged final object
+Preparation receives one request-local projection from Loop, tied to the original
+request object and cutoff. Its task takes ownership on delivery and releases it
+when preparation ends; cancellation and cleanup discard an unconsumed handoff.
+After preparation, only a weak request reference and numeric evidence remain. Validation reuses that estimate for the unchanged final object
 and matching model counter and limits; otherwise it counts the actual final request.
 Context pages use one fixed content cutoff and store continuations. Cut discovery
 reads ids and positions; retained input and tool-result queries end at the chosen
@@ -63,8 +65,10 @@ validation do not load historical model requests.
 For a compatible numeric reference with a known projection boundary, normal
 preparation also checks growth numerically and returns without a second history
 projection. Recovery, a reusable completed compaction, or an actual threshold
-compaction reads the policy view. Legacy unknown statistics and unsupported
-counters retain their explicit local-count/projection path.
+compaction uses that same local projection; only a request without a matching
+handoff rereads its fixed cutoff. Missing statistics are counted by ContextUsage
+once for both the initial budget and the saved contribution. Legacy unknown
+statistics and unsupported counters retain their explicit actual-request count.
 The mock profile
 has no context resolver. Completed compaction facts remain authoritative across
 checkpoint selection. Recovery snapshots are built from the final adopted cut,
@@ -95,5 +99,5 @@ nothing and no digest can be written
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
 | 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation` |
-| 被注入于 | `ModelProvider`、`Prompt` |
+| 被注入于 | `Loop`、`ModelProvider`、`Prompt` |
 <!-- /generated -->

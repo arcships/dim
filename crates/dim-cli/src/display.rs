@@ -223,7 +223,10 @@ impl Display {
                     ..
                 } = data.outcome
                 {
-                    self.failed = true;
+                    // A failed model terminal is reported, but it does not by
+                    // itself make the run a failure: the turn that recovered
+                    // from it, or ended Completed at its output limit, is what
+                    // the caller acted on.
                     let line = match (presentation, failure) {
                         (Some(presentation), _) => Some(format!(
                             "[failed] {}: {}{}",
@@ -248,6 +251,16 @@ impl Display {
                         self.shown_failure = Some(error);
                     }
                 }
+            }
+            EventContent::CompactionStart(_) => self.record("[context] Compacting")?,
+            EventContent::CompactionSummary(_) => self.record("[context] Compacted")?,
+            EventContent::Compaction(data) => {
+                self.record(match data.outcome {
+                    ContextCompactionResult::Completed { .. } => "[context] Compacted",
+                    ContextCompactionResult::Skipped { .. } => "[context] Compaction skipped",
+                    ContextCompactionResult::Failed { .. } => "[context] Compaction failed",
+                    ContextCompactionResult::Cancelled { .. } => "[context] Compaction cancelled",
+                })?;
             }
             EventContent::TurnEnd(data) => {
                 self.finish_text()?;

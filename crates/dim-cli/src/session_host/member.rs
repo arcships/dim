@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::*;
-use crate::model::view::MemberConversationState;
+use crate::model::view::{Earlier, MemberConversationState};
 
 pub(super) enum Notice {
     Event(Event),
@@ -151,6 +151,26 @@ impl Worker {
             .observations
             .get(session_id)
             .is_some_and(|observation| !observation.closing)
+    }
+
+    /// Whether the selected member's conversation has older history to read,
+    /// by the fields `earlier_member` tests.
+    pub(super) fn earlier_observation(&self) -> Earlier {
+        let Some((_, id)) = &self.members.selected else {
+            return Earlier::AtStart;
+        };
+        self.members
+            .observations
+            .get(id)
+            .map_or(Earlier::AtStart, |observation| {
+                if observation.pending.is_some() || observation.earlier {
+                    Earlier::Reading
+                } else if observation.window.before.is_some() {
+                    Earlier::Unread
+                } else {
+                    Earlier::AtStart
+                }
+            })
     }
 
     /// Unfinished delegations' members, once main's history says which are
@@ -307,7 +327,12 @@ impl Worker {
                 );
                 continue;
             }
-            let params = observation.window.params(&id, "main");
+            let params = observation.window.params_with_display(
+                &id,
+                "main",
+                self.client.offers("session.history.display.tail"),
+                self.client.offers("session.history.display.transcript"),
+            );
             let method = if self
                 .client
                 .supports(&["session.history.display", "session.history.detail"])
