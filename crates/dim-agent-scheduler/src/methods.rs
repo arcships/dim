@@ -117,6 +117,8 @@ impl DynPlugin for SchedulerPlugin {
                 pruning: tokio::sync::Mutex::new(()),
                 settling: tokio::sync::Mutex::new(()),
                 wakeups: tokio::sync::Mutex::new(()),
+                loops: tokio::sync::Mutex::new(()),
+                live_loops: std::sync::atomic::AtomicBool::new(false),
                 stop: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
                 retention: Default::default(),
@@ -155,6 +157,10 @@ impl DynPlugin for SchedulerPlugin {
                 shared: shared.clone(),
             });
             ctx.provide_as::<crate::wakeups::Wakeups>(wakeups.clone())?;
+            let loops = Arc::new(crate::loops::Loops {
+                shared: shared.clone(),
+            });
+            ctx.provide_as::<crate::loops::Loops>(loops.clone())?;
             methods.register(
                 ctx,
                 NAMESPACE,
@@ -200,6 +206,16 @@ impl DynPlugin for SchedulerPlugin {
                     format!("scheduler wakeups: {error}").into(),
                 ))
             })?;
+            // The same rule for a loop file: an invalid v1 fails the row and
+            // the bytes stay unchanged. This read is also where the live-loop
+            // flag starts: a daemon whose file holds no live loop takes no
+            // loop work at all.
+            let looped = crate::loops::read(&shared.files).await.map_err(|error| {
+                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    format!("scheduler loops: {error}").into(),
+                ))
+            })?;
+            loops.note_live(&looped);
             // A delivery still in flight when the previous process stopped
             // keeps its record; only a launch record this design wrote has a
             // stop timer to resume (§3.2). A record written by an earlier
@@ -217,8 +233,12 @@ impl DynPlugin for SchedulerPlugin {
             // start, before any window writes again (A.6).
             {
                 let startup = shared.clone();
+                let loops_startup = loops.clone();
                 shared.spawn(async move {
                     crate::engine::settle_delivering(&startup).await;
+                    if let Err(error) = loops_startup.settle_delivering().await {
+                        tracing::warn!(%error, "scheduler loop lookup pass failed");
+                    }
                 });
             }
             shared.spawn(crate::engine::prune(shared.clone()));
@@ -244,9 +264,15 @@ impl DynPlugin for SchedulerPlugin {
                     if let Err(error) = wakeups.evaluate().await {
                         tracing::warn!(%error, "scheduler wakeup pass failed");
                     }
+                    if let Err(error) = loops.evaluate().await {
+                        tracing::warn!(%error, "scheduler loop pass failed");
+                    }
                     ticks += 1;
                     if ticks.is_multiple_of(60) {
                         crate::engine::settle_delivering(&timer).await;
+                        if let Err(error) = loops.settle_delivering().await {
+                            tracing::warn!(%error, "scheduler loop lookup pass failed");
+                        }
                         if timer.retention_pending() {
                             crate::engine::prune(timer.clone()).await;
                         }
@@ -276,6 +302,14 @@ pub(crate) struct Shared {
     /// record level: a cancel that takes it first prevents the input, one
     /// that takes it after reports the settled state (design §10.3).
     pub(crate) wakeups: tokio::sync::Mutex<()>,
+    /// Serializes a loop change and the whole loop pass — the snapshot read,
+    /// the input writes and the settle batch — so the two order at the record
+    /// level (design §12.3).
+    pub(crate) loops: tokio::sync::Mutex<()>,
+    /// Whether any live loop exists. A daemon with none does no loop work, so
+    /// the pass takes no process hold and reads no file (design 12.2). Every
+    /// write under `loops` recomputes it.
+    pub(crate) live_loops: std::sync::atomic::AtomicBool,
     /// Cancelled when this generation starts to unload.
     pub(crate) stop: CancellationToken,
     /// The timer, delivery tasks and retention passes; cleanup waits for them.

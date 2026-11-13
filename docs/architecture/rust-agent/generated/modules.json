@@ -4114,6 +4114,17 @@
       ]
     },
     {
+      "id": "dim_cli::loop_command::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::loop_command",
+      "file": "crates/dim-cli/src/loop_command.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "panic"
+      ]
+    },
+    {
       "id": "dim_cli::loop_view",
       "crate": "dim_cli",
       "parent": "dim_cli",
@@ -35183,6 +35194,13 @@
     },
     {
       "from": "dim_cli::loop_command",
+      "to": "dim_cli::loop_command::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
       "to": "dim_cli::loop_view",
       "references": [
         "path loop_view::Loop",
@@ -35192,6 +35210,7 @@
         "path loop_view::Request::Start",
         "path loop_view::Request::Stop",
         "path loop_view::USAGE",
+        "path loop_view::cadence_text",
         "path loop_view::report",
         "path loop_view::request",
         "use crate::loop_view"
@@ -35220,6 +35239,21 @@
       "to": "dim_client::wire",
       "references": [
         "path dim_client::wire::MethodTable"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command::tests",
+      "to": "dim_cli::loop_command",
+      "references": [
+        "path start_request"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command::tests",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path loop_view::Request::Start",
+        "path loop_view::request"
       ]
     },
     {
@@ -38642,7 +38676,8 @@
       "references": [
         "path crate::loop_command::available",
         "path crate::loop_command::list",
-        "path crate::loop_command::only_live"
+        "path crate::loop_command::only_live",
+        "path crate::loop_command::start_request"
       ]
     },
     {
@@ -47555,6 +47590,15 @@
         "path i18n::LOCALES",
         "path i18n::Locale::En",
         "path i18n::Locale::ZhCn"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path crate::loop_view::Request::Show",
+        "path crate::loop_view::Request::Start",
+        "path crate::loop_view::Request::Stop"
       ]
     },
     {

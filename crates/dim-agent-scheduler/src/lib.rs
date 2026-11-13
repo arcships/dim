@@ -6,6 +6,7 @@
 //! namespace.
 mod document;
 mod engine;
+mod loops;
 mod methods;
 mod runs;
 mod session;
@@ -28,6 +29,7 @@ use dim_agent_runtime::{AgentBuilder, Names};
 use rutis::host::DynPlugin;
 
 pub use document::ScheduleDocument;
+pub use loops::{LOOPS_FILE, Loop, LoopState, Loops};
 pub use methods::{ScheduleJobs, SchedulerPlugin};
 pub use runs::{RUNS_FILE, SchedulerError};
 pub use session::SchedulerSession;
@@ -88,6 +90,7 @@ fn install_inner(
     let texts = std::sync::Arc::new(texts);
     dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
     dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
+    dim_agent_runtime::names::register::<Loops>(builder.catalog_mut(), None);
     let deliveries = methods::DeliveryHolds::default();
     builder.optional_plugin(move |names| {
         let mut plugin = make(names, texts.clone())?;
