@@ -43679,9 +43679,19 @@
     },
     {
       "from": "dim_cli::ui::render::fullscreen::tests",
+      "to": "dim_cli::ui::theme",
+      "references": [
+        "path crate::ui::theme::Theme::named"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::render::fullscreen::tests",
       "to": "dim_cli::ui::theme::palette",
       "references": [
         "path Appearance::Dark",
+        "path Appearance::Light",
+        "path ColorMode::Ansi16",
+        "path ColorMode::Ansi256",
         "path ColorMode::TrueColor",
         "path terminal_palette",
         "use crate::ui::theme::Appearance",

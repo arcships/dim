@@ -93,12 +93,22 @@ updates do not invalidate a press on the same stable header.
 
 Hover highlights only the actionable title, pressed feedback is stronger without
 moving its text, and a successful click retains a subtle position indication.
+Tool-title feedback uses normal text on the theme's subtle surface, falling back
+to a neutral gray background where the terminal palette supports one. Without a
+subtle background, titles use an underline. Pressed and keyboard-focused titles
+also use bold text instead of accent colors.
 Neither feedback nor new output changes expansion. A click requires release on
 the same still-valid target without a drag. Text selection, safe links and the
 explicit member-conversation entry keep separate actions; the member's tool
 header toggles its details instead of navigating. Existing Tab/Shift+Tab
 transcript traversal includes committed tool headers; Enter/Space toggles only
-the focused tool. Mouse-off retains native
+the focused tool. A press on the scrollbar column drags the view instead of
+selecting: the view moves as far as the thumb moves with the pointer, so a
+drag along the grabbed row keeps the view; a press on the track centres the
+thumb there first. The first and last transcript rows reach the top and the
+bottom, and dragging past the last one follows new output again. Motion without
+the button, or another press, ends a drag whose release the terminal lost.
+Mouse-off retains native
 terminal selection. Free-motion reports are enabled and restored with fullscreen
 mouse mode; unsupported terminals retain click and keyboard operation.
 

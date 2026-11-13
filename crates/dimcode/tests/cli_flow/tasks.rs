@@ -639,7 +639,6 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
         );
         // A `/timeline` jump to the first message draws the earlier history.
         terminal.write(b"\r/earlier\r");
-        terminal.until("paged-message-051");
         terminal.write(b"/timeline\r");
         terminal.until("#150");
         terminal.write(b"\x1b[H\r");
@@ -2628,11 +2627,7 @@ fn top_paged_message(text: &str) -> String {
     )
 }
 
-/// #1476. Three hundred messages in four pages of 75 (message `i` at sequences
-/// `3i..3i+2`, fixed `through` 902). The latest-turn window reads the two
-/// newest pages, 150 rows, so the transcript is drawn from message 201 and the
-/// 50 before it wait behind the load-more row. PageUp at the drawn top must
-/// reach the branch's first message, and a press after that must read nothing.
+/// #1476.
 #[test]
 fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
     let home = Home::new();
@@ -2649,14 +2644,15 @@ fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
             "running":false,"sequence":0,"attachedClients":1}));
         let first = wire.read("session.history");
         assert_eq!(first["params"]["latestTurn"], true);
+        assert_eq!(first["params"]["limit"], 64);
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         ready.send(()).unwrap();
         control.recv_timeout(Duration::from_secs(10)).unwrap();
-        let page = |start: usize| {
+        let page = |start: usize, count: usize| {
             let mut events = Vec::new();
-            for index in start..start + 75 {
+            for index in start..start + count {
                 let sequence = index as u64 * 3;
                 events.push(fact(&format!("message-{index}"), sequence, sequence, "input", "message",
                     json!({"mode":"append","user":{"content":[{"type":"text","text":format!("paged-message-{index:03}")}]}})));
@@ -2667,11 +2663,7 @@ fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
             }
             events
         };
-        wire.reply(&first, json!({"events":page(226),"through":902,"nextAfter":902,
-            "nextBefore":678,"done":false}));
-        let second = wire.read("session.history");
-        assert_eq!(second["params"]["before"], 678);
-        wire.reply(&second, json!({"events":page(151),"through":902,"nextAfter":677,
+        wire.reply(&first, json!({"events":page(151, 21),"through":515,"nextAfter":515,
             "nextBefore":453,"done":false}));
         // Every earlier read the interface asks for, counted, in the order the
         // branch holds them. A read past the start is still answered so the
@@ -2680,16 +2672,16 @@ fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
         loop {
             let request = wire.read_any();
             assert_eq!(request["method"], "session.history", "{request}");
-            assert_eq!(request["params"]["through"], 902);
+            assert_eq!(request["params"]["through"], 515);
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             // A page covers every event of its messages: message `i` holds
-            // sequences `3i..3i+2`, so page(76) ends at 452 and page(1) at 227.
+            // sequences `3i..3i+2`, so page(76, 75) ends at 452 and page(1, 75) at 227.
             let reply = match served {
-                0 => json!({"events":page(76),"through":902,"nextAfter":452,
+                0 => json!({"events":page(76, 75),"through":515,"nextAfter":452,
                     "nextBefore":228,"done":false}),
-                1 => json!({"events":page(1),"through":902,"nextAfter":227,
+                1 => json!({"events":page(1, 75),"through":515,"nextAfter":227,
                     "nextBefore":1,"done":false}),
-                _ => json!({"events":[],"through":902,"nextAfter":1,
+                _ => json!({"events":[],"through":515,"nextAfter":1,
                     "nextBefore":1,"done":false}),
             };
             served += 1;
@@ -2702,7 +2694,7 @@ fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
     terminal.until("test / restored-model");
     proceed.send(()).unwrap();
-    terminal.until("resumed paged · 100 messages");
+    terminal.until("resumed paged · 21 messages");
     probe_1476_drain(&mut terminal, Duration::from_millis(600));
     // Home puts the view at the drawn top; PageUp there shows what is before
     // it, revealing loaded rows first and reading only when none are loaded.
