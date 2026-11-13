@@ -32,6 +32,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `loader` | process | rutis-loader | internal(owner-api) | — |
 | `loaderService` | process | rutis-loader | shared-no-dispatcher | — |
 | `localId` | process | root | data | `get` sync |
+| `loops` | process | Scheduler | internal(owner-api) | — |
 | `managedProviders` | process | ManagedProviders | internal(secret) | — |
 | `managedWorktrees` | process | ManagedWorktrees | internal(hot-path) | — |
 | `managementMethods` | process | ManagementMethods | data | `register` async |
@@ -61,7 +62,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
-| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `stop` async, `withdraw` async |
+| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
 | `settings` | process | Settings | data | `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | internal(host-resource) | — |

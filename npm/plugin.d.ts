@@ -163,6 +163,10 @@ export type {
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
+/** Whether an input is still pending on the branch (session access §2): from
+ * its write until consumption or deletion. An id the branch does not hold is
+ * not pending. */
+export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
@@ -181,6 +185,7 @@ export interface Sessions {
   exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
+  pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;

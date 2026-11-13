@@ -3359,6 +3359,12 @@
         "removing": false
       },
       {
+        "service": "dim_agent_scheduler::loops::Loops",
+        "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_agent_scheduler::methods::ScheduleJobs",
         "provider": 71,
         "generation": 1,
