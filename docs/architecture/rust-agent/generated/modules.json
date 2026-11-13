@@ -3482,7 +3482,8 @@
         "matches",
         "tokio::pin",
         "tracing::error",
-        "vec"
+        "vec",
+        "write"
       ]
     },
     {
@@ -6499,6 +6500,7 @@
         "cfg",
         "crossterm::execute",
         "env",
+        "eprintln",
         "format",
         "tokio::pin",
         "tokio::select",
@@ -33610,6 +33612,7 @@
         "mod client",
         "path client",
         "path client::DaemonNotice",
+        "path client::NewerStore",
         "path client::StoreUpgrade",
         "path client::connect_inner",
         "path client::stop",
@@ -33966,6 +33969,7 @@
       "references": [
         "mod update",
         "path update::hold_installation",
+        "path update::recover_startup",
         "path update::registry",
         "path update::run"
       ]
@@ -47824,6 +47828,14 @@
     },
     {
       "from": "dim_cli::update",
+      "to": "dim_cli::client",
+      "references": [
+        "path crate::client::NewerStore",
+        "path crate::client::STARTUP_RETRY"
+      ]
+    },
+    {
+      "from": "dim_cli::update",
       "to": "dim_cli::plugins",
       "references": [
         "path crate::plugins::Signals::listen"
@@ -47859,6 +47871,7 @@
         "path Install",
         "path run_manager",
         "path super::channel",
+        "path super::entry_point",
         "path super::newer",
         "use super::Install",
         "use super::run_manager"
