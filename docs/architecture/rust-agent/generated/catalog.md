@@ -18,17 +18,17 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `callers` | process | CallChannel | internal(owner-api) | — |
 | `collaboration` | process | Collaboration | internal(host-resource) | — |
-| `collaborationDirectory` | process | CollaborationDirectory | internal(legacy-no-consumer) | — |
+| `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
 | `connectionHub` | process | Connection | internal(control) | — |
-| `credentialVariablesHost` | process | root | internal(legacy-no-consumer) | — |
+| `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
-| `eventSubscriptions` | process | eventhub | internal(legacy-no-consumer) | — |
+| `eventSubscriptions` | process | eventhub | data | `list` sync, `sources` sync, `subscribe` async, `unsubscribe` async |
 | `executionSettingsHost` | process | ExecutionSettings | internal(legacy-no-consumer) | — |
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
 | `hooksService` | process | HooksSettings | internal(host-resource) | — |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
-| `listenAddresses` | process | Transport | internal(legacy-no-consumer) | — |
+| `listenAddresses` | process | Transport | data | `read` async |
 | `loader` | process | rutis-loader | internal(owner-api) | — |
 | `loaderService` | process | rutis-loader | shared-no-dispatcher | — |
 | `localId` | process | root | data | `get` sync |
@@ -52,12 +52,12 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | internal(secret) | — |
 | `publication` | process | McpPublication | internal(host-resource) | — |
-| `reservedMethods` | process | — | internal(legacy-no-consumer) | — |
+| `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
 | `scheduleJobs` | process | Scheduler | data | `call` async |
 | `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
 | `serverControl` | process | ServerControl | internal(control) | — |
-| `sessionClientsHost` | process | Connection | internal(legacy-no-consumer) | — |
+| `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFilesHost` | process | SessionStore | internal(owner-api) | — |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |

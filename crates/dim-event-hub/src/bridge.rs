@@ -1,6 +1,7 @@
-//! The `eventHub` name for other languages (design Appendix F): a
-//! `HostDispatch` at `host_key("eventHub")` whose `declare` and `publish`
-//! take the calling row from `caller_row()`.
+//! The `eventHub` and `eventSubscriptions` names for other languages (design
+//! Appendix F): a `HostDispatch` at each `host_key`, whose operations are
+//! `EventHub`'s and `EventSubscriptions`' own. `declare` and `publish` take
+//! the calling row from `caller_row()`.
 use crate::{error::EventHubError, hub::Shared, model::PublishRequest};
 use rutis::Ctx;
 use rutis_bridge::exports::failure;
@@ -99,5 +100,57 @@ impl EventHub {
         request: crate::model::PublishRequest,
     ) -> Result<Json, EventHubError> {
         crate::publish::publish(self.shared.clone(), ctx, request).await
+    }
+}
+
+/// The `eventSubscriptions` name for other languages (design Appendix F): the
+/// operations are the typed service's own, and the Session each names is a
+/// value, as every data face's ids are.
+pub(crate) struct ForeignEventSubscriptions {
+    pub(crate) service: Arc<crate::subscriptions::EventSubscriptions>,
+}
+
+impl HostDispatch for ForeignEventSubscriptions {
+    fn methods(&self) -> Option<Json> {
+        Some(json!({
+            "sources": "sync",
+            "subscribe": "async",
+            "unsubscribe": "async",
+            "list": "sync",
+        }))
+    }
+
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        let service = self.service.clone();
+        match method {
+            "sources" => Ok(service.sources().into()),
+            "subscribe" => {
+                let call: crate::SubscriptionCall = request(args)?;
+                Ok(Value::future(async move {
+                    service
+                        .subscribe(call)
+                        .await
+                        .map(Into::into)
+                        .map_err(bridge_error)
+                }))
+            }
+            "unsubscribe" => {
+                let call: crate::UnsubscribeCall = request(args)?;
+                Ok(Value::future(async move {
+                    service
+                        .unsubscribe(call)
+                        .await
+                        .map(Into::into)
+                        .map_err(bridge_error)
+                }))
+            }
+            "list" => {
+                let call: crate::ListCall = request(args)?;
+                Ok(service.list(call).into())
+            }
+            _ => Err(BridgeError::Value(format!(
+                "eventSubscriptions has no method {method}"
+            ))),
+        }
     }
 }

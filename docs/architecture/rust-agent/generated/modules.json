@@ -22567,8 +22567,7 @@
       "from": "dim_app_server",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path dim_agent_capabilities::host::CredentialVariables",
-        "path dim_agent_capabilities::host::CredentialVariablesHost"
+        "path dim_agent_capabilities::host::CredentialVariablesHost::new"
       ]
     },
     {
@@ -23081,7 +23080,9 @@
         "mod transport",
         "path ListenAddresses",
         "path TransportPlugin::new",
+        "use transport::BoundAddresses",
         "use transport::ListenAddresses",
+        "use transport::ListenAddressesError",
         "use transport::TransportPlugin"
       ]
     },
@@ -25219,6 +25220,10 @@
       "to": "dim_app_server::collaboration",
       "references": [
         "path CANCELLED_BY_CLIENT",
+        "path CollaborationDirectory",
+        "path CollaborationDirectory::default",
+        "path CollaborationRelation",
+        "path CollaborationRelationsReply",
         "path INTERRUPTED",
         "path NOT_STARTED",
         "path cancel_rpc"
@@ -25311,7 +25316,6 @@
         "path dim_agent_capabilities::environment_clients::ClientPresence",
         "path dim_agent_capabilities::environment_clients::ClientsChanged",
         "path dim_agent_capabilities::environment_clients::SessionClientsHost",
-        "path dim_agent_capabilities::environment_clients::SessionClientsSource",
         "path dim_agent_capabilities::environment_clients::clients_changes",
         "path dim_agent_capabilities::environment_clients::register_parts"
       ]
@@ -26961,9 +26965,7 @@
       "from": "dim_app_server::mcp",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path CredentialVariables",
         "path CredentialVariablesHost",
-        "use dim_agent_capabilities::host::CredentialVariables",
         "use dim_agent_capabilities::host::CredentialVariablesHost"
       ]
     },
@@ -27715,9 +27717,7 @@
       "from": "dim_app_server::mcp::publication",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path CredentialVariables",
         "path CredentialVariablesHost",
-        "use dim_agent_capabilities::host::CredentialVariables",
         "use dim_agent_capabilities::host::CredentialVariablesHost"
       ]
     },
@@ -27889,8 +27889,7 @@
       "from": "dim_app_server::mcp::publication::tests",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path CredentialVariables",
-        "path CredentialVariablesHost"
+        "path CredentialVariablesHost::new"
       ]
     },
     {
@@ -28445,6 +28444,8 @@
         "path Owner::Active",
         "path Owner::Left",
         "path Owner::None",
+        "path ReservedMethods",
+        "path ReservedMethods::new",
         "path RpcError",
         "path RpcError::app",
         "path RpcError::reloading",
@@ -28460,6 +28461,7 @@
         "use dim_agent_capabilities::methods::MethodProvider",
         "use dim_agent_capabilities::methods::MethodTable",
         "use dim_agent_capabilities::methods::Owner",
+        "use dim_agent_capabilities::methods::ReservedMethods",
         "use dim_agent_capabilities::methods::RpcError",
         "use dim_agent_capabilities::methods::SessionMethods",
         "use dim_agent_capabilities::methods::valid_name",
@@ -28511,6 +28513,7 @@
         "path MethodDecl",
         "path MethodDecl::new",
         "path RpcError",
+        "path dim_agent_capabilities::methods::ReservedMethodsRequest",
         "use dim_agent_capabilities::methods::Handler",
         "use dim_agent_capabilities::methods::Interruption",
         "use dim_agent_capabilities::methods::MethodCall"
@@ -52558,6 +52561,10 @@
     {
       "module": "dim_app_server::connection",
       "path": "Notification::Progress"
+    },
+    {
+      "module": "dim_app_server::connection",
+      "path": "SessionClientsHost::new"
     },
     {
       "module": "dim_app_server::connection::mcp",

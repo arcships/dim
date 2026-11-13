@@ -3311,6 +3311,12 @@
         "removing": false
       },
       {
+        "service": "dim_agent_capabilities::methods::ReservedMethods",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dim_agent_capabilities::prompt_sources::BasePromptSettingsHost",
         "provider": 28,
         "generation": 1,
@@ -3575,8 +3581,32 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#collaborationDirectory",
+        "provider": 39,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#credentialVariablesHost",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventHub",
         "provider": 72,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#eventSubscriptions",
+        "provider": 72,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#listenAddresses",
+        "provider": 45,
         "generation": 1,
         "removing": false
       },
@@ -3617,6 +3647,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#reservedMethods",
+        "provider": 1,
+        "generation": 0,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
         "provider": 2,
         "generation": 1,
@@ -3625,6 +3661,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
         "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionClientsHost",
+        "provider": 43,
         "generation": 1,
         "removing": false
       },
