@@ -1893,6 +1893,20 @@
       ]
     },
     {
+      "id": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "crate": "dim_agent_runtime",
+      "parent": "dim_agent_runtime::timeline_query::properties",
+      "file": "crates/dim-agent-runtime/src/timeline_query/properties.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "json",
+        "matches",
+        "println",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_runtime::timeline_store",
       "crate": "dim_agent_runtime",
       "parent": "dim_agent_runtime",
@@ -1940,6 +1954,7 @@
         "format",
         "json",
         "matches",
+        "std::pin::pin",
         "tokio::select",
         "tracing::warn",
         "vec"
@@ -3087,6 +3102,7 @@
       "file": "crates/dim-app-server/src/provider/management.rs",
       "unexpandedMacros": [
         "matches",
+        "serde_json::json",
         "unreachable"
       ]
     },
@@ -20738,6 +20754,13 @@
     },
     {
       "from": "dim_agent_runtime::timeline_query::properties",
+      "to": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "references": [
+        "mod match_key_proof"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::timeline_query::properties",
       "to": "dim_agent_types::checkpoint",
       "references": [
         "path TimelinePosition",
@@ -20750,6 +20773,16 @@
       "references": [
         "path AgentEvent",
         "use dim_agent_types::AgentEvent"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryValue",
+        "path QueryValue::Missing",
+        "path QueryValue::Value"
       ]
     },
     {
@@ -20824,7 +20857,7 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
-        "path dim_agent_runtime::names::register",
+        "path dim_agent_runtime::names::name_of",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -21180,6 +21213,7 @@
       "to": "dim_agent_scheduler::wakeups",
       "references": [
         "path crate::wakeups::Wakeups",
+        "path crate::wakeups::WakeupsFace",
         "path crate::wakeups::read"
       ]
     },
@@ -21582,7 +21616,13 @@
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Shared",
-        "use crate::methods::Shared"
+        "path face_arguments",
+        "path face_call",
+        "path face_failure",
+        "use crate::methods::Shared",
+        "use crate::methods::face_arguments",
+        "use crate::methods::face_call",
+        "use crate::methods::face_failure"
       ]
     },
     {
@@ -21593,6 +21633,23 @@
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
         "use crate::runs::SchedulerError"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::wakeups",
+      "to": "dim_agent_scheduler::session",
+      "references": [
+        "path CancelParams",
+        "path CreateParams",
+        "path ListParams",
+        "path nonempty",
+        "path wakeup_request",
+        "use crate::session::CancelParams",
+        "use crate::session::CreateParams",
+        "use crate::session::ListParams",
+        "use crate::session::nonempty",
+        "use crate::session::wakeup_request",
+        "use crate::session::wire_scheduled"
       ]
     },
     {
@@ -29692,14 +29749,15 @@
       "from": "dim_app_server::provider::management",
       "to": "dim_agent_capabilities::methods",
       "references": [
+        "path ErrorData",
         "path Interruption::Drain",
         "path MethodCall",
         "path MethodDecl::new",
         "path RpcError",
-        "path RpcError::app",
         "path RpcError::invalid",
         "path params",
         "path reply",
+        "use dim_agent_capabilities::methods::ErrorData",
         "use dim_agent_capabilities::methods::Interruption",
         "use dim_agent_capabilities::methods::MethodCall",
         "use dim_agent_capabilities::methods::MethodDecl",
@@ -29821,7 +29879,6 @@
         "path capability_snapshot",
         "path read_catalog",
         "path read_static",
-        "path same_account",
         "path save_catalog",
         "path static_catalog",
         "path static_entries",
@@ -52204,6 +52261,10 @@
     },
     {
       "module": "dim_app_server::provider::management",
+      "path": "ProviderError::AccountChanged"
+    },
+    {
+      "module": "dim_app_server::provider::management",
       "path": "ProviderError::AuthFailed"
     },
     {
@@ -52213,6 +52274,10 @@
     {
       "module": "dim_app_server::provider::management",
       "path": "ProviderError::Cancelled"
+    },
+    {
+      "module": "dim_app_server::provider::management",
+      "path": "ProviderError::CatalogStale"
     },
     {
       "module": "dim_app_server::provider::management",
