@@ -1393,6 +1393,7 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("sessionLanguage", "legacy-no-consumer"),
         ("skillsInstructionsSettingsHost", "owner-api"),
         ("summaryPromptSettingsHost", "owner-api"),
+        ("loops", "owner-api"),
         ("wakeups", "owner-api"),
         ("agentDirectory", "owner-api"),
         ("agentIndex", "owner-api"),
