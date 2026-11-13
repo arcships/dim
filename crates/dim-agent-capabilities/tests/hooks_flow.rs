@@ -1349,6 +1349,10 @@ async fn post_tool_use_failure_runs_only_for_error_results() {
     let marker = env.path("failure-marker");
     let done = env.path("failure-marker.done");
     env.sources.set(document(serde_json::json!({
+        "PostToolUse": [command(serde_json::json!({
+            "type": "command",
+            "command": "printf '{\"hookSpecificOutput\":{\"additionalContext\":\"success context\"}}'",
+        }))],
         "PostToolUseFailure": [command(serde_json::json!({
             "type": "command",
             "command": format!(
@@ -1366,7 +1370,8 @@ async fn post_tool_use_failure_runs_only_for_error_results() {
         &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let blocks = wait_blocks(&session, "post-tool", 1).await;
+    assert!(blocks[0].contains("success context"), "{blocks:?}");
     assert!(!marker.exists(), "a success runs only PostToolUse");
     turn(
         &session,
@@ -1387,18 +1392,72 @@ async fn a_timeout_is_a_failure_and_a_blocking_failure_still_answers() {
     let slow = env.path("slow.sh");
     std::fs::write(&slow, "#!/bin/sh\nsleep 5\n").unwrap();
     std::fs::set_permissions(&slow, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let fast = env.path("fast.sh");
+    std::fs::write(
+        &fast,
+        "#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"additionalContext\":\"fast context\"}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fast, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    env.sources.set(document(serde_json::json!({
+        "PostToolUse": [{
+            "hooks": [
+                {"type": "command", "command": slow.to_str().unwrap(), "timeout": 1},
+                {"type": "command", "command": fast.to_str().unwrap()},
+            ]
+        }],
+    })));
+    let session = env.session().await;
+    let note = env.path("work/note.txt");
+    std::fs::write(&note, "note\n").unwrap();
+    let started = std::time::Instant::now();
+    turn(
+        &session,
+        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+    )
+    .await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let blocks = wait_blocks(&session, "post-tool", 1).await;
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
+    let alone = alone_block(&fast, &note).await;
+    assert_eq!(
+        without_call_id(&blocks[0]),
+        without_call_id(&alone),
+        "the timeout contributed nothing"
+    );
+    env.close().await;
+}
+
+/// A `post-tool` block without its `call_id`, which names the call and so
+/// differs between two runs.
+fn without_call_id(block: &str) -> String {
+    let Some((before, rest)) = block.split_once(" call_id=\"") else {
+        return block.to_owned();
+    };
+    let Some((_, after)) = rest.split_once('"') else {
+        return block.to_owned();
+    };
+    format!("{before}{after}")
+}
+
+/// The `post-tool` block the `fast` handler alone writes for `note`.
+async fn alone_block(fast: &Path, note: &Path) -> String {
+    let env = Env::new().await;
     env.sources.set(document(serde_json::json!({
         "PostToolUse": [command(serde_json::json!({
-            "type": "command", "command": slow.to_str().unwrap(), "timeout": 1
+            "type": "command", "command": fast.to_str().unwrap(),
         }))],
     })));
     let session = env.session().await;
-    let started = std::time::Instant::now();
-    turn(&session, "tool:read {}").await;
-    assert!(started.elapsed() < Duration::from_secs(5));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(hook_blocks(&session, "post-tool").await.is_empty());
+    turn(
+        &session,
+        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+    )
+    .await;
+    let blocks = wait_blocks(&session, "post-tool", 1).await;
+    assert_eq!(blocks.len(), 1, "{blocks:?}");
     env.close().await;
+    blocks[0].clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1775,10 +1834,16 @@ async fn a_user_answer_cancels_the_hook_and_does_not_delay_the_next_point() {
     let env = Env::new().await;
     let late = env.path("late-hook");
     let failure = env.path("failure-marker");
+    let pid = env.path("hook-pid");
     env.sources.set(document(serde_json::json!({
         "PermissionRequest": [command(serde_json::json!({
             "type": "command",
-            "command": format!("{}; printf 'late' > {}", sleep(3000), late.display()),
+            "command": format!(
+                "printf '%s' $$ > {}; {}; printf 'late' > {}",
+                pid.display(),
+                sleep(3000),
+                late.display()
+            ),
         }))],
         "PostToolUseFailure": [command(serde_json::json!({
             "type": "command",
@@ -1799,6 +1864,7 @@ async fn a_user_answer_cancels_the_hook_and_does_not_delay_the_next_point() {
         _ => None,
     })
     .await;
+    wait_file(&pid, "the PermissionRequest hook did not start").await;
     session
         .service::<dim_agent_capabilities::approval::Approval>("main")
         .unwrap()
@@ -1819,7 +1885,11 @@ async fn a_user_answer_cancels_the_hook_and_does_not_delay_the_next_point() {
         "the next hook point waited for the PermissionRequest hook"
     );
     session.idle("main").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    wait_gone(
+        prompted_pid(&pid),
+        "the PermissionRequest hook the answer cancelled",
+    )
+    .await;
     assert!(
         !late.exists(),
         "the user's answer did not terminate the running hook"
@@ -2188,10 +2258,17 @@ async fn an_identical_command_in_the_user_and_project_sources_runs_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hook_output_is_dropped_after_an_interrupt() {
     let env = Env::new().await;
+    let runs = env.path("post-tool-runs");
+    let counted = runs.display().to_string();
     env.sources.set(document(serde_json::json!({
         "PostToolUse": [command(serde_json::json!({
             "type": "command",
-            "command": format!("{}; printf 'late context'", sleep(400)),
+            "command": format!(
+                "n=$(($(cat '{counted}' 2>/dev/null || echo 0)+1)); echo $n > '{counted}'; \
+                 if [ $n = 1 ]; then {}; fi; \
+                 printf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"context %s\"}}}}' $n",
+                sleep(400),
+            ),
         }))],
     })));
     let session = env.session().await;
@@ -2212,11 +2289,24 @@ async fn hook_output_is_dropped_after_an_interrupt() {
     .await;
     session.interrupt("main", "stop".into()).unwrap();
     let _ = session.idle("main").await;
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    turn(
+        &session,
+        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+    )
+    .await;
+    let mut blocks = Vec::new();
+    for _ in 0..500 {
+        blocks = hook_blocks(&session, "post-tool").await;
+        if blocks.iter().any(|block| block.contains("context 2")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(
-        hook_blocks(&session, "post-tool").await.is_empty(),
-        "an interrupt drops the output"
+        blocks.iter().any(|block| block.contains("context 2")),
+        "the later turn's PostToolUse block was not written: {blocks:?}"
     );
+    assert_eq!(blocks.len(), 1, "an interrupt drops the output: {blocks:?}");
     env.close().await;
 }
 
@@ -2410,6 +2500,12 @@ async fn the_session_start_block_is_still_in_context_after_compaction() {
 async fn a_project_source_runs_nothing_until_the_user_enables_it() {
     let env = Env::new().await;
     let runs = env.path("project-runs");
+    let stopped = env.path("stop-ran");
+    env.sources.set(document(serde_json::json!({
+        "Stop": [command(serde_json::json!({
+            "type": "command", "command": marker_command(&stopped, "stop\n"),
+        }))],
+    })));
     let project = document(serde_json::json!({
         "SessionStart": [command(serde_json::json!({
             "type": "command",
@@ -2421,7 +2517,8 @@ async fn a_project_source_runs_nothing_until_the_user_enables_it() {
     }));
     env.sources.set_project(project.clone(), false);
     let session = env.session().await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    turn(&session, "hello").await;
+    wait_file(&stopped, "the turn's Stop point did not run").await;
     assert!(!runs.exists(), "a disabled project source runs nothing");
     assert!(hook_blocks(&session, "session-start").await.is_empty());
 
@@ -2972,7 +3069,6 @@ async fn a_source_input_runs_no_prompt_hook() {
         .await
         .unwrap();
     session.idle("main").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !runs.exists(),
         "a Goal or Scheduler input runs no UserPromptSubmit hook"
@@ -3340,22 +3436,22 @@ async fn steer_into_a_pending_prompt(
     (session, release, old.id.clone(), call)
 }
 
-/// Waits until `pid` names no live process, up to a bounded number of polling
-/// steps.
-async fn wait_gone(pid: u32) {
+/// Waits until `pid` names no live process. A zombie cannot write, so it
+/// counts as gone.
+async fn wait_gone(pid: u32, waited: &str) {
     for _ in 0..1000 {
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false);
-        if !alive {
+        let stat = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default();
+        if stat.is_empty() || stat.starts_with('Z') {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("process {pid} outlived the unload");
+    panic!("{waited} (pid {pid}) is still alive after 10s");
 }
 
 fn prompted_pid(path: &Path) -> u32 {
@@ -3408,7 +3504,7 @@ async fn an_unload_settles_a_pending_prompt_check_by_on_failure() {
                     == vec![ContentBlock::Text { text: "new".into() }]))),
         "a settled block wrote the replacement input"
     );
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     let _ = release.send(());
 
     env.close().await;
@@ -3456,7 +3552,7 @@ async fn an_unload_with_the_default_on_failure_writes_the_input() {
                     == vec![ContentBlock::Text { text: "new".into() }]))),
         "the replacement input was written"
     );
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     let _ = release.send(());
 
     env.close().await;
@@ -3536,7 +3632,7 @@ async fn an_unload_reports_only_the_handlers_still_running() {
         ],
         "the handler that finished keeps the context it produced (A.5): {user:?}"
     );
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     let _ = release.send(());
 
     env.close().await;
@@ -3581,7 +3677,7 @@ async fn an_unload_keeps_a_finished_handlers_real_reason() {
         ]),
         "the finished handler keeps its reason, in catalog order: {reply}"
     );
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     let _ = release.send(());
 
     env.close().await;
@@ -4227,7 +4323,7 @@ async fn an_interrupt_while_pre_tool_use_runs_cancels_the_call_and_ends_the_comm
         )),
         "the turn did not end cancelled"
     );
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     env.close().await;
 }
 
@@ -4279,7 +4375,7 @@ async fn a_hooks_unload_drops_a_pending_pre_tool_use_advice() {
         "Tool execution denied by user"
     );
     assert!(!ran.exists(), "a denied call ran");
-    wait_gone(prompted_pid(&pid_file)).await;
+    wait_gone(prompted_pid(&pid_file), "the hook process").await;
     env.close().await;
 }
 
