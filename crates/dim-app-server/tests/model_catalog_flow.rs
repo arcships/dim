@@ -1,4 +1,6 @@
-use dim_app_server::model_catalog::{BundledCatalog, ModelEdit, ModelSource, ProviderProjection};
+use dim_app_server::model_catalog::{
+    BundledCatalog, ModelEdit, ModelEntry, ModelSource, ProviderProjection,
+};
 use serde_json::json;
 
 #[test]
@@ -112,6 +114,8 @@ fn normalized_family_lookup_matches_prefixed_ids() {
             }),
         )
         .unwrap();
+    // A plain id that the vendor declares resolves at the vendor: the id is
+    // how the model is spelled, not a different model.
     assert_eq!(
         entry
             .metadata
@@ -119,7 +123,7 @@ fn normalized_family_lookup_matches_prefixed_ids() {
             .unwrap()
             .matched_provider_id
             .as_deref(),
-        Some("custom-provider")
+        Some("deepseek")
     );
     let official = catalog
         .project(
@@ -405,5 +409,306 @@ fn a_plan_provider_is_marked_and_its_api_entry_is_not() {
     assert_eq!(plans.len(), 27, "{plans:?}");
     for api in ["openai", "moonshot", "zai", "deepseek", "minimax"] {
         assert_eq!(catalog.is_plan(api), Some(false), "{api}");
+    }
+}
+
+/// Projects one id as a relay outside the catalog, which is the projection a
+/// gateway that ships no bundled list has.
+fn relay(catalog: &BundledCatalog, id: &str) -> ModelEntry {
+    let provider = ProviderProjection {
+        provider_id: "my-gateway".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    catalog.project(&provider, &json!({ "id": id })).unwrap()
+}
+
+/// Projects one id through a builtin provider's own bundled list.
+fn builtin(catalog: &BundledCatalog, provider_id: &str, id: &str) -> ModelEntry {
+    let provider = ProviderProjection {
+        provider_id: provider_id.into(),
+        source: Some(ModelSource::Builtin),
+        models: catalog
+            .bundled_models(provider_id)
+            .unwrap_or_default()
+            .to_vec(),
+        ..Default::default()
+    };
+    catalog.project(&provider, &json!({ "id": id })).unwrap()
+}
+
+fn matched(entry: &ModelEntry) -> (&str, &str) {
+    let metadata = entry.metadata.as_ref().unwrap();
+    (
+        metadata
+            .matched_provider_id
+            .as_deref()
+            .unwrap_or("provider-default"),
+        metadata.matched_model_id.as_deref().unwrap_or("-"),
+    )
+}
+
+fn numbers(entry: &ModelEntry) -> (Option<u64>, Option<u64>) {
+    (
+        entry.capabilities.context_window,
+        entry.capabilities.max_output_tokens,
+    )
+}
+
+/// The ids #1519's cases name, answered by the first four steps: the vendor's
+/// own list, its tokens, its canonical id and display name, and the
+/// `custom-provider` declaration. Each expected window and output cap is read
+/// from the bundled row of the provider named beside it, so a catalog change
+/// moves the expectation with it.
+#[test]
+fn an_id_is_identified_before_its_numbers_are_read() {
+    let catalog = BundledCatalog::load().unwrap();
+    for (id, provider, model) in [
+        ("deepseek-flash", "deepseek", "deepseek-flash"),
+        ("kimi-k3", "moonshot", "kimi-k3"),
+        ("kimi-k3:batch", "moonshot", "kimi-k3"),
+        ("glm-5.2", "zai", "glm-5.2"),
+        ("gemini-3.1-pro-preview", "google", "gemini-3.1-pro-preview"),
+        ("gpt-5.5", "openai", "gpt-5.5"),
+        ("kimi-k2.7-code", "moonshot", "kimi-k2.7-code"),
+        ("MiniMax-M3", "minimax", "MiniMax-M3"),
+        ("kimi-k3-20250929", "moonshot", "kimi-k3"),
+        ("claude-opus-5-5-20260101", "anthropic", "claude-opus-5-5"),
+    ] {
+        let entry = relay(&catalog, id);
+        assert_eq!(matched(&entry), (provider, model), "{id}");
+        let row = catalog
+            .bundled_models(provider)
+            .unwrap()
+            .iter()
+            .find(|row| row.model_id == model)
+            .unwrap_or_else(|| panic!("{id}: {provider} lists no {model}"));
+        let expected = (
+            row.capabilities.context_window,
+            row.capabilities.max_output_tokens,
+        );
+        assert!(
+            expected.0.is_some() && expected.1.is_some(),
+            "{id}: {provider} declares no limit for {model}"
+        );
+        assert_eq!(numbers(&entry), expected, "{id}");
+    }
+    let declared = relay(&catalog, "kimi-k2.5");
+    assert_eq!(matched(&declared), ("custom-provider", "kimi-k2.5"));
+    assert_eq!(numbers(&declared), (Some(262_144), Some(262_144)));
+    assert_eq!(
+        declared
+            .metadata
+            .as_ref()
+            .unwrap()
+            .match_strategy
+            .as_deref(),
+        Some("custom-provider")
+    );
+}
+
+/// The DeepSeek case: three vendor rows share one canonical id, and only the
+/// display name picks between them, so the narrowed rule reports one row.
+#[test]
+fn a_canonical_id_is_narrowed_by_the_display_name() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "deepseek-v4.1-flash");
+    assert_eq!(matched(&entry), ("deepseek", "deepseek-flash"));
+    assert_eq!(numbers(&entry), (Some(1_000_000), Some(384_000)));
+    assert_eq!(
+        entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+        Some("deepseek-canonical")
+    );
+    let efforts = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.effort_options.clone())
+        .unwrap();
+    assert_eq!(efforts, ["low", "high", "max"]);
+}
+
+/// An API entry beats the plan that the same vendor sells beside it, and on
+/// the plan's own provider the plan's own numbers still win.
+#[test]
+fn an_api_entry_beats_a_plan_entry() {
+    let catalog = BundledCatalog::load().unwrap();
+    let on_a_relay = relay(&catalog, "gpt-5.5");
+    assert_eq!(matched(&on_a_relay), ("openai", "gpt-5.5"));
+    assert_eq!(numbers(&on_a_relay).0, Some(1_050_000));
+    let on_the_plan = builtin(&catalog, "openai-codex", "gpt-5.5");
+    assert_eq!(matched(&on_the_plan), ("openai-codex", "gpt-5.5"));
+    assert_eq!(numbers(&on_the_plan).0, Some(258_400));
+    let kimi = relay(&catalog, "kimi-k2.7-code");
+    assert_eq!(matched(&kimi), ("moonshot", "kimi-k2.7-code"));
+    assert_eq!(numbers(&kimi).1, Some(262_144));
+}
+
+/// A row that names a different model is not an answer for this one, so the
+/// id keeps the projection's own default rather than its family base.
+#[test]
+fn a_variant_is_not_its_family_base() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "gpt-5-codex");
+    assert_ne!(matched(&entry), ("openai", "gpt-5"));
+    assert_ne!(numbers(&entry), (Some(400_000), Some(128_000)));
+}
+
+/// Several rows claim one id, declare different numbers, and no API entry
+/// exists between them, so none of them may supply numbers.
+#[test]
+fn two_vendors_claiming_one_id_report_ambiguity() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "ark-code-latest");
+    assert_eq!(matched(&entry), ("provider-default", "-"));
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    let row = catalog
+        .bundled_models("ark-code")
+        .unwrap()
+        .iter()
+        .find(|model| model.model_id == "ark-code-latest")
+        .unwrap();
+    assert_eq!(row.capabilities.context_window, Some(204_800));
+}
+
+/// Two providers selling one model under one name with one set of numbers are
+/// one model, not a conflict, and the API entry beside them settles it.
+#[test]
+fn two_rows_with_one_set_of_numbers_are_one_model() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "kimi-k3");
+    assert_eq!(matched(&entry).1, "kimi-k3");
+    let moonshot = catalog
+        .bundled_models("moonshot")
+        .unwrap()
+        .iter()
+        .find(|model| model.model_id == "kimi-k3")
+        .unwrap();
+    let mirror = catalog
+        .bundled_models("moonshot-ai")
+        .unwrap()
+        .iter()
+        .find(|model| model.model_id == "kimi-k3")
+        .unwrap();
+    assert_eq!(
+        (
+            moonshot.capabilities.context_window,
+            moonshot.capabilities.max_output_tokens
+        ),
+        (
+            mirror.capabilities.context_window,
+            mirror.capabilities.max_output_tokens
+        )
+    );
+}
+
+/// A plan's own provider keeps the plan's numbers even when the vendor's API
+/// entry disagrees, since the provider answers for the subscription it sells.
+#[test]
+fn a_plan_keeps_its_own_numbers_on_its_own_provider() {
+    let catalog = BundledCatalog::load().unwrap();
+    let plan = builtin(&catalog, "openai-codex", "gpt-6.1-sol");
+    assert_eq!(numbers(&plan).0, Some(258_400));
+    let api = catalog
+        .bundled_models("openai")
+        .unwrap()
+        .iter()
+        .find(|model| model.model_id == "gpt-6.1-sol")
+        .unwrap();
+    assert_eq!(api.capabilities.context_window, Some(1_050_000));
+}
+
+/// A provider's stored list can lag the bundle by a model. When it does, the
+/// provider still answers for that model from its own family before any other
+/// seller does: `openai-codex` keeps its own window for `gpt-5.5` rather than
+/// the vendor API entry the plan rule would otherwise prefer.
+#[test]
+fn a_providers_own_family_answers_before_another_seller() {
+    let catalog = BundledCatalog::load().unwrap();
+    let provider = ProviderProjection {
+        provider_id: "openai-codex".into(),
+        source: Some(ModelSource::Builtin),
+        models: catalog
+            .bundled_models("openai-codex")
+            .unwrap()
+            .iter()
+            .filter(|model| model.model_id != "gpt-5.5")
+            .cloned()
+            .collect(),
+        ..Default::default()
+    };
+    let entry = catalog
+        .project(&provider, &json!({ "id": "gpt-5.5" }))
+        .unwrap();
+    assert_eq!(matched(&entry), ("openai-codex", "gpt-5.5"));
+    assert_eq!(numbers(&entry).0, Some(258_400));
+}
+
+/// A vendor row is an answer where an aggregator row alone is not: the merge
+/// that would combine them arrives later, so a vendor's declaration wins now.
+#[test]
+fn a_plain_id_identifies_at_its_vendor() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "glm-5.2");
+    assert_eq!(matched(&entry), ("zai", "glm-5.2"));
+    let seller = catalog
+        .bundled_models("custom-provider")
+        .unwrap()
+        .iter()
+        .find(|model| model.model_id == "glm-5.2")
+        .unwrap();
+    assert_ne!(
+        seller
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.reasoning.as_ref())
+            .and_then(|reasoning| reasoning.effort_options.clone()),
+        catalog
+            .bundled_models("zai")
+            .unwrap()
+            .iter()
+            .find(|model| model.model_id == "glm-5.2")
+            .and_then(|model| model.metadata.as_ref())
+            .and_then(|metadata| metadata.reasoning.as_ref())
+            .and_then(|reasoning| reasoning.effort_options.clone())
+    );
+}
+
+/// A vendor the id names in its namespace segment wins over another vendor
+/// selling the same model, so `ark-code/ark-code-latest` answers with
+/// `ark-code` while the bare id stays ambiguous.
+#[test]
+fn a_namespaced_id_identifies_the_vendor_it_names() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "ark-code/ark-code-latest");
+    assert_eq!(matched(&entry), ("ark-code", "ark-code-latest"));
+    assert_eq!(numbers(&entry), (Some(204_800), Some(60_000)));
+    let bare = relay(&catalog, "ark-code-latest");
+    assert_eq!(matched(&bare), ("provider-default", "-"));
+}
+
+/// Step 4 reads the `custom-provider` rows by the same token and name rules,
+/// so a model that only that list carries resolves to a declared row and is
+/// not left for the merge.
+#[test]
+fn a_custom_provider_row_is_a_declaration() {
+    let catalog = BundledCatalog::load().unwrap();
+    for (input, model) in [
+        ("qwen3.8-omni-flash", "qwen3.8-omni-flash"),
+        ("Qwen3.8 Omni Flash", "qwen3.8-omni-flash"),
+    ] {
+        let entry = relay(&catalog, input);
+        assert_eq!(matched(&entry), ("custom-provider", model), "{input}");
+        assert_eq!(
+            entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+            Some("custom-provider"),
+            "{input}"
+        );
+        assert!(entry.capabilities.missing_limits().is_empty(), "{input}");
     }
 }

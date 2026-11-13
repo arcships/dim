@@ -28640,6 +28640,8 @@
       "references": [
         "mod id",
         "path id",
+        "path id::IdIndex",
+        "path id::IdIndex::new",
         "path variants",
         "use self::id::variants"
       ]
@@ -28649,9 +28651,11 @@
       "to": "dim_app_server::model_catalog",
       "references": [
         "path BundledCatalog",
+        "path CatalogProvider",
         "path ModelEntry",
         "path ModelSource::Custom",
         "path ProviderProjection",
+        "path ProviderRole::Vendor",
         "path model_kind",
         "path strings"
       ]

@@ -258,6 +258,7 @@ pub struct BundledCatalog {
     providers: Vec<CatalogProvider>,
     by_provider: HashMap<String, usize>,
     reasoning_off: HashMap<(String, String), ReasoningOff>,
+    ids: id::IdIndex,
 }
 
 impl BundledCatalog {
@@ -287,6 +288,7 @@ impl BundledCatalog {
             }
         }
         Ok(Self {
+            ids: id::IdIndex::new(&file.providers),
             providers: file.providers,
             by_provider,
             reasoning_off,
