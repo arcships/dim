@@ -69,7 +69,7 @@ ClientPresence {
   label: Option<String>,
 }
 
-SessionClientsHost::presences(session_id) -> Vec<ClientPresence>
+sessionClientsHost.presences {sessionId} -> {presences: [ClientPresence]}
 ```
 
 A UI leaf takes the label of the connection that hosts it; without one, only the channel is present.
@@ -152,7 +152,7 @@ The in-memory presence read is infallible; it returns an empty list for an unkno
 | `BranchLifecycle` | Wait for publication before appending; stop when the branch closes |
 | Process bus (`ClientsChanged`) | Wake on a connection change |
 
-Service faces follow the [owner catalog](../../architecture/rust-agent/generated/catalog.md#services): the process `sessionClientsHost` is `internal(legacy-no-consumer)`; `sessionIdentity`, `timeline` and `branchLifecycle` are data faces. This Rust projection is not a leaf-ready foreign part.
+The process `sessionClientsHost` is a data face with the request and reply defined in [service faces §4.9](../service-faces.md#49-旧主机端口credentialvariableshost-等六个). `sessionIdentity`, `timeline` and `branchLifecycle` are also data faces in the [owner catalog](../../architecture/rust-agent/generated/catalog.md#services). This Rust projection still uses owner methods outside the dispatched operations and is not a leaf-ready foreign part.
 
 No Prompt registry, no configure control, no version.
 

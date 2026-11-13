@@ -434,9 +434,11 @@ The protected names are a fixed list in `config.rs` plus the daemon's live crede
 The fixed list covers the model provider, cloud, proxy, code hosting and package registry
 variables the daemon knows by name; its prefixes are `DIM_` and `DIMCODE_` plus the exact names
 `DIM` and `DIMCODE`, so an unrelated name such as `DIMENSION` is not caught, and matching ignores
-case. The live set arrives through the process port `CredentialVariables` in the capabilities host,
-whose `CredentialVariablesHost` is registered next to `ModelSelectionHost`, and whose owner is the
-assembly root in `serve`. The model-config profile serves `AimuxModels::api_key_envs()`; the product
+case. The live set arrives through the process data face `credentialVariablesHost` in the
+capabilities host, provided by the assembly root in `serve`: `variables() -> {variables: [string]}`,
+the names and never a value ([service faces §4.9](../service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
+The owner binds its read into `CredentialVariablesHost`, so a Rust consumer calls the same operation
+in process and no second public contract exists. The model-config profile serves `AimuxModels::api_key_envs()`; the product
 profile reads no credential from an environment variable (`secretRef` is opaque), so it and the mock
 profile serve an empty set. The port returns the current set on every call. MCP unions it with the
 fixed list and never reads Provider or the model catalogue itself.
@@ -1332,9 +1334,9 @@ store over either is that row's `too-large`.
   formats. A new user-scope `mcp-secrets` source holds the migration overlay; it has no prior
   format and a missing file reads as empty. No existing persisted data moves or changes meaning,
   so no format version changes.
-- No new plugin, part, Timeline event or notification. D19 adds one typed capability port,
-  `CredentialVariables` with its `CredentialVariablesHost` wrapper, registered in the capabilities
-  service catalog and provided by the assembly root in `serve`. Assembly, routing, the MCP Session
+- No new plugin, part, Timeline event or notification. D19 adds one capability port,
+  `CredentialVariablesHost`, whose operation is the data face `credentialVariablesHost`, registered
+  shared in the capabilities service catalog and provided by the assembly root in `serve`. Assembly, routing, the MCP Session
   part and its connections are otherwise untouched; the MCP row registers the new Settings source
   itself.
 
@@ -1354,13 +1356,13 @@ business configuration, not an event.
 | `settings` ([Settings service](settings-service.md#42-service-settings-owner-path)) | Reading a source with its revision, compare-and-set writes, project authorization; the `mcp`, `mcp-projects` and `mcp-secrets` sources |
 | PluginManager ([§3.7](../plugins/PluginManager.md#37-content-registration)) | A plugin entry is registered content; Mcp reads it as declared and writes nothing |
 | `McpAuth` ([MCP OAuth](mcp-oauth.md)) | The `mcp.auth.*` methods of the same namespace; the credential record is untouched by a move |
-| `CredentialVariablesHost` (capabilities host, D19) | The names of the environment variables the daemon reads credentials from, beside `ModelSelectionHost`; `McpPublication` and `McpPlugin` declare it, and the assembly root in `serve` provides it |
+| `credentialVariablesHost` (capabilities host, D19) | The names of the environment variables the daemon reads credentials from; `McpPublication` and `McpPlugin` declare it, and the assembly root in `serve` provides it |
 
 ## 9. Cross-module requirements
 
-One requirement is raised to the capabilities host: a `CredentialVariables` trait and its
-`CredentialVariablesHost` wrapper beside `ModelSelectionHost`, registered in the service catalog
-and provided by the assembly root in `serve` (D19). None is raised to the runtime, rutis, Settings
+One requirement is raised to the capabilities host: the `CredentialVariablesHost` port with its
+data face `credentialVariablesHost`, registered shared in the service catalog and provided by the
+assembly root in `serve` (D19). None is raised to the runtime, rutis, Settings
 or Rpc: the revision and the source snapshot already exist, and the change stays inside the MCP
 owner and its documents and reply shapes.
 
@@ -1444,7 +1446,7 @@ for the same reason: reaching it costs sixty seconds of real time for one assert
 | §4 rule 9 (only facts later decisions use) | Configuration stays out of the Timeline; a Session broadcast notice is not added |
 | §1 (Capability and the App Server boundary) | No new part and no new Capability. The MCP process row and its Session part keep their state; the change is in the process row's management methods |
 | ADR 002 D1 (scope follows the owner of state) | Entry configuration is shared across Sessions, so it stays in the process owner |
-| ADR 002 D2 (no wiring modules) | One port is added to the capabilities host (`CredentialVariables`, D19), a typed host beside `ModelSelectionHost`, not a wiring module; `mcp.move` is one method on the existing MCP row |
+| ADR 002 D2 (no wiring modules) | One port is added to the capabilities host (`CredentialVariablesHost`, D19), whose operation is the `credentialVariablesHost` data face, not a wiring module; `mcp.move` is one method on the existing MCP row |
 | ADR 002 D3 (dependencies point to the core) | `McpPublication` and `McpPlugin` declare the capabilities host `CredentialVariablesHost`; it points to the core, and Settings is already declared |
 | ADR 002 D4 (structural versus business configuration) | Business configuration stays in its source, read on use; the `mcp-secrets` overlay is user-scope business configuration and reloads nothing |
 | ADR 002 D5 (language-neutral contracts) | The request, reply and error shapes are JSON data; the revision is an opaque string |

@@ -192,7 +192,9 @@ size.
 When the usual history reservation leaves fewer than eight live rows,
 live controls take priority: either renderer can use up to eight rows for
 the live region, limited by terminal height. Fullscreen reduces the composer's empty padding
-and the palette's query padding before overlapping either input. The draft
+and the palette's query padding before overlapping either input. When only three rows remain
+for the palette, its query occupies the top border, leaving the selected command visible
+without covering the composer or permission footer. The draft
 editor scrolls within the remaining rows and keeps its caret visible without
 discarding text. Otherwise the usual history reservation is retained.
 
@@ -239,15 +241,15 @@ Commands
 ```
 
 ```text
-Fullscreen, 8 rows             Scrollback, 8 rows
-+- Command Palette -------+
-| >                       |   +- input -----------------+
-| /new                    |   | > /                     |
-+-------------------------+   +-------------------------+
-                              +-------------------------+
-+- input -----------------+   | /new                    |
-|                         |   +-------------------------+
-+-------------------------+   AGENT
+Fullscreen, 8 rows                           Scrollback, 8 rows
++- > -------------------------------+
+| /new                              |       +- input ---------------------------+
++-----------------------------------+       | > /                               |
+                                            +-----------------------------------+
++- input ---------------------------+       +-----------------------------------+
+|                                   |       | /new                              |
++-----------------------------------+       +-----------------------------------+
+ ⏵⏵ Read only (shift+tab to cycle)            ⏵⏵ Read only (shift+tab to cycle)
 ```
 
 ## Run keys and queue
@@ -518,7 +520,7 @@ blocked or cleared one:
  ╭──────────────────────────────────────────────────────────────────────────────╮
  │ › _                                                                          │
  ╰────────────────────────────── ⑂ main ▸ child work · after message 0 ─────────╯
-  AGENT  ⏵⏵ Workspace write  ◎ goal active  1.8K / 256K              provider/model
+  ⏵⏵ Workspace write (shift+tab to cycle)  ◎ goal active  1.8K / 256K
 ```
 
 Fullscreen draws the same element in the composer's bottom border, beside the run status:
@@ -526,7 +528,8 @@ Fullscreen draws the same element in the composer's bottom border, beside the ru
 ```text
  ╭──────────────────────────────────────────────────────────────────────────────╮
  │ › _                                                                          │
- ╰──── ◎ goal paused   Full access   1.8K / 256K ───── ● main · after message 4 ─╯
+ ╰──── ◎ goal paused   1.8K / 256K ────────────────── ● main · after message 4 ─╯
+  ⏵⏵ Full access (shift+tab to cycle)
 ```
 
 ## Loop
@@ -1690,7 +1693,8 @@ draft is kept and the interface reports that the first message was not sent
 instead of restoring it. The interface does not exit for that case. Without
 `-p` the existing startup rule stands: a resumed Session that cannot start
 shows the error and exits nonzero, and Home remains available after a failed
-creation.
+creation. A startup failure dismisses any open panel so the cause is visible before
+exit or beside the restored draft.
 
 ### Daemon startup failure
 
@@ -2686,11 +2690,14 @@ Assistant: ...
 [permission] main branch preset: workspace-write  <- changed by another client
 ```
 
-The scrollback client draws a status line under the composer: the agent marker and the
-permission preset, the goal marker, the context use against
-its window, and one slot for the state in force — a notice, a required answer or permission,
-`esc interrupt`, or the background task count. The model, with its effort when both fit, is
-right-aligned on the same line; the line is clipped to the terminal width.
+Both TUI modes draw a live permission footer under the composer, without an `AGENT` prefix;
+the preset, colors, localized shortcut hint and key behavior are defined in
+[`/permissions`](#permissions). It is not committed to transcript history.
+Scrollback keeps the goal marker, context use against its window, and one slot for the state
+in force — a notice, a required answer or permission, `esc interrupt`, or the background task
+count — on the same line. The model, with its effort when both fit, is right-aligned there;
+the line is clipped to the terminal width. Fullscreen instead keeps run status, the status
+slot, goal and context information in the composer border, not the permission preset.
 
 ### Submit check warnings
 
@@ -2838,6 +2845,34 @@ The Command rules row opens the management panel
 of [The command rules area](#the-command-rules-area), where the rules are listed, added and
 removed; Esc there returns to this panel with Command rules focused. Both TUI modes preserve
 focus on return, including when Permissions was opened from Settings.
+
+Both TUI modes always show the effective preset below the composer, aligned at the left:
+
+```text
+ ╭──────────────────────────────────────────────────────────╮
+ │ › _                                                      │
+ ╰──────────────────────────────────────────────────────────╯
+  ⏵⏵ Read only (shift+tab to cycle)
+  ⏵⏵ Workspace write (shift+tab to cycle)
+  ⏵⏵ Full access (shift+tab to cycle)
+```
+
+The three rows above are alternatives: only the effective preset appears. The shortcut hint
+is translated into the selected interface language. Read only is cyan,
+Workspace write is purple and Full access is yellow; the shortcut hint is muted. Light themes
+use darker shades for contrast, and limited-color terminals use their cyan, magenta and yellow
+slots. The permission label takes priority over the hint and other status content on narrow
+terminals. Fullscreen retains run, goal, context and notice information in the composer border.
+In scrollback, when the permission prefix and model fit together, the right-aligned model
+reserves its space before optional goal, context, notice and background text is clipped.
+
+With the composer owning the keys, Shift+Tab cycles Read only → Workspace write → Full access
+→ Read only without submitting or changing the draft, including during a running turn. It
+uses the same selection operation and remembered preference as the picker; rapid presses are
+processed in order against the policy in force when each operation runs, not a stale UI copy.
+The label changes only when the operation succeeds. Prompts, command and mention menus keep their existing
+Shift+Tab behavior. In fullscreen, Tab starts transcript navigation; while a transcript target
+is picked, Shift+Tab still moves to the newer target, and Esc returns to the composer.
 
 Arguments after `/permissions` in the terminal UI open that panel instead of being ignored, and
 it opens holding one line that says where arguments work — the line prompt and `dimcode
@@ -3012,9 +3047,9 @@ authorizes a write, and a fork starts without the source's grants.
    nothing. `allowedTools` also bypasses the preset for every call of a tool, which presets and
    command rules already express more narrowly. The CLI keeps existing lists on every update.
 3. **The CLI writes `main` only** (branch semantics above).
-4. **No Shift+Tab cycle.** The key decoder belongs to the idle draft editor, which returns only
-   send or exit; a running turn reads plain lines. A cycle needs an editor action result and a
-   separate interaction design. `/permissions` covers switching.
+4. **Shift+Tab cycles in the TUI composer only.** Both TUI modes use the preset selection
+   operation above; transcript navigation and modal controls retain their keys. The line
+   client has no cycling shortcut and continues to use `/permissions` and its confirmation.
 5. **`/permissions` also adds rules.** F2 §8 lists adding as part of the panel, and with product
    storage the rules live in a database row that the user cannot edit as a file; without `add`
    a deny rule could not be created from the CLI.
@@ -3029,7 +3064,6 @@ authorizes a write, and a fork starts without the source's grants.
 | Item | What it needs |
 | --- | --- |
 | A reviewer model that answers approvals for the user | An approval answerer that responds through Approval's public respond operation, with its own model call and design, like the Collaboration leader route; not a CLI change |
-| Shift+Tab cycle | CLI only: an editor action result and a confirmation path (decision 4) |
 | `--allowed-tools`/`--disallowed-tools` | A tool catalog read to validate names at the argument boundary (decision 2) |
 | `/permissions` during a running turn | CLI only: the running turn reads plain lines and answers approvals; panel calls would join its multiplexed loop |
 
