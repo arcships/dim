@@ -88,8 +88,10 @@ the model can re-issue the call it withdrew. It reads the committed error
 results and carries no injected instruction. Its `context/prepare` carries the
 failed request's `failure_chain`, its attempts and waited time, so both
 requests spend one 8-call, 300 s budget instead of the continuation taking a
-second one. It spends the same per-turn continuation that a disposer
-continuation spends (§6.2 of
+second one. A compaction step that runs at the boundary before the
+continuation keeps the chain across the step and passes it to the request the
+step's resumption starts. It spends the same per-turn continuation that a
+disposer continuation spends (§6.2 of
 [model retry and recovery](../../../design/research/model-retry-recovery.md#62-预算与内容));
 there is no second counter. An output-limit stop is not a failure of the turn:
 it ends Completed, and its `step/model-output-end` stays for diagnostics.

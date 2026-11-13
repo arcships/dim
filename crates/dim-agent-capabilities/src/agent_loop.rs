@@ -67,6 +67,11 @@ struct Turn {
     /// same slot (model-retry-recovery §6.2). Budget recovery is a separate
     /// contract and does not read it.
     continued: bool,
+    /// The chain of a continuation that yielded to a compaction step: the
+    /// step's resumption passes it to the request it starts, so the request
+    /// the step deferred still spends one retry budget with the request that
+    /// failed.
+    deferred: Option<FailureChain>,
 }
 /// An applied input waiting for this Loop to consume it.
 struct Applied {
@@ -231,6 +236,7 @@ impl AgentLoop {
             interrupted: None,
             failed: None,
             continued: false,
+            deferred: None,
         });
         self.timeline
             .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
@@ -302,7 +308,8 @@ impl AgentLoop {
         Ok(())
     }
     /// A step boundary unless `source` retries a request: a pending
-    /// compaction step runs before the next request, which waits for it.
+    /// compaction step runs before the next request, which waits for it and
+    /// keeps the chain it was started with.
     fn next_model(
         self: &Arc<Self>,
         turn: &mut Turn,
@@ -325,10 +332,12 @@ impl AgentLoop {
             let mut compaction = self.compaction.lock().unwrap();
             if compaction.running() {
                 turn.request = None;
+                turn.deferred = chain;
                 return Ok(());
             }
             if compaction.waiting() {
                 turn.request = None;
+                turn.deferred = chain;
                 self.start_step(&mut compaction, Some(turn.id.clone()), at);
                 return Ok(());
             }
@@ -869,6 +878,7 @@ impl AgentLoop {
                     interrupted: None,
                     failed: Some(CAPABILITY_RELOADING.into()),
                     continued: false,
+                    deferred: None,
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -1427,7 +1437,8 @@ impl AgentLoop {
                 }
                 return match slot.as_mut() {
                     Some(turn) if turn.open && !turn.ending => {
-                        self.next_model(turn, None, None, event.sequence)
+                        let deferred = turn.deferred.take();
+                        self.next_model(turn, None, deferred, event.sequence)
                     }
                     Some(_) => Ok(()),
                     None => self.try_start(&mut slot),

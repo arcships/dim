@@ -1,5 +1,6 @@
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel, MockTools},
+    agent_loop::AgentLoop,
     defaults,
     host::*,
     tool_registry::definition,
@@ -694,13 +695,37 @@ async fn a_failure_a_new_request_can_settle_continues_the_turn() {
 /// A model whose first request spends three attempts with no output and then
 /// announces a call and fails, so that request ends with part of the chain
 /// spent. Every later request fails with no output at all, so a continuation
-/// carrying the remainder stops sooner than one with a fresh budget.
+/// carrying the remainder stops sooner than one with a fresh budget. While
+/// `hold` is set, the announcing attempt waits in flight until released, so a
+/// test can write a manual compaction command against it.
 #[derive(Clone)]
 struct QuietThenAnnounced {
     announced: Arc<AtomicBool>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
+    hold: Arc<AtomicBool>,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
 }
 impl QuietThenAnnounced {
+    /// The announcing attempt: one started call, then the failure.
+    fn announced_stream() -> ModelStream {
+        let error = Self::failure();
+        Box::pin(futures_util::stream::iter(vec![
+            Ok(ModelChunk::MessageStart {
+                message_id: "announced".into(),
+            }),
+            Ok(ModelChunk::ToolStart {
+                id: "call-1".into(),
+                name: "echo".into(),
+            }),
+            Ok(ModelChunk::ToolArguments {
+                id: "call-1".into(),
+                name: "echo".into(),
+                delta: "{\"text\":\"hel".into(),
+            }),
+            Err(error),
+        ]))
+    }
     fn failure() -> HostError {
         HostError::Failed {
             message: "fixture rejection".into(),
@@ -731,30 +756,24 @@ impl ModelDriver for QuietThenAnnounced {
         &self,
         _: Arc<ModelRequest>,
         _: ModelConnection,
-        _: CancellationToken,
+        cancel: CancellationToken,
     ) -> HostFuture<'_, ModelStream> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let announce = call == 3 && !self.announced.swap(true, Ordering::SeqCst);
         if !announce {
             return Box::pin(async { Err(Self::failure()) });
         }
-        let error = Self::failure();
+        if !self.hold.swap(false, Ordering::SeqCst) {
+            return Box::pin(async { Ok(Self::announced_stream() as ModelStream) });
+        }
+        let entered = self.entered.clone();
+        let release = self.release.clone();
         Box::pin(async move {
-            Ok(Box::pin(futures_util::stream::iter(vec![
-                Ok(ModelChunk::MessageStart {
-                    message_id: "announced".into(),
-                }),
-                Ok(ModelChunk::ToolStart {
-                    id: "call-1".into(),
-                    name: "echo".into(),
-                }),
-                Ok(ModelChunk::ToolArguments {
-                    id: "call-1".into(),
-                    name: "echo".into(),
-                    delta: "{\"text\":\"hel".into(),
-                }),
-                Err(error),
-            ])) as ModelStream)
+            entered.notify_one();
+            tokio::select! {
+                _ = cancel.cancelled() => Err(HostError::Cancelled("model cancelled".into())),
+                _ = release.notified() => Ok(Self::announced_stream()),
+            }
         })
     }
 }
@@ -807,6 +826,9 @@ async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
     let hosts = QuietThenAnnounced {
         announced: Arc::new(AtomicBool::new(false)),
         calls: calls.clone(),
+        hold: Arc::new(AtomicBool::new(false)),
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
     };
     builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
     let agent = MinimalHost::start(&builder).await.unwrap();
@@ -846,6 +868,122 @@ async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
         "the continuation reports the chain's total wait: {:?}",
         ends[1]
     );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_compaction_step_before_the_continuation_keeps_its_chain() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = QuietThenAnnounced {
+        announced: Arc::new(AtomicBool::new(false)),
+        calls: calls.clone(),
+        hold: Arc::new(AtomicBool::new(true)),
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    entered.notified().await;
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    release.notify_one();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(starts(&events), 2, "the turn continues once");
+    assert_eq!(calls.load(Ordering::SeqCst), 8, "one shared chain");
+    let ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    assert_eq!(ends[0].attempts, 4, "{:?}", ends[0]);
+    assert_eq!(ends[1].attempts, 8, "{:?}", ends[1]);
+    let terminal = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.kind,
+                EventKind::ModelOutputEnd(data)
+                    if matches!(data.outcome, ModelOutputOutcome::Failed { .. })
+            )
+        })
+        .expect("the failed request ends");
+    let start = events
+        .iter()
+        .enumerate()
+        .skip(terminal)
+        .find(|(_, event)| matches!(event.kind, EventKind::ModelStart(_)))
+        .map(|(index, _)| index)
+        .expect("the continuation starts");
+    let steps: Vec<_> = events[terminal + 1..start]
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the step's result resumes the turn: {steps:?}"
+    );
+    assert_eq!(steps[0].command, Some(command));
+    assert!(matches!(
+        steps[0].outcome,
+        ContextCompactionResult::Failed { .. }
+    ));
+    let prepares: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextPrepare(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prepares.len(), 2, "one preparation per request");
+    let chain = prepares[1]
+        .failure_chain
+        .as_ref()
+        .expect("the resumed request carries the chain");
+    assert_eq!(chain.from_request_id, prepares[0].request_id);
+    assert_eq!(chain.attempts, ends[0].attempts);
+    assert_eq!(chain.waited_ms, ends[0].waited_ms);
     agent.close().await.unwrap();
 }
 
