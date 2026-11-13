@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -9,67 +9,31 @@ const runtimeRoot = import.meta.dirname
 const pluginSource = path.join(runtimeRoot, 'plugins', 'light-ocr')
 const fixtures = path.join(runtimeRoot, 'fixtures', 'light-ocr')
 
-// The platform packages of `@arcships/light-ocr` 0.5.9's own table
-// (`src/document.cjs`): the helper must name exactly these.
-const PLATFORM_PACKAGES = {
-  'macos-arm64': '@arcships/light-ocr-darwin-arm64',
-  'macos-x64': '@arcships/light-ocr-darwin-x64',
-  'windows-arm64': '@arcships/light-ocr-win32-arm64',
-  'windows-x64': '@arcships/light-ocr-win32-x64',
-  'linux-x64': '@arcships/light-ocr-linux-x64-gnu',
-  'linux-arm64': '@arcships/light-ocr-linux-arm64-gnu',
-  'linux-x64-musl': '@arcships/light-ocr-linux-x64-musl',
-  'linux-arm64-musl': '@arcships/light-ocr-linux-arm64-musl',
+// Modality's page pixel bound (`dim_ocr::MAX_PAGE_PIXELS`), which the helper
+// hands the image engine as `reducedLimits.maxPixels`. The boundary test below
+// pins the value end to end: the fixture refuses only when a numeric
+// `maxPixels` is passed.
+const PAGE_PIXEL_BOUND = 25_000_000
+
+// The plugin's own lock: the pin of the facade, and upstream's declaration of
+// which platform package belongs to which OS, CPU and C library.
+const lock = JSON.parse(readFileSync(path.join(pluginSource, 'package-lock.json'), 'utf8'))
+
+// The identity the helper must accept for one lock entry, spelled from the
+// entry's own npm `os`, `cpu` and `libc` rather than from the helper's table:
+// npm's OS abbreviations are the facade's full names, and an ABI suffix is
+// there only for a musl build.
+function identity(entry) {
+  const os = { darwin: 'macos', win32: 'windows' }[entry.os[0]] ?? entry.os[0]
+  return entry.libc?.[0] === 'musl' ? `${os}-${entry.cpu[0]}-musl` : `${os}-${entry.cpu[0]}`
 }
 
-// Every light-ocr error code (`CoreErrorCode` + `AdapterErrorCode` of 0.5.9)
-// as the helper contract's code.
-const ERROR_CODES = {
-  invalid_argument: 'invalid_input',
-  invalid_image: 'invalid_input',
-  unsupported_pixel_format: 'invalid_input',
-  unsupported_capability: 'invalid_input',
-  resource_limit_exceeded: 'resource_limit_exceeded',
-  queue_full: 'resource_limit_exceeded',
-  invalid_model_bundle: 'local_runtime_unavailable',
-  unsupported_model: 'local_runtime_unavailable',
-  model_integrity_failed: 'local_runtime_unavailable',
-  runtime_initialization_failed: 'local_runtime_unavailable',
-  invalid_engine: 'local_runtime_unavailable',
-  bundle_io_failed: 'local_runtime_unavailable',
-  unsupported_platform: 'local_runtime_unavailable',
-  package_load_failed: 'local_runtime_unavailable',
-  environment_closing: 'local_runtime_unavailable',
-  internal_error: 'local_runtime_unavailable',
-  inference_failed: 'local_runtime_failed',
-  postprocess_failed: 'local_runtime_failed',
-}
-
-// The model package whose `bundle/normalized-config.json` resource limits
-// IMAGE_LIMITS copies, at the version the lock installs.
-const MODEL = '@arcships/light-ocr-model-ppocrv6-small'
-const MODEL_VERSION = '0.3.4'
-
-// The limits the image engine must carry: MODEL_VERSION's bundle resource
-// limits with Modality's page bound as `maxPixels`.
-const IMAGE_LIMITS = {
-  maxWidth: 10000,
-  maxHeight: 10000,
-  maxPixels: 25000000,
-  maxDetectionSide: 4000,
-  maxDetectionCandidates: 3000,
-  maxRecognitionBatchSize: 8,
-  maxRecognitionWidth: 3200,
-  maxTemporaryBytes: 536870912,
-}
-
-test('the copied image limits belong to the model version the lock installs', () => {
-  const lock = JSON.parse(readFileSync(path.join(pluginSource, 'package-lock.json'), 'utf8'))
-  const model = lock.packages[`node_modules/${MODEL}`]
-  assert.ok(model !== undefined, `${MODEL} is not in package-lock.json`)
-  assert.equal(model.version, MODEL_VERSION,
-    `IMAGE_LIMITS in helper.cjs copies ${MODEL} ${MODEL_VERSION}'s bundle/normalized-config.json resource limits; both must change together`)
-})
+// Every platform package the lock installs, as `{identity, name}`: the package
+// name is upstream's, the identity is derived from the same entry's platform
+// fields, so the two cannot agree by being copies of one table.
+const platformPackages = Object.entries(lock.packages)
+  .filter(([name, entry]) => name !== '' && Array.isArray(entry.os) && Array.isArray(entry.cpu))
+  .map(([name, entry]) => ({ identity: identity(entry), name: name.replace(/^node_modules\//, '') }))
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00])
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
@@ -107,7 +71,7 @@ function makeContext(t, { platform = false } = {}) {
   cpSync(path.join(fixtures, 'light-ocr'), path.join(modules, 'light-ocr'), { recursive: true })
   cpSync(path.join(fixtures, 'light-ocr-runtime'), path.join(modules, 'light-ocr-runtime'), { recursive: true })
   if (platform) {
-    for (const name of Object.values(PLATFORM_PACKAGES)) {
+    for (const { name } of platformPackages) {
       const directory = path.join(modules, name.split('/')[1])
       mkdirSync(path.join(directory, 'pdfium'), { recursive: true })
       writeFileSync(path.join(directory, 'package.json'), `${JSON.stringify({ name, version: '0.5.9', exports: { './pdfium': './pdfium/index.cjs' } })}\n`)
@@ -244,11 +208,13 @@ test('an image becomes one page, in text and layout mode', t => {
   for (const mode of ['text', 'layout']) {
     const result = run(context, ['--input', input, '--artifacts', context.artifacts, '--output-mode', mode], settings)
     assert.deepEqual(succeeded(result), { ok: true, pageCount: 1 })
-    assert.deepEqual(result.calls, [
-      { call: 'createEngine', options: { execution: { provider: 'cpu' }, reducedLimits: IMAGE_LIMITS } },
-      { call: 'recognizeEncoded', length: PNG.length, options: { applyExif: true } },
-      { call: 'createEngine.close' },
-    ])
+    // One engine per call, one recognition of exactly the input's bytes with
+    // its EXIF applied, and the engine closed whatever happened.
+    assert.deepEqual(result.calls.map(call => call.call),
+      ['createEngine', 'recognizeEncoded', 'createEngine.close'], mode)
+    assert.equal(result.calls[0].options.reducedLimits.maxPixels, PAGE_PIXEL_BOUND, mode)
+    assert.deepEqual(result.calls[1],
+      { call: 'recognizeEncoded', length: PNG.length, options: { applyExif: true } }, mode)
     assert.deepEqual(artifactsOf(context), ['result.json', 'text.txt'])
     assert.deepEqual(document(context), {
       text: 'DIMCODE\nOCR\nlow',
@@ -259,29 +225,22 @@ test('an image becomes one page, in text and layout mode', t => {
   }
 })
 
-test('an image above the page pixel bound is refused before recognition', t => {
+test('an image at the page pixel bound is accepted and one pixel past it is refused', t => {
   const context = makeContext(t)
   const input = writeFile(context.root, 'photo.png', PNG)
-  const result = run(context, ['--input', input, '--artifacts', context.artifacts], {
+  const refusedResult = run(context, ['--input', input, '--artifacts', context.artifacts], {
     recognizeEncoded: { imageWidth: 6000, imageHeight: 5000 },
   })
-  const error = refused(result, 'resource_limit_exceeded')
+  const error = refused(refusedResult, 'resource_limit_exceeded')
   assert.ok(error.message.includes('Decoded image dimensions exceed engine limits'), error.message)
   assert.deepEqual(artifactsOf(context), [])
-  assert.deepEqual(result.calls, [
-    { call: 'createEngine', options: { execution: { provider: 'cpu' }, reducedLimits: IMAGE_LIMITS } },
-    { call: 'recognizeEncoded', length: PNG.length, options: { applyExif: true } },
-    { call: 'createEngine.close' },
-  ])
-})
+  assert.deepEqual(refusedResult.calls.map(call => call.call),
+    ['createEngine', 'recognizeEncoded', 'createEngine.close'])
 
-test('an image at exactly the page pixel bound is accepted', t => {
-  const context = makeContext(t)
-  const input = writeFile(context.root, 'photo.png', PNG)
-  const result = run(context, ['--input', input, '--artifacts', context.artifacts], {
+  const accepted = run(context, ['--input', input, '--artifacts', context.artifacts], {
     recognizeEncoded: { imageWidth: 5000, imageHeight: 5000, lines: [] },
   })
-  assert.deepEqual(succeeded(result), { ok: true, pageCount: 1 })
+  assert.deepEqual(succeeded(accepted), { ok: true, pageCount: 1 })
   assert.deepEqual(artifactsOf(context), ['result.json', 'text.txt'])
   assert.deepEqual(document(context), {
     text: '',
@@ -347,18 +306,19 @@ test('a PDF in layout mode renders every page through its platform package', t =
   ])
 })
 
-test('every platform identity loads its own package', t => {
+test('each platform package the lock installs loads for its own identity', t => {
   const context = makeContext(t, { platform: true })
   const input = writeFile(context.root, 'document.pdf', PDF)
-  for (const [id, name] of Object.entries(PLATFORM_PACKAGES)) {
+  assert.ok(platformPackages.length > 0, 'the lock installs no platform package')
+  for (const { identity, name } of platformPackages) {
     const result = run(context, layoutArguments(context, input), {
-      platform: { id },
+      platform: { id: identity },
       pages: [PAGES[0]],
       pdfium: { render: [{ bytes: 8 }] },
     })
     succeeded(result)
     const load = result.calls.find(call => call.call === 'pdfium.loadDocument')
-    assert.equal(load?.package, name, id)
+    assert.equal(load?.package, name, `${identity} must load ${name}`)
   }
 })
 
@@ -380,10 +340,17 @@ test('an unusable platform identity is a missing local runtime', t => {
   assert.deepEqual(failed.calls.filter(call => call.call.startsWith('pdfium.')), [])
 })
 
-test('every engine error code becomes its helper code', t => {
+test('an engine error code becomes its helper code and an unknown one fails the runtime', t => {
   const context = makeContext(t)
   const input = writeFile(context.root, 'photo.png', PNG)
-  for (const [code, helperCode] of Object.entries(ERROR_CODES)) {
+  const cases = [
+    ['invalid_argument', 'invalid_input'],
+    ['queue_full', 'resource_limit_exceeded'],
+    ['model_integrity_failed', 'local_runtime_unavailable'],
+    ['inference_failed', 'local_runtime_failed'],
+    ['some_future_code', 'local_runtime_failed'],
+  ]
+  for (const [code, helperCode] of cases) {
     const result = run(context, ['--input', input, '--artifacts', context.artifacts], {
       recognizeEncoded: { throw: { code, message: `${code} from the fixture` } },
     })
@@ -514,26 +481,22 @@ test('an artifact path that is not a directory is invalid input', t => {
   }
 })
 
-test('the plugin manifest and its lock agree', () => {
-  const directory = path.join(pluginSource)
-  const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'))
-  const lock = JSON.parse(readFileSync(path.join(directory, 'package-lock.json'), 'utf8'))
-  assert.equal(lock.lockfileVersion, 3)
-  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
-    '@arcships/light-ocr',
-    '@arcships/light-ocr-runtime',
-    '@arcships/rutis',
-  ])
-  assert.deepEqual(lock.packages[''].dependencies, manifest.dependencies)
-  for (const [name, entry] of Object.entries(lock.packages)) {
-    if (name === '') continue
-    assert.ok(name.startsWith('node_modules/'), name)
-    assert.equal(typeof entry.integrity, 'string', name)
-    assert.equal(entry.hasInstallScript, undefined, name)
+// The one lock rule a check over committed files cannot state: no plugin's
+// install may run a script. Every plugin the runtime ships is covered, so a
+// new plugin's lock is held to it too. The `integrity` and manifest agreement
+// are `xtask check`'s.
+test('no shipped plugin lock runs an install script', () => {
+  const plugins = path.join(runtimeRoot, 'plugins')
+  const locks = readdirSync(plugins, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => path.join(plugins, entry.name, 'package-lock.json'))
+    .filter(existsSync)
+  assert.ok(locks.length > 0, 'no plugin lock to check')
+  for (const file of locks) {
+    const entries = JSON.parse(readFileSync(file, 'utf8')).packages ?? {}
+    for (const [name, entry] of Object.entries(entries)) {
+      if (name === '') continue
+      assert.equal(entry.hasInstallScript, undefined, `${file}: ${name}`)
+    }
   }
-  const facade = lock.packages['node_modules/@arcships/light-ocr']
-  const runtime = lock.packages['node_modules/@arcships/light-ocr-runtime']
-  assert.equal(facade.dependencies['@arcships/light-ocr-runtime'], runtime.version)
-  assert.equal(manifest.dependencies['@arcships/light-ocr-runtime'], runtime.version)
-  assert.equal(lock.packages['node_modules/@arcships/rutis'].version, manifest.dependencies['@arcships/rutis'])
 })

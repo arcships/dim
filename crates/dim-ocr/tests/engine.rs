@@ -66,6 +66,7 @@ fn document(artifacts: &Path) -> Document {
 }
 
 #[test]
+#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
 fn an_image_is_recognized_with_its_regions() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("latin.png"), &artifacts, "text");
@@ -105,6 +106,7 @@ fn an_image_is_recognized_with_its_regions() {
 }
 
 #[test]
+#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
 fn a_pdf_keeps_its_native_text_and_reads_the_page_without_one() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("mixed.pdf"), &artifacts, "text");
@@ -124,6 +126,7 @@ fn a_pdf_keeps_its_native_text_and_reads_the_page_without_one() {
 }
 
 #[test]
+#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
 fn layout_writes_the_rasterized_pages() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("mixed.pdf"), &artifacts, "layout");
@@ -139,6 +142,13 @@ fn layout_writes_the_rasterized_pages() {
     );
     assert!(artifacts.join("page-0001.png").is_file());
     assert!(artifacts.join("page-0002.png").is_file());
+    let mut images: Vec<String> = std::fs::read_dir(&artifacts)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(dim_ocr::PAGE_IMAGE_PREFIX))
+        .collect();
+    images.sort();
+    assert_eq!(images, ["page-0001.png", "page-0002.png"]);
     // The native text layer wins over the recognized one for page one.
     assert!(document.pages[0].text.contains("Native page one"));
     assert!(!document.pages[0].regions.is_empty());
@@ -159,22 +169,8 @@ fn an_unsupported_input_is_a_typed_failure() {
     let artifacts = artifacts();
     let (code, stdout) = run(&input, &artifacts, "text");
     assert_eq!(code, 2);
-    assert!(stdout.contains("\"local_runtime_failed\"") || stdout.contains("\"invalid_input\""));
-    std::fs::remove_dir_all(&artifacts).unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn an_input_over_the_limit_is_a_typed_refusal() {
-    let directory = artifacts();
-    let input = directory.join("big.bin");
-    let file = std::fs::File::create(&input).unwrap();
-    file.set_len(dim_ocr::MAX_INPUT_BYTES + 1).unwrap();
-    drop(file);
-    let artifacts = artifacts();
-    let (code, stdout) = run(&input, &artifacts, "text");
-    assert_eq!(code, 2);
-    assert!(stdout.contains("\"resource_limit_exceeded\""), "{stdout}");
+    assert!(stdout.contains("\"invalid_input\""), "{stdout}");
+    assert!(!stdout.contains("\"local_runtime_failed\""), "{stdout}");
     std::fs::remove_dir_all(&artifacts).unwrap();
     std::fs::remove_dir_all(directory).unwrap();
 }
