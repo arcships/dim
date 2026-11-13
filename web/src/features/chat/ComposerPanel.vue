@@ -18,6 +18,8 @@ type SessionCommands = {
   fork?: () => Promise<void>
   /** Receives the words after `/goal`; empty shows the goal. */
   goal?: (words: string) => Promise<void>
+  /** Receives the words after `/loop`; empty lists the line's loops. */
+  loop?: (words: string) => Promise<void>
   /** Receives the words after `/effort`; empty lists the choices. */
   effort?: (words: string) => Promise<void>
 }
@@ -99,6 +101,7 @@ const availableCommands = computed(() => ([
   { category: "session", name: "usage", available: props.sessionCommands?.usage !== undefined },
   { category: "session", name: "fork", available: props.sessionCommands?.fork !== undefined },
   { category: "session", name: "goal", available: props.sessionCommands?.goal !== undefined },
+  { category: "session", name: "loop", available: props.sessionCommands?.loop !== undefined },
   { category: "model", name: "effort", available: props.sessionCommands?.effort !== undefined },
   { category: "model", name: "permissions", available: props.permission !== undefined && props.variant !== "panel" },
   { category: "session", name: "lines", available: props.openLines !== undefined },
@@ -265,6 +268,15 @@ async function submit(): Promise<void> {
     await goal(goalCommand[1]?.trim() ?? "")
     return
   }
+  const loop = props.sessionCommands?.loop
+  const loopCommand = !dismissed.value && loop !== undefined ? /^\/loop(?:\s+([\s\S]*))?$/i.exec(message) : null
+  if (loop && loopCommand) {
+    text.value = ""
+    await nextTick()
+    resize()
+    await loop(loopCommand[1]?.trim() ?? "")
+    return
+  }
   const effort = props.sessionCommands?.effort
   const effortCommand = !dismissed.value && effort !== undefined ? /^\/effort(?:\s+([\s\S]*))?$/i.exec(message) : null
   if (effort && effortCommand) {
@@ -323,7 +335,7 @@ async function onModel(model: ModelId): Promise<void> {
 async function runCommand(name: typeof availableCommands.value[number]["name"]): Promise<void> {
   if (composing.value) return
   error.value = ""
-  const argument = name === "branch" || name === "goal" || name === "effort"
+  const argument = name === "branch" || name === "goal" || name === "loop" || name === "effort"
   text.value = argument ? `/${name} ` : ""
   await nextTick()
   resize()
@@ -424,7 +436,7 @@ defineExpose({ focus: () => field.value?.focus(), quote })
           @click.stop="runCommand(command.name)"
         >
           <span class="command-category">{{ index === 0 || matches[index - 1]?.category !== command.category ? t(`composer.category.${command.category}`) : '' }}</span>
-          <span class="command-name">/{{ command.name }}<span v-if="command.name === 'branch'" class="command-argument"> &lt;prompt&gt;</span><span v-else-if="command.name === 'goal' || command.name === 'effort'" class="command-argument"> [args]</span></span>
+          <span class="command-name">/{{ command.name }}<span v-if="command.name === 'branch'" class="command-argument"> &lt;prompt&gt;</span><span v-else-if="command.name === 'goal' || command.name === 'loop' || command.name === 'effort'" class="command-argument"> [args]</span></span>
           <span class="command-description">{{ t(`composer.command.${command.name}`) }}</span>
         </button>
         <p class="command-keys">{{ t("composer.commandKeys") }}</p>

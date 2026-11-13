@@ -254,6 +254,19 @@ impl InputQueue {
         }
         Ok(())
     }
+    /// Whether `input_id` is still pending: held by this queue and neither
+    /// consumed nor deleted (session-access §2). An id this queue does not
+    /// hold is not pending. The answer is this queue's state at the published
+    /// head, so a caller that asks after a write sees what it wrote.
+    pub fn pending(&self, input_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.id == input_id)
+    }
+
     /// Withdraws an input by its `input_id` and replies with this queue's
     /// decision for the command. Only an accepted withdrawal adopts its
     /// optional checked Steer candidate, atomically with the deletion.

@@ -88,6 +88,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | --- | --- | --- |
 | `scheduleJobs` | `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md#a2-tool-schedule) 的 flat `JobRequest`/`JobReply`，与 `wakeups` 同一批次（[#1396](https://github.com/arcships/dim/pull/1396)）。 |
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
+| `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFilesHost` 是进程内绑定。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
@@ -295,6 +296,20 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 按 Scheduler §10.2 的方法表，不按 §11.1 的通知表。`branchId` 默认 `main`；`at` 是 RFC 3339；`cancel` 结算 `scheduled` 记录时返回 `{}`，记录已经终态时返回 `{state}`。
 
 `Wakeup` 持久化字段继续使用 snake_case，数据面用上面的 wire 字段。测试覆盖 create、list、cancel 和 loopback。
+
+### 4.7b `loops`
+
+与 `wakeups` 同一做法：注册为 shared，在 `host_key("loops")` 提供 dispatcher，原生 `Loops` 在类型键继续提供。按 Scheduler §12.6：
+
+```text
+loops.start {sessionId, branchId?, prompt, everySeconds?} -> {loopId, branchId, state, round, nextAt?, lastRoundAt?, expiresAt, stoppedReason?, settledAt?}
+loops.next {sessionId, loopId, delaySeconds?} -> 同一记录形状
+loops.list {sessionId, branchId?} -> {loops: [记录…]}
+loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: false}
+  -> error {code: invalid_params | loop_not_found | loop_limit | loop_invalid | ..., message}
+```
+
+`branchId` 默认 `main`；`delaySeconds` 缺省取工具的默认值。校验与 `session.loop.*` 共用同一个解析函数，所以两端对同一请求给出同一个错误码。投递 pass、恢复与 `settle_delivering` 是内部实现，不在此面。
 
 ### 4.8 旧主机端口：`agentConfig` 等五个
 
