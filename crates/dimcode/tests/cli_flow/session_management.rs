@@ -712,8 +712,10 @@ fn session_delete_reads_a_reply_without_the_field_as_a_delete() {
     );
 }
 
+/// Both Session verbs that remove records refuse a daemon without their
+/// method by name, before it reads or writes anything.
 #[test]
-fn session_delete_reports_a_daemon_without_the_method() {
+fn session_delete_and_cleanup_report_a_daemon_without_the_method() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.hello(&["session.summaries"]);
@@ -729,6 +731,25 @@ fn session_delete_reports_a_daemon_without_the_method() {
     assert!(
         String::from_utf8_lossy(&output.stderr)
             .contains("This daemon does not support deleting Sessions"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.summaries"]);
+        wire.hold();
+    });
+    let output = home
+        .command()
+        .args(["session", "cleanup", "--keep", "1", "--yes"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("This daemon does not support cleaning up Sessions"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -948,28 +969,6 @@ fn session_cleanup_asks_on_a_terminal() {
         assert!(terminal.wait().success(), "{}", terminal.transcript);
         daemon.join().unwrap();
     }
-}
-
-#[test]
-fn session_cleanup_reports_a_daemon_without_the_method() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
-        wire.hello(&["session.summaries"]);
-        wire.hold();
-    });
-    let output = home
-        .command()
-        .args(["session", "cleanup", "--keep", "1", "--yes"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("This daemon does not support cleaning up Sessions"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]

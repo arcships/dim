@@ -186,11 +186,12 @@ fn read_failed(wire: &mut Wire, request: &Value) {
         "message":"the scheduler is unavailable"}}));
 }
 
-/// A run the daemon accepted is reported as done even when the read that
+/// An action the daemon accepted is reported as done even when the read that
 /// follows fails: the owner's answer is printed, the read error goes to
-/// stderr, and the command exits 0.
+/// stderr, and the command exits 0. A run and an add are the two verbs whose
+/// answer is the owner's record, so one test drives both.
 #[test]
-fn scheduled_run_keeps_the_owners_answer_when_the_read_back_fails() {
+fn scheduled_keeps_the_owners_answer_when_the_read_back_fails() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         hello(wire);
@@ -215,12 +216,7 @@ fn scheduled_run_keeps_the_owners_answer_when_the_read_back_fails() {
         String::from_utf8(output.stderr).unwrap(),
         "the scheduler is unavailable (RPC -32000)\n"
     );
-}
 
-/// An add the daemon accepted reports the entry it made even when the read
-/// that follows fails, with the read error on stderr and the exit 0.
-#[test]
-fn scheduled_add_keeps_the_owners_answer_when_the_read_back_fails() {
     let home = Home::new();
     let path = home.0.join("new.json");
     let new_job = json!({

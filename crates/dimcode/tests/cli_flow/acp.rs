@@ -2030,7 +2030,7 @@ fn lody_projection(version: u32) {
 }
 
 #[test]
-fn acp_stdio_lody_startup_model_is_selected_before_creation_without_shared_writes() {
+fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_writes() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         let mut methods = METHODS.to_vec();
@@ -2122,10 +2122,8 @@ fn acp_stdio_lody_startup_model_is_selected_before_creation_without_shared_write
     }
     peer.close();
     daemon.join().unwrap();
-}
-
-#[test]
-fn acp_stdio_lody_startup_mode_is_applied_before_creation_without_shared_writes() {
+    // The `mode` key alone: the policy it names reaches `session.create`
+    // before creation and the modes the reply reports, and writes no model.
     for mode in ["read-only", "workspace-write", "full-access"] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
