@@ -10474,6 +10474,113 @@ fn tui_approval_alias_selects_presets_and_remembers_them() {
     assert!(config.get("permissionPreset").is_none());
 }
 
+#[test]
+fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (submitted, wait_submitted) = std::sync::mpsc::channel();
+        let (controls, wait_controls) = std::sync::mpsc::channel();
+        let (checked, wait_checked) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.permission.get", "session.permission.update"]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[
+                {"id":"input","sequence":1,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"earlier message"}]},"mode":"queue"}},
+                {"id":"adopted","sequence":2,"create_at":1,"type":"input","name":"applied","data":{"input_id":"input","mode":"queue"}}
+            ],"through":8,"nextAfter":8,"done":true}));
+            let mut policy = json!({"preset":"read-only","allowedTools":["read"],"disallowedTools":["blocked"]});
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":1,"policy":policy}));
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            wait_controls.recv_timeout(PATIENCE).unwrap();
+            wire.quiet(Duration::from_millis(200));
+            checked.send(()).unwrap();
+            for (version, preset) in [(1, "workspace-write"), (2, "full-access"), (3, "read-only")] {
+                let read = wire.read("session.permission.get");
+                wire.reply(&read, json!({"version":version,"policy":policy}));
+                policy["preset"] = json!(preset);
+                let update = wire.read("session.permission.update");
+                assert_eq!(update["params"], json!({"sessionId":"session","branchId":"main","expectedVersion":version,"policy":policy}));
+                wire.reply(&update, json!({"version":version + 1}));
+            }
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":4,"policy":policy}));
+            let update = wire.read("session.permission.update");
+            wire.send(json!({"jsonrpc":"2.0","id":update["id"],"error":{"code":-32000,"message":"permission update refused"}}));
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["text"], "keep this draft");
+            wire.reply(&submit, json!({"event":{}}));
+            submitted.send(()).unwrap();
+            assert!(wire.trailing_request().is_none());
+        });
+        let mut command = home.command();
+        command.arg(if fullscreen {
+            "--fullscreen"
+        } else {
+            "--scrollback"
+        });
+        command
+            .env("COLORTERM", "truecolor")
+            .env("DIM_TERMINAL_APPEARANCE", "dark");
+        let mut terminal = Terminal::resume_tui(command);
+        let size = libc::winsize {
+            ws_row: 32,
+            ws_col: 160,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    terminal.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+        terminal.until("test / model");
+        terminal.until_anywhere("⏵⏵ Read only");
+        terminal.until_anywhere("(shift+tab to cycle)");
+        if fullscreen {
+            terminal.write(b"\t\x1b[Z");
+        }
+        terminal.write(b"/permissions\r");
+        terminal.until("Permission mode");
+        terminal.write(b"\x1b[Z\x1b");
+        controls.send(()).unwrap();
+        wait_checked.recv_timeout(PATIENCE).unwrap();
+        terminal.write(b"keep this draft");
+        for (preset, label, color) in [
+            ("workspace-write", "Workspace write", "177;139;255"),
+            ("full-access", "Full access", "255;204;0"),
+            ("read-only", "Read only", "117;216;227"),
+        ] {
+            terminal.write(b"\x1b[Z");
+            terminal.until(&format!("Permission: {preset} (also for new sessions)"));
+            terminal.until_anywhere(&format!("\x1b[38;2;{color}m⏵⏵ {label}"));
+            let config: Value =
+                serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap())
+                    .unwrap();
+            assert_eq!(config["permission"], preset);
+        }
+        terminal.write(b"\x1b[Z");
+        terminal.until("permission update refused");
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["permission"], "read-only");
+        terminal.write(b"\r");
+        wait_submitted.recv_timeout(PATIENCE).unwrap();
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
 /// The terminal's program status (OSC 7501) follows a run through a
 /// permission request and a question to its result, and the record is
 /// cleared on `/exit`, in both interface modes. So does the progress bar (OSC 9;4) where it is

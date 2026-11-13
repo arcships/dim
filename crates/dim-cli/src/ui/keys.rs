@@ -94,6 +94,7 @@ pub fn report(fullscreen: bool, mouse: bool, default_send_mode: SubmitMode) -> V
             "  {}",
             t("Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft")
         ),
+        format!("  {}", t("Shift+Tab cycle permissions (composer focused)")),
     ];
     if fullscreen {
         rows.push(t("Fullscreen").to_owned());
@@ -104,6 +105,10 @@ pub fn report(fullscreen: bool, mouse: bool, default_send_mode: SubmitMode) -> V
         rows.push(format!(
             "  {}",
             t("Tab also picks tool headers · Enter/Space toggle the focused tool")
+        ));
+        rows.push(format!(
+            "  {}",
+            t("Shift+Tab newer target while picked · Esc return to composer")
         ));
         rows.push(format!(
             "  {}",
@@ -146,6 +151,7 @@ mod tests {
                 "{report}"
             );
             assert!(report.contains("Enter queue · Ctrl+S steer"), "{report}");
+            assert!(report.contains("Shift+Tab cycle permissions"), "{report}");
             if fullscreen {
                 assert!(
                     report.contains("Home/End top or bottom (empty draft)"),

@@ -1043,6 +1043,14 @@ the first mark: `✓ cargo build 1m12s`. It reads the same Session task list
 `/tasks` shows and draws nothing while none runs. `Enter` on an empty composer
 opens `/tasks` while it shows, once no held message is left to steer.
 
+Both modes show the current permission below the composer: cyan `⏵⏵ Read only`,
+purple `⏵⏵ Workspace write`, or yellow `⏵⏵ Full access`, followed by muted
+`(shift+tab to cycle)`. With the composer focused, Shift+Tab cycles these three
+presets in that order, preserves the draft and remembers a successful selection
+for new Sessions. Prompts and menus keep their own keys; a picked fullscreen
+transcript target retains Shift+Tab navigation. See the
+[permission interaction contract](../../docs/design/cli-commands.md#permissions).
+
 | Fullscreen input | Effect |
 | --- | --- |
 | Mouse wheel, `PageUp` / `PageDown` | Scroll the transcript; new output does not move a scrolled view. A wheel notch scrolls three rows; a trackpad, once its dense reports are seen, one row per report; a fast streak speeds up to three (notch) or six (trackpad) times that |
@@ -1051,7 +1059,7 @@ opens `/tasks` while it shows, once no held message is left to steer.
 | Mouse drag | Select transcript text; release copies it (OSC 52, plus `pbcopy` locally on macOS; inside tmux OSC 52 goes through passthrough, which needs `set -g allow-passthrough on`) |
 | Click a link | Opens it in the system browser (OSC 8 links, or a bare `http(s)://` URL); over SSH the status row shows the URL instead |
 | Click a tool header or a thought's title | Toggles only that batch, codemode or call (`▸` / `▾`), or opens/closes a settled thought. Parent collapse hides children without resetting their choices. Hover and press affect only the title; release must hit the same valid target without dragging. Opening holds the view in place. Output and compare text remain selectable; links and the member-conversation entry are separate actions. `/tools` changes defaults for unchosen nodes, not manual choices; thinking has its own setting |
-| `Tab` / `Shift+Tab` | Pick older / newer transcript targets (`Up` / `Down` while one is picked), including committed tool headers; `Enter` / `Space` toggles only the focused tool node. Past the newest the pick ends. `Esc` ends it. On a user message, `e` puts the message in the composer to edit and send again; `b` opens a line of the shown line cut just before the message, with the message in the composer as its opening input (`Enter` opens it through `session.branch_create` and shows it, `Esc` cancels); `f`, on `main` only, asks, then forks the Session just before the message (`session.fork`) and attaches to the fork with the message in its composer. A `⑂ line` row, written where a line opened on the shown line, is picked too: `Enter` (or a click) shows that line ([timeline UI](../../docs/design/timeline-ui.md)); so is the load-more row at the top, which `Enter` loads |
+| `Tab` / `Shift+Tab` | Tab picks older transcript targets; Shift+Tab picks newer ones only while a target is picked, otherwise it cycles permissions. `Up` / `Down` also move while a target is picked, including committed tool headers; `Enter` / `Space` toggles only the focused tool node. Past the newest the pick ends. `Esc` ends it. On a user message, `e` puts the message in the composer to edit and send again; `b` opens a line of the shown line cut just before the message, with the message in the composer as its opening input (`Enter` opens it through `session.branch_create` and shows it, `Esc` cancels); `f`, on `main` only, asks, then forks the Session just before the message (`session.fork`) and attaches to the fork with the message in its composer. A `⑂ line` row, written where a line opened on the shown line, is picked too: `Enter` (or a click) shows that line ([timeline UI](../../docs/design/timeline-ui.md)); so is the load-more row at the top, which `Enter` loads |
 | `/`, `Ctrl+O`, `Ctrl+P` | Open the command palette centred over the dimmed transcript, with its own query row; a draft set aside by `Ctrl+O`/`Ctrl+P` returns when the command entry it opened ends (`Enter`, `Esc` or an emptied draft). With a question pending whose free-text answer is not being edited, the palette opens over it instead, and the question keeps its answers while the command's argument is typed |
 | `Home` / `End` | With an empty composer: scroll to the top / bottom of the transcript |
 | `Esc` | Interrupt the run |
