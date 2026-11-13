@@ -383,3 +383,27 @@ async fn a_loaded_branch_appends_a_date_reminder_when_the_day_changes() {
     assert_eq!(dates(&session).await, ["2026-09-30", "2026-10-01"]);
     env.agent.close().await.unwrap();
 }
+
+/// The base prompt states when to batch independent calls, and the three
+/// cases that keep a call in a later response.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_base_prompt_states_which_calls_go_in_one_response() {
+    let dirs = Dirs::new();
+    let cwd = dirs.dir("work");
+    let env = env(&dirs, Options::default()).await;
+    let session = env.session(&cwd, "").await.unwrap();
+    run(&session, "hello").await;
+    let system = last_system(&requests(&session).await);
+    in_order(
+        &system,
+        &[
+            "Working method:\n",
+            "If the user only needs information or explanation, answer directly.\n",
+            "When several tool calls do not depend on one another, make them in one response instead of one per response.\n",
+            "A call that needs an earlier call's result goes in a later response, and a wait goes in a response of its own.\n",
+            "Make all changes to one file in one call; two calls that change the same file never go in one response.\n",
+            "\nEnding a turn:\n",
+        ],
+    );
+    env.agent.close().await.unwrap();
+}

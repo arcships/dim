@@ -176,6 +176,9 @@ Do not commit unless the user asks you to.
 
 Working method:
 If the user only needs information or explanation, answer directly.
+When several tool calls do not depend on one another, make them in one response instead of one per response.
+A call that needs an earlier call's result goes in a later response, and a wait goes in a response of its own.
+Make all changes to one file in one call; two calls that change the same file never go in one response.
 
 Ending a turn:
 Finish any independent work that can be done now before ending the turn.
