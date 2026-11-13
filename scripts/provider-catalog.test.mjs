@@ -315,6 +315,36 @@ test("a keepBundledModels provider keeps its bundle and lands new upstream model
   assert.equal(fresh.capabilities.toolCalling, false);
 });
 
+test("a provider with bundled models states its role and an empty one does not", async (t) => {
+  const { cwd, env } = await checkout(t);
+  const path = join(cwd, bundled);
+  const declared = JSON.parse(await readFile(path, "utf8"));
+  const write = () => writeFile(path, JSON.stringify(declared, null, 2));
+
+  const openai = declared.providers.find((provider) => provider.providerId === "openai");
+  assert.equal(openai.metadata.role, "vendor");
+  delete openai.metadata.role;
+  await write();
+  const absent = spawnSync(process.execPath, [script], { cwd, env, encoding: "utf8" });
+  assert.equal(absent.status, 1);
+  assert.match(absent.stderr, /Provider openai: a provider with bundled models needs a role/);
+
+  openai.metadata.role = "reseller";
+  await write();
+  const unknown = spawnSync(process.execPath, [script], { cwd, env, encoding: "utf8" });
+  assert.equal(unknown.status, 1);
+  assert.match(unknown.stderr, /Provider openai: role must be vendor or aggregator/);
+
+  openai.metadata.role = "vendor";
+  const ollama = declared.providers.find((provider) => provider.providerId === "ollama");
+  assert.equal(ollama.metadata.role, undefined);
+  ollama.metadata.role = "vendor";
+  await write();
+  const carried = spawnSync(process.execPath, [script], { cwd, env, encoding: "utf8" });
+  assert.equal(carried.status, 1);
+  assert.match(carried.stderr, /Provider ollama: a provider without bundled models carries no role/);
+});
+
 test("a keepBundledModels provider keeps a bundled entry the upstream no longer lists", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);

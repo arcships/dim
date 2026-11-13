@@ -561,6 +561,22 @@ function validateChatTemplateOffKeys(providerId, modelId, value) {
   })
 }
 
+/// A provider with bundled models states whether it serves its own vendor's
+/// models or resells other vendors'. The question has no answer for a provider
+/// whose model list comes from the user or the endpoint, so those carry none.
+function validateRole(id, metadata, models) {
+  const role = metadata.role
+  if (role !== undefined && role !== "vendor" && role !== "aggregator") {
+    throw new Error(`Provider ${id}: role must be vendor or aggregator`)
+  }
+  if (models.length > 0 && role === undefined) {
+    throw new Error(`Provider ${id}: a provider with bundled models needs a role`)
+  }
+  if (models.length === 0 && role !== undefined) {
+    throw new Error(`Provider ${id}: a provider without bundled models carries no role`)
+  }
+}
+
 function validateCatalog(catalog) {
   if (!Array.isArray(catalog?.providers) || typeof catalog.updatedAt !== "string" || !Number.isFinite(Date.parse(catalog.updatedAt))) {
     throw new Error("Catalog requires an updatedAt timestamp and a providers array")
@@ -573,6 +589,7 @@ function validateCatalog(catalog) {
     if (id === "dimcode-api-oauth") throw new Error("The managed provider owns its catalog")
     if (!isRecord(metadata?.raw) || !Array.isArray(models)) throw new Error(`Provider ${id} requires raw metadata and a models array`)
     if (metadata.lookupOnly && metadata.customModels) throw new Error(`Provider ${id}: model ownership is ambiguous`)
+    validateRole(id, metadata, models)
     assertUniqueModelIds(models, id, "modelId")
     for (const { modelId, capabilities } of models) {
       for (const key of ["contextWindow", "maxOutputTokens"]) {
