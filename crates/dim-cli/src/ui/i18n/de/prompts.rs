@@ -45,6 +45,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Für mich freigeben",
         "Full access" => "Vollzugriff",
         "Run {tool}" => "{tool} ausführen",
+        "edit {count} replacement in {path}" => "edit {count} Ersetzung in {path}",
+        "edit {count} replacements in {path}" => "edit {count} Ersetzungen in {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Freigabemodus hier noch nicht änderbar"
         }
@@ -61,6 +63,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 wählen · Tab weiter · / Befehle · Esc ablehnen"
         }
         "Question" => "Frage",
+        "↑↓ scroll" => "↑↓ scrollen",
+        "replacements {from}-{to} of {count}" => "Ersetzungen {from}-{to} von {count}",
         "Question on branch {branch}" => "Frage aus Zweig {branch}",
         "Permission on branch {branch}" => "Berechtigung für Zweig {branch}",
         "Sending answer…" => "Sende Antwort…",

@@ -307,6 +307,35 @@ fullscreen 把同一元素画在输入框的下边框，位于运行状态旁：
   ⏵⏵ Full access (Shift+Tab 切换)
 ```
 
+## Loop
+
+`/loop` 按节奏重复一个 prompt，并读取 Scheduler 保存的 loop。记录、轮次与节奏属于
+[Scheduler §12](plugins/Scheduler.md#12-loop)；本节只规定原生客户端怎么用它。命令与 `/goal` 一起列在面板里。
+
+| 形式 | 调用 |
+| --- | --- |
+| `/loop` | 无：先打印用法，随后显示所示线上的 loop，或说它没有 |
+| `/loop PROMPT` | `session.loop.start`，带 prompt |
+| `/loop INTERVAL PROMPT` | `session.loop.start`，带间隔与 prompt |
+| `/loop stop` | `session.loop.stop`，作用于该线唯一存活的 loop |
+| `/loop stop ID` | `session.loop.stop`，作用于该 loop |
+
+`INTERVAL` 是一个数字加 `s`、`m`、`h` 或 `d`，例如 `30s`、`5m`、`2h`、`1d`。它只在行首且能解析时才算间隔，
+否则整行都是 prompt，因此 `/loop check the deploy` 与 `/loop 5m check the deploy` 是同一命令的两种形式。
+
+行模式打印用法与 loop；两种终端 UI 模式选中时只填入 `/loop `，提交才分发，与 `/goal` 相同。回复给出 loop、
+状态、轮次，以及已安排时的下次到期时刻：
+
+```text
+palette: loop + Enter -> /loop |          (completion only)
+/loop check the deploy + Enter -> 开始自定节奏 loop
+/loop stop + Enter             -> 停止该线唯一存活的 loop
+
+Usage: /loop [PROMPT | INTERVAL PROMPT | stop [ID]]
+Loops on main (1):
+7f2 running round 12 next 2026-11-13T09:41:00.000Z check the deploy
+```
+
 ## 提供方账号
 
 原生客户端为每个在 `provider.management` 里带 [`account` 描述符](appserver/provider-management.md#31-读取模型)

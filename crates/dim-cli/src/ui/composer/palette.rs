@@ -467,6 +467,7 @@ mod tests {
             "export",
             "earlier",
             "goal",
+            "loop",
             "tasks",
             "rename",
             "web",

@@ -146,7 +146,7 @@ The frontend directory is fixed when the daemon starts (§2.4); a daemon started
 
 ## 4. Frontend
 
-`web/` is a Vue 3 + Vite + Pinia + vue-router project built with npm (Node from `.node-version`). It is ported from `packages/cli-web` in the TypeScript repository; components, styles and i18n move with minimal change, while the transport and data model are rewritten. `main.ts` creates the Pinia store before mounting the shell, so `stores/ui.ts` applies the color scheme before the first paint; creating it later flashes the wrong theme on load.
+`web/` is a Vue 3 + Vite + Pinia + vue-router project built with npm (Node from `.node-version`), using Nuxt UI v4 (`@nuxt/ui`) and Tailwind CSS v4 tokens on top of Dim's semantic light/dark palettes and offline bundled Lucide icons (`@iconify-json/lucide`, keeping CSP `default-src 'self'`). The protocol transport and data model target App Server protocol v4 directly. `main.ts` initializes the Pinia stores before mounting the shell, so `stores/ui.ts` and `stores/appearance.ts` apply the color scheme and font scale before the first paint without flashing on load.
 
 | Layer | Phase 1 |
 | --- | --- |

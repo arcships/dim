@@ -4,7 +4,7 @@ Status: Draft.
 Scope: 既有 Goal Session/branch 部件的目标、命令、续行、模型输入和终止。
 Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
 
-[业务状态与重载](Goal-state-read.md)唯一规定完整状态数据、内存与持久化边界、加载映射、原子提交、成本和验收。[旧事件读取](Goal-property-queries.md)仅规定旧格式及命令删除。本文规定 Goal 的入口、执行规则和模型协议；[Pursuit](Pursuit.md)规定 evaluator 判定方式。当前代码和生成装配图不因设计更新而宣称已实现目标。
+[业务状态与重载](Goal-state-read.md)唯一规定完整状态数据、内存与持久化边界、加载映射、原子提交、成本和验收。[读取与输入删除](Goal-property-queries.md)规定旧历史不恢复及输入删除不回滚的边界。本文规定 Goal 的入口、执行规则和模型协议；[Pursuit](Pursuit.md)规定 evaluator 判定方式。当前代码和生成装配图不因设计更新而宣称已实现目标。
 
 ## 1. Structure
 
@@ -97,7 +97,7 @@ Session/branch 部件的可控关闭会结束其正在运行的 Goal 并写 paus
 | 普通操作员输入 | 仅在本实例内重置 count/idle，使旧延后评估失效；不写归零事件。 |
 | 待消费 Queue/Steer 输入 | 暂不自动续行；不将其列表写进 Goal 状态。 |
 | 有未结束后台任务 | 在本实例等待，取消结束可唤起一次仍有效的决定；重载后不重建这项等待。 |
-| Goal 命令输入被删除 | 按[删除合同](Goal-property-queries.md#6-删除后的重算与顺序)修复目标；不恢复旧执行。 |
+| Goal 命令输入被删除 | 仅移除本实例待输入 ID；已提交目标不变，零查询、零补偿写入。 |
 | 重载后到达旧评估报告 | 不在当前执行的配对表中，不能完成或续行目标。 |
 | paused 后 edit | 仍 paused；必须显式 set/resume 才运行。 |
 | clear 后加载 | 没有目标，不读取更早目标复活它。 |
@@ -175,7 +175,7 @@ Session 入口校验参数和 Session 身份，Goal branch 决定状态并提交
 
 返回 {branchId, through, goal}；goal 为 null 或 {objective, status, evaluator}。status 为 {kind:active|completed|blocked|none} 或 {kind:paused,reason}，保持 GoalRead 的既有外部类型。
 
-活分支等待本次入口固定位置已消费后返回内存；不因 source_through 或新的持久事件等待。重载后的 active 记录返回有效 paused，reason=interrupted_reload；不能把持久历史页当作当前状态。无活 owner 时读取最后本地业务状态并应用加载映射。新格式普通路径读取一个 Goal 状态对象；旧格式和未结算删除按各自明确合同处理。
+活分支等待本次入口固定位置已消费后返回内存；不因 source_through 或新的持久事件等待。重载后的 active 记录返回有效 paused，reason=interrupted_reload；不能把持久历史页当作当前状态。无活 owner 时读取最后本地业务状态并应用加载映射。普通路径读取一个 Goal 状态对象；没有 goal/state 就没有当前 Goal，删除输入不改变已提交状态。
 
 缺失分支、存储失败和未知 schema 仍是错误；取消读取返回 operation_interrupted，不取消已经接受的命令。详细范围见[状态读取](Goal-state-read.md#4-get-与冷恢复)。
 
@@ -203,11 +203,11 @@ handler 只登记自己的任务后返回；网络、Settings 和查询等待在
 
 沿用 dim-goal 标记、goal:state key、命令和 continuation 的原编码。状态输入 Append，set/resume/continuation 的驱动输入 Queue，其余命令 Append。命令状态输入仍在 trigger 前且原始序号紧邻，goal/state 置于两者之后；完成申请不改变状态时不伪造新的状态记录。
 
-目标及所有说明/属性仍转义 &、<、>、双引号；目标放在 objective 标签内，完成/阻塞说明分别放在 result/blocker 标签内。读取按标签边界逆向转义，不按正文标题拆分。沿用 4000/2000 字符限制，旧标记由兼容读取解释，不修改冻结事件样本。
+目标及所有说明/属性仍转义 &、<、>、双引号；目标放在 objective 标签内，完成/阻塞说明分别放在 result/blocker 标签内。读取按标签边界逆向转义，不按正文标题拆分。沿用 4000/2000 字符限制，旧历史不重建当前 Goal，不修改冻结事件样本。
 
 | 文本 | 合同 |
 | --- | --- |
-| 状态记录 | kind=state、key=goal:state；完整目标、judge、status 和原因/说明；命令配对仍使用 trigger，自动结果使用 after。历史 restated 只兼容读取，新加载不写 restated。 |
+| 状态记录 | kind=state、key=goal:state；完整目标、judge、status 和原因/说明；命令配对仍使用 trigger，自动结果使用 after。历史 restated 不恢复当前 Goal，加载不写 restated。 |
 | 命令 | kind=goal，op=set/edit/pause/resume/clear/completed/blocked，无 key。 |
 | 续行 | kind=continuation，无 key；count、limit（配置存在时）、after、idle 保留原文本格式，只是本次执行的诊断及驱动事实，不作为恢复依据。 |
 | clear / 子分支清理 | 退休 goal:state 及仍存活旧 key；新结构化状态 objective=null。 |
@@ -261,7 +261,7 @@ active 协议文本与 guide 的变更必须用产品请求验证：重载后普
 | A8 | 当前状态通过 session.goal.get 读内存；历史块不代替重载后的有效 paused。 |
 | A9 / A10 | goal_update 的 session 风险与 4000/2000 字符限制不变。 |
 | A12 / A13 | 显式 set/resume 开始新执行，branchId 默认 main。 |
-| A14 | 命令批次保留配对顺序；删除修复目标定义，不恢复执行进度。 |
+| A14 | 命令批次保留配对顺序；删除命令输入不撤销已经生效的目标。 |
 | A15 / A16 | completed 在 model judge 下完成，在 evaluator judge 下是申请；当前状态还受重载暂停规则约束。 |
 | A17 | 本实例等待当前后台任务，不在新实例恢复等待。 |
 

@@ -63,21 +63,10 @@ impl BusinessState {
         .into())
     }
 
-    pub(crate) fn apply(&self, fold: &mut Fold, replay: bool) {
-        if !replay || matches!(self.operation.as_str(), "set" | "clear") {
-            fold.objective.clone_from(&self.objective);
-            fold.state.clone_from(&self.state);
-            fold.judge = self.judge;
-        } else {
-            match self.operation.as_str() {
-                "edit" => fold.objective.clone_from(&self.objective),
-                "resume" if fold.objective.is_some() => fold.state = text::State::Active,
-                "pause" | "completed" | "blocked" if fold.objective.is_some() => {
-                    fold.state.clone_from(&self.state)
-                }
-                _ => (),
-            }
-        }
+    pub(crate) fn apply(&self, fold: &mut Fold) {
+        fold.objective.clone_from(&self.objective);
+        fold.state.clone_from(&self.state);
+        fold.judge = self.judge;
         fold.local_blocks = 1;
         fold.live.state = self.objective.is_some();
     }

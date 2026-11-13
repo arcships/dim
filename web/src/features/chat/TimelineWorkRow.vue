@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import WorkStatusIcon from "./WorkStatusIcon.vue"
+import { resolveToolDisplay } from "./tool-display"
 import { computed } from "vue"
-import { ChevronRight } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import type { TranslationKey } from "../../i18n"
 import type { ToolCategory, WorkItem } from "./work"
@@ -50,15 +51,28 @@ const summary = computed(() => {
   }
   return text
 })
-const running = computed(() => props.items.some((item) => item.kind === "thinking" ? item.running : item.status === "running"))
+const activeItem = computed(() => props.items.find((item) => item.kind === "thinking" ? item.running : item.status === "running"))
+const running = computed(() => activeItem.value !== undefined)
+const status = computed(() => activeItem.value?.kind === "thinking" ? "thinking" : activeItem.value?.category ?? (props.items.some(item => item.kind === "tool" && item.status === "error") ? "error" : "done"))
+const activeLabel = computed(() => {
+  const item = activeItem.value
+  if (!item) return summary.value
+  if (item.kind === "thinking") return t("work.thinking")
+  const display = resolveToolDisplay(item.name, item.input)
+  return display.renderer === "generic" ? item.name : t(display.labelKey)
+})
 </script>
 
 <template>
   <div class="timeline-work-row">
     <template v-if="items.length > 1">
       <button type="button" class="timeline-work-group-toggle" :class="{ 'is-running': running }" :aria-expanded="expanded" @click="emit('toggle')">
-        <ChevronRight :size="14" aria-hidden="true" :class="{ 'is-expanded': expanded }" />
-        <span>{{ summary }}</span>
+        <Transition name="work-icon" mode="out-in">
+          <WorkStatusIcon :key="status" :state="status" :active="running" />
+        </Transition>
+        <span class="timeline-status-label">{{ activeLabel }}<span class="timeline-status-shine" aria-hidden="true">{{ activeLabel }}</span></span>
+        <small v-if="activeItem?.kind === 'tool'" class="timeline-status-detail">{{ activeItem.primary }}</small>
+        <UIcon name="i-lucide-chevron-right" class="timeline-status-chevron" :class="{ 'is-expanded': expanded }" aria-hidden="true" />
       </button>
       <div v-if="expanded" class="timeline-work-group-content">
         <TimelineWorkItemView

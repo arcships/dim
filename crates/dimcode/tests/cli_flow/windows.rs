@@ -77,7 +77,7 @@ fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window
     ] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
-            wire.hello(if display { &["session.history.display", "session.history.detail"] } else { &[] });
+            wire.hello(if display { &["session.history.display", "session.history.detail", "session.history.display.tail"] } else { &[] });
             let method = if display { "session.history.display" } else { "session.history" };
             let field = if display { "items" } else { "events" };
             let attach = wire.read("session.attach");
@@ -85,25 +85,28 @@ fn line_windows_bound_sparse_history_and_apply_held_live_events_after_the_window
             wire.reply(&attach, attach_record(&attach));
             for page in 0..4 {
                 let request = wire.read(method);
-                let before = head + 1 - page * 256;
-                let first = before - 256;
-                let mut expected = json!({"sessionId":"session","branchId":"main","limit":256});
-                if page == 0 {
+                let before = head + 1 - page * 64;
+                let first = before - 64;
+                let mut expected = json!({"sessionId":"session","branchId":"main","limit":64});
+                if display {
+                    expected["tail"] = json!(true);
+                } else if page == 0 {
                     expected["latestTurn"] = json!(true);
-                } else {
+                }
+                if page != 0 {
                     expected["before"] = json!(before);
                     expected["through"] = json!(head);
                 }
                 assert_eq!(request["params"], expected);
                 let mut events = match page {
-                    0 => vec![text(head, "latest", "newest-window-text")],
-                    1 => Vec::new(),
+                    0 | 1 => Vec::new(),
                     2 => (first..before).map(|sequence| json!({"id":format!("hidden{sequence}"),
                         "sequence":sequence,"create_at":1,"type":"input","name":"message","data":{"blocks":[]}})).collect(),
-                    _ => vec![text(first, "older", "oldest-window-text")],
+                    _ => vec![text(first, "older", "oldest-window-text"),
+                        text(before-1, "latest", "newest-window-text")],
                 };
-                if display && page == 0 {
-                    events.insert(0, json!({"id":"compact","sequence":head-1,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}));
+                if display && page == 3 {
+                    events.insert(1, json!({"id":"compact","sequence":first+1,"create_at":1,"type":"display","name":"compaction","data":{"strategy":"summary"}}));
                 }
                 if page == 1 {
                     wire.notice("session.event", json!({"sessionId":"session","branchId":"main",
@@ -178,11 +181,11 @@ fn line_window_keeps_one_large_atomic_batch_whole() {
 }
 
 #[test]
-fn an_orphan_tool_result_reads_its_arguments_by_identity_without_loading_more_history() {
+fn an_orphan_tool_result_reads_its_arguments_only_after_expanding_details() {
     let home = Home::new();
     fs::write(
         home.0.join("config.json"),
-        json!({"locale":"en","tuiToolDetails":"expanded"}).to_string(),
+        json!({"locale":"en","tuiToolDetails":"collapsed"}).to_string(),
     )
     .unwrap();
     let daemon=home.daemon(move |wire| {
@@ -220,8 +223,64 @@ fn an_orphan_tool_result_reads_its_arguments_by_identity_without_loading_more_hi
         wire.hold();
     });
     let mut terminal = Terminal::resume_tui(home.command());
-    terminal.until("point-read origin arguments");
     terminal.until("Earlier content not loaded");
+    terminal.write(b"/tools\r");
+    terminal.write(b"/tools\r");
+    terminal.until("point-read origin arguments");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn tui_attach_keeps_buffered_configuration_and_skips_ended_branch_inventories() {
+    let home = Home::new();
+    let (ready, received) = std::sync::mpsc::channel();
+    let (release, resumed) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods", "session.branches", "provider.catalog"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[
+            {"name":"session.input.pending","mutating":false},
+            {"name":"session.turn.get","mutating":false}
+        ]}));
+        let directory = wire.read("session.branches");
+        wire.reply(&directory, json!({"branches":[
+            {"branchId":"main","state":"open","head":10},
+            {"branchId":"finished","parentBranchId":"main","branchPoint":1,"state":"ended","head":2}
+        ]}));
+        let history = wire.read("session.history");
+        let mut configured = configured_event(9, "updated-model", json!({}));
+        configured["data"]["provider_id"] = json!("updated-provider");
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":configured}));
+        wire.reply(&history, json!({"events":[text(10,"reply","bounded first screen")],"through":10,"nextBefore":10,"nextAfter":10,"done":true}));
+        wire.2 = false;
+        let mut catalog = None;
+        while let Some(line) = wire.trailing_request() {
+            let request:Value = serde_json::from_str(&line).unwrap();
+            assert_ne!(request["params"]["branchId"],"finished","ended branches have no actionable state");
+            match request["method"].as_str().unwrap() {
+                "provider.catalog" => catalog = Some(request),
+                "session.input.pending" => wire.reply(&request,json!({"branchId":"main","through":10,"inputs":[],"next":null})),
+                "session.turn.get" => {
+                    wire.reply(&request,json!({"branchId":"main","through":10,"turn":null,"output":null}));
+                    ready.send(()).unwrap();
+                    resumed.recv_timeout(PATIENCE).unwrap();
+                    wire.reply(&catalog.take().expect("catalog remains pending while history is shown"), json!({"catalog":null}));
+                }
+                "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                "account.providers" => wire.reply(&request,json!([])),
+                method => panic!("unexpected resume read: {method}"),
+            }
+        }
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    terminal.until("bounded first screen");
+    terminal.until_anywhere("updated-provider / updated-model");
+    received.recv_timeout(PATIENCE).unwrap();
+    release.send(()).unwrap();
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();

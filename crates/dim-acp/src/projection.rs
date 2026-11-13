@@ -164,18 +164,6 @@ impl Projection {
         }
     }
 
-    pub(crate) fn tool_origin(&mut self, data: &dim_agent_types::ToolUseData) -> Vec<Value> {
-        let mut updates = Vec::new();
-        self.tool(
-            tool_id("main", &data.request_id, &data.call.id),
-            &data.call.name,
-            json!(data.call.input),
-            "pending",
-            &mut updates,
-        );
-        updates
-    }
-
     pub(crate) fn event(&mut self, event: &Event) -> Vec<Value> {
         let mut updates = Vec::new();
         let turn = match &event.content {

@@ -166,6 +166,13 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
+    ToolOrigin {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+        request_id: String,
+        call_id: String,
+    },
     Report(crate::report::Request),
     CompactionDetails {
         projection_id: u64,
@@ -351,6 +358,8 @@ pub enum Command {
     Rename(Option<String>),
     /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
     Goal(crate::goal::Request),
+    /// `/loop`: show, start or stop a loop on the shown line.
+    Loop(crate::loop_view::Request),
     SetPermission(crate::permission::PresetSelection),
     /// List the providers of the `/connect` panel.
     ListProviders,

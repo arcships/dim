@@ -532,6 +532,38 @@ Fullscreen draws the same element in the composer's bottom border, beside the ru
   ⏵⏵ Full access (shift+tab to cycle)
 ```
 
+## Loop
+
+`/loop` runs a prompt on a rhythm and reads the loops Scheduler keeps. The record, the rounds and the
+cadences belong to [Scheduler §12](plugins/Scheduler.md#12-loop); this section owns what the native
+clients do with them. The command is listed in the palette beside `/goal`.
+
+| Form | Call |
+| --- | --- |
+| `/loop` | none: usage, then the loops of the shown line, or that it has none |
+| `/loop PROMPT` | `session.loop.start` with the prompt |
+| `/loop INTERVAL PROMPT` | `session.loop.start` with the interval and the prompt |
+| `/loop stop` | `session.loop.stop` for the line's only live loop |
+| `/loop stop ID` | `session.loop.stop` for that loop |
+
+`INTERVAL` is a number and one of `s`, `m`, `h` or `d`, such as `30s`, `5m`, `2h` or `1d`. It counts
+only as the first token of the line and only when it parses; otherwise the whole line is the prompt,
+so `/loop check the deploy` and `/loop 5m check the deploy` are two forms of the same command.
+
+The line-mode prompt prints usage and the loops; both TUI modes fill `/loop ` on selection and
+dispatch only on submission, as `/goal` does. A reply names the loop, its state, its round and, when
+one is armed, its next due time:
+
+```text
+palette: loop + Enter -> /loop |          (completion only)
+/loop check the deploy + Enter -> start a self-paced loop
+/loop stop + Enter             -> stop the line's only live loop
+
+Usage: /loop [PROMPT | INTERVAL PROMPT | stop [ID]]
+Loops on main (1):
+7f2 running round 12 next 2026-11-13T09:41:00.000Z check the deploy
+```
+
 ## Provider accounts
 
 The native client signs in to every Provider whose `provider.management` entry
@@ -3228,3 +3260,9 @@ older requested rows
 initial window
 live output
 ```
+
+### Pending terminal frames
+
+While the initial transcript window is loading or a frame is queued to the terminal writer, the event loop rechecks at the frame interval. Once loading and writing finish and no frame is owed, the existing idle polling interval applies. This bounds a queued frame's extra scheduling delay without increasing steady idle polling.
+
+The CLI checks its newly spawned daemon after 5 ms, then backs off to 10/20/40/50 ms while opening. Existing startup deadlines and progress handling are unchanged. It does not impose an initial 50 ms delay on an already ready daemon.

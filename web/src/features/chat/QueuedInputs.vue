@@ -39,8 +39,8 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
         <span class="queued-text">{{ item.text }}</span>
         <span v-for="skill in item.skills" :key="skill" class="queued-skill">{{ t("message.skillLoaded", { name: skill }) }}</span>
         <span v-for="hook in item.hooks ?? 0" :key="hook" class="queued-hook">{{ t("message.hookContext") }}</span>
-        <button v-if="index === 0" type="button" class="ui-button" data-size="sm" data-variant="secondary" :disabled="busy" @click="withdraw(item, true)">{{ t("queue.steer") }}</button>
-        <button type="button" class="ui-button" data-size="sm" data-variant="ghost" :disabled="busy" @click="withdraw(item, false)">{{ t("queue.remove") }}</button>
+        <UButton v-if="index === 0" color="neutral" variant="soft" size="sm" :disabled="busy" @click="withdraw(item, true)">{{ t("queue.steer") }}</UButton>
+        <UButton color="neutral" variant="ghost" size="sm" :disabled="busy" @click="withdraw(item, false)">{{ t("queue.remove") }}</UButton>
       </li>
     </ol>
   </section>

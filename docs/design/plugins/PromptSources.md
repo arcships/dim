@@ -22,7 +22,7 @@ The delivery decides where a change takes effect. A `System` source is part of t
 
 ### 1.1 Policy
 
-`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says.
+`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says. The shape of a tool's input, and how its entries apply, is stated by the tool's own declaration rather than by `dim/base`.
 
 The shell guidance is policy too. It is the sentence the environment source carries for the operator's shell (`Use POSIX shell syntax. …`, or the PowerShell, cmd, Git Bash and other editions), plus the file-encoding guidance on Windows: how to quote, how to invoke a path with spaces, which legacy encodings to ask the read tool for. None of it states a runtime fact.
 
@@ -129,3 +129,7 @@ impl PromptSourcesPlugin {
 ```
 
 The language source's binding is one more arm of the source loader: name `dim/language`, delivery `State`, order 220, body from the operator's setting when one is carried and no entry when none is.
+
+## Reading and adopting current source values
+
+Opening loads the current sources once. The periodic branch checker starts after that initial opening interval; a checker mounted on an already active branch still checks immediately. Each instructions source reads only its own file body. The checker compares each loaded target through the existing state watch and hands changed values to the existing resolved-source adoption; it does not reload their names. Language adoption keeps the Session language gate through its final load and adoption. No file cache or additional persistent event is introduced.

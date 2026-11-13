@@ -14,6 +14,8 @@ mod input;
 mod leaf;
 mod locale;
 mod login;
+mod loop_command;
+mod loop_view;
 mod maintenance;
 mod management;
 mod management_command;
@@ -141,6 +143,7 @@ async fn open_tui(
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
         initial,
+        resume: options.resume.is_some(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
     let (leaf_end, leaf_ended) = tokio::sync::oneshot::channel();
