@@ -31,7 +31,7 @@ export class HistoryWindow {
   }
 
   params(sessionId: string, branchId: string): Record<string, unknown> {
-    return { sessionId, branchId, limit: this.transcript && this.initial ? 64 : 256,
+    return { sessionId, branchId, limit: this.transcript && this.initial ? (this.pages.length === 0 ? 32 : 64) : 256,
       ...(this.through === undefined ? {} : { through: this.through }),
       ...(this.before === undefined ? (this.tail || this.transcript ? {} : { latestTurn: true }) : { before: this.before }),
       ...(this.tail || this.transcript ? { tail: true } : {}),

@@ -145,8 +145,9 @@ The line CLI's live idle/configuration settlement reads events after its current
 this is execution-time catch-up, not cold history restoration.
 
 ```text
-attach -> latest 64-position page -> draw -> editable
-          | no visible row: at most 4 pages total
+attach -> transcript: latest 32 selected events -> draw -> editable
+          | no visible row: subsequent 64-event pages, at most 4 pages total
+          | legacy tail: existing 64-position pages
        -> owner inventories -> enable their own controls
 /earlier -> 256-position page(s), at most 4 -> prepend older content
 ```
@@ -214,7 +215,9 @@ The changes apply to every entry, not just the main TUI:
 
 Negotiated `session.history.display.transcript` uses the kind-filtered page contract in
 [display reads](appserver/session-display-read.md). CLI, ACP and Web initial pages request
-64 selected events and stop on the first page with transcript rows. Earlier reads request
+32 selected events; if no transcript row is found, subsequent pages request 64. They stop
+on the first page with transcript rows, or after four pages (at most 224 selected events).
+This smaller first page applies to initial load, switching and reconnect. Earlier reads request
 256 selected events. The four-page and retention limits below still apply; they do not
 trigger full-history discovery. Servers without that capability retain the existing
 bounded raw-position windows. ACP's explicit history extension returns one selected page.

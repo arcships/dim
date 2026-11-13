@@ -2273,12 +2273,14 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
         let first = wire.read(method);
         assert_eq!(first["params"].get("tail"),display.then_some(&json!(true)));
         assert_eq!(first["params"].get("transcript"), display.then_some(&json!(true)));
+        assert_eq!(first["params"]["limit"], if display { 32 } else { 64 });
         assert!(first["params"].get("through").is_none());
         wire.reply(
             &first,
             json!({(field):[],"through":9,"nextBefore":9,"nextAfter":9,"done":false}),
         );
         let second = wire.read(method);
+        assert_eq!(second["params"]["limit"], 64);
         assert_eq!(second["params"]["through"], 9);
         assert_eq!(second["params"]["before"], 9);
         let text = event(

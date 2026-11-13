@@ -348,7 +348,12 @@ test("indexed transcript pages use one fixed head for initial and earlier reads"
     assert.equal(params.transcript, true)
     assert.equal(params.latestTurn, undefined)
     if (params.before === undefined) {
+      assert.equal(params.limit, 32)
+      return { ...page([], 100), nextBefore: 99 }
+    }
+    if (params.before === 99) {
       assert.equal(params.limit, 64)
+      assert.equal(params.through, 100)
       return { ...page([input(90, "newest")], 100), nextBefore: 90 }
     }
     assert.equal(params.limit, 256)
@@ -357,8 +362,8 @@ test("indexed transcript pages use one fixed head for initial and earlier reads"
     return { ...page([input(1, "oldest")], 100), nextBefore: 1 }
   }, {}, true, true)
   await flush()
-  assert.equal(requests.length, 1)
-  await chat.loadEarlier("session", "main")
   assert.equal(requests.length, 2)
+  await chat.loadEarlier("session", "main")
+  assert.equal(requests.length, 3)
   assert.deepEqual(chat.views.session.rows.map(row => row.text), ["oldest", "newest"])
 })

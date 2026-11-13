@@ -64,6 +64,9 @@ impl Window {
         let mut params = self.params_with_tail(session, branch, tail || transcript);
         if transcript {
             params["transcript"] = json!(true);
+            if self.initial && self.pages.is_empty() {
+                params["limit"] = json!(32);
+            }
         }
         params
     }
