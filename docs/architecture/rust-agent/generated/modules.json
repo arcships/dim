@@ -4284,6 +4284,7 @@
       "parent": "dim_cli",
       "file": "crates/dim-cli/src/member_approval.rs",
       "unexpandedMacros": [
+        "format",
         "matches",
         "vec"
       ]
@@ -5762,6 +5763,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "assert_ne",
         "panic",
         "serde_json::json",
         "vec"
@@ -18589,6 +18591,14 @@
       "references": [
         "path JsonObject",
         "use dim_agent_types::JsonObject"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::files::edit",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ToolContent::Text",
+        "use dim_agent_types::ToolContent"
       ]
     },
     {
@@ -43055,7 +43065,8 @@
       "to": "dim_cli::member_approval",
       "references": [
         "path crate::member_approval::DetailError",
-        "path crate::member_approval::lines"
+        "path crate::member_approval::lines",
+        "path crate::member_approval::tool_line"
       ]
     },
     {
@@ -43087,7 +43098,8 @@
       "from": "dim_cli::ui::prompts",
       "to": "dim_cli::sanitize",
       "references": [
-        "path crate::sanitize::safe"
+        "path crate::sanitize::safe",
+        "path crate::sanitize::safe_line"
       ]
     },
     {
@@ -43217,6 +43229,22 @@
     },
     {
       "from": "dim_cli::ui::prompts::tests",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path dim_agent_types::ApprovalCallData"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::prompts::tests",
+      "to": "dim_agent_types::member_approval",
+      "references": [
+        "path dim_agent_types::MEMBER_APPROVAL_ALLOW",
+        "path dim_agent_types::MemberApprovalDescriptor",
+        "path dim_agent_types::MemberApprovalTarget"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::prompts::tests",
       "to": "dim_cli::ui::prompts",
       "references": [
         "path AskUserPrompt",
@@ -43225,6 +43253,7 @@
         "path Effect::Approval",
         "path ExitConfirm::new",
         "path ExitReason::AgentRunning",
+        "path PermissionPrompt",
         "path PermissionPrompt::grant_for",
         "path PermissionPrompt::new"
       ]
