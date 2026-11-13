@@ -41,11 +41,57 @@ const discovery = ref<McpImportSource[]>()
 const editorForm = ref<HTMLFormElement>()
 const search = ref("")
 let mounted = true
+const USER_SCOPE = "__user__"
 const dirty = computed(() => draft.value !== undefined && JSON.stringify(draft.value) !== baseline.value)
 const oauthEnabled = computed(() => draft.value !== undefined && (editing.value ? draft.value.oauthAction === "set" || (draft.value.oauthAction === "keep" && draft.value.oauth) : draft.value.oauth))
 const staticCredentialWithheld = computed(() => draft.value !== undefined && draft.value.secretsInUserScope && draft.value.authConfigured)
 const entries = computed(() => catalog.value?.servers.filter((server) => server.id.toLocaleLowerCase().includes(search.value.toLocaleLowerCase())) ?? [])
 const invalidEntries = computed(() => catalog.value?.invalid.filter((entry) => entry.id.toLocaleLowerCase().includes(search.value.toLocaleLowerCase())) ?? [])
+const scopeItems = computed(() => [
+  { value: USER_SCOPE, label: s('User configuration', '用户配置') },
+  ...sessions.workspaces.map((workspace) => ({ value: workspace.cwd, label: `${workspace.name} — ${workspace.cwd}` })),
+])
+const importActionItems = computed(() => [
+  { value: "import", label: s('Import', '导入') },
+  { value: "skip", label: s('Skip', '跳过') },
+  { value: "replace", label: s('Replace the existing entry', '替换现有条目') },
+  { value: "rename", label: s('Import under a new id', '以新 ID 导入') },
+])
+const sourceItems = computed(() => [
+  { value: "user", label: s('User', '用户') },
+  ...(loadedCwd.value ? [{ value: "project", label: s('Project', '项目') }] : []),
+])
+const transportItems = [
+  { value: "stdio", label: "stdio" },
+  { value: "http", label: "HTTP" },
+  { value: "sse", label: "SSE" },
+]
+const argsActionItems = computed(() => [
+  { value: "keep", label: s('Keep stored arguments', '保留已存参数') },
+  { value: "replace", label: s('Replace all arguments', '替换全部参数') },
+])
+const oauthActionItems = computed(() => [
+  { value: "keep", label: s('Preserve existing configuration', '保留现有配置') },
+  { value: "set", label: s('Configure / edit OAuth', '配置 / 编辑 OAuth') },
+  { value: "remove", label: s('Remove explicit configuration (automatic discovery remains)', '移除显式配置（仍可自动发现）') },
+])
+const metadataActionItems = computed(() => [
+  { value: "keep", label: s('Keep', '保留') },
+  { value: "set", label: s('Replace', '替换') },
+  { value: "remove", label: s('Remove', '移除') },
+])
+const bearerActionItems = computed(() => [
+  { value: "keep", label: s('Keep stored token', '保留已存储的令牌') },
+  { value: "set", label: s('Replace token', '替换令牌'), disabled: oauthEnabled.value },
+  { value: "remove", label: s('Remove token', '移除令牌') },
+])
+function secretActionItems(stored: boolean | undefined) {
+  return [
+    ...(stored ? [{ value: "keep", label: s('Keep', '保留') }] : []),
+    { value: "set", label: s('Set', '设置') },
+    ...(stored ? [{ value: "remove", label: s('Remove', '删除') }] : []),
+  ]
+}
 bindSettingsDirty(computed(() => dirty.value || !!clientSecret.value || !!callback.value))
 watch(draft, () => { testResult.value = undefined }, { deep: true })
 
@@ -445,10 +491,9 @@ async function finishAuth(cancel = false): Promise<void> {
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
-async function changeScope(event: Event): Promise<void> {
-  const select = event.target as HTMLSelectElement
-  await load(select.value)
-  select.value = loadedCwd.value
+async function changeScope(value: unknown): Promise<void> {
+  const path = typeof value === "string" && value !== USER_SCOPE ? value : ""
+  await load(path)
 }
 reloadSettingsOnReconnect(connection, () => load(), computed(() => draft.value !== undefined || !!clientSecret.value || !!callback.value || !!authorization.value))
 onMounted(() => load())
@@ -463,9 +508,22 @@ onBeforeUnmount(() => {
 <template>
   <article class="settings-page">
     <header><h2 data-route-heading tabindex="-1">MCP</h2><p>{{ s('Manage command and remote MCP servers. Project servers stay disabled until you explicitly enable them locally.', '管理命令和远程 MCP 服务器。项目服务器默认禁用，只有您在本地明确启用后才会运行。') }}</p></header>
-    <form class="settings-card settings-form" @submit.prevent="load()"><label><span>{{ s('Configuration scope', '配置范围') }}</span><select :value="loadedCwd" class="ui-field" data-size="md" :disabled="busy" @change="changeScope"><option value="">{{ s('User configuration', '用户配置') }}</option><option v-for="workspace in sessions.workspaces" :key="workspace.cwd" :value="workspace.cwd">{{ workspace.name }} — {{ workspace.cwd }}</option></select></label><p>{{ s('Choose a workspace to include its project MCP servers alongside user and plugin servers. This does not change a server\'s working directory.', '选择工作区后，会同时显示该项目、用户和插件提供的 MCP 服务器。这不会更改服务器的运行目录。') }}</p><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy">{{ s('Load / refresh', '加载 / 刷新') }}</button><button class="ui-button" data-size="md" data-variant="primary" type="button" :disabled="busy || !catalog || !connection.supports('mcp.save')" @click="create">{{ s('Add server', '添加服务器') }}</button><input ref="importFile" type="file" accept="application/json,.json" hidden :disabled="busy" @change="importFileChosen" /><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy || !!draft || !connection.supports('mcp.import.preview')" @click="chooseImportFile">{{ s('Import from file…', '从文件导入…') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy || !!draft || !connection.supports('mcp.import.sources')" @click="discover">{{ s('Discover…', '发现…') }}</button><span class="settings-meta">{{ importDestination() }}</span></div></form>
+    <form class="settings-card settings-form" @submit.prevent="load()">
+      <UFormField :label="s('Configuration scope', '配置范围')">
+        <USelect :model-value="loadedCwd || USER_SCOPE" :items="scopeItems" :disabled="busy" @update:model-value="changeScope" />
+      </UFormField>
+      <p>{{ s('Choose a workspace to include its project MCP servers alongside user and plugin servers. This does not change a server\'s working directory.', '选择工作区后，会同时显示该项目、用户和插件提供的 MCP 服务器。这不会更改服务器的运行目录。') }}</p>
+      <div class="settings-actions">
+        <UButton type="submit" color="neutral" variant="soft" :disabled="busy">{{ s('Load / refresh', '加载 / 刷新') }}</UButton>
+        <UButton color="primary" :disabled="busy || !catalog || !connection.supports('mcp.save')" @click="create">{{ s('Add server', '添加服务器') }}</UButton>
+        <input ref="importFile" type="file" accept="application/json,.json" hidden :disabled="busy" @change="importFileChosen" />
+        <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.import.preview')" @click="chooseImportFile">{{ s('Import from file…', '从文件导入…') }}</UButton>
+        <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.import.sources')" @click="discover">{{ s('Discover…', '发现…') }}</UButton>
+        <span class="settings-meta">{{ importDestination() }}</span>
+      </div>
+    </form>
     <GeneralSettingsStatus :busy="busy" :error="error" @reload="load()" />
-    <p v-if="importNotice" class="ui-banner settings-banner" data-tone="success" role="status">{{ importNotice }}</p>
+    <UAlert v-if="importNotice" class="settings-banner" color="success" variant="soft" role="status" :description="importNotice" />
     <section v-if="discovery" class="settings-card" aria-live="polite">
       <h3>{{ s('MCP stores of other local clients', '其他本地客户端的 MCP 存储') }}</h3>
       <p>{{ s('These files belong to other clients. Dim reads them only when you open Discover or preview one, inside the daemon, and never shows or returns a value from them.', '这些文件属于其他客户端。只有您打开“发现”或预览其中一项时，Dim 才会在守护进程内读取这些文件，且绝不显示或返回其中的任何值。') }}</p>
@@ -474,10 +532,10 @@ onBeforeUnmount(() => {
         <p>{{ row.path }}</p>
         <p v-if="row.state === 'ready'">{{ s('Entries', '条目') }}: {{ row.entries }}</p>
         <p v-else-if="row.error">{{ row.error }}</p>
-        <button v-if="row.state === 'ready'" class="ui-button" data-size="sm" data-variant="secondary" type="button" :disabled="busy" @click="previewDiscovered(row)">{{ s('Preview', '预览') }}</button>
+        <UButton v-if="row.state === 'ready'" size="sm" color="neutral" variant="soft" :disabled="busy" @click="previewDiscovered(row)">{{ s('Preview', '预览') }}</UButton>
       </div>
       <p v-if="!discovery.length" role="status">{{ s('No known store was found.', '未找到已知存储。') }}</p>
-      <div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy" @click="closeDiscovery">{{ s('Close discovery', '关闭发现') }}</button></div>
+      <div class="settings-actions"><UButton color="neutral" variant="soft" :disabled="busy" @click="closeDiscovery">{{ s('Close discovery', '关闭发现') }}</UButton></div>
     </section>
     <section v-if="importPreview" class="settings-card" aria-live="polite">
       <h3>{{ s('Import preview', '导入预览') }} · {{ importPreview.source }} · {{ importPreview.revision }}</h3>
@@ -485,7 +543,9 @@ onBeforeUnmount(() => {
       <p>{{ s('Each entry is matched against the selected source. No value is shown: changed fields are named only. Imported and replaced entries start disabled.', '每个条目会与所选来源比对。此处不显示任何值，只列出变更字段名。导入和替换的条目默认禁用。') }}</p>
       <p v-if="importPreview.source === 'project'">{{ s('The workspace file receives each entry\'s public skeleton: the command, declared working directory, URL origin and public OAuth fields. Arguments, environment and header values, the bearer token, a URL with userinfo, path, query or fragment, hidden OAuth fields and unknown members go to your user-scope mcp-secrets record, never to the workspace file.', '工作区文件只写入每个条目的公开骨架：命令、声明的运行目录、URL 来源和公开 OAuth 字段。参数、环境变量与请求头的值、Bearer 令牌、带用户信息、路径、查询或片段的 URL、隐藏的 OAuth 字段及未知成员会写入您的用户范围 mcp-secrets 记录，绝不会写入工作区文件。') }}</p>
       <p>{{ importUnknown() }}</p>
-      <p v-if="importStale" class="ui-banner settings-banner" data-tone="warning">{{ s('This preview is older than the source.', '此预览早于当前源。') }} <button class="ui-button" data-size="sm" data-variant="secondary" type="button" :disabled="busy" @click="previewImportAgain">{{ s('Preview again', '重新预览') }}</button></p>
+      <UAlert v-if="importStale" class="settings-banner" color="warning" variant="soft" :description="s('This preview is older than the source.', '此预览早于当前源。')">
+        <template #actions><UButton size="sm" color="neutral" variant="soft" :disabled="busy" @click="previewImportAgain">{{ s('Preview again', '重新预览') }}</UButton></template>
+      </UAlert>
       <p v-if="!importPreview.entries.length" role="status">{{ s('The document holds no mcpServers entries.', '文档中没有 mcpServers 条目。') }}</p>
       <div v-for="entry in importPreview.entries" :key="entry.id" class="runtime-detail">
         <h4>{{ entry.id }} · {{ entry.status }}<template v-if="entry.transport"> · {{ entry.transport }}</template></h4>
@@ -494,19 +554,26 @@ onBeforeUnmount(() => {
         <p v-if="entry.omitted">{{ importOmitted(entry) }}</p>
         <p v-if="entry.error">{{ entry.error }}</p>
         <p v-if="entry.status === 'invalid'">{{ s('This entry does not decode, so it can only be skipped.', '此条目无法解码，只能跳过。') }}</p>
-        <label v-else><span>{{ s('Action', '操作') }}</span><select v-model="entry.action" class="ui-field" data-size="md" :disabled="busy" :aria-label="s('Import action', '导入操作')"><option value="import">{{ s('Import', '导入') }}</option><option value="skip">{{ s('Skip', '跳过') }}</option><option value="replace">{{ s('Replace the existing entry', '替换现有条目') }}</option><option value="rename">{{ s('Import under a new id', '以新 ID 导入') }}</option></select></label>
-        <label v-if="entry.action === 'rename'"><span>{{ s('New id', '新 ID') }}</span><input v-model="entry.newId" class="ui-field" data-size="md" :disabled="busy" :aria-label="s('New id for this entry', '此条目的新 ID')" required /></label>
+        <UFormField v-else :label="s('Action', '操作')">
+          <USelect v-model="entry.action" :items="importActionItems" :disabled="busy" :aria-label="s('Import action', '导入操作')" />
+        </UFormField>
+        <UFormField v-if="entry.action === 'rename'" :label="s('New id', '新 ID')">
+          <UInput v-model="entry.newId" :disabled="busy" :aria-label="s('New id for this entry', '此条目的新 ID')" required />
+        </UFormField>
       </div>
-      <div class="settings-actions"><button class="ui-button" data-size="md" data-variant="primary" :disabled="busy || !importReady" @click="applyImport">{{ s('Apply import', '应用导入') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy" @click="closeImportPreview">{{ s('Close preview', '关闭预览') }}</button></div>
+      <div class="settings-actions">
+        <UButton color="primary" :disabled="busy || !importReady" @click="applyImport">{{ s('Apply import', '应用导入') }}</UButton>
+        <UButton color="neutral" variant="soft" :disabled="busy" @click="closeImportPreview">{{ s('Close preview', '关闭预览') }}</UButton>
+      </div>
     </section>
-    <p v-for="issue in catalog?.errors" :key="issue" class="ui-banner settings-banner" data-tone="warning">{{ issue }}</p>
+    <UAlert v-for="issue in catalog?.errors" :key="issue" class="settings-banner" color="warning" variant="soft" :description="issue" />
     <section v-if="invalidEntries.length" class="settings-card">
       <h3>{{ s('Entries that did not decode', '无法解码的条目') }}</h3>
       <p>{{ s('These entries stay in their file as written. They cannot run, and they can only be removed or replaced.', '这些条目按原样保留在文件中。它们无法运行，只能被移除或替换。') }}</p>
       <div v-for="entry in invalidEntries" :key="`${entry.source}:${entry.id}`" class="runtime-detail">
         <h4>{{ entry.id }} · {{ entry.source }}</h4>
         <p>{{ entry.error }}</p>
-        <div class="settings-actions"><button class="ui-button" data-size="md" data-variant="danger-ghost" :disabled="busy || !!draft || entry.source === 'plugin' || !connection.supports('mcp.remove')" @click="removeInvalid(entry)">{{ s('Remove', '移除') }}</button></div>
+        <div class="settings-actions"><UButton color="error" variant="ghost" :disabled="busy || !!draft || entry.source === 'plugin' || !connection.supports('mcp.remove')" @click="removeInvalid(entry)">{{ s('Remove', '移除') }}</UButton></div>
       </div>
     </section>
     <section v-if="detail" class="settings-card settings-form" aria-live="polite">
@@ -518,35 +585,100 @@ onBeforeUnmount(() => {
       <p>{{ s('Connection snapshots do not open a connection. Tool lists are the last successful discovery for each live connection generation.', '查看快照不会打开连接。工具列表来自每个活动连接代次最近一次成功的发现。') }}</p>
       <p v-if="!detail.inspection.connections.length" role="status">{{ s('No live session connections. Use Test connection to discover tools without creating a session.', '没有活动会话连接。可通过“测试连接”发现工具，无需创建会话。') }}</p>
       <section v-for="(runtime, index) in detail.inspection.connections" :key="index" class="runtime-detail"><h4>{{ s('Connection', '连接') }} {{ index + 1 }} · {{ runtime.state }}<template v-if="runtime.expired"> · {{ s('Credential expired', '凭据已过期') }}</template></h4><ul v-if="runtime.tools"><li v-for="tool in runtime.tools" :key="tool.name"><strong>{{ tool.name }}</strong><p v-if="tool.description">{{ tool.description }}</p></li></ul><p v-if="runtime.tools === undefined">{{ s('Tools have not been discovered.', '尚未发现工具。') }}</p><p v-else-if="!runtime.tools.length">{{ s('The server exposes no tools.', '服务器没有提供工具。') }}</p></section>
-      <label v-if="detail.inspection.configuration.type !== 'stdio' && detail.inspection.configuration.oauth?.clientId"><span>{{ s('OAuth client secret (optional, sent once on Sign in)', 'OAuth 客户端密钥（可选，仅在登录时发送一次）') }}</span><input v-model="clientSecret" class="ui-field" data-size="md" type="password" autocomplete="new-password" :disabled="busy" /></label>
-      <div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy" @click="inspect(detail.server)">{{ s('Refresh details', '刷新详情') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !connection.supports('mcp.test') || (detail.server.source !== 'user' && !detail.server.enabled)" @click="testServer(detail.server)">{{ s('Test connection', '测试连接') }}</button><button v-if="detail.server.transport !== 'stdio'" class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!authorization || !detail.server.enabled || !connection.supports('mcp.auth.start')" @click="action('mcp.auth.start', detail.server)">{{ s('Sign in', '登录') }}</button></div>
+      <UFormField v-if="detail.inspection.configuration.type !== 'stdio' && detail.inspection.configuration.oauth?.clientId" :label="s('OAuth client secret (optional, sent once on Sign in)', 'OAuth 客户端密钥（可选，仅在登录时发送一次）')">
+        <UInput v-model="clientSecret" type="password" autocomplete="new-password" :disabled="busy" />
+      </UFormField>
+      <div class="settings-actions">
+        <UButton color="neutral" variant="soft" :disabled="busy" @click="inspect(detail.server)">{{ s('Refresh details', '刷新详情') }}</UButton>
+        <UButton color="neutral" variant="soft" :disabled="busy || !connection.supports('mcp.test') || (detail.server.source !== 'user' && !detail.server.enabled)" @click="testServer(detail.server)">{{ s('Test connection', '测试连接') }}</UButton>
+        <UButton v-if="detail.server.transport !== 'stdio'" color="neutral" variant="soft" :disabled="busy || !!authorization || !detail.server.enabled || !connection.supports('mcp.auth.start')" @click="action('mcp.auth.start', detail.server)">{{ s('Sign in', '登录') }}</UButton>
+      </div>
     </section>
-    <form v-if="draft" ref="editorForm" class="settings-card settings-form" autocomplete="off" @submit.prevent="save"><h3>{{ editing ? s('Edit server', '编辑服务器') : s('New server', '新服务器') }}</h3><p v-if="editing && draft.secretsInUserScope" class="ui-banner settings-banner" data-tone="warning">{{ s('Withheld arguments, environment, headers, URL parts and OAuth metadata are stored in your user-scope configuration. They cannot be edited here; non-secret fields still save through the owner.', '隐藏的参数、环境变量、请求头、URL 部分和 OAuth 元数据存储在用户范围配置中。此处无法编辑；非机密字段仍可通过所有者保存。') }} <button class="ui-button" data-size="sm" data-variant="secondary" type="button" :disabled="busy || !connection.supports('mcp.move')" @click="moveToUser(draft.id)">{{ s('Move to user to edit', '移到用户范围编辑') }}</button></p><fieldset :disabled="busy"><label><span>{{ s('Server ID', '服务器 ID') }}</span><input v-model="draft.id" class="ui-field" data-size="md" :disabled="editing" required /></label><label><span>{{ s('Source', '来源') }}</span><select v-model="draft.source" class="ui-field" data-size="md" :disabled="editing"><option value="user">{{ s('User', '用户') }}</option><option v-if="loadedCwd" value="project">{{ s('Project', '项目') }}</option></select></label><p v-if="editing">{{ s('The source and transport are fixed. Changes write only this source. Use Move to change the source; a move into a project keeps withheld values in your user-scope configuration.', '来源和传输方式固定。更改只写入此来源。使用“移动”更改来源；移入项目时隐藏值保留在用户范围配置中。') }}</p><label><span>{{ s('Transport', '传输方式') }}</span><select v-model="draft.type" class="ui-field" data-size="md" :disabled="editing"><option value="stdio">stdio</option><option value="http">HTTP</option><option value="sse">SSE</option></select></label>
-      <label><span>{{ s('Tool call timeout (optional, milliseconds)', '工具调用超时（可选，毫秒）') }}</span><input v-model="draft.timeout" class="ui-field" data-size="md" type="number" min="1000" max="86400000" step="1" placeholder="600000" /></label>
-      <template v-if="draft.type === 'stdio'">
-        <label><span>{{ s('Executable', '可执行程序') }}</span><input v-model="draft.command" class="ui-field" data-size="md" required /></label>
-        <label><span>{{ s('Working directory (optional)', '工作目录（可选）') }}</span><input v-model="draft.cwd" class="ui-field" data-size="md" /></label>
-        <label v-if="editing && !draft.secretsInUserScope"><span>{{ s('Stored arguments (hidden)', '已存参数（隐藏）') }}: {{ draft.storedArgsCount }}</span><select v-model="draft.argsAction" class="ui-field"><option value="keep">{{ s('Keep stored arguments', '保留已存参数') }}</option><option value="replace">{{ s('Replace all arguments', '替换全部参数') }}</option></select></label>
-        <div v-if="!draft.secretsInUserScope && (!editing || draft.argsAction === 'replace')"><strong>{{ s('Arguments (one per field)', '参数（每个字段一个）') }}</strong><div v-for="(_, index) in draft.args" :key="index" class="argument-row"><input v-model="draft.args[index]" class="ui-field" data-size="md" type="password" autocomplete="new-password" :aria-label="s('Argument', '参数')" /><button class="ui-button" data-size="md" data-variant="secondary" type="button" @click="draft.args.splice(index, 1)">{{ s('Remove', '移除') }}</button></div><button class="ui-button" data-size="sm" data-variant="secondary" type="button" @click="draft.args.push('')">{{ s('Add argument', '添加参数') }}</button></div>
-      </template>
-      <template v-else>
-        <p v-if="editing">{{ s('Current endpoint', '当前端点') }}: {{ draft.endpoint }} — {{ s('Path and credentials are hidden.', '路径和凭据已隐藏。') }}</p>
-        <label v-if="!draft.secretsInUserScope"><span>{{ editing ? s('Replace URL (blank preserves the stored URL)', '替换 URL（留空保留已存储的 URL）') : 'URL' }}</span><input v-model="draft.url" class="ui-field" data-size="md" type="text" inputmode="url" :required="!editing" autocomplete="off" /></label>
-        <template v-if="!editing"><label class="checkbox-label"><input v-model="draft.oauth" type="checkbox" :disabled="!!draft.token" />{{ s('Configure OAuth', '配置 OAuth') }}</label><label v-if="!draft.oauth"><span>{{ s('Bearer token (optional, write-only)', 'Bearer 令牌（可选，只写）') }}</span><input v-model="draft.token" class="ui-field" data-size="md" type="password" autocomplete="new-password" /></label></template>
-        <label v-if="editing && !staticCredentialWithheld"><span>{{ s('OAuth configuration', 'OAuth 配置') }}</span><select v-model="draft.oauthAction" class="ui-field" data-size="md"><option value="keep">{{ s('Preserve existing configuration', '保留现有配置') }}</option><option value="set">{{ s('Configure / edit OAuth', '配置 / 编辑 OAuth') }}</option><option value="remove">{{ s('Remove explicit configuration (automatic discovery remains)', '移除显式配置（仍可自动发现）') }}</option></select></label>
-        <section v-if="(!editing && draft.oauth) || (editing && draft.oauthAction === 'set' && !staticCredentialWithheld)" class="settings-form">
-          <p>{{ s('OAuth cannot be combined with a bearer token or Authorization header. Remove those explicitly when enabling OAuth. Leave optional fields blank to use defaults.', 'OAuth 不能与 Bearer 令牌或 Authorization 请求头一起使用。启用 OAuth 时请明确移除这些字段。可选字段留空使用默认值。') }}</p>
-          <label><span>{{ s('OAuth client ID (optional)', 'OAuth 客户端 ID（可选）') }}</span><input v-model="draft.clientId" class="ui-field" data-size="md" /></label>
-          <label><span>{{ s('Callback port (default 1456)', '回调端口（默认 1456）') }}</span><input v-model="draft.callbackPort" class="ui-field" data-size="md" type="number" min="1" max="65535" step="1" placeholder="1456" /></label>
-          <label><span>{{ s('Scopes (space separated, optional)', '权限范围（空格分隔，可选）') }}</span><input v-model="draft.scopes" class="ui-field" data-size="md" /></label>
-          <label v-if="editing && !draft.secretsInUserScope"><span>{{ s('Authorization metadata URL', '授权元数据 URL') }} · {{ draft.metadataConfigured ? s('Configured (hidden)', '已配置（隐藏）') : s('None', '无') }}</span><select v-model="draft.metadataAction" class="ui-field" data-size="md"><option value="keep">{{ s('Keep', '保留') }}</option><option value="set">{{ s('Replace', '替换') }}</option><option value="remove">{{ s('Remove', '移除') }}</option></select></label>
-          <label v-if="!draft.secretsInUserScope && (!editing || draft.metadataAction === 'set')"><span>{{ s('Authorization metadata URL (optional fallback)', '授权元数据 URL（可选回退）') }}</span><input v-model="draft.metadataUrl" class="ui-field" data-size="md" type="url" :required="editing && draft.metadataAction === 'set'" autocomplete="off" /></label>
-          <p>{{ s('Client secrets are entered under server details when signing in, never in saved configuration.', '客户端密钥在服务器详情中登录时输入，绝不写入配置。') }}</p>
+    <form v-if="draft" ref="editorForm" class="settings-card settings-form" autocomplete="off" @submit.prevent="save">
+      <h3>{{ editing ? s('Edit server', '编辑服务器') : s('New server', '新服务器') }}</h3>
+      <UAlert v-if="editing && draft.secretsInUserScope" class="settings-banner" color="warning" variant="soft" :description="s('Withheld arguments, environment, headers, URL parts and OAuth metadata are stored in your user-scope configuration. They cannot be edited here; non-secret fields still save through the owner.', '隐藏的参数、环境变量、请求头、URL 部分和 OAuth 元数据存储在用户范围配置中。此处无法编辑；非机密字段仍可通过所有者保存。')">
+        <template #actions><UButton size="sm" color="neutral" variant="soft" :disabled="busy || !connection.supports('mcp.move')" @click="moveToUser(draft.id)">{{ s('Move to user to edit', '移到用户范围编辑') }}</UButton></template>
+      </UAlert>
+      <fieldset :disabled="busy">
+        <UFormField :label="s('Server ID', '服务器 ID')"><UInput v-model="draft.id" :disabled="editing" required /></UFormField>
+        <UFormField :label="s('Source', '来源')"><USelect v-model="draft.source" :items="sourceItems" :disabled="editing" /></UFormField>
+        <p v-if="editing">{{ s('The source and transport are fixed. Changes write only this source. Use Move to change the source; a move into a project keeps withheld values in your user-scope configuration.', '来源和传输方式固定。更改只写入此来源。使用“移动”更改来源；移入项目时隐藏值保留在用户范围配置中。') }}</p>
+        <UFormField :label="s('Transport', '传输方式')"><USelect v-model="draft.type" :items="transportItems" :disabled="editing" /></UFormField>
+        <UFormField :label="s('Tool call timeout (optional, milliseconds)', '工具调用超时（可选，毫秒）')"><UInput :model-value="String(draft.timeout ?? '')" type="number" min="1000" max="86400000" step="1" placeholder="600000" @update:model-value="draft.timeout = $event ?? ''" /></UFormField>
+        <template v-if="draft.type === 'stdio'">
+          <UFormField :label="s('Executable', '可执行程序')"><UInput v-model="draft.command" required /></UFormField>
+          <UFormField :label="s('Working directory (optional)', '工作目录（可选）')"><UInput v-model="draft.cwd" /></UFormField>
+          <UFormField v-if="editing && !draft.secretsInUserScope" :label="`${s('Stored arguments (hidden)', '已存参数（隐藏）')}: ${draft.storedArgsCount}`">
+            <USelect v-model="draft.argsAction" :items="argsActionItems" />
+          </UFormField>
+          <div v-if="!draft.secretsInUserScope && (!editing || draft.argsAction === 'replace')">
+            <strong>{{ s('Arguments (one per field)', '参数（每个字段一个）') }}</strong>
+            <div v-for="(_, index) in draft.args" :key="index" class="argument-row">
+              <UInput v-model="draft.args[index]" type="password" autocomplete="new-password" :aria-label="s('Argument', '参数')" />
+              <UButton color="neutral" variant="soft" @click="draft.args.splice(index, 1)">{{ s('Remove', '移除') }}</UButton>
+            </div>
+            <UButton size="sm" color="neutral" variant="soft" @click="draft.args.push('')">{{ s('Add argument', '添加参数') }}</UButton>
+          </div>
+        </template>
+        <template v-else>
+          <p v-if="editing">{{ s('Current endpoint', '当前端点') }}: {{ draft.endpoint }} — {{ s('Path and credentials are hidden.', '路径和凭据已隐藏。') }}</p>
+          <UFormField v-if="!draft.secretsInUserScope" :label="editing ? s('Replace URL (blank preserves the stored URL)', '替换 URL（留空保留已存储的 URL）') : 'URL'">
+            <UInput v-model="draft.url" type="text" inputmode="url" :required="!editing" autocomplete="off" />
+          </UFormField>
+          <template v-if="!editing">
+            <UCheckbox v-model="draft.oauth" :disabled="!!draft.token" :label="s('Configure OAuth', '配置 OAuth')" />
+            <UFormField v-if="!draft.oauth" :label="s('Bearer token (optional, write-only)', 'Bearer 令牌（可选，只写）')">
+              <UInput v-model="draft.token" type="password" autocomplete="new-password" />
+            </UFormField>
+          </template>
+          <UFormField v-if="editing && !staticCredentialWithheld" :label="s('OAuth configuration', 'OAuth 配置')">
+            <USelect v-model="draft.oauthAction" :items="oauthActionItems" />
+          </UFormField>
+          <section v-if="(!editing && draft.oauth) || (editing && draft.oauthAction === 'set' && !staticCredentialWithheld)" class="settings-form">
+            <p>{{ s('OAuth cannot be combined with a bearer token or Authorization header. Remove those explicitly when enabling OAuth. Leave optional fields blank to use defaults.', 'OAuth 不能与 Bearer 令牌或 Authorization 请求头一起使用。启用 OAuth 时请明确移除这些字段。可选字段留空使用默认值。') }}</p>
+            <UFormField :label="s('OAuth client ID (optional)', 'OAuth 客户端 ID（可选）')"><UInput v-model="draft.clientId" /></UFormField>
+            <UFormField :label="s('Callback port (default 1456)', '回调端口（默认 1456）')"><UInput v-model="draft.callbackPort" type="number" min="1" max="65535" step="1" placeholder="1456" /></UFormField>
+            <UFormField :label="s('Scopes (space separated, optional)', '权限范围（空格分隔，可选）')"><UInput v-model="draft.scopes" /></UFormField>
+            <UFormField v-if="editing && !draft.secretsInUserScope" :label="`${s('Authorization metadata URL', '授权元数据 URL')} · ${draft.metadataConfigured ? s('Configured (hidden)', '已配置（隐藏）') : s('None', '无')}`">
+              <USelect v-model="draft.metadataAction" :items="metadataActionItems" />
+            </UFormField>
+            <UFormField v-if="!draft.secretsInUserScope && (!editing || draft.metadataAction === 'set')" :label="s('Authorization metadata URL (optional fallback)', '授权元数据 URL（可选回退）')">
+              <UInput v-model="draft.metadataUrl" type="url" :required="editing && draft.metadataAction === 'set'" autocomplete="off" />
+            </UFormField>
+            <p>{{ s('Client secrets are entered under server details when signing in, never in saved configuration.', '客户端密钥在服务器详情中登录时输入，绝不写入配置。') }}</p>
+          </section>
+        </template>
+        <section v-if="editing && !draft.secretsInUserScope && draft.type !== 'stdio'">
+          <h4>{{ s('Bearer token (write-only)', 'Bearer 令牌（只写）') }}</h4>
+          <p>{{ draft.authConfigured ? s('A token is configured.', '已配置令牌。') : s('No token is configured.', '未配置令牌。') }}</p>
+          <UFormField :label="s('Token action', '令牌操作')">
+            <USelect v-model="draft.bearerAction" :items="bearerActionItems" />
+          </UFormField>
+          <UFormField v-if="draft.bearerAction === 'set'" :label="s('New bearer token', '新 Bearer 令牌')">
+            <UInput v-model="draft.token" type="password" autocomplete="new-password" required />
+          </UFormField>
         </section>
-      </template>
-      <section v-if="editing && !draft.secretsInUserScope && draft.type !== 'stdio'"><h4>{{ s('Bearer token (write-only)', 'Bearer 令牌（只写）') }}</h4><p>{{ draft.authConfigured ? s('A token is configured.', '已配置令牌。') : s('No token is configured.', '未配置令牌。') }}</p><label><span>{{ s('Token action', '令牌操作') }}</span><select v-model="draft.bearerAction" class="ui-field" data-size="md"><option value="keep">{{ s('Keep stored token', '保留已存储的令牌') }}</option><option value="set" :disabled="oauthEnabled">{{ s('Replace token', '替换令牌') }}</option><option value="remove">{{ s('Remove token', '移除令牌') }}</option></select></label><label v-if="draft.bearerAction === 'set'"><span>{{ s('New bearer token', '新 Bearer 令牌') }}</span><input v-model="draft.token" class="ui-field" data-size="md" type="password" autocomplete="new-password" required /></label></section>
-      <section v-if="!draft.secretsInUserScope"><h4>{{ draft.type === 'stdio' ? s('Environment variables', '环境变量') : s('HTTP headers', 'HTTP 请求头') }}</h4><p>{{ s('Stored values are never returned. Keep preserves a value; Set replaces it; Remove deletes it. Values are not stored in this browser.', '已存储的值不会返回。“保留”维持原值，“设置”替换原值，“删除”移除字段。值不会保存在此浏览器中。') }}</p><div v-for="(secret, index) in draft.secrets" :key="index" class="secret-row"><input v-model="secret.name" class="ui-field" data-size="md" :aria-label="s('Field name', '字段名称')" :readonly="secret.stored" required /><select v-model="secret.action" class="ui-field" data-size="md" :aria-label="s('Secret action', '机密操作')"><option v-if="secret.stored" value="keep">{{ s('Keep', '保留') }}</option><option value="set">{{ s('Set', '设置') }}</option><option v-if="secret.stored" value="remove">{{ s('Remove', '删除') }}</option></select><input v-if="secret.action === 'set'" v-model="secret.value" class="ui-field" data-size="md" type="password" autocomplete="new-password" :aria-label="s('New value', '新值')" /><button class="ui-button" data-size="sm" data-variant="secondary" type="button" @click="draft.secrets.splice(index, 1)">{{ s('Cancel field change', '取消字段更改') }}</button></div><button class="ui-button" data-size="sm" data-variant="secondary" type="button" @click="draft.secrets.push({ name: '', action: 'set', value: '' })">{{ s('Add field', '添加字段') }}</button></section>
-      <label v-if="!editing && draft.source === 'user'" class="checkbox-label"><input v-model="draft.enabled" type="checkbox" />{{ s('Enable after saving', '保存后启用') }}</label><p v-if="draft.source === 'project'">{{ s('Project tests require a saved entry that you explicitly enabled locally. Unsaved project definitions cannot execute.', '项目测试要求条目已保存且由您在本地明确启用。未保存的项目定义不能执行。') }}</p><p v-if="editing">{{ s('Enablement and unedited fields are preserved. Use the server actions to enable, disable or sign in.', '启用状态及未编辑字段会被保留。请通过服务器操作启用、禁用或登录。') }}</p><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="!connection.supports('mcp.test') || (draft.source === 'project' && (!editing || !draft.enabled))" @click="testServer()">{{ s('Test draft connection', '测试草稿连接') }}</button><button class="ui-button" data-size="md" data-variant="primary" :disabled="!dirty || (editing && !connection.supports('mcp.update'))">{{ s('Save server', '保存服务器') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" @click="closeEditor">{{ s('Cancel', '取消') }}</button></div></fieldset></form>
+        <section v-if="!draft.secretsInUserScope">
+          <h4>{{ draft.type === 'stdio' ? s('Environment variables', '环境变量') : s('HTTP headers', 'HTTP 请求头') }}</h4>
+          <p>{{ s('Stored values are never returned. Keep preserves a value; Set replaces it; Remove deletes it. Values are not stored in this browser.', '已存储的值不会返回。“保留”维持原值，“设置”替换原值，“删除”移除字段。值不会保存在此浏览器中。') }}</p>
+          <div v-for="(secret, index) in draft.secrets" :key="index" class="secret-row">
+            <UInput v-model="secret.name" :aria-label="s('Field name', '字段名称')" :readonly="secret.stored" required />
+            <USelect v-model="secret.action" :items="secretActionItems(secret.stored)" :aria-label="s('Secret action', '机密操作')" />
+            <UInput v-if="secret.action === 'set'" v-model="secret.value" type="password" autocomplete="new-password" :aria-label="s('New value', '新值')" />
+            <UButton size="sm" color="neutral" variant="soft" @click="draft.secrets.splice(index, 1)">{{ s('Cancel field change', '取消字段更改') }}</UButton>
+          </div>
+          <UButton size="sm" color="neutral" variant="soft" @click="draft.secrets.push({ name: '', action: 'set', value: '' })">{{ s('Add field', '添加字段') }}</UButton>
+        </section>
+        <UCheckbox v-if="!editing && draft.source === 'user'" v-model="draft.enabled" :label="s('Enable after saving', '保存后启用')" />
+        <p v-if="draft.source === 'project'">{{ s('Project tests require a saved entry that you explicitly enabled locally. Unsaved project definitions cannot execute.', '项目测试要求条目已保存且由您在本地明确启用。未保存的项目定义不能执行。') }}</p>
+        <p v-if="editing">{{ s('Enablement and unedited fields are preserved. Use the server actions to enable, disable or sign in.', '启用状态及未编辑字段会被保留。请通过服务器操作启用、禁用或登录。') }}</p>
+        <div class="settings-actions">
+          <UButton color="neutral" variant="soft" :disabled="!connection.supports('mcp.test') || (draft.source === 'project' && (!editing || !draft.enabled))" @click="testServer()">{{ s('Test draft connection', '测试草稿连接') }}</UButton>
+          <UButton type="submit" color="primary" :disabled="!dirty || (editing && !connection.supports('mcp.update'))">{{ s('Save server', '保存服务器') }}</UButton>
+          <UButton color="neutral" variant="soft" @click="closeEditor">{{ s('Cancel', '取消') }}</UButton>
+        </div>
+      </fieldset>
+    </form>
     <section v-if="testResult" class="settings-card" role="status">
       <h3 v-if="testResult.probe.status === 'connected'">{{ s('Connection test passed', '连接测试通过') }}: {{ testResult.id }} · {{ testResult.probe.latencyMs }} ms</h3>
       <h3 v-else-if="testResult.probe.status === 'authRequired'">{{ s('Sign-in required', '需要登录') }}: {{ testResult.id }} · {{ testResult.probe.latencyMs }} ms</h3>
@@ -560,19 +692,49 @@ onBeforeUnmount(() => {
       <ul v-if="testResult.probe.tools"><li v-for="tool in testResult.probe.tools" :key="tool.name"><strong>{{ tool.name }}</strong><p v-if="tool.description">{{ tool.description }}</p></li></ul>
       <p v-if="testResult.probe.status === 'connected' && !testResult.probe.tools?.length">{{ s('The server exposes no tools.', '服务器没有提供工具。') }}</p>
     </section>
-    <section v-if="authorization" class="settings-card"><h3>{{ s('Authorize MCP', '授权 MCP') }}: {{ authorizingId }}</h3><p>{{ s('Callback', '回调') }}: <code>{{ authorization.redirectUri }}</code> · {{ s('Expires', '过期时间') }}: {{ new Date(authorization.expiresAt).toLocaleString() }}</p><a class="ui-button" data-size="md" data-variant="primary" :href="authorization.authorizationUrl" target="_blank" rel="noopener noreferrer">{{ s('Open authorization page', '打开授权页面') }}</a><form class="settings-form" autocomplete="off" @submit.prevent="finishAuth()"><label><span>{{ s('Paste the full callback URL after authorization', '授权后粘贴完整回调 URL') }}</span><input v-model="callback" class="ui-field" data-size="md" type="password" autocomplete="new-password" :disabled="busy" required /></label><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="primary" :disabled="busy || !connection.supports('mcp.auth.complete')">{{ s('Complete sign-in', '完成登录') }}</button><button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy || !connection.supports('mcp.auth.cancel')" @click="finishAuth(true)">{{ s('Cancel sign-in', '取消登录') }}</button></div></form></section>
-    <label class="search-label"><span>{{ s('Search servers', '搜索服务器') }}</span><input v-model="search" class="ui-field" data-size="md" type="search" /></label>
-    <section v-for="server in entries" :key="`${server.source}:${server.id}`" class="settings-card"><h3>{{ server.id }}</h3><p>{{ server.source }} · {{ server.transport }} · {{ server.enabled ? s('Enabled', '已启用') : s('Disabled', '已禁用') }}<template v-if="server.auth"> · OAuth: {{ server.auth }}</template></p><div class="settings-actions"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !connection.supports('mcp.inspect')" @click="inspect(server)">{{ s('Details / tools', '详情 / 工具') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.test') || (server.source !== 'user' && !server.enabled)" @click="testServer(server)">{{ s('Test connection', '测试连接') }}</button><template v-if="server.source !== 'plugin'"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.configuration') || !connection.supports('mcp.update')" @click="edit(server)">{{ s('Edit', '编辑') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.move') || (server.source === 'user' && !loadedCwd)" @click="move(server)">{{ server.source === 'user' ? s('Move to project…', '移入项目…') : s('Move to user…', '移到用户…') }}</button><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!draft || !connection.supports('mcp.set_enabled')" @click="action('mcp.set_enabled', server)">{{ server.enabled ? s('Disable', '禁用') : s('Enable', '启用') }}</button><button class="ui-button" data-size="md" data-variant="danger-ghost" :disabled="busy || !!draft || !connection.supports('mcp.remove')" @click="action('mcp.remove', server)">{{ s('Remove', '移除') }}</button></template><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !server.enabled || !connection.supports('mcp.disconnect')" @click="action('mcp.disconnect', server)">{{ s('Disconnect', '断开连接') }}</button><template v-if="server.transport !== 'stdio'"><button class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !!authorization || !server.enabled || !connection.supports('mcp.auth.start')" @click="action('mcp.auth.start', server)">{{ s('Sign in', '登录') }}</button><button v-if="server.auth" class="ui-button" data-size="md" data-variant="secondary" :disabled="busy || !connection.supports('mcp.auth.logout')" @click="action('mcp.auth.logout', server)">{{ s('Sign out', '退出登录') }}</button></template></div><p v-if="server.source === 'plugin'">{{ s('This entry is owned by its plugin. Change it through Plugins.', '此条目归其插件所有。请通过插件页面更改。') }}</p></section>
+    <section v-if="authorization" class="settings-card">
+      <h3>{{ s('Authorize MCP', '授权 MCP') }}: {{ authorizingId }}</h3>
+      <p>{{ s('Callback', '回调') }}: <code>{{ authorization.redirectUri }}</code> · {{ s('Expires', '过期时间') }}: {{ new Date(authorization.expiresAt).toLocaleString() }}</p>
+      <UButton color="primary" :href="authorization.authorizationUrl" target="_blank" rel="noopener noreferrer">{{ s('Open authorization page', '打开授权页面') }}</UButton>
+      <form class="settings-form" autocomplete="off" @submit.prevent="finishAuth()">
+        <UFormField :label="s('Paste the full callback URL after authorization', '授权后粘贴完整回调 URL')">
+          <UInput v-model="callback" type="password" autocomplete="new-password" :disabled="busy" required />
+        </UFormField>
+        <div class="settings-actions">
+          <UButton type="submit" color="primary" :disabled="busy || !connection.supports('mcp.auth.complete')">{{ s('Complete sign-in', '完成登录') }}</UButton>
+          <UButton color="neutral" variant="soft" :disabled="busy || !connection.supports('mcp.auth.cancel')" @click="finishAuth(true)">{{ s('Cancel sign-in', '取消登录') }}</UButton>
+        </div>
+      </form>
+    </section>
+    <UFormField class="search-label" :label="s('Search servers', '搜索服务器')"><UInput v-model="search" type="search" /></UFormField>
+    <section v-for="server in entries" :key="`${server.source}:${server.id}`" class="settings-card">
+      <h3>{{ server.id }}</h3>
+      <p>{{ server.source }} · {{ server.transport }} · {{ server.enabled ? s('Enabled', '已启用') : s('Disabled', '已禁用') }}<template v-if="server.auth"> · OAuth: {{ server.auth }}</template></p>
+      <div class="settings-actions">
+        <UButton color="neutral" variant="soft" :disabled="busy || !connection.supports('mcp.inspect')" @click="inspect(server)">{{ s('Details / tools', '详情 / 工具') }}</UButton>
+        <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.test') || (server.source !== 'user' && !server.enabled)" @click="testServer(server)">{{ s('Test connection', '测试连接') }}</UButton>
+        <template v-if="server.source !== 'plugin'">
+          <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.configuration') || !connection.supports('mcp.update')" @click="edit(server)">{{ s('Edit', '编辑') }}</UButton>
+          <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.move') || (server.source === 'user' && !loadedCwd)" @click="move(server)">{{ server.source === 'user' ? s('Move to project…', '移入项目…') : s('Move to user…', '移到用户…') }}</UButton>
+          <UButton color="neutral" variant="soft" :disabled="busy || !!draft || !connection.supports('mcp.set_enabled')" @click="action('mcp.set_enabled', server)">{{ server.enabled ? s('Disable', '禁用') : s('Enable', '启用') }}</UButton>
+          <UButton color="error" variant="ghost" :disabled="busy || !!draft || !connection.supports('mcp.remove')" @click="action('mcp.remove', server)">{{ s('Remove', '移除') }}</UButton>
+        </template>
+        <UButton color="neutral" variant="soft" :disabled="busy || !server.enabled || !connection.supports('mcp.disconnect')" @click="action('mcp.disconnect', server)">{{ s('Disconnect', '断开连接') }}</UButton>
+        <template v-if="server.transport !== 'stdio'">
+          <UButton color="neutral" variant="soft" :disabled="busy || !!authorization || !server.enabled || !connection.supports('mcp.auth.start')" @click="action('mcp.auth.start', server)">{{ s('Sign in', '登录') }}</UButton>
+          <UButton v-if="server.auth" color="neutral" variant="soft" :disabled="busy || !connection.supports('mcp.auth.logout')" @click="action('mcp.auth.logout', server)">{{ s('Sign out', '退出登录') }}</UButton>
+        </template>
+      </div>
+      <p v-if="server.source === 'plugin'">{{ s('This entry is owned by its plugin. Change it through Plugins.', '此条目归其插件所有。请通过插件页面更改。') }}</p>
+    </section>
     <p v-if="catalog && !entries.length && !invalidEntries.length" role="status">{{ s('No matching MCP servers. Add a server to get started.', '没有匹配的 MCP 服务器。请添加服务器以开始使用。') }}</p>
   </article>
 </template>
 
 <style scoped>
 fieldset { display: grid; gap: var(--space-4); min-width: 0; padding: 0; border: 0; }
-label { display: grid; gap: var(--space-2); }
-.checkbox-label, .argument-row { display: flex; align-items: center; gap: var(--space-2); }
-.argument-row { margin-block: var(--space-2); }
-.argument-row input { flex: 1; min-width: 0; }
+.argument-row { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); }
+.argument-row > :first-child { flex: 1; min-width: 0; }
 .secret-row { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: var(--space-2); margin-block: var(--space-3); }
 .search-label { margin-block: var(--space-4); }
 .runtime-detail { border-top: 1px solid var(--border); padding-top: var(--space-3); }

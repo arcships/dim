@@ -4,6 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -86,6 +87,7 @@ function mount() {
   })
   const root = node("root")
   const app = renderer.createApp(PluginSettings)
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   return { root, app, calls }
 }
