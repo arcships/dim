@@ -31,12 +31,13 @@ use tokio::sync::watch;
 
 /// The Session and branch services marked `#[rutis::service]`: provided in
 /// their instance, each is served by name there.
-fn crossing_instance_names() -> [(String, &'static str); 9] {
+fn crossing_instance_names() -> [(String, &'static str); 11] {
     [
         (
             name_of::<crate::ui_extensions::UiResources>(),
             SESSION_GROUP,
         ),
+        (name_of::<crate::mcp::McpSession>(), SESSION_GROUP),
         (
             name_of::<dim_agent_capabilities::timeline_tree::TreeCommands>(),
             SESSION_GROUP,
@@ -58,6 +59,10 @@ fn crossing_instance_names() -> [(String, &'static str); 9] {
         (name_of::<dim_agent_runtime::Timeline>(), BRANCH_GROUP),
         (
             name_of::<dim_agent_runtime::TimelineIdentity>(),
+            BRANCH_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>(),
             BRANCH_GROUP,
         ),
     ]

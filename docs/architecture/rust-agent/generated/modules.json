@@ -17857,7 +17857,9 @@
         "mod background",
         "path BackgroundExecPlugin::new",
         "path background::BackgroundExec",
+        "path background::OUTPUT_PAGE_BYTES",
         "path background::OutputPageError::Closed",
+        "path background::OutputPageError::InvalidLimit",
         "path background::OutputPageError::Read",
         "path background::OutputPageError::Unavailable",
         "path background::OutputPageError::Unknown",
@@ -18167,6 +18169,13 @@
       "to": "dim_agent_types::tool",
       "references": [
         "path ToolResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::background::testing",
+      "to": "dim_agent_capabilities::workspace_tools::background",
+      "references": [
+        "path super::BackgroundExec"
       ]
     },
     {
@@ -19180,6 +19189,8 @@
         "path QueryPage",
         "path QuerySelect::Fields",
         "path QuerySpec",
+        "path QueryValue::Elements",
+        "path QueryValue::Missing",
         "path QueryValue::Value",
         "path TimelineQuery"
       ]
@@ -30953,6 +30964,13 @@
     },
     {
       "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::workspace_tools::background",
+      "references": [
+        "path dim_agent_capabilities::workspace_tools::background::BackgroundExec"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path AgentBuilder",
@@ -31013,6 +31031,13 @@
         "path ServerError::Configuration",
         "use crate::Result",
         "use crate::ServerError"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_app_server::mcp::session",
+      "references": [
+        "path crate::mcp::McpSession"
       ]
     },
     {
@@ -47158,13 +47183,17 @@
         "path RowKind::ToolCall",
         "path RowKind::UserMessage",
         "path SideLine",
-        "path TaskFinish::failed",
         "path TaskOutcome",
+        "path TaskOutcome::Completed",
+        "path TaskOutcome::Failed",
+        "path TaskOutcome::Stopped",
         "path TaskTarget",
         "path ViewRow",
         "path ViewSnapshot",
         "path crate::model::view::CompactionDetailState::Failed",
         "path crate::model::view::CompactionTarget",
+        "path crate::model::view::MemberTarget::Starting",
+        "path crate::model::view::TaskKind::Member",
         "path crate::model::view::TaskView",
         "use crate::model::view::CompactionState",
         "use crate::model::view::Earlier",
@@ -47172,7 +47201,6 @@
         "use crate::model::view::LineView",
         "use crate::model::view::RowKind",
         "use crate::model::view::SideLine",
-        "use crate::model::view::TaskFinish",
         "use crate::model::view::TaskOutcome",
         "use crate::model::view::TaskTarget",
         "use crate::model::view::ViewRow",
@@ -47567,9 +47595,11 @@
         "path MouseOutcome::Click",
         "path MouseOutcome::Copy",
         "path MouseOutcome::Ignored",
+        "path MouseOutcome::Models",
         "path MouseOutcome::Open",
         "path MouseOutcome::Overlay",
         "path MouseOutcome::Redraw",
+        "path MouseOutcome::Task",
         "path crate::ui::render::fullscreen::MIN_VIEW_ROWS",
         "use crate::ui::render::FullScreen",
         "use crate::ui::render::fullscreen::Document",
@@ -48042,6 +48072,13 @@
     },
     {
       "from": "dim_cli::ui::tui::tests",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path dim_agent_types::ModelPreferences"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::clipboard",
       "references": [
         "path crate::clipboard::Source::Text"
@@ -48200,6 +48237,7 @@
         "path crate::model::view::CompactionView",
         "path crate::model::view::MemberConversationState::Live",
         "path crate::model::view::MemberTarget::Session",
+        "path crate::model::view::MemberTarget::Starting",
         "path crate::model::view::QueuedInput",
         "path crate::model::view::RowTone::Danger",
         "path crate::model::view::TaskFinish",
@@ -48472,9 +48510,7 @@
         "path live_panel_rows",
         "path overlay_panel_rows",
         "path queue_strip",
-        "path shown_tasks",
         "path side_reply",
-        "path task_line",
         "path web_panel",
         "path write_notifications"
       ]
@@ -53788,6 +53824,14 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "ModelFailureKind::ServerError"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "MouseKind::Drag"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "MouseKind::Press"
     },
     {
       "module": "dim_cli::ui::tui::tests",

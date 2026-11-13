@@ -64,6 +64,7 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute."},
+                "title": {"type": "string", "minLength": 1, "description": "Short, nonblank single-line task title shown in the background task list; separate from the command."},
                 "cwd": {"type": "string", "description": "Working directory. Defaults to session cwd."},
                 "runInBackground": {
                     "type": "boolean",
@@ -74,7 +75,7 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
                     "description": "Optional timeout in milliseconds. Estimate how long this command should be allowed to run. If omitted, the command times out after 300000 ms. Negative values disable the total timeout only when runInBackground is true; foreground negative values use the default timeout."
                 },
             },
-            "required": ["command"]
+            "required": ["command", "title"]
         }),
     );
     definition.risk = Some("execute_process".into());
@@ -120,7 +121,7 @@ pub(super) async fn stop(
     let owner = branch
         .service::<BackgroundExec>()
         .map_err(super::host_error)?;
-    match owner.stop(&input.task_id).await {
+    match owner.stop(input.task_id).await {
         Ok(ended) => Ok(ToolResult {
             is_error: (ended.status == ExecStatus::Failed).then_some(true),
             ..ToolResult::text(
@@ -192,6 +193,7 @@ fn object(value: Value) -> JsonObject {
 
 struct Input {
     command: String,
+    title: Option<String>,
     cwd: Option<String>,
     run_in_background: bool,
     timeout_ms: u64,
@@ -208,7 +210,7 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
     if !removed.is_empty() {
         return Err((
             format!(
-                "exec accepts command, cwd, runInBackground and timeoutMs; a negative timeoutMs disables the background timeout. Remove {}.",
+                "exec accepts command, title, cwd, runInBackground and timeoutMs; a negative timeoutMs disables the background timeout. Remove {}.",
                 removed.join(", ")
             ),
             "exec_invalid_request",
@@ -247,11 +249,27 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
             ));
         }
     };
+    let title = match input.get("title") {
+        None => None,
+        Some(Value::String(title))
+            if !title.trim().is_empty()
+                && !title.contains(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']) =>
+        {
+            Some(title.clone())
+        }
+        _ => {
+            return Err((
+                "exec title must be a nonblank single-line string.".into(),
+                "exec_invalid_request",
+            ));
+        }
+    };
     let negative = timeout
         .and_then(Value::as_f64)
         .is_some_and(|value| value < 0.0);
     Ok(Input {
         command,
+        title,
         cwd: input.get("cwd").and_then(Value::as_str).map(String::from),
         run_in_background: input.get("runInBackground") == Some(&Value::Bool(true)),
         timeout_ms: match timeout.and_then(Value::as_f64) {
@@ -2027,6 +2045,7 @@ pub(super) fn recovered_result(task_id: &str, output_path: &str) -> ToolResult {
 struct Call<'a> {
     task_id: String,
     command: &'a str,
+    title: Option<&'a str>,
     cwd: String,
     timeout_ms: i64,
 }
@@ -2105,6 +2124,7 @@ pub(super) async fn execute(
     let request = Call {
         task_id: task_id.clone(),
         command: &input.command,
+        title: input.title.as_deref(),
         cwd: cwd_text,
         timeout_ms: effective_timeout.map_or(-1, |timeout| timeout as i64),
     };
@@ -2393,6 +2413,7 @@ async fn hand_off(
                     .chars()
                     .take(DESCRIPTION_CHARS)
                     .collect(),
+                title: request.title.map(String::from),
                 output_path: output_path.clone(),
             },
             process,

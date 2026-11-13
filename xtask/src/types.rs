@@ -37,6 +37,10 @@ fn declarations(root: &Path) -> Result<String> {
         )
         .declared("std::num::NonZeroU64", "number | bigint")
         .declared(
+            "dim_agent_types::ToolResult",
+            "import('./plugin.js').ToolResult",
+        )
+        .declared(
             "dim_agent_types::TimelinePosition",
             "{ branch_id: string; sequence: number | bigint }",
         )

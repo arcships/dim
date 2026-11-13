@@ -18,8 +18,8 @@ use crate::model::session::{
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    CompactionState, Earlier, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome,
-    TaskTarget, ViewRow, ViewSnapshot,
+    CompactionState, Earlier, LineState, LineView, RowKind, SideLine, TaskOutcome, TaskTarget,
+    ViewRow, ViewSnapshot,
 };
 use crate::ui::Env;
 use crate::ui::Initial;
@@ -373,11 +373,9 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         }
         let now = Instant::now();
         let current = terminal.size();
-        let laid_out = match &full {
+        let laid_out = match &mut full {
             Some(full) => {
-                if full.size() != current {
-                    dirty = true;
-                }
+                dirty |= full.resize(current);
                 (full.layout_cols(), current.1)
             }
             None => screen.size(),
@@ -507,6 +505,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             }
             Wait::Event(InputEvent::Mouse(event)) => {
                 let Some(full) = &mut full else { continue };
+                dirty |= full.resize(terminal.size());
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
                     MouseOutcome::Redraw => dirty = true,
@@ -528,6 +527,14 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                             return code;
                         }
                         app.set_notice(t("Copied to clipboard"));
+                        dirty = true;
+                    }
+                    MouseOutcome::Task(task) => {
+                        app.open_task(&task);
+                        dirty = true;
+                    }
+                    MouseOutcome::Models => {
+                        app.run_command("models", "");
                         dirty = true;
                     }
                     MouseOutcome::Click {
@@ -5603,22 +5610,25 @@ impl App {
             let margin = " ".repeat(MARGIN);
             live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
         }
-        // The tasks running apart from the turn sit on one row above the
-        // composer, in both interfaces; a task that just ended keeps its place
-        // for TASK_FADE seconds so it does not vanish from under the eye. No
-        // task draws no row, so an idle Session keeps the space. It goes above
-        // the anchor, so the row and the executor it names give their space
-        // back rather than moving the composer up.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        let task_start = live.len();
         if self.prompt.is_none()
             && let Some(snapshot) = &self.snapshot
-            && let Some(line) =
-                task_line(shown_tasks(&snapshot.tasks, now), now, width, &self.palette)
         {
-            live.push(format!("{}{line}", " ".repeat(MARGIN)));
+            let tasks = shown_tasks(&snapshot.tasks, now);
+            frame.task_rows = tasks
+                .iter()
+                .enumerate()
+                .map(|(row, (task, _))| (live.len() + row, task.id.clone()))
+                .collect();
+            live.extend(
+                task_lines(tasks, now, width, &self.palette)
+                    .into_iter()
+                    .map(|line| format!("{}{line}", " ".repeat(MARGIN))),
+            );
         }
         frame.anchor = live.len();
         let live_budget = crate::ui::render::live_row_budget(
@@ -5633,6 +5643,7 @@ impl App {
         let input_budget = live_budget
             .saturating_sub(
                 3 + status_rows
+                    + (live.len() - task_start)
                     + if !self.fullscreen && self.composer.palette_open() {
                         3
                     } else {
@@ -5789,6 +5800,12 @@ impl App {
                 .as_ref()
                 .and_then(|label| label.fitted(|text| left + width_of(text) + 3 < room))
                 .map(|label| fg(&label, &p.highlight));
+            if self.prompt.is_none()
+                && let Some(model) = &model
+            {
+                let end = MARGIN + outer - 3;
+                frame.model_label = Some((box_top, end - width_of(model)..end));
+            }
             let title = title.map(|(text, label)| label(text));
             let docked = self.dock_status(status.as_deref());
             let place = self.composer_place(docked.as_deref(), outer);
@@ -7105,8 +7122,20 @@ impl App {
         }
     }
 
-    /// Opens a delegation card's member: its read-only conversation, or its
-    /// result when there is no member Session to read.
+    fn open_task(&mut self, id: &str) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let Some(task) = snapshot.tasks.iter().find(|task| task.id == id) else {
+            return;
+        };
+        let mut panel = TasksPanel::new(snapshot);
+        match panel.open_card(task.clone()) {
+            Effect::Notice(text) => self.set_notice(text),
+            _ => self.prompt = Some(Prompt::Tasks(panel)),
+        }
+    }
+
     /// Opens what a picked or clicked card stands for: a delegation's
     /// member, or the line a marker opened.
     fn open_card(&mut self, request_event_id: &str) {
@@ -7424,7 +7453,7 @@ impl App {
             None => clip(&left, total).0,
         };
         match label {
-            Some(label) => format!("{line}{}", fg(&label, &self.palette.muted)),
+            Some(label) => format!("{line}{}", fg(&label, &self.palette.highlight)),
             None => line,
         }
     }
@@ -7632,69 +7661,63 @@ fn shown_tasks(
         .collect()
 }
 
-/// The line of tasks running apart from the turn: `◐ 2 · cargo build 1m12s ·
-/// cargo test 34s` while both run, with `✓`, `✗` or `⊘` in place of the
-/// elapsed time's lead once one ends. Without a running task the count has
-/// nothing to say, so the row starts at the first entry's mark:
-/// `✓ cargo build 1m12s`. A single row, cut to `width` cells; `None` when
-/// there is nothing to show.
-fn task_line(
+fn task_lines(
     tasks: Vec<(&crate::model::view::TaskView, Option<u64>)>,
     now: u64,
     width: usize,
     p: &Palette,
-) -> Option<String> {
+) -> Vec<String> {
     use crate::ui::text::truncate_cells;
-    if tasks.is_empty() {
-        return None;
-    }
-    let running = tasks.iter().filter(|(_, end)| end.is_none()).count();
-    let head = (running > 0).then(|| format!("\u{25d0} {running}"));
-    let mut row = head.clone().unwrap_or_default();
-    let mut room = width.saturating_sub(display_width(&row));
-    for (shown, (task, end)) in tasks.iter().enumerate() {
+    let mut rows = Vec::new();
+    for (task, end) in tasks {
         let started = task.started_at / 1000;
         let at = end.unwrap_or(now).max(started);
         let elapsed = task_elapsed(at - started);
         let label = crate::sanitize::safe(&task.label);
         let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mark = task
-            .finished
-            .as_ref()
-            .map_or("", |finish| finish.outcome.mark());
-        let lead = if shown == 0 && head.is_none() {
-            ""
-        } else {
-            " · "
-        };
-        let entry = format!("{lead}{mark}{label} {elapsed}");
-        let fits = display_width(&entry) <= room;
-        if !fits {
-            if shown == 0 {
-                // The first entry still names what runs, shortened to fit.
-                let tail = format!(" {elapsed}");
-                let fixed = display_width(lead) + display_width(mark) + tail.len();
-                let label = truncate_cells(&label, room.saturating_sub(fixed).max(1));
-                row.push_str(&format!("{lead}{mark}{label}{tail}"));
-            } else {
-                row.push_str(&truncate_cells(" · …", room.max(1)));
+        let (mark, color) = match &task.finished {
+            Some(finish) => (
+                finish.outcome.mark(),
+                match finish.outcome {
+                    TaskOutcome::Completed => &p.success,
+                    TaskOutcome::Failed => &p.danger,
+                    TaskOutcome::Stopped => &p.muted,
+                },
+            ),
+            None if task.kind
+                == crate::model::view::TaskKind::Member(
+                    crate::model::view::MemberTarget::Starting,
+                ) =>
+            {
+                ("◌ ", &p.activity)
             }
-            break;
-        }
-        row.push_str(&entry);
-        room -= display_width(&entry);
+            None => ("◐ ", &p.activity),
+        };
+        let room = width.saturating_sub(display_width(mark) + elapsed.len() + 2);
+        let agent = task.agent.as_deref().map_or(String::new(), |name| {
+            let name = crate::sanitize::safe(name);
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            let name = truncate_cells(&name, (room / 3).saturating_sub(3));
+            if name.is_empty() {
+                String::new()
+            } else {
+                format!(" · {name}")
+            }
+        });
+        let label = truncate_cells(&label, room.saturating_sub(display_width(&agent)));
+        let padding = width.saturating_sub(
+            display_width(mark) + display_width(&label) + display_width(&agent) + elapsed.len(),
+        );
+        rows.push(format!(
+            "{}{}{}{}{}",
+            fg(mark, color),
+            fg(&label, &p.text),
+            fg(&agent, &p.muted),
+            " ".repeat(padding),
+            fg(&elapsed, &p.muted),
+        ));
     }
-    let failed = tasks
-        .iter()
-        .any(|(task, end)| end.is_some() && task.finished.as_ref().is_some_and(TaskFinish::failed));
-    let color = if running > 0 {
-        &p.activity
-    } else if failed {
-        &p.danger
-    } else {
-        &p.success
-    };
-    Some(fg(&truncate_cells(&row, width.max(1)), color))
+    rows
 }
 
 /// The side panel's line drawn as its transcript, without the opening
@@ -10003,6 +10026,9 @@ mod tests {
                 task_id: id.into(),
             }),
             label: label.into(),
+            command: Some(label.into()),
+            agent: None,
+            agent_id: None,
             started_at: 0,
             finished: None,
         }
@@ -10045,137 +10071,6 @@ mod tests {
     }
 
     #[test]
-    fn the_task_line_names_running_tasks_and_fades_an_ended_one() {
-        use crate::ui::render::panel::strip_escapes;
-        let p = &test_theme().palette;
-        let now = 1_000;
-        let running = background_task("t1", "cargo build");
-        let mut running = running;
-        running.started_at = (now - 72) * 1000;
-        let line = task_line(shown_tasks(&[running.clone()], now), now, 60, p)
-            .expect("a running task draws a line");
-        let plain = strip_escapes(&line);
-        assert_eq!(plain, "◐ 1 · cargo build 1m12s", "{plain}");
-
-        let mut second = background_task("t2", "cargo test");
-        second.started_at = (now - 34) * 1000;
-        let line = task_line(
-            shown_tasks(&[running.clone(), second.clone()], now),
-            now,
-            60,
-            p,
-        )
-        .expect("two tasks draw one line");
-        let plain = strip_escapes(&line);
-        assert_eq!(plain, "◐ 2 · cargo build 1m12s · cargo test 34s", "{plain}");
-
-        let ended = ended_at(running, now * 1000);
-        let both = [ended.clone(), second.clone()];
-        let shown = shown_tasks(&both, now);
-        let plain = strip_escapes(&task_line(shown.clone(), now, 60, p).expect("a line"));
-        assert!(plain.starts_with("◐ 1 · ✓ cargo build 1m12s"), "{plain}");
-        assert!(plain.contains("cargo test 34s"), "{plain}");
-
-        // An ended task that has not faded yet is the only one the row
-        // shows, so it carries no count.
-        let ended_now = |task, outcome| {
-            let mut task = finished(task, outcome);
-            task.finished.as_mut().expect("a finish").at = now * 1000;
-            task
-        };
-        let mut failed = ended_now(background_task("t3", "cargo build"), TaskOutcome::Failed);
-        failed.started_at = (now - 72) * 1000;
-        let plain =
-            strip_escapes(&task_line(shown_tasks(&[failed], now), now, 60, p).expect("a line"));
-        assert!(plain.starts_with("✗ cargo build 1m12s"), "{plain}");
-
-        let mut stopped = ended_now(background_task("t4", "cargo test"), TaskOutcome::Stopped);
-        stopped.started_at = (now - 12) * 1000;
-        let plain =
-            strip_escapes(&task_line(shown_tasks(&[stopped], now), now, 60, p).expect("a line"));
-        assert_eq!(plain, "⊘ cargo test 12s", "{plain}");
-
-        // Five seconds after the end the ended task leaves; nothing else runs.
-        let later = now + TASK_FADE;
-        assert!(
-            shown_tasks(&[ended], later).is_empty(),
-            "an ended task fades out"
-        );
-        assert!(task_line(Vec::new(), later, 60, p).is_none());
-    }
-
-    /// With nothing running the count has nothing to say, so the row starts
-    /// at the first entry's mark and carries no leading separator; a narrow
-    /// row still names that task.
-    #[test]
-    fn a_row_of_ended_tasks_starts_at_the_first_mark_without_a_count() {
-        use crate::ui::render::panel::{strip_escapes, visible_width};
-        let p = &test_theme().palette;
-        let now = 1_000;
-        let ended_now = |task, outcome| {
-            let mut task = finished(task, outcome);
-            task.finished.as_mut().expect("a finish").at = now * 1000;
-            task
-        };
-        let mut first = ended_now(
-            background_task("t1", "cargo build --all-targets --locked"),
-            TaskOutcome::Completed,
-        );
-        first.started_at = (now - 72) * 1000;
-        let mut second = ended_now(
-            background_task("t2", "cargo test --workspace --locked"),
-            TaskOutcome::Stopped,
-        );
-        second.started_at = (now - 34) * 1000;
-
-        let tasks = [first.clone(), second.clone()];
-        let plain =
-            strip_escapes(&task_line(shown_tasks(&tasks, now), now, 100, p).expect("a line"));
-        assert_eq!(
-            plain,
-            "✓ cargo build --all-targets --locked 1m12s · ⊘ cargo test --workspace --locked 34s",
-            "{plain}"
-        );
-
-        for width in [20, 30, 40, 100] {
-            let line = strip_escapes(
-                &task_line(shown_tasks(&[first.clone()], now), now, width, p).expect("a line"),
-            );
-            assert!(!line.starts_with(" ·"), "{width}: {line:?}");
-            assert!(line.starts_with("✓ "), "{width}: {line:?}");
-            assert!(visible_width(&line) <= width, "{width}: {line:?}");
-            assert!(line.contains("cargo"), "{width}: {line:?}");
-        }
-    }
-
-    #[test]
-    fn a_narrow_task_line_cuts_labels_and_still_names_the_first_task() {
-        use crate::ui::render::panel::{strip_escapes, visible_width};
-        let p = &test_theme().palette;
-        let now = 100;
-        let mut first = background_task("t1", "cargo build --all-targets --locked");
-        first.started_at = 0;
-        let mut second = background_task("t2", "cargo test --workspace --locked");
-        second.started_at = 0;
-        for width in [20, 30, 40, 120] {
-            let line = task_line(
-                shown_tasks(&[first.clone(), second.clone()], now),
-                now,
-                width,
-                p,
-            )
-            .expect("a line");
-            assert!(
-                visible_width(&line) <= width,
-                "{width}: too wide: {:?}",
-                strip_escapes(&line)
-            );
-            let plain = strip_escapes(&line);
-            assert!(plain.contains("cargo"), "{width}: {plain:?}");
-        }
-    }
-
-    #[test]
     fn the_dock_draws_the_task_line_above_the_composer_and_enter_opens_the_tasks() {
         use crate::model::session::Command;
         use crate::ui::render::panel::strip_escapes;
@@ -10211,7 +10106,7 @@ mod tests {
                 .collect();
             let line = rows
                 .iter()
-                .position(|row| row.contains("cargo build 1m12s"))
+                .position(|row| row.contains("cargo build"))
                 .unwrap_or_else(|| panic!("{fullscreen}: no task line in {rows:?}"));
             let composer = rows
                 .iter()
@@ -10220,6 +10115,241 @@ mod tests {
             assert!(line < composer, "{fullscreen}: the line sits above it");
         }
 
+        let mut member = background_task("m1", "Review runtime ownership");
+        member.kind = crate::model::view::TaskKind::Member(
+            crate::model::view::MemberTarget::Session("member-session".into()),
+        );
+        member.agent = Some("Code Reviewer".into());
+        member.started_at = (now - 34) * 1000;
+        let mut starting = member.clone();
+        starting.id = "m2".into();
+        starting.label = "Inspect integration coverage".into();
+        starting.agent = Some("Test Explorer".into());
+        starting.kind =
+            crate::model::view::TaskKind::Member(crate::model::view::MemberTarget::Starting);
+        let mut stopped = ended_at(member.clone(), now * 1000);
+        stopped.finished.as_mut().unwrap().outcome = TaskOutcome::Stopped;
+        let mut failed = ended_at(starting.clone(), now * 1000);
+        failed.finished.as_mut().unwrap().outcome = TaskOutcome::Failed;
+        let mut types = member.clone();
+        types.id = "m3".into();
+        types.label = "Check generated types".into();
+        types.agent = Some("Type Checker".into());
+        let mut audit = member.clone();
+        audit.id = "m4".into();
+        audit.label = "Audit cancellation paths".into();
+        audit.agent = Some("Safety Reviewer".into());
+        audit.kind = crate::model::view::TaskKind::Member(
+            crate::model::view::MemberTarget::Session("audit-session".into()),
+        );
+        let cases = [
+            vec![member.clone(), starting.clone()],
+            vec![task.clone(), member.clone()],
+            vec![ended_at(task.clone(), now * 1000), stopped, failed],
+            vec![
+                task.clone(),
+                member.clone(),
+                starting.clone(),
+                member.clone(),
+            ],
+            vec![task.clone(), member, starting, types, audit],
+        ];
+        for fullscreen in [false, true] {
+            for size in [(32, 8), (44, 12), (44, 30), (80, 30), (120, 30)] {
+                for tasks in &cases {
+                    app.fullscreen = fullscreen;
+                    app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                        session_id: "s1".into(),
+                        focus: "main".into(),
+                        tasks: tasks.clone(),
+                        ..ViewSnapshot::default()
+                    })));
+                    let frame = app.frame(size);
+                    let rows: Vec<_> = frame.live[frame.dock..frame.anchor]
+                        .iter()
+                        .map(|row| strip_escapes(row))
+                        .collect();
+                    assert_eq!(rows.len(), tasks.len(), "{rows:?}");
+                    let task_rows = if size.1 >= 30 {
+                        rows.as_slice()
+                    } else {
+                        &rows[rows.len() - 1..]
+                    };
+                    for (row, task) in rows.iter().zip(tasks) {
+                        assert!(display_width(row) <= size.0 as usize, "{row}");
+                        let prefix: String = task.label.chars().take(4).collect();
+                        assert!(row.contains(&prefix), "{row}");
+                        assert_eq!(
+                            row.matches('◐').count()
+                                + row.matches('◌').count()
+                                + row.matches('✓').count()
+                                + row.matches('⊘').count()
+                                + row.matches('✗').count(),
+                            1,
+                            "{row}"
+                        );
+                        if size.0 >= 80 {
+                            if let Some(agent) = &task.agent {
+                                assert!(row.contains(agent), "{row}");
+                            }
+                            let elapsed = row.split_whitespace().last().unwrap();
+                            assert!(
+                                elapsed.ends_with('s')
+                                    && elapsed.starts_with(|c: char| c.is_ascii_digit()),
+                                "{row}"
+                            );
+                        }
+                    }
+                    let bytes = if fullscreen {
+                        FullScreen::new(size, true).render(&frame, size, &app.palette, &app)
+                    } else {
+                        Screen::new(size, true).render(&frame, size)
+                    };
+                    let mut emu =
+                        crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+                    emu.feed(&bytes);
+                    let rendered = emu.rows_text().join("\n");
+                    assert!(
+                        rendered.contains("Ask anything"),
+                        "{fullscreen} {size:?}: {rendered}"
+                    );
+                    for row in task_rows {
+                        assert!(
+                            rendered.contains(row.trim_end().rsplit_once(' ').unwrap().0.trim()),
+                            "{fullscreen} {size:?}: {rendered}"
+                        );
+                    }
+                    assert!(emu.cursor_visible, "{fullscreen} {size:?}: {rendered}");
+
+                    app.composer.set_draft(
+                        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nlast draft line",
+                    );
+                    let frame = app.frame(size);
+                    let bytes = if fullscreen {
+                        FullScreen::new(size, true).render(&frame, size, &app.palette, &app)
+                    } else {
+                        Screen::new(size, true).render(&frame, size)
+                    };
+                    let mut emu =
+                        crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+                    emu.feed(&bytes);
+                    let rendered = emu.rows_text().join("\n");
+                    assert!(
+                        rendered.contains("last draft line"),
+                        "{fullscreen} {size:?}: {rendered}"
+                    );
+                    for row in task_rows {
+                        assert!(
+                            rendered.contains(row.trim_end().rsplit_once(' ').unwrap().0.trim()),
+                            "{fullscreen} {size:?}: {rendered}"
+                        );
+                    }
+                    assert!(emu.cursor_visible, "{fullscreen} {size:?}: {rendered}");
+                    app.composer.set_draft("");
+                }
+            }
+        }
+
+        app.fullscreen = true;
+        app.composer.set_draft("keep this draft");
+        for size in [(80, 30), (44, 12)] {
+            use crate::ui::render::fullscreen::MouseOutcome;
+            use crate::ui::terminal::{MouseEvent, MouseKind};
+            let mut screen = FullScreen::new(size, true);
+            let frame = app.frame(size);
+            let mut emu = crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+            emu.feed(&screen.render(&frame, size, &app.palette, &app));
+            let row = emu
+                .rows_text()
+                .iter()
+                .position(|row| row.contains("Audit cancellation"))
+                .unwrap() as u16;
+            let event = |kind| MouseEvent {
+                kind,
+                column: 4,
+                row,
+            };
+            screen.mouse(event(MouseKind::Press), &app);
+            app.snapshot
+                .as_mut()
+                .unwrap()
+                .tasks
+                .last_mut()
+                .unwrap()
+                .started_at -= 1000;
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            assert_eq!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Task("m4".into())
+            );
+            app.open_task("m4");
+            let detail = app.frame(size);
+            emu.feed(&screen.render(&detail, size, &app.palette, &app));
+            let rendered = emu.rows_text().join("\n");
+            if size.0 >= 80 {
+                assert!(rendered.contains("Audit cancellation"), "{rendered}");
+            }
+            assert!(
+                rendered.contains("Member Session: audit-session"),
+                "{rendered}"
+            );
+            assert_eq!(
+                screen.mouse(event(MouseKind::Press), &app),
+                MouseOutcome::Ignored
+            );
+            assert_eq!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Ignored
+            );
+            app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                KeyCode::Esc,
+                Modifiers::NONE,
+            )));
+            assert!(app.prompt.is_none());
+            assert_eq!(app.composer.text(), "keep this draft");
+
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            screen.mouse(event(MouseKind::Press), &app);
+            screen.mouse(event(MouseKind::Drag), &app);
+            assert_ne!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Task("m4".into())
+            );
+            screen.mouse(event(MouseKind::Press), &app);
+            app.snapshot.as_mut().unwrap().tasks.swap(1, 4);
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            assert_eq!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Ignored
+            );
+            app.snapshot.as_mut().unwrap().tasks.swap(1, 4);
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            screen.mouse(event(MouseKind::Press), &app);
+            let resized = (size.0 - 1, size.1);
+            screen.render(&app.frame(resized), resized, &app.palette, &app);
+            assert_eq!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Ignored
+            );
+        }
+        app.open_task("t1");
+        app.sync_task_details();
+        let frame = app.frame((80, 30));
+        assert!(
+            frame
+                .overlay
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .any(|row| row.contains("Loading output..."))
+        );
+        assert!(sent.borrow().iter().any(|command| matches!(command, Command::WatchTaskOutput { target: Some(target), .. } if target.task_id == "t1")));
+        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Esc,
+            Modifiers::NONE,
+        )));
+        app.composer.set_draft("");
         app.fullscreen = false;
         app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
             KeyCode::Enter,
@@ -10555,6 +10685,118 @@ mod tests {
             Vec::new()
         }
         fn shutdown(self: Box<Self>) {}
+    }
+
+    #[test]
+    fn model_labels_share_highlighting_and_fullscreen_clicks_open_the_picker() {
+        use crate::ui::render::panel::strip_escapes;
+        use crate::ui::terminal::{MouseEvent, MouseKind};
+
+        for fullscreen in [false, true] {
+            for cols in [100, 26, 18] {
+                let size = (cols, 24);
+                let mut drawn = Drawn::new(size, None, true);
+                let app = &mut drawn.app;
+                app.fullscreen = fullscreen;
+                app.apply(Update::Ready(Configuration {
+                    provider_id: "test".into(),
+                    model_id: "model".into(),
+                    model_preferences: Some(dim_agent_types::ModelPreferences {
+                        reasoning_effort: Some("high".into()),
+                        ..Default::default()
+                    }),
+                    capability_snapshot: None,
+                }));
+                app.composer.set_draft("keep draft");
+                let frame = app.frame(size);
+                let label = frame.live.iter().find_map(|row| {
+                    let text = strip_escapes(row);
+                    text.find("test / model").map(|start| {
+                        let label = if text[start..].contains("· high") {
+                            "test / model · high"
+                        } else {
+                            "test / model"
+                        };
+                        assert!(row.contains(&fg(label, &app.palette.highlight)), "{row:?}");
+                        label
+                    })
+                });
+                assert_eq!(
+                    label,
+                    match (fullscreen, cols) {
+                        (_, 100) => Some("test / model · high"),
+                        (true, 26) => Some("test / model"),
+                        _ => None,
+                    }
+                );
+                if !fullscreen || label.is_none() {
+                    assert!(frame.model_label.is_none());
+                    continue;
+                }
+                let mut screen = FullScreen::new(size, true);
+                let mut emu = crate::ui::render::testterm::Emu::new(cols as usize, 24);
+                emu.feed(&screen.render(&frame, size, &app.palette, app));
+                let rows = emu.rows_text();
+                let row = rows
+                    .iter()
+                    .position(|row| row.contains(label.unwrap()))
+                    .unwrap();
+                let column = rows[row].chars().position(|ch| ch == 't').unwrap();
+                let event = |kind, column| MouseEvent {
+                    kind,
+                    column: column as u16,
+                    row: row as u16,
+                };
+                for column in [column - 1, column + label.unwrap().chars().count()] {
+                    screen.mouse(event(MouseKind::Press, column), app);
+                    assert_ne!(
+                        screen.mouse(event(MouseKind::Release, column), app),
+                        MouseOutcome::Models
+                    );
+                }
+                screen.mouse(event(MouseKind::Press, column), app);
+                screen.mouse(event(MouseKind::Drag, column), app);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.mouse(event(MouseKind::Press, column), app);
+                let resized = (cols - 1, 24);
+                screen.resize(resized);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.mouse(event(MouseKind::Press, column), app);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.render(&app.frame(size), size, &app.palette, app);
+                for column in [column, column + label.unwrap().chars().count() - 1] {
+                    screen.mouse(event(MouseKind::Press, column), app);
+                    screen.render(&app.frame(size), size, &app.palette, app);
+                    assert_eq!(
+                        screen.mouse(event(MouseKind::Release, column), app),
+                        MouseOutcome::Models
+                    );
+                }
+                app.run_command("models", "");
+                let frame = app.frame(size);
+                emu.feed(&screen.render(&frame, size, &app.palette, app));
+                assert!(emu.rows_text().join("\n").contains("Select a model"));
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Press, column), app),
+                    MouseOutcome::Models
+                );
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                press(app, KeyCode::Esc);
+                assert_eq!(app.composer.text(), "keep draft");
+            }
+        }
     }
 
     #[test]

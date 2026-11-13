@@ -162,6 +162,10 @@ Exec retains its `cwd` argument resolution, POSIX `&` refusal, heavy-search
 refusal, timeouts and background ownership. Its existing `exec_shell_unavailable`
 tool-result code is preserved, with instructions to fix the file and retry.
 
+Exec's schema requires a `title` string for newly generated calls: a short task-specific label for the background task list, independent of the shell `command`. Runtime admission still accepts omission for existing callers. The external tool boundary rejects a supplied title that is not a string, is blank after checking whitespace, or contains CR, LF, NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR, with `exec_invalid_request` before starting a process. An accepted title is passed verbatim to BackgroundExec on either immediate or automatic handoff; consumers do not normalize it. The command-derived `description` retains its existing meaning. Omitting the title keeps existing callers working and creates no inferred title. The title schema and its description are protocol under [model-facing prompts §4](../../../design/model-prompts.md#4-protocol-and-policy); execution policy is unchanged.
+
+For provider compatibility, the title schema uses `type: string` and `minLength: 1` without a regular expression; admission enforces the nonblank, single-line contract.
+
 Exec takes no input that selects a boundary. The user's `Process isolation` control in
 `/permissions` or `/settings` selects the existing `sandbox` and `network` settings
 ([process isolation](../../../design/host-platform-isolation.md#process-isolation));
@@ -526,6 +530,38 @@ Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities
 Owns commands transferred from foreground execution, their terminal records and
 bounded completion notices on the calling branch.
 
+`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v48](../../../design/appserver/native-storage-format.md#v48-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
+
+### Data face
+
+`backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id));
+the typed `BackgroundExec` serves it and stays the Rust binding.
+
+| Method | Positional arguments | Reply | Errors |
+| --- | --- | --- | --- |
+| `output` | `(taskId)` | `string`: the live tail preview | `unknown`, `closed` |
+| `outputPage` | `(taskId, cursor, limit)` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit`, `read` |
+| `wait` | `(taskId, timeoutMs)` | the `exec/ended` record `{task_id, status, result}` | `unknown`, `closed`, `timeout`, `read` |
+| `stop` | `(taskId)` | the `exec/ended` record | `unknown`, `closed`, `read` |
+
+`taskId` is a task this branch started. `output` reads the live capture; it is
+`unknown` for an ended or replayed task, whose registered file stays readable by
+`outputPage`. `outputPage` reads that file by byte cursor: `limit` rejects 0 and
+clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
+`cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
+ended task at once and otherwise waits for its dispatch until `timeoutMs` elapses.
+For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it cancels
+a running task so it ends `cancelled`
+and does not wake, and answers an already ended task's record without changing
+its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+drops the read and a dropped `wait` releases the watch. `start` needs the live
+process, so it is the `exec` tool's own operation and is not on the face.
+
+Historical `outputPage`, `wait` and `stop` calls use the owner's bounded task-fact reads, without rebuilding a historical task cache. `wait` returns a historical terminal record without waiting for execution; `timeoutMs` governs the completion wait for a live task. Failed reads or inconsistent required facts answer `read`, not `unknown`. Dropping a historical call cancels its read.
+
+Errors cross as `{code, message}`; the codes are the variants above. The owner
+releases no lock across a read: the page opens the registered file itself.
+
 ### Dependencies
 
 | Service | Purpose |
@@ -547,8 +583,9 @@ Session from `start`, before `exec/started`, until its supervisor has appended
 `exec/ended`; that end keeps the branch busy until its wake is posted. A start
 that gets no hold (the Session is closing) is refused as in a closing branch,
 and a refused start stops its command. Tracked tasks are joined on unload.
-Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O. Historical output/stop resolves the selected task's first start and end by task_id; these reads do not retain a historical task directory. Read failures propagate explicitly.
- The notice is not the full command output; output files carry large
+Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O.
+
+The notice is not the full command output; output files carry large
 results. The `exec/ended` result carries the final `preview` and
 `previewTruncated` in its `structuredContent`, from the same settled capture
 as the live read. Its escaped result preview uses the existing context-block
@@ -583,13 +620,19 @@ branch-scoped, and a request on that branch after the notice carries the entry
 `a_turn_stop_keeps_background_work_and_its_wake_starts_a_turn`,
 `idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_end`,
 `running_tasks_hold_the_session_until_the_last_one_ends`,
-`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`.
+`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`,
+`background_exec_face_answers_as_the_typed_service` (the `backgroundExec` face
+against the typed service: tail, page, wait, stop and the error codes).
+The `transport_flow/shell_input.rs` flow
+`node_object_faces_use_session_and_branch_owners_across_the_bridge` resolves
+`backgroundExec` through the real Node loader and verifies owner operations
+and Session isolation.
 
 <!-- generated:plugin BackgroundExec — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle` |
-| 提供 | `B:BackgroundExec` |
+| 提供 | `B:BackgroundExec`、`B:dyn HostDispatch#backgroundExec` |
 | 被注入于 | — |
 <!-- /generated -->

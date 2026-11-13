@@ -73,6 +73,7 @@ pub(super) async fn read(
                     "data.request_id",
                     "data.call_id",
                     "data.description",
+                    "data.title",
                 ]
                 .map(String::from)
                 .to_vec(),
@@ -95,7 +96,12 @@ pub(super) async fn read(
     };
     let tasks: Vec<_> = rows
         .into_iter()
-        .map(|row| {
+        .map(|mut row| {
+            let title = match row.values.pop().expect("title field") {
+                QueryValue::Missing => None,
+                QueryValue::Value { value } => serde_json::from_value(value).expect("stored title"),
+                QueryValue::Elements { .. } => unreachable!("title is a scalar field"),
+            };
             let values: Vec<_> = row
                 .values
                 .into_iter()
@@ -115,6 +121,7 @@ pub(super) async fn read(
                 request_id: values[5].as_str().expect("request id").into(),
                 call_id: values[6].as_str().expect("call id").into(),
                 description: values[7].as_str().expect("description").into(),
+                title,
             }
         })
         .collect();
