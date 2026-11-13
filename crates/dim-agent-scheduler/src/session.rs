@@ -3,7 +3,7 @@
 //! before it calls the process service ([design §1.1, A.2, §10](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::MAX_PROMPT_BYTES,
-    loops::{self, Loops, StartRequest},
+    loops::{self, Loops, StartRequest, wire_loop},
     methods::{Caller, ScheduleJobs, ToolRequest},
     wakeups::{WakeupRequest, Wakeups},
 };
@@ -314,36 +314,21 @@ fn loop_handler(loops: Arc<Loops>) -> dim_agent_capabilities::methods::Handler {
             match method.as_str() {
                 "session.loop.start" => {
                     let p: LoopStartParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    let branch = p.branch_id.as_deref().unwrap_or("main");
-                    nonempty(branch, "branchId")?;
-                    nonempty(&p.prompt, "prompt")?;
-                    prompt_size(&p.prompt).map_err(RpcError::invalid)?;
-                    let created = loops
-                        .start(StartRequest {
-                            session_id: p.session_id,
-                            branch_id: branch.to_owned(),
-                            prompt: p.prompt,
-                            every_seconds: p.every_seconds,
-                        })
-                        .await?;
+                    let created = loops.start(loop_start_request(p)?).await?;
                     reply(json!({ "loop": wire_loop(&created) }))
                 }
                 "session.loop.list" => {
                     let p: LoopListParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    let branch = p.branch_id.as_deref().unwrap_or("main");
-                    nonempty(branch, "branchId")?;
-                    let own = loops.list(&p.session_id, branch).await?;
+                    let (session_id, branch) = loop_list_scope(p)?;
+                    let own = loops.list(&session_id, &branch).await?;
                     reply(json!({
                         "loops": own.iter().map(wire_loop).collect::<Vec<_>>()
                     }))
                 }
                 "session.loop.stop" => {
                     let p: LoopStopParams = params(value)?;
-                    nonempty(&p.session_id, "sessionId")?;
-                    nonempty(&p.loop_id, "loopId")?;
-                    let (record, settled) = loops.stop(&p.session_id, &p.loop_id).await?;
+                    let (session_id, loop_id) = loop_stop_target(p)?;
+                    let (record, settled) = loops.stop(&session_id, &loop_id).await?;
                     let mut answer = json!({ "loop": wire_loop(&record) });
                     if !settled {
                         answer["settled"] = json!(false);
@@ -379,46 +364,84 @@ fn loop_declaration() -> ToolDefinition {
     tool
 }
 
-/// The created record as the wire spells it (design §12.6).
-fn wire_loop(record: &loops::Loop) -> Value {
-    json!({
-        "loopId": record.loop_id,
-        "branchId": record.branch_id,
-        "state": record.state.name(),
-        "round": record.round,
-        "nextAt": record.next_at,
-        "lastRoundAt": record.last_round_at,
-        "expiresAt": record.expires_at,
-        "stoppedReason": record.stopped_reason,
-        "settledAt": record.settled_at,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopStartParams {
+    pub(crate) session_id: String,
+    #[serde(default)]
+    pub(crate) branch_id: Option<String>,
+    pub(crate) prompt: String,
+    /// A fixed cadence; absent starts a self-paced loop.
+    #[serde(default)]
+    pub(crate) every_seconds: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopListParams {
+    pub(crate) session_id: String,
+    #[serde(default)]
+    pub(crate) branch_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopStopParams {
+    pub(crate) session_id: String,
+    pub(crate) loop_id: String,
+}
+
+/// The one parse of a loop start, shared by the `session.loop.start` handler
+/// and the `loops` data face's `start`, so both answer the same errors.
+pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest, RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = params.branch_id.as_deref().unwrap_or("main");
+    nonempty(branch, "branchId")?;
+    nonempty(&params.prompt, "prompt")?;
+    prompt_size(&params.prompt).map_err(RpcError::invalid)?;
+    Ok(StartRequest {
+        session_id: params.session_id,
+        branch_id: branch.to_owned(),
+        prompt: params.prompt,
+        every_seconds: params.every_seconds,
     })
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoopStartParams {
-    session_id: String,
-    #[serde(default)]
-    branch_id: Option<String>,
-    prompt: String,
-    /// A fixed cadence; absent starts a self-paced loop.
-    #[serde(default)]
-    every_seconds: Option<u64>,
+/// The one parse of a loop list scope, shared by the handler and the face.
+pub(crate) fn loop_list_scope(params: LoopListParams) -> Result<(String, String), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = params.branch_id.as_deref().unwrap_or("main");
+    nonempty(branch, "branchId")?;
+    Ok((params.session_id, branch.to_owned()))
+}
+
+/// The one parse of a loop stop target, shared by the handler and the face.
+pub(crate) fn loop_stop_target(params: LoopStopParams) -> Result<(String, String), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    nonempty(&params.loop_id, "loopId")?;
+    Ok((params.session_id, params.loop_id))
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoopListParams {
-    session_id: String,
+pub(crate) struct LoopNextParams {
+    pub(crate) session_id: String,
+    pub(crate) loop_id: String,
+    /// Seconds until the round is due; absent uses the tool's default.
     #[serde(default)]
-    branch_id: Option<String>,
+    pub(crate) delay_seconds: Option<i64>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoopStopParams {
-    session_id: String,
-    loop_id: String,
+/// The one parse of a loop `next`, shared by the handler and the face. The
+/// delay default is the tool's, so one absence rule serves both entry points.
+pub(crate) fn loop_next_target(params: LoopNextParams) -> Result<(String, String, i64), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    nonempty(&params.loop_id, "loopId")?;
+    Ok((
+        params.session_id,
+        params.loop_id,
+        params.delay_seconds.unwrap_or(300),
+    ))
 }
 
 pub(crate) fn wakeup_request(

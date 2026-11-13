@@ -169,6 +169,10 @@ impl DynPlugin for SchedulerPlugin {
                 shared: shared.clone(),
             });
             ctx.provide_as::<crate::loops::Loops>(loops.clone())?;
+            ctx.provide_at(
+                host_key("loops"),
+                Arc::new(crate::loops::LoopsFace(loops.clone())),
+            )?;
             methods.register(
                 ctx,
                 NAMESPACE,

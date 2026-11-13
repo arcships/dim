@@ -15,6 +15,8 @@ pub struct Holds {
     lose_input_reply: AtomicBool,
     /// Notified after a wakeup create acquires process admission.
     pub wakeup_create: Notify,
+    /// Notified after a loop start acquires process admission.
+    pub loop_start: Notify,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable

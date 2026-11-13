@@ -91,8 +91,8 @@ fn install_inner(
     builder
         .catalog_mut()
         .register_shared(dim_agent_runtime::names::name_of::<ScheduleJobs>())
-        .register_shared(dim_agent_runtime::names::name_of::<Wakeups>());
-    dim_agent_runtime::names::register::<Loops>(builder.catalog_mut(), None);
+        .register_shared(dim_agent_runtime::names::name_of::<Wakeups>())
+        .register_shared(dim_agent_runtime::names::name_of::<Loops>());
     let deliveries = methods::DeliveryHolds::default();
     builder.optional_plugin(move |names| {
         let mut plugin = make(names, texts.clone())?;

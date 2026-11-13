@@ -1390,7 +1390,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("promptSourcesBranch", "hot-path"),
         ("skillsInstructionsSettingsHost", "owner-api"),
         ("summaryPromptSettingsHost", "owner-api"),
-        ("loops", "owner-api"),
         ("agentDirectory", "owner-api"),
         ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),

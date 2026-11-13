@@ -20880,7 +20880,6 @@
       "references": [
         "path Names",
         "path dim_agent_runtime::names::name_of",
-        "path dim_agent_runtime::names::register",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -21154,7 +21153,13 @@
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Shared",
-        "use crate::methods::Shared"
+        "path face_arguments",
+        "path face_call",
+        "path face_failure",
+        "use crate::methods::Shared",
+        "use crate::methods::face_arguments",
+        "use crate::methods::face_call",
+        "use crate::methods::face_failure"
       ]
     },
     {
@@ -21165,6 +21170,28 @@
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
         "use crate::runs::SchedulerError"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::session",
+      "references": [
+        "path LoopListParams",
+        "path LoopNextParams",
+        "path LoopStartParams",
+        "path LoopStopParams",
+        "path loop_list_scope",
+        "path loop_next_target",
+        "path loop_start_request",
+        "path loop_stop_target",
+        "use crate::session::LoopListParams",
+        "use crate::session::LoopNextParams",
+        "use crate::session::LoopStartParams",
+        "use crate::session::LoopStopParams",
+        "use crate::session::loop_list_scope",
+        "use crate::session::loop_next_target",
+        "use crate::session::loop_start_request",
+        "use crate::session::loop_stop_target"
       ]
     },
     {
@@ -21289,6 +21316,7 @@
       "to": "dim_agent_scheduler::loops",
       "references": [
         "path crate::loops::Loops",
+        "path crate::loops::LoopsFace",
         "path crate::loops::read"
       ]
     },
@@ -21538,7 +21566,8 @@
         "path loops::Loop",
         "use crate::loops",
         "use crate::loops::Loops",
-        "use crate::loops::StartRequest"
+        "use crate::loops::StartRequest",
+        "use crate::loops::wire_loop"
       ]
     },
     {

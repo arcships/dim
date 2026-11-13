@@ -10,13 +10,17 @@
 use crate::{
     document::{MAX_PROMPT_BYTES, canonical_instant, format_instant},
     engine::sessions,
-    methods::Shared,
+    methods::{Shared, face_arguments, face_call, face_failure},
     runs::SchedulerError,
+    session::{
+        LoopListParams, LoopNextParams, LoopStartParams, LoopStopParams, loop_list_scope,
+        loop_next_target, loop_start_request, loop_stop_target,
+    },
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
 use dim_agent_types::markup::escaped;
-use rutis_bridge::session::HostDispatch;
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as BridgeValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -389,6 +393,10 @@ impl Loops {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
+        #[cfg(feature = "testing")]
+        if let Some(holds) = &self.shared.holds {
+            holds.loop_start.notify_one();
+        }
         let _hold = self.shared.loops.lock().await;
         let now = Utc::now();
         let cadence = match request.every_seconds {
@@ -955,6 +963,116 @@ impl Loops {
             self.notice(&record);
         }
         Ok(())
+    }
+}
+
+/// The created record as the wire spells it (design §12.6), for the
+/// `session.loop.*` methods and the `loops` data face alike.
+pub(crate) fn wire_loop(record: &Loop) -> serde_json::Value {
+    json!({
+        "loopId": record.loop_id,
+        "branchId": record.branch_id,
+        "state": record.state.name(),
+        "round": record.round,
+        "nextAt": record.next_at,
+        "lastRoundAt": record.last_round_at,
+        "expiresAt": record.expires_at,
+        "stoppedReason": record.stopped_reason,
+        "settledAt": record.settled_at,
+    })
+}
+
+/// The `loops` data face: `start`, `next`, `list` and `stop`, the owner
+/// operations the Session part calls on the native binding. The pass, recovery
+/// and `settle_delivering` stay internal (design §12.6).
+pub(crate) struct LoopsFace(pub(crate) Arc<Loops>);
+
+impl HostDispatch for LoopsFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({ "start": "async", "next": "async", "list": "async", "stop": "async" }))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        let loops = self.0.clone();
+        let shared = loops.shared.clone();
+        let operation = match method {
+            "start" => {
+                let (request, cancelled) =
+                    match face_arguments::<LoopStartParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                let request = match loop_start_request(request) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return face_failure(SchedulerError::new("invalid_params", error.message));
+                    }
+                };
+                face_call(&shared, cancelled, false, async move {
+                    let record = loops.start(request).await?;
+                    Ok(wire_loop(&record))
+                })
+            }
+            "next" => {
+                let (request, cancelled) =
+                    match face_arguments::<LoopNextParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                let (session_id, loop_id, delay) = match loop_next_target(request) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        return face_failure(SchedulerError::new("invalid_params", error.message));
+                    }
+                };
+                face_call(&shared, cancelled, false, async move {
+                    let record = loops.next(&session_id, &loop_id, delay).await?;
+                    Ok(wire_loop(&record))
+                })
+            }
+            "list" => {
+                let (request, cancelled) =
+                    match face_arguments::<LoopListParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                let (session_id, branch) = match loop_list_scope(request) {
+                    Ok(scope) => scope,
+                    Err(error) => {
+                        return face_failure(SchedulerError::new("invalid_params", error.message));
+                    }
+                };
+                face_call(&shared, cancelled, true, async move {
+                    let records = loops.list(&session_id, &branch).await?;
+                    Ok(json!({ "loops": records.iter().map(wire_loop).collect::<Vec<_>>() }))
+                })
+            }
+            "stop" => {
+                let (request, cancelled) =
+                    match face_arguments::<LoopStopParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                let (session_id, loop_id) = match loop_stop_target(request) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        return face_failure(SchedulerError::new("invalid_params", error.message));
+                    }
+                };
+                face_call(&shared, cancelled, false, async move {
+                    let (record, settled) = loops.stop(&session_id, &loop_id).await?;
+                    let mut answer = wire_loop(&record);
+                    if !settled {
+                        answer["settled"] = json!(false);
+                    }
+                    Ok(answer)
+                })
+            }
+            _ => {
+                return Err(BridgeError::Value(format!("unknown loops method {method}")));
+            }
+        };
+        Ok(operation)
     }
 }
 
