@@ -1155,6 +1155,10 @@ fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult
 }
 
 /// The paths a family's words scan, in the order the command names them.
+///
+/// An option that takes a value belongs in the family's table; one left out is
+/// read as before the table existed, so its value becomes a scanned path or the
+/// pattern.
 fn scan_targets(family: &str, args: &[String]) -> Vec<String> {
     if family == "find" {
         return find_starting_points(args);
