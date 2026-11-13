@@ -22,7 +22,7 @@ The delivery decides where a change takes effect. A `System` source is part of t
 
 ### 1.1 Policy
 
-`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says.
+`dim/base` is policy: the identity sentence and the rules — safety, tone, objectivity, engineering, git, working method, ending a turn, and the linking conventions. It is guidance about how to work; the runtime behaves the same whatever it says. The working-method rule states when several tool calls go in one response: calls that do not depend on one another go together, a call that needs an earlier call's result goes in a later response, a wait goes in a response of its own, and all changes to one file go in one call.
 
 The shell guidance is policy too. It is the sentence the environment source carries for the operator's shell (`Use POSIX shell syntax. …`, or the PowerShell, cmd, Git Bash and other editions), plus the file-encoding guidance on Windows: how to quote, how to invoke a path with spaces, which legacy encodings to ask the read tool for. None of it states a runtime fact.
 
