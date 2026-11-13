@@ -305,8 +305,7 @@ export interface ModelId {
   modelId: string
 }
 
-/** The `get` reply: the Agent's identity and default model. */
-export interface AgentConfigReply {
+export interface AgentConfig2 {
   name: string
   systemPrompt: string
   model: ModelId
@@ -317,7 +316,7 @@ export interface AgentConfig {
    * The Agent's identity and default model as data, for parts in other
    * languages.
    */
-  get(): Promise<AgentConfigReply>
+  get(): Promise<AgentConfig2>
 }
 
 export interface SessionConfig {
