@@ -1940,6 +1940,7 @@
         "format",
         "json",
         "matches",
+        "std::pin::pin",
         "tokio::select",
         "tracing::warn",
         "vec"
@@ -20815,7 +20816,7 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
-        "path dim_agent_runtime::names::register",
+        "path dim_agent_runtime::names::name_of",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -21171,6 +21172,7 @@
       "to": "dim_agent_scheduler::wakeups",
       "references": [
         "path crate::wakeups::Wakeups",
+        "path crate::wakeups::WakeupsFace",
         "path crate::wakeups::read"
       ]
     },
@@ -21573,7 +21575,13 @@
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Shared",
-        "use crate::methods::Shared"
+        "path face_arguments",
+        "path face_call",
+        "path face_failure",
+        "use crate::methods::Shared",
+        "use crate::methods::face_arguments",
+        "use crate::methods::face_call",
+        "use crate::methods::face_failure"
       ]
     },
     {
@@ -21584,6 +21592,23 @@
         "path SchedulerError::invalid_data",
         "path SchedulerError::new",
         "use crate::runs::SchedulerError"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::wakeups",
+      "to": "dim_agent_scheduler::session",
+      "references": [
+        "path CancelParams",
+        "path CreateParams",
+        "path ListParams",
+        "path nonempty",
+        "path wakeup_request",
+        "use crate::session::CancelParams",
+        "use crate::session::CreateParams",
+        "use crate::session::ListParams",
+        "use crate::session::nonempty",
+        "use crate::session::wakeup_request",
+        "use crate::session::wire_scheduled"
       ]
     },
     {
