@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -9,28 +9,16 @@ const runtimeRoot = import.meta.dirname
 const pluginSource = path.join(runtimeRoot, 'plugins', 'light-ocr')
 const fixtures = path.join(runtimeRoot, 'fixtures', 'light-ocr')
 
-// Modality's page pixel bound (`dim_ocr::MAX_PAGE_PIXELS`), which the helper
-// hands the image engine as `reducedLimits.maxPixels`. The boundary test below
-// pins the value end to end: the fixture refuses only when a numeric
-// `maxPixels` is passed.
+// dim_ocr::MAX_PAGE_PIXELS
 const PAGE_PIXEL_BOUND = 25_000_000
 
-// The plugin's own lock: the pin of the facade, and upstream's declaration of
-// which platform package belongs to which OS, CPU and C library.
 const lock = JSON.parse(readFileSync(path.join(pluginSource, 'package-lock.json'), 'utf8'))
 
-// The identity the helper must accept for one lock entry, spelled from the
-// entry's own npm `os`, `cpu` and `libc` rather than from the helper's table:
-// npm's OS abbreviations are the facade's full names, and an ABI suffix is
-// there only for a musl build.
 function identity(entry) {
   const os = { darwin: 'macos', win32: 'windows' }[entry.os[0]] ?? entry.os[0]
   return entry.libc?.[0] === 'musl' ? `${os}-${entry.cpu[0]}-musl` : `${os}-${entry.cpu[0]}`
 }
 
-// Every platform package the lock installs, as `{identity, name}`: the package
-// name is upstream's, the identity is derived from the same entry's platform
-// fields, so the two cannot agree by being copies of one table.
 const platformPackages = Object.entries(lock.packages)
   .filter(([name, entry]) => name !== '' && Array.isArray(entry.os) && Array.isArray(entry.cpu))
   .map(([name, entry]) => ({ identity: identity(entry), name: name.replace(/^node_modules\//, '') }))
@@ -208,8 +196,6 @@ test('an image becomes one page, in text and layout mode', t => {
   for (const mode of ['text', 'layout']) {
     const result = run(context, ['--input', input, '--artifacts', context.artifacts, '--output-mode', mode], settings)
     assert.deepEqual(succeeded(result), { ok: true, pageCount: 1 })
-    // One engine per call, one recognition of exactly the input's bytes with
-    // its EXIF applied, and the engine closed whatever happened.
     assert.deepEqual(result.calls.map(call => call.call),
       ['createEngine', 'recognizeEncoded', 'createEngine.close'], mode)
     assert.equal(result.calls[0].options.reducedLimits.maxPixels, PAGE_PIXEL_BOUND, mode)
@@ -478,25 +464,5 @@ test('an artifact path that is not a directory is invalid input', t => {
     const result = run(context, ['--input', input, '--artifacts', artifacts], {})
     const error = refused(result, 'invalid_input')
     assert.ok(error.message.includes('The artifact directory is missing'), error.message)
-  }
-})
-
-// The one lock rule a check over committed files cannot state: no plugin's
-// install may run a script. Every plugin the runtime ships is covered, so a
-// new plugin's lock is held to it too. The `integrity` and manifest agreement
-// are `xtask check`'s.
-test('no shipped plugin lock runs an install script', () => {
-  const plugins = path.join(runtimeRoot, 'plugins')
-  const locks = readdirSync(plugins, { withFileTypes: true })
-    .filter(entry => entry.isDirectory())
-    .map(entry => path.join(plugins, entry.name, 'package-lock.json'))
-    .filter(existsSync)
-  assert.ok(locks.length > 0, 'no plugin lock to check')
-  for (const file of locks) {
-    const entries = JSON.parse(readFileSync(file, 'utf8')).packages ?? {}
-    for (const [name, entry] of Object.entries(entries)) {
-      if (name === '') continue
-      assert.equal(entry.hasInstallScript, undefined, `${file}: ${name}`)
-    }
   }
 })

@@ -162,9 +162,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # `plugin-sdk` compiles the packed declarations and the author guide,
-          # which every plugin PR needs. The `light-ocr-*` tests check an
-          # optional plugin and run in the `ocr` step below.
           node --test runtime/plugin-sdk.test.mjs
           # The workflow plugin tests stay off: no double of a
           # test's can receive the plugin definition they register, because
@@ -182,18 +179,12 @@ jobs:
           if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
             node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored --test-threads=2
           fi
-      # The OCR-only tests: the light-ocr Node tests and the three Apple Vision
-      # engine tests. They check the OS frameworks' and upstream's behaviour, so
-      # they follow the paths that can change it (`ocr` group) and every main
-      # push, which selects every group. The Rust artifacts the engine tests run
-      # are built by the steps above because every path of this group also
-      # selects `rust`.
+      # Every `ocr` path also selects `rust`, so the steps above built the engine test.
       - name: Verify OCR
         if: needs.changes.outputs.ocr == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          npm ci --prefix runtime --ignore-scripts --registry=https://registry.npmjs.org
           # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
           # tests run from the repository root, so name it explicitly.
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
