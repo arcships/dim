@@ -2471,7 +2471,7 @@ mod tests {
     /// p-value under the same test (ContextCompaction §13.4).
     #[test]
     fn the_multi_arm_table_reads_the_decisions_against_the_baseline() {
-        let reasoning = |id: &str, reasoning: SummaryReasoning| {
+        let reasoning = |id: &str, reasoning: SummaryReasoning, metrics: Metrics| {
             (
                 Arm {
                     id: id.into(),
@@ -2480,22 +2480,29 @@ mod tests {
                     prompt: None,
                     length_sentence: None,
                 },
-                level(20),
+                metrics,
             )
         };
         let results = vec![
-            reasoning("reasoning-inherit", SummaryReasoning::Inherit),
-            reasoning("reasoning-off", SummaryReasoning::Off),
-            reasoning("reasoning-low", SummaryReasoning::Low),
+            reasoning("reasoning-inherit", SummaryReasoning::Inherit, level(20)),
+            reasoning(
+                "reasoning-off",
+                SummaryReasoning::Off,
+                Metrics {
+                    facts: Counts::new(10, 20),
+                    ..level(20)
+                },
+            ),
+            reasoning("reasoning-low", SummaryReasoning::Low, level(20)),
         ];
         let text = against_baseline(&results, 20, &kinds());
         assert!(text.contains("against `reasoning-inherit`"), "{text}");
         assert!(
-            text.contains("| fact recall | 20/20 (1.000) | 20/20 (1.000) |"),
-            "{text}"
+            text.contains("| fact recall | 20/20 (1.000) | 10/20 (0.500) | 0.500 |"),
+            "the row carries the arm's own counts and loss: {text}"
         );
         assert!(
-            text.contains("`reasoning-off` against `reasoning-inherit` passes"),
+            text.contains("`reasoning-off` against `reasoning-inherit` fails: fact recall falls"),
             "{text}"
         );
         assert!(
@@ -2507,29 +2514,27 @@ mod tests {
     /// The report states the candidate texts' own token cost beside the
     /// scores, counted as the product counts the request each text travels in
     /// (model-prompts §8.1): the prompt, and the length sentence too when one
-    /// is given.
+    /// is given. The expectation is a literal: the counter reads the
+    /// serialized request at four bytes per token, and 394 ASCII characters
+    /// plus the two quotes of the JSON string and the four bytes of the absent
+    /// tool list are exactly 400 bytes, so 100 tokens. The 27-character length
+    /// sentence serializes to 29 bytes, `{target}` and all, which is 7.25
+    /// tokens and so 8.
     #[test]
     fn the_report_states_the_candidate_texts_token_cost() {
         let model = ModelId {
             provider_id: "provider".into(),
             model_id: "model".into(),
         };
-        let prompt = "You write summaries of coding sessions.";
+        let prompt = "y".repeat(394);
+        assert_eq!(
+            candidate_cost_line(&model, Some(&prompt), None),
+            "\ncandidate tokens: prompt 100\n"
+        );
         let sentence = LengthSentence::new("Keep it to {target} tokens.").unwrap();
         assert_eq!(
-            candidate_cost_line(&model, Some(prompt), Some(&sentence)),
-            format!(
-                "\ncandidate tokens: prompt {:.0}, length sentence {:.0}\n",
-                text_tokens(&model, prompt),
-                text_tokens(&model, sentence.as_str())
-            )
-        );
-        assert_eq!(
-            candidate_cost_line(&model, Some(prompt), None),
-            format!(
-                "\ncandidate tokens: prompt {:.0}\n",
-                text_tokens(&model, prompt)
-            )
+            candidate_cost_line(&model, Some(&prompt), Some(&sentence)),
+            "\ncandidate tokens: prompt 100, length sentence 8\n"
         );
         assert_eq!(candidate_cost_line(&model, None, None), "");
     }
