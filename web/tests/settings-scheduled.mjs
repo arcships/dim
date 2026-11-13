@@ -59,8 +59,11 @@ async function select(root, label, option) {
   await flush()
 }
 async function change(element, value, event = "onChange") {
-  element.props["onUpdate:modelValue"](value)
-  if (element.props[event]) await element.props[event]({ target: { value } })
+  if (event === "onInput") await element.props.onInput({ target: { value } })
+  else {
+    element.props["onUpdate:modelValue"](value)
+    if (element.props[event]) await element.props[event]({ target: { value } })
+  }
   await flush()
 }
 const submit = root => all(root).find(el => el.type === "form").props.onSubmit({ preventDefault() {} })
@@ -278,4 +281,26 @@ test("history reads render owner outcomes and session links and retain entries a
   await flush()
   assert.equal(text(root).includes("History temporarily unavailable"), false)
   assert.deepEqual(reads.slice(1), [{ job_id: "job-1", limit: 50 }, { job_id: "job-1", limit: 50 }])
+})
+
+test("the last schedule input is compiled before saving without another control change", async t => {
+  for (const scenario of [
+    { plan: undefined, label: "Run time", value: "14:35", expected: { cron: "35 14 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } },
+    { plan: "Custom Cron", label: "Cron", value: "35 14 * * 1", expected: { cron: "35 14 * * 1", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } },
+    { plan: "Every N minutes", label: "Interval in minutes", value: "73", expected: { every_minutes: 73 } },
+  ]) {
+    let written
+    const root = mount(t, { name: "settings-scheduled-new", params: {} }, async (method, params) => {
+      if (method === "schedule.list") return { jobs: [] }
+      assert.equal(method, "schedule.save")
+      written = params.job
+      return saved(job(params.job))
+    })
+    await flush()
+    await change(field(root, "Name"), "Latest input", "onInput")
+    if (scenario.plan) await select(root, "Plan", scenario.plan)
+    await change(field(root, scenario.label), scenario.value, "onInput")
+    await submit(root)
+    assert.deepEqual(written.schedule, scenario.expected)
+  }
 })

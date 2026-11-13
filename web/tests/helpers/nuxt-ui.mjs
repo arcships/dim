@@ -114,8 +114,8 @@ const UInput = defineComponent({
         "onUpdate:modelValue": (value) => emit("update:modelValue", value),
         onInput: (event) => {
           const val = event?.target?.value ?? event
-          emit("update:modelValue", props.modelModifiers?.number ? Number(val) : val)
           emit("input", event)
+          emit("update:modelValue", props.modelModifiers?.number ? Number(val) : val)
         },
         onChange: (event) => emit("change", event),
         onBlur: (event) => emit("blur", event),

@@ -100,21 +100,21 @@ function selectMode(value: string): void { mode.value = value; advanced.value = 
         <USelectMenu v-model="frequency" value-key="value" :search-input="false" :aria-label="s('Frequency', '重复频率')" :items="frequencyItems" @update:model-value="update" />
       </UFormField>
       <UFormField v-if="mode === 'repeat'" :label="s('Run time', '运行时间')">
-        <UInput v-model="time" type="time" step="60" required @input="update" />
+        <UInput v-model="time" type="time" step="60" required @update:model-value="update" />
       </UFormField>
       <UFormField v-else class="schedule-once" :label="s('Date and time', '运行日期和时间')">
-        <UInput v-model="once" type="datetime-local" step="60" required @input="explicitInstant = ''; update()" />
+        <UInput v-model="once" type="datetime-local" step="60" required @update:model-value="explicitInstant = ''; update()" />
       </UFormField>
     </div>
     <div v-if="advanced === 'basic' && mode === 'repeat' && frequency === 'weekly'" class="settings-actions">
       <UCheckbox v-for="(label, index) in weekdays" :key="index" :model-value="days.includes((index + 1) % 7)" :value="(index + 1) % 7" :label="label" @update:model-value="toggleDay((index + 1) % 7, $event)" />
     </div>
     <UFormField v-if="advanced !== 'interval' && (mode === 'repeat' || advanced === 'cron')" :label="s('Execution time zone', '执行时区')" :description="s('Blank keeps the CLI host’s local time zone, not the browser’s.', '留空使用 CLI 主机本地时区，不是浏览器时区。')">
-      <UInput v-model="timezone" placeholder="Asia/Shanghai" @change="update" />
+      <UInput v-model="timezone" placeholder="Asia/Shanghai" @update:model-value="update" />
     </UFormField>
     <p v-if="mode === 'once' && advanced === 'basic'" class="settings-help">{{ s('Browser time zone: ', '浏览器时区：') }}{{ localZone }}. {{ s('Minute precision. A past instant may be recorded as missed.', '精确到分钟；过去时间可能被记为错过。') }}</p>
     <UFormField v-if="ambiguous" :label="s('Exact instant with UTC offset', '带 UTC 偏移的明确时间')">
-      <UInput v-model="explicitInstant" placeholder="2026-11-01T01:30:00-05:00" @change="update" />
+      <UInput v-model="explicitInstant" placeholder="2026-11-01T01:30:00-05:00" @update:model-value="update" />
     </UFormField>
     <UCollapsible :default-open="advanced !== 'basic'" :unmount-on-hide="false">
       <UButton size="sm" color="neutral" variant="ghost" trailing-icon="i-lucide-chevron-down" :label="s('Advanced schedule', '高级计划')" />
@@ -125,12 +125,12 @@ function selectMode(value: string): void { mode.value = value; advanced.value = 
           </UFormField>
           <template v-if="advanced === 'interval'">
             <UFormField :label="s('Interval in minutes', '间隔分钟数')">
-              <UInput v-model.number="minutes" type="number" min="1" max="4294967295" step="1" required @input="update" />
+              <UInput v-model.number="minutes" type="number" min="1" max="4294967295" step="1" required @update:model-value="update" />
             </UFormField>
             <p class="settings-help">{{ s('Anchored at enable time on the host, not a fixed clock time. Resuming resets the anchor. No time zone applies.', '从主机启用时间起计时，不保证固定钟点；恢复会重设起点，不受时区影响。') }}</p>
           </template>
           <UFormField v-if="advanced === 'cron'" :label="`Cron · ${s('minute hour day month weekday', '分 时 日 月 周')}`">
-            <UInput v-model="cron" required @input="update" />
+            <UInput v-model="cron" required @update:model-value="update" />
           </UFormField>
         </div>
       </template>
