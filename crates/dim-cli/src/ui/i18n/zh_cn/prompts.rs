@@ -42,6 +42,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "智能权限",
         "Full access" => "完全访问权限",
         "Run {tool}" => "运行 {tool}",
+        "edit {count} replacement in {path}" => "在 {path} 中 edit {count} 处替换",
+        "edit {count} replacements in {path}" => "在 {path} 中 edit {count} 处替换",
         "Changing the approvals mode from here is not yet available" => {
             "暂不支持在此处更改 approvals 模式"
         }
@@ -58,6 +60,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 选择 · Tab 下一题 · / 命令 · Esc 拒答"
         }
         "Question" => "问题",
+        "↑↓ scroll" => "↑↓ 滚动",
+        "replacements {from}-{to} of {count}" => "替换 {from}-{to}，共 {count} 处",
         "Question on branch {branch}" => "来自分支 {branch} 的问题",
         "Permission on branch {branch}" => "来自分支 {branch} 的授权请求",
         "Sending answer…" => "正在发送回答…",

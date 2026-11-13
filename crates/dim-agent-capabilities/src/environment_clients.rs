@@ -40,7 +40,10 @@ pub fn clients_changes(session_id: &str) -> String {
 
 /// The channels the model may see. `tui` is a UI leaf; a leaf's underlying
 /// connection is not counted again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ClientChannel {
     Tui,
     Cli,
@@ -86,22 +89,54 @@ pub enum DeclaredClientKind {
 }
 
 /// One attached connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClientPresence {
     pub channel: ClientChannel,
     /// The client's self-declared `hello.clientName`; never an identity.
     pub label: Option<String>,
 }
 
-/// The App Server's read-only presence view.
-pub trait SessionClientsSource: Send + Sync + 'static {
-    /// The connections attached to `session_id` now. An unknown Session is empty.
-    fn presences(&self, session_id: &str) -> Vec<ClientPresence>;
+/// The connections attached to one Session now.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionPresenceRequest {
+    pub session_id: String,
 }
 
-/// The process port. The App Server provides it from its connection and UI
-/// registries; an assembly without it does not install this projection.
-pub struct SessionClientsHost(pub Arc<dyn SessionClientsSource>);
+/// The `presences` reply; an unknown Session is empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionPresencesReply {
+    pub presences: Vec<ClientPresence>,
+}
+
+/// An owner's read of one Session's attached connections, bound as the face's
+/// one operation.
+pub type SessionPresences = Arc<dyn Fn(&str) -> Vec<ClientPresence> + Send + Sync>;
+
+/// The `sessionClientsHost` face: the connections attached to each Session,
+/// as data. The App Server binds its connection and UI registries; a Rust
+/// reader calls [`Self::presences`] directly and a part of another language
+/// calls the same operation by name.
+pub struct SessionClientsHost(SessionPresences);
+
+impl SessionClientsHost {
+    /// Binds an owner's read as the face's operation.
+    pub fn new(presences: SessionPresences) -> Self {
+        Self(presences)
+    }
+}
+
+#[rutis::service]
+impl SessionClientsHost {
+    /// The connections attached to `request.session_id` now.
+    pub fn presences(&self, request: SessionPresenceRequest) -> SessionPresencesReply {
+        SessionPresencesReply {
+            presences: (self.0)(&request.session_id),
+        }
+    }
+}
 
 /// Registers the presence branch plugin on behalf of the process plugin that
 /// provides `SessionClientsHost`.
@@ -228,7 +263,13 @@ impl DynPlugin for ClientsBranchPlugin {
                 }
                 let mut last = None;
                 loop {
-                    let current = snapshot(&clients.0.presences(&session));
+                    let current = snapshot(
+                        &clients
+                            .presences(SessionPresenceRequest {
+                                session_id: session.clone(),
+                            })
+                            .presences,
+                    );
                     if last.as_deref() != Some(current.as_str()) {
                         if lifecycle.is_cancelled() || phase.phase() >= BranchPhase::Closing {
                             return;

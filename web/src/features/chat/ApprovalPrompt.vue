@@ -62,7 +62,7 @@ const edit = computed(() => name.value === "edit" ? diffLines(input.value, undef
 const content = computed(() => name.value === "write" ? text("content") : undefined)
 /** Input fields other than the ones a panel already shows. */
 const extra = computed(() => Object.entries(input.value)
-  .filter(([key]) => !["command", "cwd", "path", "pattern", "oldText", "newText", "content", "query", "url"].includes(key))
+  .filter(([key]) => !["command", "cwd", "path", "pattern", "edits", "oldText", "newText", "content", "query", "url"].includes(key))
   .map(([key, value]) => ({ key, value: typeof value === "string" ? value : JSON.stringify(value) })))
 
 type Choice = ApprovalDecision | "always" | "session"

@@ -81,6 +81,9 @@ impl Theme {
             success: own(entry.success),
             warning: own(entry.warning),
             danger: own(entry.danger),
+            permission_read: palette::terminal_palette(mode, appearance).permission_read,
+            permission_write: palette::terminal_palette(mode, appearance).permission_write,
+            permission_full: palette::terminal_palette(mode, appearance).permission_full,
             diff_add: palette::terminal_palette(mode, appearance).diff_add,
             diff_remove: palette::terminal_palette(mode, appearance).diff_remove,
             tool_hover: palette::terminal_palette(mode, appearance).tool_hover,
@@ -179,6 +182,9 @@ fn with_floors(palette: Palette, background: contrast::Rgb) -> Palette {
         success: lift_text(&palette.success, COLORED_TEXT),
         warning: lift_text(&palette.warning, COLORED_TEXT),
         danger: lift_text(&palette.danger, COLORED_TEXT),
+        permission_read: lift_text(&palette.permission_read, COLORED_TEXT),
+        permission_write: lift_text(&palette.permission_write, COLORED_TEXT),
+        permission_full: lift_text(&palette.permission_full, COLORED_TEXT),
         diff_add: palette.diff_add,
         diff_remove: palette.diff_remove,
         tool_hover: palette.tool_hover,
@@ -229,6 +235,9 @@ mod tests {
             &theme.palette.highlight,
             &theme.palette.keybind,
             &theme.palette.activity,
+            &theme.palette.permission_read,
+            &theme.palette.permission_write,
+            &theme.palette.permission_full,
             &theme.code.number,
         ] {
             let color = parse_hex(role).expect("hex role on a light terminal");
@@ -240,6 +249,9 @@ mod tests {
         let few = Theme::system(ColorMode::Ansi16, Appearance::Light, None);
         assert_eq!(few.palette.accent, "ansi:3");
         assert_eq!(few.palette.activity, "ansi:12");
+        assert_eq!(few.palette.permission_read, "ansi:6");
+        assert_eq!(few.palette.permission_write, "ansi:5");
+        assert_eq!(few.palette.permission_full, "ansi:3");
         for mode in [ColorMode::TrueColor, ColorMode::Ansi256] {
             for id in ["system", "dim-light", "monokai-light"] {
                 for background in ["#ffffff", "#f5f5f5", "#d0d0d0"] {

@@ -564,6 +564,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C effacer, deux fois pour quitter · Ctrl+D quitter si brouillon vide"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab changer les permissions (zone de saisie active)"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "Sélection active : Shift+Tab vers une cible plus récente · Esc retour à la saisie"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab pour changer)",
         "Fullscreen" => "Plein écran",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown défiler · Home/End haut ou bas (brouillon vide) · Tab choisir un message, e modifier, q citer"

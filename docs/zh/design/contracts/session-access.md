@@ -4,7 +4,7 @@
 
 > **离线资源节点。** 关于资源节点离线的各行描述的是 P3 多节点行为。#5 已撤回（rutis 是外部依赖，链接断开时会撤掉导入的服务），这些行在 P3 按总览 §6.3 重新设计：节点服务在每次调用时按 Session 的资源节点查找，该字段在 P3 加入 `SessionConfig`（[A.3](#a3-sessionconfig-字段)）。P1/P2 中每个 Session 都使用控制节点。
 
-进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`stop`、`idle` 和 `delete`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
+进程插件以 Collaboration 已有的方式访问 Session：通过 Agents 和公共的 Session 接口。本文把这种访问定义为语言中立的进程服务 `sessions`（ADR 002 D5），由 Agents 提供，因此 TypeScript 或 Python 进程插件（Scheduler、Workflow）可以按名称使用它。其方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle` 和 `delete`，请求与回复均为数据（[A.1](#a1-sessions-服务)）。在 Rust 中，它是 `AgentIndex` 加上 `Session` 门面（[附录 E](#附录-e-rust-绑定)）。本文不增加任何宿主或门面插件。Agents 从不会重载的目录部分提供它，因此 Agents 重载只让进行中的调用失败，从不让调用方重载（D3，#35）；绑定、生命周期及其依据的 spike 见 [sessions 服务](../appserver/sessions-service.md)设计。
 
 | 补充 | 所有者 | 使用方 |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ flowchart LR
 | Session 门面（[agent.rs](../../../../crates/dim-agent-runtime/src/agent.rs)、[branch.rs](../../../../crates/dim-agent-runtime/src/branch.rs)） | Session、分支 | 已存在 |
 | InputQueue | 分支 | 变更：消费 `input/withdraw`，写入 `input/deleted`；撤回服务 |
 
-本文定义的合同：`sessions` 服务及 `LaunchRequest`、`InputWrite`、`RawBlock`、`HistoryRequest`、`HistoryPage`、`LookupReply`、`WithdrawRequest`、`WithdrawReply` 与 `SessionsError`；存活带 key 块投影 `session.keys`（Rpc 内建，`KeysRequest`、`KeysResult`、`KeyEntry`）；`SessionConfig` 字段 `interactive` 与 `session.create` 的 `interactive` 参数；来源标记、key 与 `submissionId` 约定；以及撤回合同。使用的合同：运行时门面、Agents 装载、`input/message` 数据与消费合同、现有的上下文块元素格式、以及 Session 输入路径。
+本文定义的合同：`sessions` 服务及 `LaunchRequest`、`InputWrite`、`RawBlock`、`HistoryRequest`、`HistoryPage`、`LookupReply`、`WithdrawRequest`、`WithdrawReply`、`PendingRequest`、`PendingReply` 与 `SessionsError`；存活带 key 块投影 `session.keys`（Rpc 内建，`KeysRequest`、`KeysResult`、`KeyEntry`）；`SessionConfig` 字段 `interactive` 与 `session.create` 的 `interactive` 参数；来源标记、key 与 `submissionId` 约定；以及撤回合同。使用的合同：运行时门面、Agents 装载、`input/message` 数据与消费合同、现有的上下文块元素格式、以及 Session 输入路径。
 
 ## 2. 数据与状态
 
@@ -66,7 +66,7 @@ flowchart LR
 | 带 key 块的效果 | 历史投影（[history.rs](../../../../crates/dim-agent-capabilities/src/history.rs)） | 从固定前缀与压缩事实重建 |
 | 调用方进度（运行、待定的 `submissionId`） | 调用方的进程存储 | 调用方的文档 |
 
-输入从其 `input/message` 起处于待处理状态，直到引用其事件 id 的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。单独的 `input/withdraw` 从不改变输入是否待处理；只有 InputQueue 的结果事实会改变。每个“待处理输入”推导（Goal、AcpGateway、Scheduler、Workflow）都严格使用这条规则。
+输入从其 `input/message` 起处于待处理状态，直到引用其事件 id 的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。单独的 `input/withdraw` 从不改变输入是否待处理；只有 InputQueue 的结果事实会改变。每个“待处理输入”推导（Goal、AcpGateway、Scheduler、Workflow）都严格使用这条规则。分支不持有的 id 回答 `pending: false`，因此因重启丢失一轮的调用方与轮次已被消费的调用方读到同一答案。
 
 ## 3. 流程
 
@@ -153,6 +153,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | `sessions.history(HistoryRequest) -> HistoryPage` | async | 读取历史，可选为以已发布 head 为界的固定前缀 |
 | `session.input.withdraw {sessionId, branchId, inputId, reason?}` | RPC | 客户端撤回；InputQueue 的 `sessionMethods`（命名空间 `session.input`） |
 | `sessions.withdraw(WithdrawRequest) -> WithdrawReply` | async | 按 `input_id` 为调用方写入的输入写入 `input/withdraw`，并返回 InputQueue 的决定 |
+| `sessions.pending(PendingRequest) -> PendingReply` | async | 回答 `input_id` 在该分支上是否仍待处理（§2）；分支不持有的 id 为 `false` |
 | `sessions.stop({sessionId, branchId, reason?}) -> {sequence}` | async | 中断该分支的 turn |
 | `sessions.idle({sessionId, branchId}) -> {sequence}` | async | 等待分支空闲；返回的序号是最后提交的序号，位于整批次边界 |
 | `sessions.delete({sessionId}) -> {}` | async | 删除一个 Session：Agents 关闭它，并删除它的行与文件（[Session 删除](../appserver/session-deletion-and-fork.md#3-删除)） |
@@ -228,6 +229,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`、`reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
+| `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown` |
 | `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
@@ -451,6 +453,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 | `lookup` | `Session::lookup(branch, submission_id)`，与 `session.input_lookup` 共用：读分支的提交标识索引，等待找到的输入发布 |
 | `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
 | `withdraw` | `Session::service::<InputQueue>(branch)`，然后 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer }) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>`：指令持久保存可选的已检查 `InputMessageData`；返回 `Withdrawal::Deleted { sequence }` 及其可选的已提交替代输入，或 `(Withdrawal::NotHeld, None)`。`InputMethods` 经分支的 `Publication` 确认被接受的 Steer 结果已发布，再返回 RPC 回执；无法确认发布时报告 `publication_unknown`。普通撤回保留 Agents 原有的发布等待 |
+| `pending` | `Session::service::<InputQueue>(branch)` 后 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |

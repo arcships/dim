@@ -88,6 +88,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | --- | --- | --- |
 | `scheduleJobs` | `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md#a2-tool-schedule) 的 flat `JobRequest`/`JobReply`，与 `wakeups` 同一批次（[#1396](https://github.com/arcships/dim/pull/1396)）。 |
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
+| `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFilesHost` 是进程内绑定。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
@@ -199,18 +200,12 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `eventSubscriptions` | process | eventhub | legacy-no-consumer | 按 #1292 定义操作面 |
 | `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
 | `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 按 #1292 定义操作面 |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
 | `selectableModelsHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
 | `modelSelectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
 | `modalityConnectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
-| `listenAddresses` | process | Transport | legacy-no-consumer | 按 #1292 定义操作面 |
-| `credentialVariablesHost` | process | root | legacy-no-consumer | 按 #1292 定义操作面 |
-| `reservedMethods` | process | — | legacy-no-consumer | 按 #1292 定义操作面 |
-| `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 按 #1292 定义操作面 |
-| `sessionClientsHost` | process | Connection | legacy-no-consumer | 按 #1292 定义操作面 |
 | `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 批次契约（#1292）
@@ -296,6 +291,20 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 `Wakeup` 持久化字段继续使用 snake_case，数据面用上面的 wire 字段。测试覆盖 create、list、cancel 和 loopback。
 
+### 4.7b `loops`
+
+与 `wakeups` 同一做法：注册为 shared，在 `host_key("loops")` 提供 dispatcher，原生 `Loops` 在类型键继续提供。按 Scheduler §12.6：
+
+```text
+loops.start {sessionId, branchId?, prompt, everySeconds?} -> {loopId, branchId, state, round, nextAt?, lastRoundAt?, expiresAt, stoppedReason?, settledAt?}
+loops.next {sessionId, loopId, delaySeconds?} -> 同一记录形状
+loops.list {sessionId, branchId?} -> {loops: [记录…]}
+loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: false}
+  -> error {code: invalid_params | loop_not_found | loop_limit | loop_invalid | ..., message}
+```
+
+`branchId` 默认 `main`；`delaySeconds` 缺省取工具的默认值。校验与 `session.loop.*` 共用同一个解析函数，所以两端对同一请求给出同一个错误码。投递 pass、恢复与 `settle_delivering` 是内部实现，不在此面。
+
 ### 4.8 旧主机端口：`agentConfig` 等五个
 
 这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 不在这五个操作面的范围内，按 §2.6 处理其公共操作或私有实现职责。
@@ -319,6 +328,35 @@ worktreeAssociations.associate {sessionId, repository, root, subtree} -> {}
 - `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
 - `worktreeAssociations` 去掉 `AssociateWorktree` trait：端口持有所有者的写闭包，Rust 调用方和 wire 调用同一个 `associate`。SessionStore 绑定 `associate_worktree`；字符串转回 `PathBuf`，绝对性和子树包含仍由所有者校验。
 - 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
+
+### 4.9 旧主机端口：`credentialVariablesHost` 等六个
+
+六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
+
+```text
+credentialVariablesHost.variables() -> {variables: [string]}
+  -- 只给变量名，永不给凭据值
+sessionClientsHost.presences {sessionId} -> {presences: [{channel, label?}]}
+  -- channel 是 tui/cli/web/acp/remote/desktop/unknown；label 是 hello.clientName，不是身份
+listenAddresses.read() -> {unixPath?, pipeName?, websocketAddress?}
+  -> error {code: invalid_path, message}
+  -- 路径按 §1 是 UTF-8 字符串；非 UTF-8 的 unix socket 路径是 invalid_path
+reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]}
+  -> {} | error {code: reserved, message}
+  -- interruption/progress 只属于真实注册，不属于这个问题
+collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
+  -- 只读：Team 关系的写入仍由 Collaboration 的准入决定，数据面不提供第二个写入者
+eventSubscriptions.sources() -> sources
+eventSubscriptions.subscribe {sessionId, branchId?, types, match?, mode?} -> reply
+eventSubscriptions.unsubscribe {sessionId, subscriptionId} -> reply
+eventSubscriptions.list {sessionId} -> reply
+  -> error {code, message}
+  -- subscribe 将 EventHub A.3 的 target.sessionId/branchId 展开到请求顶层；sessionId 是值，不是授权
+```
+
+`eventSubscriptions` 的 `sources`、`list` 在 dispatcher 里是 sync，其余是 async。测试：`crates/dim-agent-capabilities/tests/legacy_port_faces.rs`、`crates/dim-app-server/tests/legacy_port_faces.rs` 和 EventHub 的 `fixture_flow.rs` 证明 typed binding 与 wire 返回同一结果。
+
+`reservedMethods` 的 owner 是 App Server 的根值：它从 `process_value`（每个 Agent 一份）改为进程根上的一份，因为 shared 名字的 isolate 只覆盖 dispatcher key，而 `process_value` 的按 Agent 隔离覆盖的是类型 key；一份进程值对所有 Session 表等价，且只有一个 dispatcher。
 
 ## 5. 验证
 

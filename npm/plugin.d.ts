@@ -168,6 +168,10 @@ export type {
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
+/** Whether an input is still pending on the branch (session access §2): from
+ * its write until consumption or deletion. An id the branch does not hold is
+ * not pending. */
+export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
@@ -186,6 +190,7 @@ export interface Sessions {
   exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
+  pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
@@ -246,6 +251,32 @@ export type EventHubErrorThrown = import('./branch-services.js').RustError<'Even
 export interface EventHub {
   declare(declaration: EventHubDeclaration): Promise<void>;
   publish(request: EventHubPublishRequest): Promise<EventHubPublishReply>;
+}
+
+/** `eventSubscriptions.subscribe`: the subscription the calling row creates
+ * for one Session (design A.3, §3.3). */
+export interface EventSubscriptionCall {
+  sessionId: string;
+  types: string[];
+  match?: Record<string, string>;
+  mode?: 'queue' | 'steer' | 'append';
+  /** Defaults to `main`. */
+  branchId?: string;
+}
+/** `eventSubscriptions.unsubscribe` (design A.3). */
+export interface EventUnsubscribeCall {
+  sessionId: string;
+  subscriptionId: string;
+}
+/** Process service `eventSubscriptions`, EventHub's subscription core: a row
+ * of any language manages the subscriptions of the Session it names, as
+ * `eventhub.subscribe`, `eventhub.unsubscribe` and `eventhub.subscriptions`
+ * do (design Appendix F). */
+export interface EventSubscriptions {
+  sources(): Promise<unknown>;
+  subscribe(call: EventSubscriptionCall): Promise<unknown>;
+  unsubscribe(call: EventUnsubscribeCall): Promise<unknown>;
+  list(call: { sessionId: string }): Promise<unknown>;
 }
 
 /** The host's creation-time snapshot (`sessionConfig.get()`, `ToolCall.config`);

@@ -578,3 +578,141 @@ async fn a_host_without_session_files_truncates() {
     assert!(!text.contains("tail"), "the preview drops the rest: {text}");
     assert_eq!(calls[0].mode, "queue");
 }
+
+#[tokio::test]
+async fn the_subscription_service_answers_the_same_through_the_binding_and_the_face() {
+    use dim_event_hub::{EventSubscriptions, ListCall, SubscriptionCall, UnsubscribeCall};
+    use rutis_bridge::session::call_service;
+
+    let directory = directory();
+    let fixture = Fixture::mount(directory.path()).await;
+    fixture.producer.declare(im_declaration()).await.unwrap();
+    let binding = fixture.root.get::<EventSubscriptions>().unwrap();
+
+    let sources: Value = call_service(&fixture.root, "eventSubscriptions", "sources", ())
+        .await
+        .unwrap();
+    assert_eq!(binding.sources(), sources);
+
+    let call = SubscriptionCall {
+        session_id: "session".into(),
+        types: vec!["im.*".into()],
+        matches: Some(std::collections::BTreeMap::from([(
+            "channel".into(),
+            "review".into(),
+        )])),
+        mode: Some(InputMode::Queue),
+        branch_id: Some("main".into()),
+    };
+    let subscribed: Value = call_service(&fixture.root, "eventSubscriptions", "subscribe", (call,))
+        .await
+        .unwrap();
+    let id = subscribed["subscriptionId"].as_str().unwrap().to_owned();
+
+    let other: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "subscribe",
+        (SubscriptionCall {
+            session_id: "other-session".into(),
+            types: vec!["im.*".into()],
+            matches: None,
+            mode: Some(InputMode::Queue),
+            branch_id: Some("main".into()),
+        },),
+    )
+    .await
+    .unwrap();
+    let other_list: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "list",
+        (ListCall {
+            session_id: "other-session".into(),
+        },),
+    )
+    .await
+    .unwrap();
+    assert!(
+        other_list["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == other["subscriptionId"])
+    );
+    assert!(
+        fixture
+            .sessions
+            .calls()
+            .iter()
+            .any(|call| call.session_id == "other-session")
+    );
+    let removed: Value = call_service(
+        &fixture.root,
+        "eventSubscriptions",
+        "unsubscribe",
+        (UnsubscribeCall {
+            session_id: "other-session".into(),
+            subscription_id: other["subscriptionId"].as_str().unwrap().into(),
+        },),
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, json!({}));
+
+    let typed = binding
+        .unsubscribe(UnsubscribeCall {
+            session_id: "other".into(),
+            subscription_id: id.clone(),
+        })
+        .await
+        .unwrap_err();
+    let through_face = call_service::<Value>(
+        &fixture.root,
+        "eventSubscriptions",
+        "unsubscribe",
+        (UnsubscribeCall {
+            session_id: "other".into(),
+            subscription_id: id.clone(),
+        },),
+    )
+    .await
+    .expect_err("another Session's subscription is unknown");
+    assert_eq!(through_face.code(), Some("subscription_unknown"));
+    assert!(through_face.to_string().contains(&typed.message));
+
+    let list = ListCall {
+        session_id: "session".into(),
+    };
+    let through_face: Value =
+        call_service(&fixture.root, "eventSubscriptions", "list", (list.clone(),))
+            .await
+            .unwrap();
+    assert_eq!(binding.list(list), through_face);
+    assert_eq!(
+        through_face["subscriptions"][0]["match"],
+        json!({"channel": "review"})
+    );
+    assert!(
+        through_face["subscriptions"]
+            .as_array()
+            .is_some_and(|subscriptions| subscriptions.iter().any(|s| s["id"] == json!(id))),
+        "the subscription is listed: {through_face}"
+    );
+
+    binding
+        .unsubscribe(UnsubscribeCall {
+            session_id: "session".into(),
+            subscription_id: id.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        binding.list(ListCall {
+            session_id: "session".into()
+        })["subscriptions"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+}
