@@ -94,7 +94,7 @@ impl Holds {
     /// Whether this lookup reply is to fail, counting down to zero.
     pub(crate) fn take_lookup_failure(&self) -> bool {
         self.lookup_failures
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
             .is_ok()
