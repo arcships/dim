@@ -1848,7 +1848,11 @@ impl Worker {
             Command::SetPermission(change) => {
                 let result = if self.session_id.is_empty() {
                     Ok(dim_agent_types::PermissionPolicy {
-                        preset: change,
+                        preset: change.resolve(
+                            self.options
+                                .permission
+                                .unwrap_or(dim_agent_types::PermissionPreset::WorkspaceWrite),
+                        ),
                         ..Default::default()
                     })
                 } else {
@@ -1857,9 +1861,9 @@ impl Worker {
                         .await
                         .map_err(|error| error.to_string())
                 };
-                if result.is_ok() {
-                    self.options.permission = Some(change);
-                    self.send(Update::PermissionSelected(change));
+                if let Ok(policy) = &result {
+                    self.options.permission = Some(policy.preset);
+                    self.send(Update::PermissionSelected(policy.preset));
                 }
                 self.send(Update::Permissions(result));
             }

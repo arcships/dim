@@ -34,6 +34,25 @@ pub const PRESETS: [PermissionPreset; 3] = [
 pub const PRESET_METHODS: [&str; 2] = ["session.permission.get", "session.permission.update"];
 pub const RULE_METHODS: [&str; 2] = ["permission.rules", "permission.set_rules"];
 
+#[derive(Clone, Copy)]
+pub enum PresetSelection {
+    Preset(PermissionPreset),
+    Next,
+}
+
+impl PresetSelection {
+    pub fn resolve(self, current: PermissionPreset) -> PermissionPreset {
+        match self {
+            Self::Preset(preset) => preset,
+            Self::Next => match current {
+                PermissionPreset::ReadOnly => PermissionPreset::WorkspaceWrite,
+                PermissionPreset::WorkspaceWrite => PermissionPreset::FullAccess,
+                PermissionPreset::FullAccess => PermissionPreset::ReadOnly,
+            },
+        }
+    }
+}
+
 pub fn creation_policy(options: &crate::args::Options) -> Option<Value> {
     options.permission.map(|preset| json!({"preset": preset}))
 }
@@ -41,7 +60,7 @@ pub fn creation_policy(options: &crate::args::Options) -> Option<Value> {
 pub async fn select_preset(
     client: &mut Client,
     session_id: &str,
-    preset: PermissionPreset,
+    selection: PresetSelection,
 ) -> Result<PermissionPolicy> {
     #[derive(Deserialize)]
     struct Updated {
@@ -50,6 +69,7 @@ pub async fn select_preset(
     }
     let mut state = read(client, session_id).await?;
     for _ in 0..ATTEMPTS {
+        let preset = selection.resolve(state.policy.preset);
         if state.policy.preset == preset {
             return Ok(state.policy);
         }
@@ -67,7 +87,7 @@ pub async fn select_preset(
     }
     Err("The Session's permissions kept changing; try again".into())
 }
-/// Attempts for a write whose outcome does not depend on what was read.
+/// Maximum attempts for a write that can be retried against fresh state.
 const ATTEMPTS: usize = 3;
 
 pub fn parse_preset(value: &str) -> Result<PermissionPreset> {

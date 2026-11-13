@@ -360,7 +360,7 @@ pub enum Command {
     Goal(crate::goal::Request),
     /// `/loop`: show, start or stop a loop on the shown line.
     Loop(crate::loop_view::Request),
-    SetPermission(dim_agent_types::PermissionPreset),
+    SetPermission(crate::permission::PresetSelection),
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.
