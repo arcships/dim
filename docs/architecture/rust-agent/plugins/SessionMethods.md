@@ -15,7 +15,7 @@ that lies in one of those roots or equals, contains or lies inside a built-in.
 A host that names none reserves nothing: every namespace in the name grammar is
 accepted. The value is also the data face `reservedMethods`: a row of another
 language asks `check {namespace, declarations}` the same question
-([service faces §4.8](../../../design/service-faces.md#48-旧主机端口credentialvariableshost-等六个)).
+([service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
 
 ## Events and lifetime
 

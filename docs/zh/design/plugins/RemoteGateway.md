@@ -39,7 +39,7 @@ RemoteGateway 只认证升级请求，并在连接上记录设备；此后的每
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
 | `RemoteGatewayPlugin` | 进程，控制节点 | `entryHost`（Transport）、`pluginFiles`（扩展）、Settings 业务来源 `remote` | 把 `remote`（`remote.*`）注册到 `managementMethods`；回答其打开的入口在调用内发来的 `authenticate` 与 `handle` 请求 |
-| `TransportPlugin`（变更） | 进程 | 现有；不依赖 RemoteGateway 的任何内容 | 现有 `ListenAddresses`，其数据面 `listenAddresses.read` 回答 `{unixPath?, pipeName?, websocketAddress?}`（[service faces §4.8](../../../design/service-faces.md#48-旧主机端口credentialvariableshost-等六个)）；新增 `entryHost` |
+| `TransportPlugin`（变更） | 进程 | 现有；不依赖 RemoteGateway 的任何内容 | 现有 `ListenAddresses`，其数据面 `listenAddresses.read` 回答 `{unixPath?, pipeName?, websocketAddress?}`（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）；新增 `entryHost` |
 | `ConnectionPlugin` / `RpcPlugin`（变更） | 进程 | 现有 | `ConnectionEntry {name, deviceId}`；Rpc 从不向带 `deviceId` 的连接提供管理方法 |
 
 此处定义的契约：设备记录与令牌、配对与轮换 HTTP 端点、`remote.*` 方法、`remote-devices.json` 格式。依赖的契约：Transport 的 `entryHost` 服务及其调用内的 `authenticate` 与 `handle` 请求（拟议的 Transport 变更，[语言中立](../../adr/002-plugin-scope.md)形式见 A.1，Rust 绑定见附录 G；依赖是单向的，RemoteGateway 依赖 Transport）、Connection 的入口记录、[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间，从不提供给已配对设备）、`pluginFiles`（扩展）（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）、PluginManager 对插件本身的开启和关闭（[PluginManager](PluginManager.md)，[ADR 007](../../adr/007-plugin-configuration.md)），以及对业务来源 `remote` 的 Settings 类型化操作，用于入口是否打开和监听设置，其 schema 由 RemoteGateway 声明（ADR 002 D4）。RemoteGateway 不了解任何 Session 方法的含义，也不了解任何其他插件。

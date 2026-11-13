@@ -82,7 +82,7 @@ Issue：[#593](https://github.com/arcships/dim/issues/593)。本节拥有一次�
 
 临时 Agent 就是有 owner 的 Agent。没有单独的标志位：同一个字段同时决定它是否公开、哪个 Team 能寻址它。默认 Agent 与 Agents 的 `agent.create` 创建的 Agent 没有 owner，是公开的。
 
-Team 关系也是进程内存：`CollaborationDirectory` 持有这个进程已知的成员，其只读数据面 `collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}` 让另一种语言的行读到它们（[service faces §4.8](../../../design/service-faces.md#48-旧主机端口credentialvariableshost-等六个)）。该面不提供写入：准入是 Collaboration 的业务，第二个写入者可能记下没有任何 Session 与 Agent 检查准入过的关系。
+Team 关系也是进程内存：`CollaborationDirectory` 持有这个进程已知的成员，其只读数据面 `collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}` 让另一种语言的行读到它们（[service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)）。该面不提供写入：准入是 Collaboration 的业务，第二个写入者可能记下没有任何 Session 与 Agent 检查准入过的关系。
 
 生产方保证以下不变量：
 

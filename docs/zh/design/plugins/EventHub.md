@@ -254,7 +254,7 @@ sequenceDiagram
 | 接口 | 种类 | 用途 |
 | --- | --- | --- |
 | `eventHub` | 进程服务，无 key，见 [§3.1](../overview.md#31-合同形式) | 提供生产方的 `declare` 与 `publish`；订阅操作属于 `eventSubscriptions`。客户端经管理平面访问，见 §7。`events` 工具与 `eventhub.*` 方法调用进程部件自己的订阅核心，不经过这个服务；`events` 工具经 `eventSubscriptions` 到达该核心，这是进程部件声明的一个进程服务，见 [设计规则 §4 第 7 条](../../../architecture/rust-agent/principles.md)，而不是经共享状态 |
-| `eventSubscriptions` | 进程服务，无 key，数据面（shared，带宿主 dispatch） | 受信任插件通过 `sources`、`subscribe`、`unsubscribe` 与 `list` 管理请求指定的 Session；`events` 工具提供自己的 Session。subscribe 将 A.3 的 target.sessionId 和 target.branchId 展开到请求顶层，见 [service faces §4.8](../../../design/service-faces.md#48-旧主机端口credentialvariableshost-等六个) |
+| `eventSubscriptions` | 进程服务，无 key，数据面（shared，带宿主 dispatch） | 受信任插件通过 `sources`、`subscribe`、`unsubscribe` 与 `list` 管理请求指定的 Session；`events` 工具提供自己的 Session。subscribe 将 A.3 的 target.sessionId 和 target.branchId 展开到请求顶层，见 [service faces §4.9](../../../design/service-faces.md#49-旧主机端口credentialvariableshost-等六个) |
 | `eventhub.sources`、`eventhub.subscriptions`、`eventhub.subscribe`、`eventhub.unsubscribe` | `managementMethods`，命名空间 `eventhub` | 客户端读取目录、管理任意 Session 的订阅 |
 | `eventhub/ready` | 进程总线事件，无 key | 告诉在进程里 EventHub 第一次 `apply` 之前就已装载的生产方：`eventHub` 服务已提供且可读，现在声明，见 2.1 |
 | `events` | 向 `toolRegistry` 登记的工具，Session | 模型读取目录、管理自己 Session 的订阅 |
