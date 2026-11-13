@@ -561,8 +561,9 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | `session.loop.list` | `sessionMethods`，non-mutating，`interruption: report` | 客户端读本分支的 loop |
 | `session.loop.stop` | `sessionMethods`，mutating，`interruption: drain` | 客户端停止一个 loop |
 | Session 通知 | `{source: "Scheduler", kind: "loop", data: {branchId, loopId, state, round, nextAt?}}` | 记录已变更；`session.loop.list` 是真相 |
+| `loops` | 进程组数据面，注册为 shared，在 `host_key("loops")` 提供 dispatcher | `start`、`next`、`list`、`stop`，即 Session 部分调用的 owner 操作；投递 pass、恢复与 `settle_delivering` 保持内部 |
 
-工具与方法对非交互 Session 和 Collaboration member 一律拒绝，与 `schedule`、`wakeup` 相同。一轮的工具由目标分支自己的 Permission 状态授权；loop 不携带 policy，也不预批准任何东西。记录是 Scheduler 自己的业务存储，因此不新增服务面：工具通过 `names.key()` 取得 `Loops`，方法与同一 typed 服务通信。
+工具与方法对非交互 Session 和 Collaboration member 一律拒绝，与 `schedule`、`wakeup` 相同。一轮的工具由目标分支自己的 Permission 状态授权；loop 不携带 policy，也不预批准任何东西。记录是 Scheduler 自己的业务存储，工具与方法都通过同一 typed 服务访问它：Session 部分用 `names.key()` 声明 `loops` 并直接调用原生 `Loops` 绑定，其他语言通过 `loops` 数据面访问同一 owner 操作。投递 pass、恢复与 `settle_delivering` 不在该面上。
 
 `/loop` 的读法：`/loop` 打印用法与本分支的 loop，`/loop <prompt>` 开始自定节奏 loop，`/loop <interval> <prompt>` 开始固定节奏，`/loop stop [id]` 停止一个。间隔只在行首且能解析时才算，否则整行都是 prompt。
 
@@ -628,7 +629,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 
 把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
 
-`scheduleJobs`、`wakeups` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
+`scheduleJobs`、`wakeups`、`loops` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
 
 ### A.3 管理方法
 
@@ -840,7 +841,7 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | --- | --- |
 | 注册到 `toolRegistry` 的工具 `schedule` | Session 部分经 `names.key()` 取得 `ToolRegistry`，并在 `apply` 中调用 `tools.register(ctx, ToolContribution {definition, handler})`，与 `dim-agent-questions` 相同 |
 | 注册到 `managementMethods` 的命名空间 `schedule` | 进程部分取得 `ManagementMethods` 并调用 `methods.register(ctx, "schedule", declarations, handler)`；Rpc 每次调用查找它，不持有对 Scheduler 的依赖 |
-| `scheduleJobs`、`wakeups` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明两项依赖并直接调用；wire 投影仅在 bridge 边界发生 |
+| `scheduleJobs`、`wakeups`、`loops` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups`、`Loops` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明这些依赖并直接调用；wire 投影仅在 bridge 边界发生。`loops` 提供 `start`、`next`、`list`、`stop`；投递 pass、恢复与 `settle_delivering` 保持内部（§12.6） |
 | `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFileTransactions`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
 | 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |
