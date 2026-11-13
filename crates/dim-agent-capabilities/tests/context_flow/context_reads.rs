@@ -2718,15 +2718,21 @@ async fn a_steer_during_the_context_read_ends_the_request_before_it_is_handed_ov
     agent.close().await.unwrap();
 }
 
+/// Whether `kinds` is the `branch/create` existence read BranchLine's
+/// `roster_state` issues when the line becomes active. It filters that one
+/// kind and selects `Exists`; no branch is created in this test, so no other
+/// read here filters that kind alone.
+fn is_roster_read(kinds: &[String]) -> bool {
+    kinds.len() == 1 && kinds[0] == "branch/create"
+}
+
 /// A preparation that stays below the threshold reads no turn order and no
 /// cut window: its estimate takes one page per fact it compares against, so
 /// what it reads does not grow with the stored history (#914).
 ///
-/// Turn 0 is not compared with the last turn. `create_session` returns when
-/// the Agent publishes, while the line's writer issues its one-shot
-/// `branch/create` roster read only once the branch and Session are active,
-/// so that read falls before turn 0's window or inside it by scheduling
-/// alone. Turns 1 to 11 all start after it.
+/// BranchLine's roster read is the one read that is not per turn: it runs
+/// once, when the branch and Session are active, which may fall before any
+/// turn's window or inside one.
 #[tokio::test]
 async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
     let store = Arc::new(CountContextReads::default());
@@ -2755,6 +2761,41 @@ async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
         let calls = store.query_kinds.lock().unwrap()[before..].to_vec();
         per_turn.push(calls);
     }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while store
+            .query_kinds
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|kinds| is_roster_read(kinds))
+            .count()
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the line's roster read happens");
+    let roster_reads = store
+        .query_kinds
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|kinds| is_roster_read(kinds))
+        .count();
+    assert_eq!(
+        roster_reads, 1,
+        "the roster read happens once over the whole test, whatever turn's window holds it"
+    );
+    let per_turn: Vec<Vec<&Vec<String>>> = per_turn
+        .iter()
+        .map(|calls| {
+            calls
+                .iter()
+                .filter(|kinds| !is_roster_read(kinds))
+                .collect()
+        })
+        .collect();
     for calls in &per_turn {
         for kinds in calls {
             assert!(
@@ -2763,9 +2804,10 @@ async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
             );
         }
     }
-    assert_eq!(
-        per_turn[1].len(),
-        per_turn[per_turn.len() - 1].len(),
+    assert!(
+        per_turn
+            .iter()
+            .all(|calls| calls.len() == per_turn[0].len()),
         "the reads of a turn do not grow with the stored history: {per_turn:?}"
     );
     agent.close().await.unwrap();
