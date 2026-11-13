@@ -352,3 +352,9 @@ The read method is retained because tool arguments contain only an opaque route 
 supply the action the user must review. Separate allow/reject tools express different risks without
 weakening reject or requiring a new risk mechanism. The terminal notice retires an open user
 prompt without polling or modifying Approval. No further abstraction is required.
+
+## Reload reads
+
+Collaboration does not restore old turn progress, interruption sets or admission tasks. A new generation starts these in memory and consumes new facts. Requests without a terminal result or failed delivery remain necessary business work: select their current member positions, locate each delivery by its operation identity through the existing text index, then fail accepted delegations after activation and stop their member. Unapplied approval inputs are selected from current input members and withdrawn. Completed turns and adopted/deleted inputs are not replayed. A non-request operation that has no delivery receives the original Closed delivery terminal; it is not executed again. This settles the accepted operation without reconstructing its old admission or execution task.
+
+An operation that actually arrives after reload can still name an older turn. Admission locates that turn's start/end by `data.turn_id`, then checks interrupts only inside that interval. A live current-turn operation uses the already observed state. No collection of all historically interrupted turns is restored or retained for this check.

@@ -37,7 +37,7 @@ WHERE session_id=:s AND branch_id=:b AND kind=:kind
 ORDER BY sequence DESC LIMIT 1;
 ```
 
-scope边界SQL形状（started、ended各一次）：
+scope边界SQL形状（按实际需要的status定位）：
 
 ```sql
 SELECT sequence,event_id FROM timeline_events
@@ -50,7 +50,7 @@ WHERE session_id=:s AND branch_id=:b AND kind='context/scope'
 ORDER BY sequence DESC LIMIT 1;
 ```
 
-完整scope键不能只用id，避免不同来源分支/种类冲突。再次started不抹掉上次ended；两种status分别seek，Prompt比较它们与Set的位置。branch/start重置另用原kind位置索引，Store不判断条目有效性。
+完整scope键不能只用id，避免不同来源分支/种类冲突。再次started不抹掉上次ended。正常恢复已采用Set时，采用事实已经证明写入时scope活动，只查其后的ended及branch重置边界；不重复查询started。新配置采用尚未采用的scope时才按业务合同定位必要状态边界。branch/start重置另用原kind位置索引，Store不判断条目有效性。
 
 Usage前驱SQL形状：
 

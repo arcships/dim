@@ -94,6 +94,17 @@ async fn display_windows_and_live_compaction_use_one_typed_detail_with_a_frame_b
     let display = reader.rpc("session.history.display", params.clone()).await;
     assert_ok(&display);
     assert_eq!(display["result"]["items"], json!([summary]));
+    let tail = reader
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":event.sequence,"limit":1
+            }),
+        )
+        .await;
+    assert_ok(&tail);
+    assert_eq!(tail["result"]["items"], json!([summary]));
+    assert!(tail["result"]["turnStart"].is_null());
     let summary_bytes = serde_json::to_vec(&display).unwrap().len();
     assert!(summary_bytes < 1024);
     let full = legacy.rpc("session.history", params).await;
@@ -184,6 +195,159 @@ async fn display_windows_and_live_compaction_use_one_typed_detail_with_a_frame_b
     let summary=reader.rpc("session.history.display",json!({"sessionId":id,"branchId":"main","through":oversized.sequence,"latestTurn":true,"limit":1})).await;
     assert_ok(&summary);
     assert!(serde_json::to_vec(&summary).unwrap().len() < 1024);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_tail_pages_inside_a_batch() {
+    let directory = new_directory("display-tail");
+    let (server, probe) = serve_streaming(&directory, Arc::new(StreamingModel::default())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.history.display.tail"))
+    );
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+    let batch = timeline
+        .append_batch_registered(
+            (0..12)
+                .map(|i| {
+                    EventKind::InputMessage(dim_agent_types::InputMessageData::text(
+                        format!("tail-{i}"),
+                        Some(dim_agent_types::InputMode::Append),
+                    ))
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let through = batch.last().unwrap().sequence;
+    let first = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&first);
+    assert_eq!(first["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["result"]["nextBefore"], through - 2);
+    assert!(first["result"]["turnStart"].is_null());
+    let second = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,
+                "before":first["result"]["nextBefore"],"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&second);
+    assert_eq!(second["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(second["result"]["nextBefore"], through - 5);
+    for transcript in [false, true] {
+        let mut before = None;
+        let mut found = Vec::new();
+        for _ in 0..4 {
+            let mut params = json!({"sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3,"transcript":transcript});
+            if let Some(cursor) = before {
+                params["before"] = json!(cursor);
+            }
+            let reply = client.rpc("session.history.display", params).await;
+            assert_ok(&reply);
+            let page = &reply["result"];
+            let next = page["nextBefore"].as_u64().unwrap();
+            assert!(before.is_none_or(|before| next < before));
+            before = Some(next);
+            found.extend(
+                page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|event| event["sequence"].as_u64().unwrap()),
+            );
+        }
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            batch.iter().map(|event| event.sequence).collect::<Vec<_>>()
+        );
+    }
+    let expected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&expected);
+    let hidden = timeline
+        .append_batch_registered(
+            (0..100)
+                .map(|_| {
+                    EventKind::Extension(
+                        dim_agent_types::ExtensionEvent::new(
+                            "test-hidden",
+                            "saved",
+                            json!({"payload":"not displayed"}),
+                        )
+                        .unwrap(),
+                    )
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let selected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,
+                "through":hidden.last().unwrap().sequence,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&selected);
+    assert_eq!(selected["result"]["items"], expected["result"]["items"]);
+    let oversized = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":257}),
+        )
+        .await;
+    assert_eq!(oversized["error"]["code"], -32602);
+
+    let invalid = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"latestTurn":true
+            }),
+        )
+        .await;
+    assert_eq!(invalid["error"]["code"], -32602);
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(directory).unwrap();
@@ -586,6 +750,28 @@ async fn the_latest_turn_window_carries_the_prompt_and_folds_like_forward_paging
         .await;
     assert_ok(&forward);
     assert_eq!(sequences(&page), sequences(&forward));
+    for method in ["session.history", "session.history.display"] {
+        let pinned = client
+            .rpc(
+                method,
+                json!({"sessionId":id,"branchId":"main","latestTurn":true,"through":turn_start}),
+            )
+            .await;
+        assert_ok(&pinned);
+        assert_eq!(pinned["result"]["turnStart"], turn_start);
+        assert!(
+            pinned["result"][if method == "session.history" {
+                "events"
+            } else {
+                "items"
+            }]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| text_of(event) == Some("hello window")),
+            "{pinned}"
+        );
+    }
 
     server.shutdown();
     server.join().await.unwrap();
@@ -717,6 +903,22 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
             .iter()
             .any(|event| event["type"] == "branch" && event["name"] == "end"),
         "{ended}"
+    );
+
+    let transcript = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":branch,"tail":true,"transcript":true}),
+        )
+        .await;
+    assert_ok(&transcript);
+    assert!(
+        transcript["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "branch" && event["name"] == "end"),
+        "{transcript}"
     );
     let mut pinned = params;
     pinned["through"] = open["result"]["through"].clone();

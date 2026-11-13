@@ -459,9 +459,10 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function window(channel: Channel, branchId: string, before?: number, through?: number) {
-    const window = new HistoryWindow(before, through)
+    const connection = useConnectionStore()
+    const display = connection.supports("session.history.display") && connection.supports("session.history.detail")
+    const window = new HistoryWindow(before, through, display && connection.supports("session.history.display.tail"), display && connection.supports("session.history.display.transcript"))
     for (;;) {
-      const display = (useConnectionStore().supports("session.history.display") && useConnectionStore().supports("session.history.detail"))
       const page = await client().call(display ? "session.history.display" : "session.history", window.params(channel.view.sessionId, branchId), display ? readDisplayHistory : readHistory, HISTORY_TIMEOUT_MS)
       if (window.push(page)) break
     }
