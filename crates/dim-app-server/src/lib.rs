@@ -1384,10 +1384,8 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
         ("basePromptSettingsHost", "owner-api"),
         ("promptSourcesBranch", "hot-path"),
-        ("scheduleJobs", "owner-api"),
         ("skillsInstructionsSettingsHost", "owner-api"),
         ("summaryPromptSettingsHost", "owner-api"),
-        ("wakeups", "owner-api"),
         ("agentDirectory", "owner-api"),
         ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),

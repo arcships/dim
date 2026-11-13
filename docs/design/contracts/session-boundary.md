@@ -529,6 +529,12 @@ carry the native event whole, and the frozen fixtures stay unchanged.
 | `report` call interrupted | `-32000`, `operation_interrupted` |
 | Provider error | `-32000`, provider's `appError` |
 
+Native method errors may include owner-defined JSON fields beside `data.appError`.
+The method owner defines and supplies their safe public shape; the method table
+and Rpc preserve them without interpreting them. These fields must not shadow
+`appError` or built-in error fields. An error without additional fields keeps its
+existing wire shape.
+
 ## Appendix D. Acceptance
 
 1. A Session-scoped method dispatches through the Session it names. A name no namespace of that Session ever held returns `unknown_method`; a withdrawn namespace returns `service_reloading` while the part that registered it starts or reloads and `service_unavailable` once that part is Failed or Unresolved; Rpc never names the provider. A Session namespace that overlaps a built-in or lies in a reserved root is refused when it registers, and one inside a management namespace never receives the names that namespace holds.
