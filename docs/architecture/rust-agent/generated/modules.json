@@ -4778,6 +4778,17 @@
       ]
     },
     {
+      "id": "dim_cli::session_host::member::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::session_host::member",
+      "file": "crates/dim-cli/src/session_host/member.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "json"
+      ]
+    },
+    {
       "id": "dim_cli::session_host::report",
       "crate": "dim_cli",
       "parent": "dim_cli::session_host",
@@ -4810,6 +4821,19 @@
         "json",
         "matches",
         "unreachable"
+      ]
+    },
+    {
+      "id": "dim_cli::session_host::tasks::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::session_host::tasks",
+      "file": "crates/dim-cli/src/session_host/tasks.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format",
+        "json",
+        "panic"
       ]
     },
     {
@@ -38846,6 +38870,7 @@
       "to": "dim_cli::args",
       "references": [
         "path Options",
+        "path Options::parse",
         "use crate::args::Options"
       ]
     },
@@ -39416,11 +39441,14 @@
       "to": "dim_client",
       "references": [
         "path Client",
+        "path Client::connect",
         "path Message",
         "path Message::Notice",
         "path Message::Response",
         "path client::RpcError",
         "path client::app_error",
+        "path dim_client::ConnectionConfig",
+        "path dim_client::Server",
         "path dim_client::app_error",
         "use crate::client::Client",
         "use crate::client::Message"
@@ -39639,6 +39667,13 @@
     },
     {
       "from": "dim_cli::session_host::member",
+      "to": "dim_cli::session_host::member::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member",
       "to": "dim_client",
       "references": [
         "path client::RpcError"
@@ -39662,6 +39697,57 @@
         "path crate::wire::TurnRead",
         "path dim_client::wire::DisplayPage",
         "path dim_client::wire::MethodTable"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_cli::model::view",
+      "references": [
+        "path MemberConversationState::Live"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_cli::projection",
+      "references": [
+        "path Projection::default"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_cli::session_host",
+      "references": [
+        "path Worker",
+        "path crate::session_host::TEST_FEATURES",
+        "path crate::session_host::test_worker"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_cli::session_host::member",
+      "references": [
+        "path EarlierRead::None",
+        "path EarlierRead::Reading",
+        "path Observation",
+        "path Pending",
+        "path Pending::Goal",
+        "path Pending::Turn"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_client",
+      "references": [
+        "path Message::Response",
+        "use crate::client::Message"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::member::tests",
+      "to": "dim_client::window",
+      "references": [
+        "path dim_client::window::Window",
+        "path dim_client::window::Window::default"
       ]
     },
     {
@@ -39873,6 +39959,13 @@
     },
     {
       "from": "dim_cli::session_host::tasks",
+      "to": "dim_cli::session_host::tasks::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks",
       "to": "dim_cli::session_host::workflow",
       "references": [
         "path workflow"
@@ -39910,6 +40003,46 @@
         "path EventContent::BranchStart",
         "path crate::wire::TurnRead",
         "path dim_client::wire::DisplayPage"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_cli::model::session",
+      "references": [
+        "path crate::model::session::Command::FocusLine",
+        "path crate::model::session::Command::TaskHistory"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_cli::session_host",
+      "references": [
+        "path Worker",
+        "path crate::session_host::TEST_FEATURES",
+        "path crate::session_host::test_worker"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_cli::session_host::tasks",
+      "references": [
+        "path EarlierRead::Failed"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_client",
+      "references": [
+        "path Message::Response",
+        "path client::RpcError",
+        "use crate::client::Message"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host::tasks::tests",
+      "to": "dim_client::wire",
+      "references": [
+        "path Event"
       ]
     },
     {
@@ -53193,6 +53326,10 @@
     {
       "module": "dim_cli::session",
       "path": "char::is_whitespace"
+    },
+    {
+      "module": "dim_cli::session_host",
+      "path": "BufReader::new"
     },
     {
       "module": "dim_cli::session_host",

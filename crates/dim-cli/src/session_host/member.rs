@@ -23,6 +23,16 @@ enum Pending {
     Tool(u64, String, String),
 }
 
+/// The earlier read the observation was asked for: none, a press taken while
+/// another request was in flight, or the read a press sent.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EarlierRead {
+    #[default]
+    None,
+    Asked,
+    Reading,
+}
+
 struct Observation {
     /// The leader attachment it was made for; a replacement releases it.
     projection_id: u64,
@@ -35,7 +45,7 @@ struct Observation {
     pending: Option<Pending>,
     window: dim_client::window::Window,
     model_through: u64,
-    earlier: bool,
+    earlier: EarlierRead,
     goal_available: bool,
     tool_available: bool,
     goal_stale: bool,
@@ -72,6 +82,14 @@ impl Observation {
                 false => self.projection.apply("main", &event),
             }
         }
+    }
+
+    /// Ends the observation: it read nothing and has nothing left to read.
+    fn release(&mut self) {
+        self.closing = true;
+        self.window = Default::default();
+        self.live.clear();
+        self.earlier = EarlierRead::None;
     }
 }
 
@@ -163,7 +181,7 @@ impl Worker {
             .observations
             .get(id)
             .map_or(Earlier::AtStart, |observation| {
-                if observation.pending.is_some() || observation.earlier {
+                if observation.earlier != EarlierRead::None {
                     Earlier::Reading
                 } else if observation.window.before.is_some() {
                     Earlier::Unread
@@ -198,9 +216,7 @@ impl Worker {
         let needed = self.needed_members();
         for (id, observation) in &mut self.members.observations {
             if !needed.contains(id) || observation.projection_id != self.projection_id {
-                observation.closing = true;
-                observation.window = Default::default();
-                observation.live.clear();
+                observation.release();
             }
         }
         for id in needed {
@@ -217,7 +233,7 @@ impl Worker {
                         pending: None,
                         window: Default::default(),
                         model_through: 0,
-                        earlier: false,
+                        earlier: EarlierRead::None,
                         goal_available: false,
                         tool_available: false,
                         goal_stale: false,
@@ -302,6 +318,19 @@ impl Worker {
                 self.members.observations.get_mut(&id).unwrap().goal_stale = false;
             }
         }
+        let asked: Vec<String> = self
+            .members
+            .observations
+            .iter_mut()
+            .filter(|(_, observation)| {
+                observation.earlier == EarlierRead::Asked && observation.pending.is_none()
+            })
+            .map(|(id, observation)| {
+                observation.earlier = EarlierRead::Reading;
+                id.clone()
+            })
+            .collect();
+        self.members.pages.extend(asked);
         if self
             .members
             .observations
@@ -316,7 +345,8 @@ impl Worker {
             };
             if observation.closing
                 || observation.pending.is_some()
-                || (observation.state != MemberConversationState::Loading && !observation.earlier)
+                || (observation.state != MemberConversationState::Loading
+                    && observation.earlier == EarlierRead::None)
             {
                 continue;
             }
@@ -542,13 +572,13 @@ impl Worker {
                     Err(error) => self.fail_member(&id, error),
                     Ok(done) => {
                         if done {
-                            if observation.earlier {
+                            if observation.earlier == EarlierRead::Reading {
                                 let mut older = Projection::default();
                                 for event in observation.window.take() {
                                     older.replay("main", &event);
                                 }
                                 observation.projection.prepend(older);
-                                observation.earlier = false;
+                                observation.earlier = EarlierRead::None;
                             } else {
                                 for event in observation.window.take() {
                                     observation.event(event, true);
@@ -603,8 +633,7 @@ impl Worker {
         let Some(observation) = self.members.observations.get_mut(id) else {
             return true;
         };
-        if observation.pending.is_some()
-            || observation.earlier
+        if observation.earlier != EarlierRead::None
             || observation.state != MemberConversationState::Live
         {
             return true;
@@ -613,8 +642,14 @@ impl Worker {
             self.send(Update::Notice("Beginning of conversation".into()));
             return true;
         }
-        observation.earlier = true;
-        self.members.pages.push_back(id.clone());
+        observation.earlier = if observation.pending.is_some() {
+            EarlierRead::Asked
+        } else {
+            EarlierRead::Reading
+        };
+        if observation.earlier == EarlierRead::Reading {
+            self.members.pages.push_back(id.clone());
+        }
         true
     }
 
@@ -661,7 +696,7 @@ impl Worker {
             .observations
             .get_mut(session_id)
             .expect("ended observation")
-            .closing = true;
+            .release();
         self.members.unavailable.insert(session_id.to_owned());
     }
 
@@ -697,5 +732,173 @@ impl Worker {
                 model: observation.model.clone(),
             });
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::client::Message;
+
+    /// A window whose `before` names the older history left to read.
+    fn window(before: Option<u64>, through: u64) -> dim_client::window::Window {
+        let mut window = dim_client::window::Window::default();
+        window.before = before;
+        window.through = Some(through);
+        window
+    }
+
+    /// A live member observation holding a loaded window.
+    fn observation(before: Option<u64>, pending: Option<Pending>) -> Observation {
+        Observation {
+            projection_id: 0,
+            projection: Projection::default(),
+            state: MemberConversationState::Live,
+            model: None,
+            attached: true,
+            closing: false,
+            pending,
+            window: window(before, 9),
+            model_through: 0,
+            earlier: EarlierRead::None,
+            goal_available: false,
+            tool_available: false,
+            goal_stale: false,
+            cursor: 0,
+            live: Vec::new(),
+        }
+    }
+
+    /// Selects `observation` as the detail's member on a fresh worker.
+    fn select(worker: &mut Worker, observation: Observation) {
+        worker.session_id = "s1".into();
+        worker.members.selected = Some((worker.projection_id, "member".into()));
+        worker
+            .members
+            .observations
+            .insert("member".into(), observation);
+    }
+
+    /// A complete history is at its start whatever else the member runs.
+    /// `pending` covers every request the observation makes, and none of them
+    /// is an earlier read.
+    #[tokio::test]
+    async fn a_complete_member_history_is_at_start_while_another_request_is_in_flight() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(None, Some(Pending::Turn(1))));
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a complete history has nothing earlier to read, whatever else is in flight"
+        );
+    }
+
+    /// An earlier read asked for while another member request is in flight is
+    /// recorded, reports `Reading` from then, and goes out once that request
+    /// settles, so a press is never dropped.
+    #[tokio::test]
+    async fn a_page_up_during_another_member_request_reads_once_it_settles() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), Some(Pending::Goal(1))));
+        worker.earlier_member();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the recorded earlier read is reported from the moment it is recorded"
+        );
+        worker
+            .message(Message::Response {
+                id: 1,
+                result: Ok(json!({"branchId":"member","through":9,"goal":null})),
+            })
+            .await
+            .unwrap();
+        assert!(
+            worker.members.observations["member"].pending.is_none(),
+            "the goal read settled"
+        );
+        worker.poll_member().await.unwrap();
+        assert!(
+            matches!(
+                worker.members.observations["member"].pending,
+                Some(Pending::History(_))
+            ),
+            "the recorded earlier read went out once nothing else was in flight"
+        );
+    }
+
+    /// A failed earlier read releases the observation, and a released member
+    /// has nothing to read: the detail shows the error and the member is
+    /// reattached to be read again.
+    #[tokio::test]
+    async fn a_failed_member_read_releases_the_observation_and_its_flag() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        let mut observation = observation(Some(7), None);
+        observation.earlier = EarlierRead::Reading;
+        select(&mut worker, observation);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read is in flight"
+        );
+
+        worker.fail_member("member", "the daemon dropped the read".into());
+        assert!(worker.members.observations["member"].closing);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a released observation reports its start, not a read in flight"
+        );
+    }
+
+    /// A projection change releases the observation the old attachment owned,
+    /// and a released observation has nothing left to read.
+    #[tokio::test]
+    async fn a_member_released_by_a_projection_change_reports_its_start() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), None));
+        worker.earlier_member();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read went out"
+        );
+
+        worker.projection_id += 1;
+        worker.poll_member().await.unwrap();
+
+        assert!(
+            worker.members.observations["member"].closing,
+            "the observation the previous attachment owned is released"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a released observation reports its start, not the read it had in flight"
+        );
+    }
+
+    /// A closed member reports its start: its window is gone with the Session.
+    #[tokio::test]
+    async fn a_closed_member_reports_its_start() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), None));
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "a live member with older history is unread"
+        );
+
+        worker.member_closed("member");
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a closed member has no earlier history to read"
+        );
     }
 }
