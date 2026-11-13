@@ -37,7 +37,7 @@ pub struct TasksPanel {
     list: ListPanel,
     tasks: Vec<TaskView>,
     detail: Option<Box<Detail>>,
-    /// Opened from a transcript card: leaving the detail returns to it.
+    /// Opened directly: leaving the detail returns to the composer.
     from_card: bool,
 }
 
@@ -185,10 +185,14 @@ impl TasksPanel {
                 .as_ref()
                 .and_then(|finish| finish.exit_code)
                 .map_or(String::new(), |code| format!(" · exit {code}"));
+            let agent = task
+                .agent
+                .as_deref()
+                .map_or(String::new(), |name| format!(" · {}", safe(name)));
             Item::new(
                 task.id.clone(),
                 safe(&task.label),
-                format!("{kind} · {status} · {elapsed}s{exit}"),
+                format!("{kind}{agent} · {status} · {elapsed}s{exit}"),
             )
         }));
         self.list.set_items(Ok(items), selected.as_deref());
@@ -352,7 +356,7 @@ impl TasksPanel {
         }
     }
 
-    /// A transcript card's delegation, which may have left the task list.
+    /// Opens a transcript card or background row directly, without the list.
     pub fn open_card(&mut self, task: TaskView) -> Effect {
         self.from_card = true;
         self.open(task)
@@ -523,6 +527,9 @@ impl TasksPanel {
         let mut lines = Vec::new();
         let mut hint = "Esc back";
         let mut title = safe(&detail.task.label);
+        if let Some(agent) = &detail.task.agent {
+            title.push_str(&format!(" · {}", safe(agent)));
+        }
         match &detail.body {
             DetailBody::Command { text, state } => {
                 let (status, color) = match state {
@@ -551,6 +558,14 @@ impl TasksPanel {
                     ),
                 };
                 content.push(fg(&truncate_cells(&status, inner), color));
+                if let Some(command) = &detail.task.command {
+                    lines.extend(
+                        wrap_cells(&safe(command), inner)
+                            .into_iter()
+                            .map(|line| fg(&line, &p.muted)),
+                    );
+                    lines.push(String::new());
+                }
                 let text = if text.is_empty() {
                     match state {
                         TaskOutputState::Loading => t("Loading output..."),

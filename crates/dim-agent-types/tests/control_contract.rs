@@ -128,6 +128,9 @@ fn native_product_events_round_trip_without_a_v1_view() {
     for payload in [
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","allowedTools":["read"],"disallowedTools":["exec"]}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","output_path":"/tmp/output.log"}}),
+        json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","title":"Run tests","output_path":"/tmp/output.log"}}),
+        json!({"type":"collaboration","name":"request","data":{"turn_id":"t","request_id":"r","call_id":"c","target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Review the implementation"}}),
+        json!({"type":"collaboration","name":"request","data":{"turn_id":"t","request_id":"r","call_id":"c","target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Review the implementation","title":"Review change"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"completed","result":{"content":"Output path: /tmp/output.log"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"failed","result":{"content":"exit code 1"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"cancelled","result":{"content":"stopped"}}}),

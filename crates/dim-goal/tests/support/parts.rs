@@ -1602,6 +1602,7 @@ impl Env {
                 call_id: format!("call-{task_id}"),
                 task_id: task_id.to_owned(),
                 description: "background work".into(),
+                title: None,
                 output_path: "/dev/null".into(),
             }),
         )

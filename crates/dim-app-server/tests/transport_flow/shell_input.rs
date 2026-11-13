@@ -80,7 +80,7 @@ async fn background_exec_output_is_live_bounded_and_scoped() {
     let command = "while [ ! -f long-line ]; do sleep 0.01; done; awk 'BEGIN { for (i=0; i<150000; i++) printf \"x\"; printf \"\\n\" }'; while [ ! -f produce ]; do sleep 0.01; done; awk 'BEGIN { for (i=0; i<3000; i++) printf \"%04d-%080d\\n\", i, 0 }'; printf 'tail\\001\\n'; while [ ! -f finish ]; do sleep 0.01; done; printf 'final\\n'";
     let text = format!(
         "tool:exec {}",
-        json!({"command":command,"runInBackground":true,"timeoutMs":-1})
+        json!({"command":command,"title":"Capture command output","runInBackground":true,"timeoutMs":-1})
     );
     assert_ok(
         &shell
@@ -96,10 +96,31 @@ async fn background_exec_output_is_live_bounded_and_scoped() {
         if event["params"]["event"]["type"] == "exec"
             && event["params"]["event"]["name"] == "started"
         {
+            assert_eq!(
+                event["params"]["event"]["data"]["title"],
+                "Capture command output"
+            );
             break event["params"]["event"]["data"]["task_id"].clone();
         }
     };
     session.idle("main").await.unwrap();
+    let pending = shell
+        .client
+        .rpc(
+            "session.exec.pending",
+            json!({"sessionId":shell.sid,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    assert_eq!(pending["result"]["tasks"][0]["taskId"], task);
+    assert_eq!(
+        pending["result"]["tasks"][0]["title"],
+        "Capture command output"
+    );
+    assert_eq!(
+        pending["result"]["tasks"][0]["description"],
+        command.chars().take(200).collect::<String>()
+    );
     assert_ok(
         &shell
             .client
@@ -421,6 +442,18 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     let task = next_exec_started(&mut shell, 0).await;
     session.idle("main").await.unwrap();
     let params = json!({"sessionId":shell.sid,"branchId":"main","taskId":task});
+    let pending = shell
+        .client
+        .rpc(
+            "session.exec.pending",
+            json!({"sessionId":shell.sid,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    let inventory_task: dim_agent_types::PendingExec =
+        serde_json::from_value(pending["result"]["tasks"][0].clone()).unwrap();
+    assert_eq!(inventory_task.title, None);
+    assert!(pending["result"]["tasks"][0].get("title").is_none());
     // Before any output the registered file is empty: an empty page, no next
     // cursor.
     let empty = exec_output_page(&mut shell, &params, 0, 64).await;

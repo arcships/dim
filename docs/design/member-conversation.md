@@ -367,22 +367,28 @@ terminal delegation result.
 
 ### Layout and entry points
 
+Card headings show the delegation's task title followed by its Agent name,
+using the same title and identity as the
+[background-task presentation](background-task-list.md#task-titles-and-composer-rows).
+The prompt remains the expanded task detail, not the heading. Historical
+requests without a title retain their first prompt line as the label.
+
 ```text
-+-- Agent: inspect imports --------------------------------------+
++-- Check dependencies · Agent: inspect imports -----------------+
 | Task: Check crate dependencies                                 |
 | Member model: provider / model     Running          00:42       |
 | Activity: reading Cargo.toml                                   |
 | [Open member conversation]                                     |
 +---------------------------------------------------------------+
 
-+-- Agent: inspect tests ----------------------------------------+
++-- Review coverage · Agent: inspect tests ----------------------+
 | Task: Review the integration coverage                          |
 | Member model: No model observed                 Completed 01:12 |
 | Result: Found two missing restart cases ...                    |
 | [Open member conversation]                                     |
 +---------------------------------------------------------------+
 
-+-- Agent: default -----------------------------------------------+
++-- Check imports · Agent: default ------------------------------+
 | Task: Check the imports                                        |
 | Not started · 2s                                               |
 | Reason: agent_not_found: no visible Agent has this agentId;    |
@@ -390,7 +396,7 @@ terminal delegation result.
 |         a profile to create a temporary Agent                  |
 +---------------------------------------------------------------+
 
-+-- Provider member: external-agent:<node>:<agent> ---------------+
++-- Inspect repository · Provider member: external-agent:… -------+
 | Task: Inspect the repository                                   |
 | State: Running                                       00:42     |
 | Activity: not observed on this attachment                      |
@@ -416,7 +422,7 @@ stop/idle heuristic creates an end timestamp. Stored result detail remains
 available without observing a live member.
 
 Use the existing canonical transcript renderer below the App layer. Collapsed
-cards show the task's first display line, model/state and elapsed time. Expanded
+cards show the task title and Agent name, model/state and elapsed time. Expanded
 cards show up to three wrapped task lines, the latest member activity line and
 up to six wrapped result lines; indicate omitted text and keep the full real
 result in detail. Do not copy the App renderer into the panel or introduce a

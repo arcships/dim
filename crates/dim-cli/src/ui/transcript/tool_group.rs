@@ -1351,10 +1351,11 @@ fn append_card(lines: &mut Vec<Line>, call: &Call<'_>, now: u64, detail: Detail)
     let provider = task.kind == TaskKind::Member(MemberTarget::Provider);
     let action =
         matches!(task.kind, TaskKind::Member(MemberTarget::Session(_))).then(|| task.id.clone());
+    let agent = safe(task.agent.as_deref().expect("member task names its Agent"));
     let who = if provider {
-        tf("Provider member: {name}", &[("name", &safe(&card.agent))])
+        tf("Provider member: {name}", &[("name", &agent)])
     } else {
-        tf("Agent: {name}", &[("name", &safe(&card.agent))])
+        tf("Agent: {name}", &[("name", &agent)])
     };
     let model = if provider || refused {
         None
@@ -1396,22 +1397,21 @@ fn append_card(lines: &mut Vec<Line>, call: &Call<'_>, now: u64, detail: Detail)
         action: action.clone(),
         ..body_line(4, text, tone, overflow)
     };
+    let heading = vec![
+        span(first(&task.label), Tone::Text),
+        span(format!(" · {who}"), Tone::Muted),
+    ];
     if detail == Detail::Collapsed {
-        let mut spans = vec![span(who, Tone::Text)];
-        let label = first(&card.prompt);
-        if !label.is_empty() {
-            spans.push(span(format!(" · {label}"), Tone::Muted));
-        }
         lines.push(Line {
             action: action.clone(),
-            ..header_line(2, mark, spans)
+            ..header_line(2, mark, heading)
         });
         lines.push(line(meta, Tone::Muted, Overflow::Truncate));
         return;
     }
     lines.push(Line {
         action: action.clone(),
-        ..header_line(2, mark, vec![span(who, Tone::Text)])
+        ..header_line(2, mark, heading)
     });
     lines.push(Line {
         hang: 6,
