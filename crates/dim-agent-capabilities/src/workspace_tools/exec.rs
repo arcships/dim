@@ -495,13 +495,19 @@ impl ShellScan {
     /// The physical index of the character `offset` logical characters ahead.
     ///
     /// A logical character is a physical one, with a continuation removed first
-    /// where [`Self::join`] is set.
+    /// where [`Self::join`] is set. A continuation is a newline preceded by an
+    /// odd run of backslashes; an even run is a sequence of escapes ending in
+    /// a literal `\`, and its newline stays a newline.
     fn at(&self, offset: usize) -> Option<usize> {
         let mut index = self.index;
         let mut left = offset;
         loop {
             let ch = *self.chars.get(index)?;
-            if self.join && ch == '\\' && self.chars.get(index + 1) == Some(&'\n') {
+            if self.join
+                && ch == '\\'
+                && self.chars.get(index + 1) == Some(&'\n')
+                && self.backslashes_before(index) % 2 == 1
+            {
                 index += 2;
                 continue;
             }
@@ -511,6 +517,15 @@ impl ShellScan {
             left -= 1;
             index += 1;
         }
+    }
+
+    /// How many backslashes end at `index`, counting backwards.
+    fn backslashes_before(&self, index: usize) -> usize {
+        self.chars[..=index]
+            .iter()
+            .rev()
+            .take_while(|ch| **ch == '\\')
+            .count()
     }
 
     fn peek(&self, offset: usize) -> Option<char> {
@@ -2506,6 +2521,15 @@ const ALWAYS_REFUSED: &[&str] = &[
     "echo \"${v:-$\\\n(sleep 5 &)}\"",
     "# note \\\nsleep 5 &",
     "/bin/sle\\\nep 5 &",
+    // `\\` is an escaped backslash, so the newline after it starts a line
+    // rather than continuing one, and the heredoc ends at the next `EOF`.
+    "cat <<EOF \\\\\nEOF\nsleep 5 &\nx=1\nEOF",
+    // The same run inside `" "`: taking the newline as a continuation swallows
+    // the closing quote.
+    "echo \"a\\\\\n\" ; sleep 5 & echo \"b\" \"\"",
+    // The same inside `${...}`. zsh rejects the line, so refusing it costs
+    // nothing there.
+    "echo ${v:-a\\\\\n} ; sleep 5 & echo }",
 ];
 
 /// An `&` whose verdict differs by edition, in [`EDITIONS`] order: `true` is
