@@ -1893,6 +1893,20 @@
       ]
     },
     {
+      "id": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "crate": "dim_agent_runtime",
+      "parent": "dim_agent_runtime::timeline_query::properties",
+      "file": "crates/dim-agent-runtime/src/timeline_query/properties.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "json",
+        "matches",
+        "println",
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_runtime::timeline_store",
       "crate": "dim_agent_runtime",
       "parent": "dim_agent_runtime",
@@ -20731,6 +20745,13 @@
     },
     {
       "from": "dim_agent_runtime::timeline_query::properties",
+      "to": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "references": [
+        "mod match_key_proof"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::timeline_query::properties",
       "to": "dim_agent_types::checkpoint",
       "references": [
         "path TimelinePosition",
@@ -20743,6 +20764,16 @@
       "references": [
         "path AgentEvent",
         "use dim_agent_types::AgentEvent"
+      ]
+    },
+    {
+      "from": "dim_agent_runtime::timeline_query::properties::match_key_proof",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryComparison::Eq",
+        "path QueryValue",
+        "path QueryValue::Missing",
+        "path QueryValue::Value"
       ]
     },
     {
