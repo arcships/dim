@@ -326,6 +326,9 @@ struct ShellReading {
     /// A continuation between two characters of an operator joins them: bash
     /// and dash. zsh rejects a split operator and ksh reads two markers.
     joins_operators: bool,
+    /// `$'...'` is a quote in which `\` escapes the next character and only an
+    /// unescaped `'` closes it: bash, zsh and ksh. dash has no such quote.
+    ansi_c_quote: bool,
 }
 
 /// How one shell reads the constructs that differ. Measured on bash 3.2.57,
@@ -337,6 +340,7 @@ const BASH: ShellReading = ShellReading {
     amp_redirect: true,
     joined_delimiter: true,
     joins_operators: true,
+    ansi_c_quote: true,
 };
 const ZSH: ShellReading = ShellReading {
     arithmetic_command: true,
@@ -344,6 +348,7 @@ const ZSH: ShellReading = ShellReading {
     amp_redirect: true,
     joined_delimiter: true,
     joins_operators: false,
+    ansi_c_quote: true,
 };
 const DASH: ShellReading = ShellReading {
     arithmetic_command: false,
@@ -351,6 +356,7 @@ const DASH: ShellReading = ShellReading {
     amp_redirect: false,
     joined_delimiter: false,
     joins_operators: true,
+    ansi_c_quote: false,
 };
 const KSH: ShellReading = ShellReading {
     arithmetic_command: true,
@@ -358,6 +364,7 @@ const KSH: ShellReading = ShellReading {
     amp_redirect: false,
     joined_delimiter: false,
     joins_operators: false,
+    ansi_c_quote: true,
 };
 
 /// An `&` outside `' '` and `" "`, when neither neighbour makes it inert.
@@ -367,6 +374,18 @@ fn quote_only_marker(script: &str, reading: ShellReading) -> bool {
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
+        if ch == '$' && chars.get(i + 1) == Some(&'\'') && reading.ansi_c_quote && !double {
+            i += 2;
+            while let Some(inner) = chars.get(i) {
+                i += 1;
+                match inner {
+                    '\\' => i += 1,
+                    '\'' => break,
+                    _ => {}
+                }
+            }
+            continue;
+        }
         if ch == '\'' && !double {
             single = !single;
         } else if ch == '"' && !single {
@@ -515,6 +534,10 @@ impl ShellScan {
                     }
                     word_start = false;
                 }
+                '$' if self.peek(1) == Some('\'') && self.reading.ansi_c_quote => {
+                    self.ansi_c_quoted();
+                    word_start = false;
+                }
                 '$' => {
                     self.dollar();
                     word_start = false;
@@ -632,6 +655,24 @@ impl ShellScan {
                 return;
             }
             self.index += 1;
+        }
+    }
+
+    /// `$'...'`: here `\` escapes the next character, so `\'` does not close
+    /// the quote.
+    fn ansi_c_quoted(&mut self) {
+        self.skip(2);
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                return;
+            };
+            self.skip(1);
+            match ch {
+                '\\' => self.skip(1),
+                '\'' => return,
+                _ => {}
+            }
         }
     }
 
@@ -802,6 +843,9 @@ impl ShellScan {
                     self.double_quoted();
                 }
                 '\'' => self.single_quoted(),
+                '$' if self.peek(1) == Some('\'') && self.reading.ansi_c_quote => {
+                    self.ansi_c_quoted();
+                }
                 '$' => self.dollar(),
                 '`' => {
                     self.skip(1);
@@ -2408,6 +2452,12 @@ const BY_EDITION: &[(&str, [bool; 6])] = &[
         "cat <<-true\n\ttr\\\nue\nsleep 5 &\ntrue",
         [true, true, true, true, false, false],
     ),
+    // `$'a\' '` opens a quote that runs to the next `'`, so the `&` between
+    // them is text; dash has no `$'` and rejects the line.
+    (
+        "echo $'a\\' ' & sleep 5 &",
+        [true, true, true, true, false, true],
+    ),
     // `(( cmd & ))` is arithmetic only where the shell has that command.
     ("(( sleep 5 & ))", [false, false, false, true, true, false]),
     ("(( a & b ))", [false, false, false, true, true, false]),
@@ -2435,6 +2485,18 @@ const BY_EDITION: &[(&str, [bool; 6])] = &[
     (
         "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
         [true, true, false, true, true, false],
+    ),
+    // `$'it\'s & fine'` is inert where the quote exists, and dash has no `$'`,
+    // so it refuses the line as a syntax error. `sh` may be dash.
+    (
+        "echo $'it\\'s & fine'",
+        [false, false, false, true, true, false],
+    ),
+    // `$'...'` also applies inside `${...}`, so the quote there runs past the
+    // escaped `'` and the `&` after it stays text. dash rejects the line.
+    (
+        "echo ${v:-$'a\\'b'} & sleep 5 &",
+        [true, true, true, true, false, true],
     ),
     // `|&` is a ksh coprocess, which runs in the background.
     ("sleep 5 |& cat", [false, false, false, true, true, true]),
