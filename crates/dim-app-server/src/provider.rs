@@ -1535,7 +1535,57 @@ fn selection_scope(cwd: Option<&Path>) -> Result<String, HostError> {
         Some(_) => Err(failure("Workspace path must be absolute")),
     }
 }
+/// Whether one resolution also applies the model's saved preferences.
+///
+/// A closed choice, so every caller of the shared core states which it means:
+/// a client adoption applies them, and every other caller withholds them, since
+/// a consumer model must not inherit what a person picked in `/models`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Saved {
+    /// Apply the saved value for each field the caller left unstated.
+    Apply,
+    /// Resolve at the model's declared defaults alone.
+    Withhold,
+}
+
 impl ProviderService {
+    /// The preferences saved for one model, `{providerId, modelId}`: the
+    /// per-model record `/models` writes, and nothing else.
+    ///
+    /// A static record keeps its own map; a managed one keeps it beside its
+    /// account. A Provider or model this build does not know answers empty, so
+    /// a disappeared record reads as no saved value rather than an error.
+    async fn saved_preferences(
+        self: &Arc<Self>,
+        provider_id: &str,
+        model_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ModelPreferences, HostError> {
+        let managed = self
+            .oauth
+            .contains(provider_id, cancel)
+            .await
+            .map_err(failure)?;
+        let db = self.db.clone();
+        let (provider_id, model_id) = (provider_id.to_owned(), model_id.to_owned());
+        self.owned(cancel, move |_| {
+            Box::pin(async move {
+                db.run_read(move |connection| {
+                    let preferences = if managed {
+                        read_catalog(connection, &provider_id)?
+                            .and_then(|record| record.model_preferences.get(&model_id).cloned())
+                    } else {
+                        read_static(connection, &provider_id)?
+                            .and_then(|record| record.model_preferences.get(&model_id).cloned())
+                    };
+                    Ok(preferences.unwrap_or_default())
+                })
+                .await
+                .map_err(failure)
+            })
+        })
+        .await
+    }
     async fn account_available(
         self: &Arc<Self>,
         provider_id: &str,
@@ -2112,8 +2162,39 @@ impl ProviderService {
         preferences: ModelPreferences,
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
-        self.configuration_with_limits(explicit, cwd, preferences, (None, None), cancel)
-            .await
+        self.configuration_with_limits(
+            explicit,
+            cwd,
+            preferences,
+            Saved::Apply,
+            (None, None),
+            cancel,
+        )
+        .await
+    }
+
+    /// The configuration a consumer model runs at: the model's declared
+    /// defaults alone, never the values a person saved in `/models`.
+    ///
+    /// The host port and every part that resolves a model for its own work
+    /// call this rather than [`configuration`], so a consumer never inherits a
+    /// chat preference. `sessions.launch` and Scheduler launches reach it
+    /// through the port.
+    pub(super) async fn configuration_at_defaults(
+        self: &Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<&Path>,
+        cancel: &CancellationToken,
+    ) -> Result<ModelSelection, HostError> {
+        self.configuration_with_limits(
+            explicit,
+            cwd,
+            ModelPreferences::default(),
+            Saved::Withhold,
+            (None, None),
+            cancel,
+        )
+        .await
     }
 
     async fn configuration_with_limits(
@@ -2121,6 +2202,7 @@ impl ProviderService {
         explicit: Option<ModelId>,
         cwd: Option<&Path>,
         preferences: ModelPreferences,
+        saved: Saved,
         limits: (Option<u64>, Option<u64>),
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
@@ -2179,8 +2261,22 @@ impl ProviderService {
             )
             .map_err(|error| failure(error.to_string()))?;
             let base = preferences::catalog_defaults(&model.config, &snapshot, protocol);
-            let config = preferences::configure(&preferences, &snapshot, protocol, &base)
-                .map_err(failure)?;
+            let config = match saved {
+                Saved::Apply => {
+                    let saved = self.saved_preferences(&id, &model.id, cancel).await?;
+                    preferences::effective(
+                        &preferences,
+                        &saved,
+                        &snapshot,
+                        protocol,
+                        &base,
+                        &id,
+                        &model.id,
+                    )
+                }
+                Saved::Withhold => preferences::configure(&preferences, &snapshot, protocol, &base),
+            }
+            .map_err(failure)?;
             return Ok(ModelSelection {
                 provider_id: id.clone(),
                 model_id: model.id.clone(),
@@ -2691,12 +2787,7 @@ impl ResolveModelSelection for ProductResolver {
     ) -> HostFuture<'_, ModelSelection> {
         Box::pin(async move {
             self.0
-                .configuration(
-                    explicit,
-                    cwd.as_deref(),
-                    ModelPreferences::default(),
-                    &cancel,
-                )
+                .configuration_at_defaults(explicit, cwd.as_deref(), &cancel)
                 .await
         })
     }
