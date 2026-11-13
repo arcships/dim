@@ -527,6 +527,10 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                         app.open_task(&task);
                         dirty = true;
                     }
+                    MouseOutcome::Models => {
+                        app.run_command("models", "");
+                        dirty = true;
+                    }
                     MouseOutcome::Click {
                         block: Some(block),
                         row,
@@ -5655,6 +5659,12 @@ impl App {
                 .as_ref()
                 .and_then(|label| label.fitted(|text| left + width_of(text) + 3 < room))
                 .map(|label| fg(&label, &p.highlight));
+            if self.prompt.is_none()
+                && let Some(model) = &model
+            {
+                let end = MARGIN + outer - 3;
+                frame.model_label = Some((box_top, end - width_of(model)..end));
+            }
             let title = title.map(|(text, label)| label(text));
             let docked = self.dock_status(status.as_deref());
             let place = self.composer_place(docked.as_deref(), outer);
@@ -7280,38 +7290,42 @@ impl App {
             .as_ref()
             .and_then(|label| label.fitted(|text| width_of(&left) + 2 + width_of(text) <= total));
         let line = match label {
-            Some(label) => {
-                let gap = total - width_of(&left) - width_of(&label);
-                format!("{left}{}{label}", " ".repeat(gap))
+            Some(ref label) => {
+                let gap = total - width_of(&left) - width_of(label);
+                format!("{left}{}", " ".repeat(gap))
             }
             None => clip(&left, total).0,
         };
-        if let Some((text, _)) = &self.notice
+        let line = if let Some((text, _)) = &self.notice
             && let Some(at) = line.find(text.as_str())
         {
             let (before, rest) = line.split_at(at);
             let (notice, after) = rest.split_at(text.len().min(rest.len()));
-            return format!(
+            format!(
                 "{}{}{}",
                 fg(before, &self.palette.muted),
                 fg(notice, &self.palette.highlight),
                 fg(after, &self.palette.muted)
-            );
-        }
-        if self.context_near()
+            )
+        } else if self.context_near()
             && let Some(context) = self.context_label()
             && let Some(at) = line.find(&context)
         {
             let (before, rest) = line.split_at(at);
             let (context, after) = rest.split_at(context.len().min(rest.len()));
-            return format!(
+            format!(
                 "{}{}{}",
                 fg(before, &self.palette.muted),
                 fg(context, &self.palette.warning),
                 fg(after, &self.palette.muted)
-            );
+            )
+        } else {
+            fg(&line, &self.palette.muted)
+        };
+        match label {
+            Some(label) => format!("{line}{}", fg(&label, &self.palette.highlight)),
+            None => line,
         }
-        fg(&line, &self.palette.muted)
     }
 }
 
@@ -10520,6 +10534,116 @@ mod tests {
             Vec::new()
         }
         fn shutdown(self: Box<Self>) {}
+    }
+
+    #[test]
+    fn model_labels_share_highlighting_and_fullscreen_clicks_open_the_picker() {
+        use crate::ui::render::panel::strip_escapes;
+        use crate::ui::terminal::{MouseEvent, MouseKind};
+
+        for fullscreen in [false, true] {
+            for cols in [100, 26, 18] {
+                let size = (cols, 24);
+                let mut drawn = Drawn::new(size, None, true);
+                let app = &mut drawn.app;
+                app.fullscreen = fullscreen;
+                app.apply(Update::Ready(Configuration {
+                    provider_id: "test".into(),
+                    model_id: "model".into(),
+                    model_preferences: Some(dim_agent_types::ModelPreferences {
+                        reasoning_effort: Some("high".into()),
+                        ..Default::default()
+                    }),
+                    capability_snapshot: None,
+                }));
+                app.composer.set_draft("keep draft");
+                let frame = app.frame(size);
+                let label = frame.live.iter().find_map(|row| {
+                    let text = strip_escapes(row);
+                    text.find("test / model").map(|start| {
+                        let label = if text[start..].contains("· high") {
+                            "test / model · high"
+                        } else {
+                            "test / model"
+                        };
+                        assert!(row.contains(&fg(label, &app.palette.highlight)), "{row:?}");
+                        label
+                    })
+                });
+                assert_eq!(
+                    label,
+                    match (fullscreen, cols) {
+                        (_, 100) => Some("test / model · high"),
+                        (true, 26) => Some("test / model"),
+                        _ => None,
+                    }
+                );
+                if !fullscreen || label.is_none() {
+                    assert!(frame.model_label.is_none());
+                    continue;
+                }
+                let mut screen = FullScreen::new(size, true);
+                let mut emu = crate::ui::render::testterm::Emu::new(cols as usize, 24);
+                emu.feed(&screen.render(&frame, size, &app.palette, app));
+                let rows = emu.rows_text();
+                let row = rows
+                    .iter()
+                    .position(|row| row.contains(label.unwrap()))
+                    .unwrap();
+                let column = rows[row].chars().position(|ch| ch == 't').unwrap();
+                let event = |kind, column| MouseEvent {
+                    kind,
+                    column: column as u16,
+                    row: row as u16,
+                };
+                for column in [column - 1, column + label.unwrap().chars().count()] {
+                    screen.mouse(event(MouseKind::Press, column), app);
+                    assert_ne!(
+                        screen.mouse(event(MouseKind::Release, column), app),
+                        MouseOutcome::Models
+                    );
+                }
+                screen.mouse(event(MouseKind::Press, column), app);
+                screen.mouse(event(MouseKind::Drag, column), app);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.mouse(event(MouseKind::Press, column), app);
+                let resized = (cols - 1, 24);
+                screen.resize(resized);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.mouse(event(MouseKind::Press, column), app);
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                screen.render(&app.frame(size), size, &app.palette, app);
+                screen.mouse(event(MouseKind::Press, column), app);
+                screen.render(&app.frame(size), size, &app.palette, app);
+                assert_eq!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                app.run_command("models", "");
+                let frame = app.frame(size);
+                emu.feed(&screen.render(&frame, size, &app.palette, app));
+                assert!(emu.rows_text().join("\n").contains("Select a model"));
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Press, column), app),
+                    MouseOutcome::Models
+                );
+                assert_ne!(
+                    screen.mouse(event(MouseKind::Release, column), app),
+                    MouseOutcome::Models
+                );
+                press(app, KeyCode::Esc);
+                assert_eq!(app.composer.text(), "keep draft");
+            }
+        }
     }
 
     #[test]
