@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Setujui untuk saya",
         "Full access" => "Akses penuh",
         "Run {tool}" => "Jalankan {tool}",
+        "edit {count} replacement in {path}" => "edit {count} penggantian di {path}",
+        "edit {count} replacements in {path}" => "edit {count} penggantian di {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Ubah mode persetujuan di sini belum tersedia"
         }
@@ -59,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 pilih · Tab lanjut · / perintah · Esc tolak"
         }
         "Question" => "Pertanyaan",
+        "↑↓ scroll" => "↑↓ gulir",
+        "replacements {from}-{to} of {count}" => "penggantian {from}-{to} dari {count}",
         "Question on branch {branch}" => "Pertanyaan dari cabang {branch}",
         "Permission on branch {branch}" => "Izin pada cabang {branch}",
         "Sending answer…" => "Mengirim jawaban…",
