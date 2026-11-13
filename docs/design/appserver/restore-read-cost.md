@@ -51,7 +51,7 @@ Source `cd6bbce4fcaf8079e2faf52bd1a7b40192841a5a`, native v43, release binary SH
 | Completed external work | 195.9 / 202.4 | 198.2 / 204.0 | 220 / 220 | 153.8 / 153.8 | 3.9 / 3.8 |
 | 2.43 MB compaction, no statistics | 228.6 / 221.8 | 211.8 / 213.8 | 230 / 240 | 165.0 / 164.9 | 8.5 / 8.5 |
 
-At this earlier revision the 200 ms end-to-end target was not met and the ordinary fixture regressed. Section 7 records the current measurement. Initial display selection changed from the latest turn to a fixed tail, so these are user-flow comparisons, not isolated query speedups. At 192 MiB, editable times were 247.5–258.5, 196.7–205.0 and 212.7–218.9 ms respectively, without limit or OOM events.
+At this earlier revision the 200 ms end-to-end target was not met and the ordinary fixture regressed. Sections 7–8 record the subsequent measurements. Initial display selection changed from the latest turn to a fixed tail, so these are user-flow comparisons, not isolated query speedups. At 192 MiB, editable times were 247.5–258.5, 196.7–205.0 and 212.7–218.9 ms respectively, without limit or OOM events.
 
 The compaction's 594 overflow pages fell from seven reads (17,031,168 bytes) to two reads (4,866,048 bytes) in one summary SELECT. A separate VFS diagnostic verified this; its timings are excluded. Forcing a materialized raw JSON or JSONB intermediate increased that query's measured CPU median from 2.24 ms to 5.32/6.03 ms and copied the whole body, so it was rejected. A supplementary mixed-kind position query also increased body reads and was removed. Position-only projections still reuse selected coordinates.
 
@@ -117,3 +117,54 @@ The following direct-protocol diagnostics reuse normal caches and exclude the CL
 The window remains bounded, not guaranteed full: all input/message events remain eligible, and Shell/Hook or other internal input content may not form a chat entry. The existing four-page cap therefore remains reachable, as the completed-work earlier-page probe shows. No prefix index or source classification is introduced. The initial page has 64 selected events and earlier pages 256; these are event counts, not rendered-message counts.
 
 Validation for this increment: 102 relevant Rust flow cases and 17 Web cases passed, including the corrected ACP window fixture and final storage/history reruns; one existing ACP case remains ignored. Affected all-target Clippy, Web type checking, formatting and ADR checks passed. Earlier workspace-wide evidence belongs to the preceding commits; the full workspace suite was not rerun for this increment.
+
+
+## 8. Size the first selected page independently
+
+Implementation `4939d01fb` changes only the shared Rust client window and the Web window. The first negotiated transcript page requests 32 selected events. If no transcript row is present, later pages request 64; the read still stops at the first visible page, the branch start or four pages. The maximum initial selection is now 224 events rather than 256. Explicit earlier reads retain their own 256-event page, and legacy server fallbacks remain unchanged. No new API, index, cache or query is introduced.
+
+Keeping 64 after changing a page from raw positions to selected kinds was not a calibrated first-page choice. A direct-protocol comparison on the same fixed-head fixtures tested four choices:
+
+| Initial policy | Ordinary pages / events / visible identities | Completed pages / events | Compaction pages / events |
+| --- | --- | --- | --- |
+| Always 16 | 4 / 64 / 0 | 1 / 16 | 1 / 16 |
+| Always 32 | 3 / 96 / 5 | 1 / 32 | 1 / 32 |
+| Always 64 | 2 / 128 / 16 | 1 / 64 | 1 / 64 |
+| First 32, then 64 | 2 / 96 / 5 | 1 / 32 | 1 / 32 |
+
+Always 16 fails to reach the ordinary fixture's latest chat before the four-page bound. Always 32 requires another round trip. First 32, then 64 reduces the dense-tail read without adding a round trip in these fixtures. This does not promise every arbitrary sparse history will contain a visible row within the cap, or that a fixed event count fills a viewport. Missing earlier content remains explicitly marked and available through the existing earlier-history action.
+
+| Fixture | Selected events before → after | Returned JSON bytes before → after | RPC pages before → after |
+| --- | --- | --- | --- |
+| Ordinary | 128 → 96 | 47,629 → 29,594 | 2 → 2 |
+| Completed work | 64 → 32 | 13,070 → 6,491 | 1 → 1 |
+| Compaction | 64 → 32 | 14,925 → 7,395 | 1 → 1 |
+
+The returned body volume falls by 38%, 50% and 50%. This quantity alone cannot explain a multi-MiB whole-process peak change. The compaction's inline JSON still has to be read for its summary, and executable/library file pages are not removed by reducing the display page. Anonymous memory, file cache, physical reads and the group peak must be measured separately rather than inferred from returned bytes.
+
+Ablation: the implementation reuses whether the existing window has received its first page. There is no new counter or adaptive-controller object. The larger fallback page is retained because the fixed-32 comparison adds an RPC; fixed-16 loses the ordinary fixture's visible history. Changed client and ACP flows verify the first/continuation limits, fixed head and live-event handling. The existing earlier-read and old-server flows retain their contracts.
+
+
+### Cold product check after sizing
+
+Release source `4939d01fb`; SHA-256 `26393c0d9eb208b0e0d8d4be415aef4870a3936add4a0b194a77236a0fc787f8`. The comparison reruns the frozen §7 binary rather than comparing only with yesterday's timings. Each binary has two runs per fixture, using the same §7 256 MiB/no-swap procedure. Executable, database and configuration residency was zero before every run; all twelve runs had zero limit/OOM events. No compiler ran during these measurements. Both are already v44, with no upgrade in the timer.
+
+| Fixture | Before editable ms | After editable ms | Before group peak MiB | After group peak MiB | Before daemon CPU ms | After daemon CPU ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ordinary | 175.4 / 171.1 | 167.0 / 161.4 | 154.5 / 155.3 | 154.7 / 155.4 | 190 / 180 | 180 / 160 |
+| Completed work | 165.2 / 158.7 | 156.7 / 161.9 | 156.1 / 154.8 | 153.5 / 154.7 | 160 / 160 | 160 / 170 |
+| Compaction | 171.9 / 162.5 | 169.6 / 170.4 | 166.9 / 166.8 | 165.0 / 166.7 | 170 / 150 | 170 / 160 |
+
+All six new runs display the fixture's latest expected history and render a typed key within 200 ms. The ordinary fixture improves in these samples; completed-work and compaction timings/CPU do not establish an additional improvement. Two runs are insufficient to assign significance to small changes.
+
+| Fixture | Before anonymous MiB | After anonymous MiB | Before file MiB | After file MiB | Before daemon read-call MiB | After daemon read-call MiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ordinary | 33.04 / 33.25 | 33.21 / 33.07 | 117.22 / 117.32 | 116.91 / 117.24 | 4.92 / 4.95 | 4.67 / 4.72 |
+| Completed work | 32.68 / 32.51 | 32.36 / 32.73 | 118.59 / 117.50 | 116.93 / 117.11 | 4.23 / 4.21 | 3.87 / 4.04 |
+| Compaction | 34.32 / 34.28 | 34.31 / 34.33 | 124.21 / 123.52 | 122.47 / 123.42 | 8.34 / 8.26 | 8.36 / 8.29 |
+
+These anonymous/file categories are full-group samples at editable history, not a decomposition of the earlier peak. Anonymous memory is effectively unchanged. Peak memory is flat in the ordinary fixture and modestly lower in the other two; the samples do not establish a large or universal memory saving. Daemon physical reads change from 24.07/24.07 to 23.89/23.96 MiB, 24.48/24.43 to 23.82/23.97 MiB, and 24.68/24.81 to 24.19/24.43 MiB respectively. All file memory still counts toward the group limit.
+
+The correction reduces selected content and avoids unnecessary work even though the selected display payload is only tens of KiB. It does not eliminate the existing program/file-page footprint or compaction summary's inline-body reads. Those costs remain in the measurement, and no causal claim assigns the multi-MiB peak movement solely to display bytes.
+
+Validation for this sizing correction: 3 shared-client flows, 1 ACP load flow, 5 CLI window/attach flows and 17 Web flows passed; affected client/CLI/ACP all-target Clippy, Web type checking, formatting and ADR checks passed. Server code, storage format and indexes are unchanged, so the preceding server-query evidence remains applicable.
