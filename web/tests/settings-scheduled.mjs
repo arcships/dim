@@ -5,11 +5,12 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive, ref } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
 globalThis.window = { innerWidth: 1280, innerHeight: 900, addEventListener() {}, removeEventListener() {} }
-const components = /\/(ScheduledSettings|SchedulePlan|SelectField|ConfirmDialog)\.vue$/
+const components = /\/(ScheduledSettings|SchedulePlan|ConfirmDialog)\.vue$/
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier.startsWith("../../stores/")) {
@@ -76,6 +77,7 @@ function mount(t, route, call, supports = () => true) {
     toast: { push() {} },
   }
   const root = node("root"), app = renderer.createApp(ScheduledSettings)
+  app.use(nuxtUiTestPlugin)
   app.provide(settingsDirtyKey, ref(false))
   app.mount(root)
   t.after(() => app.unmount())
@@ -113,8 +115,11 @@ test("new tasks use the current workspace and compile selected weekdays and minu
   await change(field(root, "Name"), "Weekly", "onInput")
   await select(root, "CLI host workspace", "/other-project")
   await select(root, "Frequency", "Every week")
-  const checkbox = all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === 2)
-  await change(checkbox, [2, 6])
+  for (const day of [1, 3, 4, 5]) {
+    const box = all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === day)
+    await change(box, false)
+  }
+  await change(all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === 6), true)
   await change(field(root, "Run time"), "17:43", "onInput")
   await submit(root)
   assert.equal(writes.length, 1)

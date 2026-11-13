@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue"
+import { computed, nextTick, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { Check, LoaderCircle, Search } from "lucide-vue-next"
 import type { ModelId } from "../../rpc/protocol"
 import { useModelsStore } from "../../stores/models"
 
@@ -16,8 +15,9 @@ const props = defineProps<{ model: ModelId | undefined; selectable: boolean; dis
 const emit = defineEmits<{ select: [model: ModelId] }>()
 const { t } = useI18n()
 const models = useModelsStore()
-const details = ref<HTMLDetailsElement>()
-const searchInput = ref<HTMLInputElement>()
+const open = ref(false)
+const searchInput = ref<{ inputRef?: HTMLInputElement | null }>()
+const triggerRef = ref<{ $el?: HTMLElement | null }>()
 const query = ref("")
 const selectedProvider = ref<string>()
 const activeIndex = ref(0)
@@ -53,18 +53,18 @@ function initial(name: string): string {
   return name.trim().charAt(0).toLocaleUpperCase()
 }
 
-async function onToggle(): Promise<void> {
-  if (details.value?.open !== true) return
+watch(open, async (isOpen) => {
+  if (!isOpen) return
   if (models.providers === undefined) await models.load()
   query.value = ""
   selectedProvider.value = props.model?.providerId ?? providers.value[0]?.providerId
   activeIndex.value = Math.max(0, paneOptions.value.findIndex(isCurrent))
   await nextTick()
-  if (!matchMedia("(pointer: coarse)").matches) searchInput.value?.focus()
-}
+  if (!matchMedia("(pointer: coarse)").matches) searchInput.value?.inputRef?.focus()
+})
 
 function select(option: Option): void {
-  if (details.value) details.value.open = false
+  open.value = false
   if (!isCurrent(option)) emit("select", { providerId: option.providerId, modelId: option.modelId })
 }
 
@@ -72,11 +72,20 @@ function onSearchKey(event: KeyboardEvent): void {
   if (event.isComposing || event.keyCode === 229) return
   if (event.key === "Escape") {
     event.preventDefault()
-    if (details.value) details.value.open = false
-    details.value?.querySelector("summary")?.focus()
+    open.value = false
+    triggerRef.value?.$el?.focus()
     return
   }
-  if (event.key === "ArrowDown") {
+  if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !searching.value && providers.value.length > 1) {
+    event.preventDefault()
+    const step = event.key === "ArrowRight" ? 1 : -1
+    const index = providers.value.findIndex((provider) => provider.providerId === currentProvider.value)
+    const next = providers.value[(index + step + providers.value.length) % providers.value.length]
+    if (next !== undefined) {
+      selectedProvider.value = next.providerId
+      activeIndex.value = 0
+    }
+  } else if (event.key === "ArrowDown") {
     event.preventDefault()
     activeIndex.value = Math.min(paneOptions.value.length - 1, activeIndex.value + 1)
   } else if (event.key === "ArrowUp") {
@@ -90,68 +99,93 @@ function onSearchKey(event: KeyboardEvent): void {
 }
 
 defineExpose({ open: () => {
-  if (props.selectable && models.available && !props.disabled && details.value) details.value.open = true
+  if (props.selectable && models.available && !props.disabled) open.value = true
 } })
 </script>
 
 <template>
-  <span v-if="!selectable || !models.available" class="ui-button model-trigger" data-variant="ghost" data-size="sm" aria-disabled="true">
+  <span v-if="!selectable || !models.available" class="model-trigger model-readonly" aria-disabled="true">
     <span class="model-trigger-label">{{ triggerLabel }}</span>
   </span>
-  <details v-else ref="details" class="composer-popover model-menu" :class="{ 'is-disabled': disabled }" @toggle="onToggle">
-    <summary class="ui-button model-trigger" data-variant="ghost" data-size="sm" v-tooltip="model ? `${triggerLabel} · ${model.providerId}` : undefined">
-      <span v-if="model" class="provider-badge" aria-hidden="true">{{ initial(model.providerId) }}</span>
-      <span class="model-trigger-label">{{ triggerLabel }}</span>
-    </summary>
-    <div class="composer-popover-content is-end ui-popover model-content" data-width="xl">
-      <label class="ui-menu-search model-search">
-        <Search aria-hidden="true" />
-        <input ref="searchInput" v-model="query" type="text" :placeholder="t('composer.searchModels')" :aria-label="t('composer.searchModels')" @keydown="onSearchKey" @input="activeIndex = 0">
-      </label>
-      <p v-if="models.providers === undefined && !models.error" class="menu-empty"><LoaderCircle class="is-spinning" aria-hidden="true" />{{ t("composer.modelLoading") }}</p>
-      <p v-else-if="models.error" class="menu-empty">
-        <button type="button" class="ui-button" data-variant="danger-ghost" data-size="sm" @click="models.load()">{{ t("composer.modelLoadRetry") }}</button>
-      </p>
-      <div v-if="models.providers !== undefined && (!models.error || providers.length > 0)" class="model-panes">
-        <div v-if="!searching" class="provider-pane">
-          <button v-for="provider in providers" :key="provider.providerId" type="button" class="ui-menu-item" :aria-current="currentProvider === provider.providerId" @click="selectedProvider = provider.providerId; activeIndex = 0">
-            <span class="provider-badge" aria-hidden="true">{{ initial(provider.name) }}</span><span>{{ provider.name }}</span>
-          </button>
-        </div>
-        <div class="model-pane" role="listbox" :aria-label="t('composer.searchModels')">
-          <p v-if="paneOptions.length === 0" class="menu-empty">{{ t("composer.noModels") }}</p>
-          <button
-            v-for="(option, index) in paneOptions"
-            :key="`${option.providerId}:${option.modelId}`"
-            type="button"
-            role="option"
-            class="ui-menu-item"
-            :aria-selected="isCurrent(option)"
-            :data-highlighted="index === activeIndex ? '' : undefined"
-            :title="`${option.name} · ${option.providerName}`"
-            @mouseenter="activeIndex = index"
-            @click="select(option)"
-          >
-            <span class="model-check"><Check v-if="isCurrent(option)" aria-hidden="true" /></span>
-            <span v-if="searching" class="provider-badge" aria-hidden="true">{{ initial(option.providerName) }}</span>
-            <span class="model-name">{{ option.name }}</span>
-          </button>
+  <UPopover v-else v-model:open="open" :content="{ side: 'top', align: 'end' }">
+    <UTooltip :text="model ? `${triggerLabel} · ${model.providerId}` : undefined" :disabled="!model">
+      <UButton ref="triggerRef" color="neutral" variant="ghost" size="sm" class="model-trigger" :disabled="disabled">
+        <span v-if="model" class="provider-badge" aria-hidden="true">{{ initial(model.providerId) }}</span>
+        <span class="model-trigger-label">{{ triggerLabel }}</span>
+      </UButton>
+    </UTooltip>
+    <template #content>
+      <div class="model-content">
+        <UInput
+          ref="searchInput"
+          v-model="query"
+          size="sm"
+          icon="i-lucide-search"
+          class="model-search"
+          :placeholder="t('composer.searchModels')"
+          :aria-label="t('composer.searchModels')"
+          @keydown="onSearchKey"
+          @update:model-value="activeIndex = 0"
+        />
+        <p v-if="models.providers === undefined && !models.error" class="menu-empty"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" aria-hidden="true" />{{ t("composer.modelLoading") }}</p>
+        <p v-else-if="models.error" class="menu-empty">
+          <UButton color="error" variant="ghost" size="sm" @click="models.load()">{{ t("composer.modelLoadRetry") }}</UButton>
+        </p>
+        <div v-if="models.providers !== undefined && (!models.error || providers.length > 0)" class="model-panes">
+          <div v-if="!searching" class="provider-pane" role="group" :aria-label="t('composer.providers')">
+            <UButton
+              v-for="provider in providers"
+              :key="provider.providerId"
+              color="neutral"
+              :variant="currentProvider === provider.providerId ? 'soft' : 'ghost'"
+              size="sm"
+              block
+              class="menu-option"
+              :aria-current="currentProvider === provider.providerId"
+              @click="selectedProvider = provider.providerId; activeIndex = 0"
+            >
+              <span class="provider-badge" aria-hidden="true">{{ initial(provider.name) }}</span>
+              <span class="truncate">{{ provider.name }}</span>
+            </UButton>
+          </div>
+          <div class="model-pane" role="listbox" :aria-label="t('composer.searchModels')">
+            <p v-if="paneOptions.length === 0" class="menu-empty">{{ t("composer.noModels") }}</p>
+            <UButton
+              v-for="(option, index) in paneOptions"
+              :key="`${option.providerId}:${option.modelId}`"
+              color="neutral"
+              :variant="index === activeIndex ? 'soft' : 'ghost'"
+              size="sm"
+              block
+              role="option"
+              class="menu-option"
+              :aria-selected="isCurrent(option)"
+              :title="`${option.name} · ${option.providerName}`"
+              @mouseenter="activeIndex = index"
+              @click="select(option)"
+            >
+              <span class="model-check"><UIcon v-if="isCurrent(option)" name="i-lucide-check" class="size-3.5" aria-hidden="true" /></span>
+              <span v-if="searching" class="provider-badge" aria-hidden="true">{{ initial(option.providerName) }}</span>
+              <span class="model-name">{{ option.name }}</span>
+            </UButton>
+          </div>
         </div>
       </div>
-    </div>
-  </details>
+    </template>
+  </UPopover>
 </template>
 
 <style scoped>
 .model-trigger { max-width: min(260px, 32vw); }
+.model-readonly { display: inline-flex; height: var(--control-sm-height); align-items: center; padding: 0 var(--space-2); color: var(--muted-foreground); font-size: var(--text-sm); }
 .model-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Provider initial: a 16px glyph tile on the xs control radius. */
 .provider-badge { display: grid; width: 16px; height: 16px; flex: none; place-items: center; border-radius: var(--control-xs-radius); background: var(--muted); color: var(--foreground); font-size: var(--text-xs); font-weight: var(--weight-medium); line-height: 1; }
 .model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-content { display: flex; flex-direction: column; overflow: hidden; }
-.model-panes { display: flex; height: 240px; min-height: 96px; margin-inline: calc(-1 * var(--space-1)); }
-.provider-pane { display: flex; width: 132px; flex: none; flex-direction: column; gap: 2px; overflow-y: auto; padding: 0 var(--space-1); border-right: 1px solid var(--border); }
-.model-pane { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; overflow-y: auto; padding: 0 var(--space-1); }
+.model-content { display: flex; width: min(440px, calc(100vw - 24px)); flex-direction: column; gap: var(--space-2); overflow: hidden; padding: var(--space-2); }
+.model-panes { display: flex; height: 240px; min-height: 96px; }
+.provider-pane { display: flex; width: 132px; flex: none; flex-direction: column; gap: 2px; overflow-y: auto; padding-right: var(--space-2); border-right: 1px solid var(--border); }
+.model-pane { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; overflow-y: auto; padding-left: var(--space-2); }
+.menu-option { justify-content: flex-start; text-align: left; }
 .model-check { display: flex; width: 14px; height: 14px; flex: none; align-items: center; justify-content: center; color: var(--primary-ink); }
-.model-check svg { width: 14px; height: 14px; }
 </style>
