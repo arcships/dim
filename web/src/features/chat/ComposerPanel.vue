@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, ref, useId, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { ArrowUp, Square, X } from "lucide-vue-next"
 import type { DraftAttachments, FileCandidate, ImageBlock, ModelId, PermissionPreset, PermissionPolicy } from "../../rpc/protocol"
 import { linkMentions, mentionTrigger, type FileMention, type MentionTrigger } from "../../mentions"
 import { useModelsStore } from "../../stores/models"
@@ -19,6 +18,8 @@ type SessionCommands = {
   fork?: () => Promise<void>
   /** Receives the words after `/goal`; empty shows the goal. */
   goal?: (words: string) => Promise<void>
+  /** Receives the words after `/loop`; empty lists the line's loops. */
+  loop?: (words: string) => Promise<void>
   /** Receives the words after `/effort`; empty lists the choices. */
   effort?: (words: string) => Promise<void>
 }
@@ -100,6 +101,7 @@ const availableCommands = computed(() => ([
   { category: "session", name: "usage", available: props.sessionCommands?.usage !== undefined },
   { category: "session", name: "fork", available: props.sessionCommands?.fork !== undefined },
   { category: "session", name: "goal", available: props.sessionCommands?.goal !== undefined },
+  { category: "session", name: "loop", available: props.sessionCommands?.loop !== undefined },
   { category: "model", name: "effort", available: props.sessionCommands?.effort !== undefined },
   { category: "model", name: "permissions", available: props.permission !== undefined && props.variant !== "panel" },
   { category: "session", name: "lines", available: props.openLines !== undefined },
@@ -266,6 +268,15 @@ async function submit(): Promise<void> {
     await goal(goalCommand[1]?.trim() ?? "")
     return
   }
+  const loop = props.sessionCommands?.loop
+  const loopCommand = !dismissed.value && loop !== undefined ? /^\/loop(?:\s+([\s\S]*))?$/i.exec(message) : null
+  if (loop && loopCommand) {
+    text.value = ""
+    await nextTick()
+    resize()
+    await loop(loopCommand[1]?.trim() ?? "")
+    return
+  }
   const effort = props.sessionCommands?.effort
   const effortCommand = !dismissed.value && effort !== undefined ? /^\/effort(?:\s+([\s\S]*))?$/i.exec(message) : null
   if (effort && effortCommand) {
@@ -324,7 +335,7 @@ async function onModel(model: ModelId): Promise<void> {
 async function runCommand(name: typeof availableCommands.value[number]["name"]): Promise<void> {
   if (composing.value) return
   error.value = ""
-  const argument = name === "branch" || name === "goal" || name === "effort"
+  const argument = name === "branch" || name === "goal" || name === "loop" || name === "effort"
   text.value = argument ? `/${name} ` : ""
   await nextTick()
   resize()
@@ -403,21 +414,21 @@ defineExpose({ focus: () => field.value?.focus(), quote })
       <div v-if="images.length > 0 || pastes.length > 0" class="draft-attachments">
         <span v-for="image in images" :key="image.id" class="draft-chip">
           <img :src="image.url" :alt="t('composer.imageAttachment')" class="draft-thumb">
-          <button type="button" class="ui-icon-button" data-variant="ghost" data-size="xs" :aria-label="t('composer.removeAttachment')" @click="removeImage(image.id)"><X aria-hidden="true" /></button>
+          <UButton color="neutral" variant="ghost" size="xs" square icon="i-lucide-x" :aria-label="t('composer.removeAttachment')" @click="removeImage(image.id)" />
         </span>
         <span v-for="paste in pastes" :key="paste.id" class="draft-chip">
           <span>{{ t("composer.pastedText", { lines: paste.text.split("\n").length }) }}</span>
-          <button type="button" class="ui-icon-button" data-variant="ghost" data-size="xs" :aria-label="t('composer.removeAttachment')" @click="removePaste(paste.id)"><X aria-hidden="true" /></button>
+          <UButton color="neutral" variant="ghost" size="xs" square icon="i-lucide-x" :aria-label="t('composer.removeAttachment')" @click="removePaste(paste.id)" />
         </span>
       </div>
-      <div v-if="menuOpen" :id="menuId" class="command-menu ui-popover" role="listbox" :aria-label="t('composer.commands')">
+      <div v-if="menuOpen" :id="menuId" class="command-menu" role="listbox" :aria-label="t('composer.commands')">
         <button
           v-for="(command, index) in matches"
           :id="`${menuId}-${index}`"
           :key="command.name"
           type="button"
           role="option"
-          class="ui-menu-item command-item"
+          class="command-menu-item command-item"
           :aria-selected="index === activeIndex"
           :data-highlighted="index === activeIndex ? '' : undefined"
           @mousedown.prevent
@@ -425,18 +436,18 @@ defineExpose({ focus: () => field.value?.focus(), quote })
           @click.stop="runCommand(command.name)"
         >
           <span class="command-category">{{ index === 0 || matches[index - 1]?.category !== command.category ? t(`composer.category.${command.category}`) : '' }}</span>
-          <span class="command-name">/{{ command.name }}<span v-if="command.name === 'branch'" class="command-argument"> &lt;prompt&gt;</span><span v-else-if="command.name === 'goal' || command.name === 'effort'" class="command-argument"> [args]</span></span>
+          <span class="command-name">/{{ command.name }}<span v-if="command.name === 'branch'" class="command-argument"> &lt;prompt&gt;</span><span v-else-if="command.name === 'goal' || command.name === 'loop' || command.name === 'effort'" class="command-argument"> [args]</span></span>
           <span class="command-description">{{ t(`composer.command.${command.name}`) }}</span>
         </button>
         <p class="command-keys">{{ t("composer.commandKeys") }}</p>
       </div>
-      <div v-if="mentionShown" :id="mentionMenuId" class="command-menu ui-popover" role="listbox" :aria-label="t('composer.files')">
+      <div v-if="mentionShown" :id="mentionMenuId" class="command-menu" role="listbox" :aria-label="t('composer.files')">
         <button
           v-for="(candidate, index) in candidates"
           :key="candidate.absolutePath"
           type="button"
           role="option"
-          class="ui-menu-item command-item"
+          class="command-menu-item command-item"
           :aria-selected="index === candidateActive"
           :data-highlighted="index === candidateActive ? '' : undefined"
           @mousedown.prevent
@@ -473,19 +484,18 @@ defineExpose({ focus: () => field.value?.focus(), quote })
         </div>
         <div class="composer-run-group">
           <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" />
-          <button
-            class="ui-icon-button"
-            :data-variant="showStop ? 'contrast' : 'primary'"
-            data-size="sm"
-            type="button"
-            :aria-label="showStop ? t('composer.stopResponse') : t('composer.send')"
-            v-tooltip="showStop ? t('composer.stopResponse') : t('composer.send')"
-            :disabled="showStop ? stopping : !canSend"
-            @click.stop="showStop ? stop() : submit()"
-          >
-            <Square v-if="showStop" fill="currentColor" aria-hidden="true" />
-            <ArrowUp v-else :stroke-width="2.25" aria-hidden="true" />
-          </button>
+          <UTooltip :text="showStop ? t('composer.stopResponse') : t('composer.send')">
+            <UButton
+              color="neutral"
+              variant="solid"
+              size="sm"
+              square
+              :icon="showStop ? 'i-lucide-square' : 'i-lucide-arrow-up'"
+              :aria-label="showStop ? t('composer.stopResponse') : t('composer.send')"
+              :disabled="showStop ? stopping : !canSend"
+              @click.stop="showStop ? stop() : submit()"
+            />
+          </UTooltip>
         </div>
       </footer>
     </div>
@@ -500,7 +510,9 @@ defineExpose({ focus: () => field.value?.focus(), quote })
 .composer-input::placeholder { color: var(--muted-foreground); }
 .composer-panel[data-variant="panel"] { padding: var(--space-2) var(--space-3) var(--space-3); }
 .composer-panel[data-variant="panel"] .composer-input { min-height: 48px; }
-.command-menu { position: absolute; bottom: calc(100% + var(--space-2)); left: 0; width: 100%; max-width: none; max-height: min(320px, 50dvh); overflow-y: auto; transform-origin: bottom left; --popover-enter-y: 4px; }
+.command-menu { position: absolute; z-index: var(--z-popover); bottom: calc(100% + var(--space-2)); left: 0; width: 100%; max-width: none; max-height: min(320px, 50dvh); overflow-y: auto; padding: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); color: var(--card-foreground); box-shadow: var(--shadow-pop); transform-origin: bottom left; --popover-enter-y: 4px; }
+.command-menu-item { display: flex; width: 100%; min-width: 0; min-height: var(--control-md); align-items: center; gap: var(--space-2); margin: 0; padding: 0 var(--space-2); border: 0; border-radius: var(--control-md-radius); background: transparent; color: var(--foreground); font: inherit; font-size: var(--text-md); font-weight: var(--weight-ui); text-align: left; cursor: pointer; outline: none; transition: background-color var(--duration-hover) ease, color var(--duration-hover) ease; }
+.command-menu-item:is(:hover, :focus-visible, [data-highlighted]) { background: var(--hover); }
 .command-item { display: grid; grid-template-columns: 48px 128px minmax(0, 1fr); }
 .command-category, .command-description { color: var(--muted-foreground); }
 .command-category { font-size: var(--text-xs); }

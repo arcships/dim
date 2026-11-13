@@ -2207,3 +2207,112 @@ async fn node_crash_resubmission_gets_the_original_receipt() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// `sessions.pending` answers session-access §2's rule at the published head:
+/// an input admitted behind a busy branch is pending, the same input once a
+/// turn consumed it is not, a withdrawn input is not, and an id the branch
+/// never held is not. `input/consumed` is what ends it
+/// (`crates/dim-agent-capabilities/src/input_queue.rs:86-96`); `input/applied`
+/// alone does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(None).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    let at = json!({"sessionId":session.id(),"branchId":"main"});
+    let ask = |input: &Value| {
+        let mut request = at.clone();
+        request["inputId"] = input["inputId"].clone();
+        request
+    };
+
+    // The turn stays open on its approval, so a Queue input waits behind it
+    // and is pending.
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:pending",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        sessions.ok("pending", ask(&held)).await,
+        json!({"pending":true})
+    );
+
+    // A turn consumes the held input, and from then on it is not pending.
+    sessions.ok("stop", at.clone()).await;
+    sessions.ok("idle", at.clone()).await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:drain",
+                json!([{"type":"text","text":"keep going"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if sessions.ok("pending", ask(&held)).await == json!({"pending":false}) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the held input is consumed by a turn");
+
+    // A withdrawn input is not pending, and neither is an id the branch never
+    // held.
+    let deleted = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:deleted",
+                json!([{"type":"text","text":"drop me"}]),
+            ),
+        )
+        .await;
+    sessions.ok("withdraw", ask(&deleted)).await;
+    assert_eq!(
+        sessions.ok("pending", ask(&deleted)).await,
+        json!({"pending":false})
+    );
+    assert_eq!(
+        sessions
+            .ok(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown"})
+            )
+            .await,
+        json!({"pending":false})
+    );
+
+    let mut no_branch = ask(&held);
+    no_branch["branchId"] = json!("missing");
+    assert_eq!(sessions.error("pending", no_branch).await, "branch_missing");
+    assert_eq!(
+        sessions
+            .error(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":""})
+            )
+            .await,
+        "rejected"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+}

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { Check, ChevronDown, Copy, GitBranch, Quote } from "lucide-vue-next"
 import { copyText } from "../../clipboard"
 import { formatTimelineTimestamp } from "./timeline-time"
 
@@ -36,10 +35,10 @@ async function copy(): Promise<void> {
     <strong class="sr-only">{{ t("chat.you") }}</strong>
     <div class="user-bubble">
       <div ref="content" class="user-bubble-content" :class="{ 'is-clipped': overflows && !expanded }">{{ text }}</div>
-      <button v-if="overflows" type="button" class="ui-button user-bubble-expand" data-variant="ghost" data-size="xs" :aria-expanded="expanded" @click="expanded = !expanded">
-        <ChevronDown aria-hidden="true" :class="{ 'is-expanded': expanded }" />
+      <UButton v-if="overflows" class="user-bubble-expand" color="neutral" variant="ghost" size="xs" :aria-expanded="expanded" @click="expanded = !expanded">
+        <UIcon name="i-lucide-chevron-down" class="size-3.5 user-expand-icon" :class="{ 'is-expanded': expanded }" aria-hidden="true" />
         <span>{{ expanded ? t("message.collapse") : t("message.expand") }}</span>
-      </button>
+      </UButton>
     </div>
     <div v-if="skills?.length" class="user-skills">
       <div v-for="skill in skills" :key="skill" class="user-skill">{{ t("message.skillLoaded", { name: skill }) }}</div>
@@ -47,16 +46,15 @@ async function copy(): Promise<void> {
     <div v-for="hook in hooks ?? 0" :key="hook" class="user-hook">{{ t("message.hookContext") }}</div>
     <div class="user-actions">
       <span class="user-sent-time timestamp">{{ sentTime }}</span>
-      <button class="ui-icon-button" data-variant="ghost" data-size="sm" type="button" v-tooltip="t('message.copy')" :aria-label="t('message.copy')" @click="copy">
-        <Check v-if="copied" class="is-copied" aria-hidden="true" />
-        <Copy v-else aria-hidden="true" />
-      </button>
-      <button v-if="branchable" class="ui-icon-button" data-variant="ghost" data-size="sm" type="button" v-tooltip="t('message.branch')" :aria-label="t('message.branch')" @click="emit('branch', text)">
-        <GitBranch aria-hidden="true" />
-      </button>
-      <button v-if="quotable" class="ui-icon-button" data-variant="ghost" data-size="sm" type="button" v-tooltip="t('message.quote')" :aria-label="t('message.quote')" @click="emit('quote', text)">
-        <Quote aria-hidden="true" />
-      </button>
+      <UTooltip :text="t('message.copy')">
+        <UButton color="neutral" variant="ghost" size="sm" square :icon="copied ? 'i-lucide-check' : 'i-lucide-copy'" :class="{ 'is-copied': copied }" :aria-label="t('message.copy')" @click="copy" />
+      </UTooltip>
+      <UTooltip v-if="branchable" :text="t('message.branch')">
+        <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-git-branch" :aria-label="t('message.branch')" @click="emit('branch', text)" />
+      </UTooltip>
+      <UTooltip v-if="quotable" :text="t('message.quote')">
+        <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-quote" :aria-label="t('message.quote')" @click="emit('quote', text)" />
+      </UTooltip>
     </div>
   </article>
 </template>
@@ -68,8 +66,8 @@ async function copy(): Promise<void> {
 .user-bubble-content { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .user-bubble-content.is-clipped { max-height: 300px; overflow: hidden; }
 .user-bubble-expand { margin: var(--space-1) auto 0; }
-.user-bubble-expand svg { transition: transform var(--duration-press) var(--ease-out); }
-.user-bubble-expand svg.is-expanded { transform: rotate(180deg); }
+.user-expand-icon { transition: transform var(--duration-press) var(--ease-out); }
+.user-expand-icon.is-expanded { transform: rotate(180deg); }
 .user-actions { display: flex; height: var(--control-sm); align-items: center; gap: var(--space-1); color: var(--muted-foreground); opacity: 0; transition: opacity var(--duration-hover) ease; }
 .user-message:hover .user-actions, .user-message:focus-within .user-actions { opacity: 1; }
 .user-skill, .user-hook { color: var(--muted-foreground); font-size: var(--text-xs); }

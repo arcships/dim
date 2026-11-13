@@ -558,6 +558,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C hapus, 2x untuk keluar · Ctrl+D keluar jika draf kosong"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab ganti izin (saat kolom masukan aktif)"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "Saat dipilih, Shift+Tab ke target lebih baru · Esc kembali ke masukan"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab untuk beralih)",
         "Fullscreen" => "Layar penuh",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown gulir · Home/End atas/bawah (saat draf kosong) · Tab pilih pesan, e edit, q kutip"

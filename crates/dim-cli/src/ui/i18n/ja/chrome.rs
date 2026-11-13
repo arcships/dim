@@ -538,6 +538,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C クリア、2 回で終了 · 空なら Ctrl+D で終了"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab 権限を切り替え（入力欄にフォーカス時）"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "選択中は Shift+Tab で新しい項目へ · Esc 入力欄に戻る"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab で切替)",
         "Fullscreen" => "全画面",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown スクロール · Home/End 先頭/末尾 (下書きが空の場合) · Tab メッセージ選択、e 編集、q 引用"

@@ -639,6 +639,7 @@ impl Composer {
             {
                 if let Some(argument) = command.argument
                     && args.is_empty()
+                    && !command.argument_optional
                 {
                     return Outcome::Rejected(tf(
                         "/{name} needs {argument}",

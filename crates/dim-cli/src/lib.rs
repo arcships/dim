@@ -14,6 +14,8 @@ mod input;
 mod leaf;
 mod locale;
 mod login;
+mod loop_command;
+mod loop_view;
 mod maintenance;
 mod management;
 mod management_command;

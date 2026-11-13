@@ -48,20 +48,64 @@ It also serves as the starting catalog for maintenance. Use the Node version in 
 node scripts/update-provider-catalog.ts                       # Validate the checked-in catalog offline
 node scripts/update-provider-catalog.ts --sync kimi-for-coding # Sync one provider from PublicProviderConf
 node scripts/update-provider-catalog.ts --sync                # Sync all configured remote sources
+node scripts/update-provider-catalog.ts --sync --full         # Sync and print every changed value
 ```
 
 The bundled catalog owns provider settings such as authentication, adapter, and
 `remoteModelList`. Upstream supplies model descriptors and the API base URL. Sync derives
-the default model from the refreshed model list. The script's `remoteProviders` table can
-keep a provider's base URL, default model, and curated models local. When onboarding an
-upstream-backed provider, add its definition to the catalog and its policy to that table.
-The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus subscribers.
-The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+the default model from the refreshed model list.
 
-Sync applies the existing reasoning overrides and replaces the complete catalog after
-validation. A sync must supply at least one usable upstream model for a provider whose
-bundled catalog includes models outside its local policy. A sync that produces the same
-content preserves the file and its timestamp.
-A fetch or validation failure leaves the catalog as it was. Review and commit the complete
-catalog after a sync. Model entries occupy individual lines for review. Upstream responses
-and intermediate model lists stay in memory.
+Two tables beside the catalog drive it. `provider-sync.json` states a policy for every
+provider: `remote` for one refreshed from PublicProviderConf's published `dist/`, `local`
+for one maintained here, with a one-line reason a reviewer reads, and a `local` provider
+is never touched by a sync. A `remote` policy may keep the provider's base URL, default
+model, or curated model list, name the upstream file when it differs from the provider id,
+or declare its bundled rows authoritative. `model-overrides.json` holds field patches per
+provider and model, re-applied after every sync. A patch merges key by key into the
+upstream row, so a `limit` patch keeps the output cap upstream states, and a patch that no
+longer matches a model fails the run instead of disappearing. Both tables are read by the
+sync alone: the binary embeds `default-catalog.json` and `reasoning-off-overrides.json`
+and reads neither table.
+
+The offline validation checks the tables against the catalog: every provider has a policy,
+no policy names a provider the catalog lacks, a `local` policy states a reason, every model
+override names a provider whose policy is `remote`, every provider with models states
+whether it is a `vendor` or an `aggregator`, and each provider's `metadata.source` follows
+its policy. The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus
+subscribers, and its override states it. The same model ID supports a larger window on
+higher tiers.
+[Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+
+Sync replaces the complete catalog after validation and prints a summary. The changes a
+reviewer must judge come first: per provider, the models added and removed, and every
+changed context window, output cap, status, capability or effort option with its old and
+new value. A model whose override differs from upstream ends that line with
+`(override: limit.context)`, naming the leaves the table decides rather than upstream.
+Next comes every other changed leaf, in the provider entry and in each surviving model. A
+path dim reads prints with both values. A path nothing reads that moved on more than three
+models of one provider is one line naming the path and the count, and `--full` prints its
+values when a reviewer needs them. Every changed path is therefore named, and a provider
+counts as unchanged only when its whole entry is equal. `canonical_model_id` is not
+upstream's to omit: a surviving model keeps the bundled value when upstream states none,
+and an `=` line names it, since removing it from the bundled entry by hand is how one is
+retired. Next comes the override report, each patched leaf with the value upstream states
+beside it, so a divergence is visible without reading the diff, plus a line for an
+override that repeats upstream's own value and can be retired. The local providers and the
+reason each one is not synced come last. An up-to-date run prints the override report too,
+since a redundant override never changes the catalog. Read that summary instead of the
+diff. A sync must supply at least one usable upstream model for a provider whose bundled
+catalog includes models outside its local policy. A sync that produces the same content
+preserves the file and its timestamp. A fetch or validation failure leaves the catalog as
+it was. Review and commit the complete catalog after a sync. Model entries occupy
+individual lines for review. Upstream responses and intermediate model lists stay in
+memory.
+
+Before a release, run `node scripts/update-provider-catalog.ts --sync` once with the Node
+version in `.node-version`, in a clean checkout of the latest `origin/main`, and read its
+summary. No diff means the release continues. A diff is committed on its own branch with
+the summary in the commit message, and it reaches `main` through a pull request the user
+approves; a patch that no longer matches a model fails the run instead of being dropped, so
+fix the override or the policy and run again. Never sync twice for one release, and
+recovery or nightly repair skips the step because it rebuilds an existing SHA or tag. The
+[release skill](../../.agents/skills/dim-release/SKILL.md#sync-the-bundled-catalog-before-each-release)
+carries the steps.

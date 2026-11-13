@@ -208,14 +208,14 @@ impl EventsTool {
         branch_id: &str,
     ) -> Result<Value, crate::EventHubError> {
         args.only(&["types", "match", "mode", "branchId"])?;
-        let request = crate::SubscribeRequest {
-            types: args.types.clone().unwrap_or_default(),
-            matches: args.matches.clone(),
-            target: crate::SubscribeTarget::default(),
-            mode: args.mode,
-        };
         self.subscriptions
-            .subscribe(&self.session_id, Some(branch_id), request)
+            .subscribe(crate::SubscriptionCall {
+                session_id: self.session_id.clone(),
+                types: args.types.clone().unwrap_or_default(),
+                matches: args.matches.clone(),
+                mode: args.mode,
+                branch_id: Some(branch_id.to_owned()),
+            })
             .await
     }
 
@@ -227,13 +227,18 @@ impl EventsTool {
             ));
         };
         self.subscriptions
-            .unsubscribe(&self.session_id, subscription_id)
+            .unsubscribe(crate::UnsubscribeCall {
+                session_id: self.session_id.clone(),
+                subscription_id: subscription_id.to_owned(),
+            })
             .await
     }
 
     fn list(&self, args: &EventsArgs) -> Result<Value, crate::EventHubError> {
         args.only(&[])?;
-        Ok(self.subscriptions.list(&self.session_id))
+        Ok(self.subscriptions.list(crate::ListCall {
+            session_id: self.session_id.clone(),
+        }))
     }
 }
 

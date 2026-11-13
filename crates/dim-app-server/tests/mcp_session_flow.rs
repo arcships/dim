@@ -450,11 +450,8 @@ async fn authorize_project(host: &MinimalHost, home: &Path) {
         .unwrap();
 }
 /// The credential variable names a test host reports to MCP.
-struct CredentialNames(BTreeSet<String>);
-impl dim_agent_capabilities::host::CredentialVariables for CredentialNames {
-    fn credential_variables(&self) -> BTreeSet<String> {
-        self.0.clone()
-    }
+fn credentials_host(names: BTreeSet<String>) -> CredentialVariablesHost {
+    CredentialVariablesHost::new(Arc::new(move || names.clone()))
 }
 
 impl Env {
@@ -576,10 +573,8 @@ impl Env {
         mcp_host_rows(&mut builder, &home);
         configure(&mut builder, &remote);
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide(CredentialVariablesHost(Arc::new(CredentialNames(
-                credential_names,
-            ))))
-            .map_err(|error| AgentError::Build(error.to_string()))?;
+            root.provide(credentials_host(credential_names))
+                .map_err(|error| AgentError::Build(error.to_string()))?;
             if let Some(platform) = platform {
                 root.provide(platform)
                     .map_err(|error| AgentError::Build(error.to_string()))?;
@@ -2469,9 +2464,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             .plugin(|_| Ok(Box::new(AimuxPlugin)))
             .plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide(CredentialVariablesHost(Arc::new(CredentialNames(
-                BTreeSet::new(),
-            ))))
+            root.provide(credentials_host(BTreeSet::new()))
             .map_err(|error| AgentError::Build(error.to_string()))?;
             Ok(())
         })

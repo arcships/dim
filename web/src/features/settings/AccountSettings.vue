@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { ExternalLink, RefreshCw } from "lucide-vue-next"
 import BrandMark from "../../components/BrandMark.vue"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { copyText } from "../../clipboard"
@@ -124,6 +123,10 @@ async function loadBatches(): Promise<void> {
   try { batches.value = await connection.client.call("account.reset_batches", { providerId: provider.value.providerId }, readResetBatches) }
   catch (cause) { resetError.value = messageFrom(cause) }
 }
+function toggleBatches(open: boolean): void {
+  batchesOpen.value = open
+  if (open) void loadBatches()
+}
 async function applyReset(resetType: "window" | "monthly_full"): Promise<void> {
   const subscriptionId = usage.value?.subscriptionId
   if (saving.value || !provider.value || subscriptionId === undefined || (pendingReset.value && pendingReset.value.resetType !== resetType)) return
@@ -148,9 +151,13 @@ onMounted(load)
   <article class="settings-page">
     <ConfirmDialog ref="confirm" />
     <header><h2 data-route-heading tabindex="-1">{{ t("account") }}</h2><p>{{ t("accountDescription") }}</p></header>
-    <p v-if="error" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ error }} <button class="ui-button" data-variant="ghost" :disabled="loading || connection.phase !== 'connected'" @click="load">{{ t("retry") }}</button></p>
-    <button v-if="recoveryProvider && connection.supports('account.recover')" class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected'" @click="recover">{{ text("Recover stored sign-in", "恢复已保存的登录") }}</button>
-    <p v-if="loading" class="ui-banner settings-banner" role="status">{{ t("loading") }}</p>
+    <UAlert v-if="error" class="settings-banner" color="error" variant="subtle" :description="error" role="alert">
+      <template #actions>
+        <UButton color="neutral" variant="ghost" size="sm" :disabled="loading || connection.phase !== 'connected'" @click="load">{{ t("retry") }}</UButton>
+      </template>
+    </UAlert>
+    <UButton v-if="recoveryProvider && connection.supports('account.recover')" color="neutral" variant="outline" size="md" :disabled="saving || loading || connection.phase !== 'connected'" @click="recover">{{ text("Recover stored sign-in", "恢复已保存的登录") }}</UButton>
+    <UAlert v-if="loading" class="settings-banner" color="neutral" variant="subtle" :description="t('loading')" role="status" />
     <section v-else-if="!provider && !error" class="settings-card"><p class="settings-help">{{ t("accountUnavailable") }}</p></section>
     <template v-if="provider">
       <section class="settings-card">
@@ -158,11 +165,11 @@ onMounted(load)
           <div class="settings-identity">
             <span class="settings-avatar">{{ title.slice(0, 2).toUpperCase() }}</span>
             <div class="settings-identity-text"><strong>{{ title }}</strong><p v-if="identity?.email">{{ identity.email }}</p><p v-if="identity?.subject">{{ t("uid") }}: {{ identity.subject }}</p></div>
-            <button v-if="provider.actions.includes('refresh')" class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected'" @click="refreshModels"><RefreshCw aria-hidden="true" />{{ t("refreshModelList") }}</button>
-            <button class="ui-button" data-variant="ghost" :disabled="saving || loading || connection.phase !== 'connected'" @click="logout">{{ t("signOut") }}</button>
+            <UButton v-if="provider.actions.includes('refresh')" color="neutral" variant="outline" size="md" icon="i-lucide-refresh-cw" :disabled="saving || loading || connection.phase !== 'connected'" @click="refreshModels">{{ t("refreshModelList") }}</UButton>
+            <UButton color="neutral" variant="ghost" size="md" :disabled="saving || loading || connection.phase !== 'connected'" @click="logout">{{ t("signOut") }}</UButton>
           </div>
           <p v-if="modelRefresh === 'refreshed'" class="settings-help" role="status">{{ t("modelListRefreshed") }}</p>
-          <p v-else-if="modelRefresh" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ t("modelRefreshFailed", { reason: modelRefresh.error }) }}</p>
+          <UAlert v-else-if="modelRefresh" class="settings-banner" color="error" variant="subtle" :description="t('modelRefreshFailed', { reason: modelRefresh.error })" role="alert" />
         </template>
         <template v-else>
           <div class="account-login-heading"><BrandMark aria-hidden="true" /><h3>{{ t("signIn") }}</h3></div>
@@ -170,28 +177,33 @@ onMounted(load)
         </template>
       </section>
       <section v-if="signedIn" class="settings-card settings-usage">
-        <div class="settings-list-toolbar"><h3>{{ t("plan") }}</h3><button class="ui-icon-button" data-variant="ghost" :aria-label="t('refresh')" :disabled="loading || connection.phase !== 'connected'" @click="load"><RefreshCw :class="{ 'account-refreshing': loading }" aria-hidden="true" /></button></div>
-        <p v-if="usageError" class="ui-banner" data-tone="danger" role="alert">{{ usageError }}</p>
+        <div class="settings-list-toolbar"><h3>{{ t("plan") }}</h3><UButton color="neutral" variant="ghost" size="md" square icon="i-lucide-refresh-cw" :aria-label="t('refresh')" :disabled="loading || connection.phase !== 'connected'" :ui="{ leadingIcon: loading ? 'account-refreshing' : undefined }" @click="load" /></div>
+        <UAlert v-if="usageError" color="error" variant="subtle" :description="usageError" role="alert" />
         <div v-if="usage?.plan" class="settings-identity"><div class="settings-identity-text"><strong>{{ usage.plan.name }}</strong><p>{{ usage.plan.status }}<span v-if="usage.plan.expiresAt"> · {{ new Date(usage.plan.expiresAt).toLocaleDateString() }}</span></p><p v-if="usage.plan.priceAmount !== undefined">{{ (usage.plan.priceAmount / 100).toLocaleString(locale, { minimumFractionDigits: 2 }) }} {{ usage.plan.priceCurrency }}<template v-if="usage.plan.priceInterval"> / {{ usage.plan.priceInterval }}</template></p><p v-if="usage.plan.cancelAtPeriodEnd">{{ text("Cancels at the end of this term", "将在本期结束后取消") }}</p><p v-if="usage.plan.lastTermStatus">{{ text("Previous term", "上一周期") }}: {{ usage.plan.lastTermStatus }} · {{ usage.plan.lastTermStart }} — {{ usage.plan.lastTermEnd }}</p></div></div>
         <div v-for="meter in meters" :key="meter.id" class="settings-meter">
           <div class="settings-meter-label"><span>{{ meter.label }}</span><span v-if="meter.unlimited">{{ t("unlimited") }}</span><span v-else><template v-if="meter.used !== undefined">{{ meter.used.toLocaleString() }}</template><template v-if="meter.total !== undefined"> / {{ meter.total.toLocaleString() }}</template><template v-if="meter.remaining !== undefined"> · {{ t("remaining") }} {{ meter.remaining.toLocaleString() }}</template></span></div>
-          <progress v-if="!meter.unlimited && meter.total !== undefined && meter.total > 0 && meter.used !== undefined" :value="meter.used" :max="meter.total" :aria-label="meter.label" />
+          <UProgress v-if="!meter.unlimited && meter.total !== undefined && meter.total > 0 && meter.used !== undefined" :model-value="meter.used" :max="meter.total" :aria-label="meter.label" size="sm" />
           <small v-if="meter.expires" class="settings-meta">{{ t("expires") }}: {{ new Date(meter.expires).toLocaleString() }}</small>
         </div>
-        <div class="settings-inline-actions"><a v-if="usage?.subscriptionUrl" class="ui-button" data-variant="secondary" :href="usage.subscriptionUrl" target="_blank" rel="noopener noreferrer">{{ t("viewPlan") }}<ExternalLink aria-hidden="true" /></a><a v-if="usage?.pricingUrl" class="ui-button" data-variant="ghost" :href="usage.pricingUrl" target="_blank" rel="noopener noreferrer">{{ t("choosePlan") }}<ExternalLink aria-hidden="true" /></a></div>
+        <div class="settings-inline-actions"><UButton v-if="usage?.subscriptionUrl" color="neutral" variant="outline" size="md" trailing-icon="i-lucide-external-link" :href="usage.subscriptionUrl" target="_blank" rel="noopener noreferrer">{{ t("viewPlan") }}</UButton><UButton v-if="usage?.pricingUrl" color="neutral" variant="ghost" size="md" trailing-icon="i-lucide-external-link" :href="usage.pricingUrl" target="_blank" rel="noopener noreferrer">{{ t("choosePlan") }}</UButton></div>
       </section>
       <section v-if="signedIn && usage?.resets" class="settings-card settings-form">
         <h3>{{ t("resetCredits") }}</h3>
-        <p v-if="resetError" class="ui-banner" data-tone="danger" role="alert">{{ resetError }}</p>
+        <UAlert v-if="resetError" color="error" variant="subtle" :description="resetError" role="alert" />
         <div v-for="kind in (['window', 'monthlyFull'] as const)" :key="kind" class="settings-row">
           <div class="settings-row-main"><strong>{{ kind === 'window' ? text('Window reset', '窗口重置') : text('Monthly full reset', '每月全量重置') }} · {{ usage.resets[kind].availableCount }}</strong><small v-if="usage.resets[kind].nearestExpiresAt">{{ t("expires") }}: {{ new Date(usage.resets[kind].nearestExpiresAt!).toLocaleString() }}</small></div>
-          <button class="ui-button" data-variant="secondary" :disabled="saving || loading || connection.phase !== 'connected' || (pendingReset ? pendingReset.resetType !== (kind === 'window' ? 'window' : 'monthly_full') : !usage.resets[kind].availableCount) || usage.subscriptionId === undefined" @click="applyReset(kind === 'window' ? 'window' : 'monthly_full')">{{ t("reset") }}</button>
+          <UButton color="neutral" variant="outline" size="md" :disabled="saving || loading || connection.phase !== 'connected' || (pendingReset ? pendingReset.resetType !== (kind === 'window' ? 'window' : 'monthly_full') : !usage.resets[kind].availableCount) || usage.subscriptionId === undefined" @click="applyReset(kind === 'window' ? 'window' : 'monthly_full')">{{ t("reset") }}</UButton>
         </div>
-        <details @toggle="batchesOpen = ($event.target as HTMLDetailsElement).open; batchesOpen && loadBatches()"><summary>{{ text("Credit batches and expiry", "重置额度批次与有效期") }}</summary><template v-if="batches"><div v-for="kind in (['window', 'monthlyFull'] as const)" :key="kind"><h4>{{ kind === 'window' ? text('Window', '窗口') : text('Monthly', '每月') }}</h4><p v-for="batch in batches[kind]" :key="batch.grantId" class="settings-help">{{ batch.sourceType }} · {{ batch.remaining }} · {{ batch.scopeType }} {{ batch.subscriptionId }} · {{ new Date(batch.expiresAt).toLocaleString() }}</p><p v-if="!batches[kind].length" class="settings-help">{{ text("No credits", "暂无额度") }}</p></div></template></details>
+        <UCollapsible :open="batchesOpen" @update:open="toggleBatches">
+          <UButton color="neutral" variant="link" size="sm" class="px-0" :trailing-icon="batchesOpen ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'">{{ text("Credit batches and expiry", "重置额度批次与有效期") }}</UButton>
+          <template #content>
+            <template v-if="batches"><div v-for="kind in (['window', 'monthlyFull'] as const)" :key="kind"><h4>{{ kind === 'window' ? text('Window', '窗口') : text('Monthly', '每月') }}</h4><p v-for="batch in batches[kind]" :key="batch.grantId" class="settings-help">{{ batch.sourceType }} · {{ batch.remaining }} · {{ batch.scopeType }} {{ batch.subscriptionId }} · {{ new Date(batch.expiresAt).toLocaleString() }}</p><p v-if="!batches[kind].length" class="settings-help">{{ text("No credits", "暂无额度") }}</p></div></template>
+          </template>
+        </UCollapsible>
       </section>
       <section v-if="signedIn && (referral?.enabled || referralError)" class="settings-card settings-form">
-        <h3>{{ t("referral") }}</h3><p v-if="referralError" class="ui-banner" data-tone="danger" role="alert">{{ referralError }}</p>
-        <template v-if="referral?.enabled"><p>{{ text("Invited", "已邀请") }} {{ referral.invitedCount }} · {{ text("Subscribed", "已付费") }} {{ referral.paidCount }} · {{ text("Rewards", "奖励额度") }} {{ referral.rewardGrantedUnits ?? '—' }}</p><p class="settings-help">{{ text("Your rebate", "邀请人返利") }} {{ referral.inviterRebateBp / 100 }}% · {{ text("Friend's discount", "受邀人优惠") }} {{ referral.inviteeRebateBp / 100 }}%</p><template v-if="referral.eligible && referral.inviteUrl"><label><span>{{ text("Invitation link", "邀请链接") }}</span><input class="ui-field" :value="referral.inviteUrl" readonly /></label><div class="settings-inline-actions"><button class="ui-button" data-variant="secondary" @click="copyInvite">{{ t(copied ? 'copied' : 'copy') }}</button><a class="ui-button" data-variant="ghost" :href="referral.inviteUrl" target="_blank" rel="noopener noreferrer">{{ text("Open", "打开") }}<ExternalLink aria-hidden="true" /></a></div></template><p v-else class="settings-help">{{ text("Your account is not eligible for invitations yet.", "当前账户暂未获得邀请资格。") }}</p></template>
+        <h3>{{ t("referral") }}</h3><UAlert v-if="referralError" color="error" variant="subtle" :description="referralError" role="alert" />
+        <template v-if="referral?.enabled"><p>{{ text("Invited", "已邀请") }} {{ referral.invitedCount }} · {{ text("Subscribed", "已付费") }} {{ referral.paidCount }} · {{ text("Rewards", "奖励额度") }} {{ referral.rewardGrantedUnits ?? '—' }}</p><p class="settings-help">{{ text("Your rebate", "邀请人返利") }} {{ referral.inviterRebateBp / 100 }}% · {{ text("Friend's discount", "受邀人优惠") }} {{ referral.inviteeRebateBp / 100 }}%</p><template v-if="referral.eligible && referral.inviteUrl"><UFormField :label="text('Invitation link', '邀请链接')"><UInput :model-value="referral.inviteUrl" size="md" readonly class="w-full" /></UFormField><div class="settings-inline-actions"><UButton color="neutral" variant="outline" size="md" @click="copyInvite">{{ t(copied ? 'copied' : 'copy') }}</UButton><UButton color="neutral" variant="ghost" size="md" trailing-icon="i-lucide-external-link" :href="referral.inviteUrl" target="_blank" rel="noopener noreferrer">{{ text("Open", "打开") }}</UButton></div></template><p v-else class="settings-help">{{ text("Your account is not eligible for invitations yet.", "当前账户暂未获得邀请资格。") }}</p></template>
       </section>
     </template>
   </article>
@@ -201,7 +213,7 @@ onMounted(load)
 .account-login-heading { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-6); }
 .account-login-heading svg { width: 36px; height: 26px; }
 .account-login-heading h3, .settings-list-toolbar h3 { margin: 0; }
-.account-refreshing { animation: spin 1s linear infinite; }
+:deep(.account-refreshing) { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .account-refreshing { animation: none; } }
+@media (prefers-reduced-motion: reduce) { :deep(.account-refreshing) { animation: none; } }
 </style>

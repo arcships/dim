@@ -358,7 +358,9 @@ pub enum Command {
     Rename(Option<String>),
     /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
     Goal(crate::goal::Request),
-    SetPermission(dim_agent_types::PermissionPreset),
+    /// `/loop`: show, start or stop a loop on the shown line.
+    Loop(crate::loop_view::Request),
+    SetPermission(crate::permission::PresetSelection),
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.

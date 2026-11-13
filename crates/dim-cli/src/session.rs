@@ -8,12 +8,15 @@ use crate::{
     display::Display,
     export, goal_command,
     input::Input,
-    mcp,
+    loop_command, mcp,
     model::session::RenameReply,
     permission, permission_command,
     question::line::Questions,
 };
 use dim_agent_types::{ApprovalCallData, ContentBlock, PermissionPolicy, UserInput};
+
+/// The branch a line-mode command acts on: the prompt shows `main`.
+const MAIN_BRANCH: &str = "main";
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -390,6 +393,23 @@ pub async fn chat(
                     let text = text.as_deref().expect("plain goal command");
                     if let Err(error) =
                         goal_command::command(client, &session_id, text, &mut display, &mut interrupts).await
+                    {
+                        display.record(&format!("Error: {error}"))?;
+                    }
+                    draft.clear();
+                    continue;
+                }
+                Some("/loop") => {
+                    let text = text.as_deref().expect("plain loop command");
+                    if let Err(error) = loop_command::command(
+                        client,
+                        &session_id,
+                        MAIN_BRANCH,
+                        text,
+                        &mut display,
+                        &mut interrupts,
+                    )
+                    .await
                     {
                         display.record(&format!("Error: {error}"))?;
                     }

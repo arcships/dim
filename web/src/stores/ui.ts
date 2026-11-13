@@ -19,6 +19,8 @@ export type EndLineRequest = {
   purpose: string
 }
 
+export type SidebarSortBy = "recentActive" | "recentCreated"
+
 const STORAGE_KEY = "dim-web.ui.v1"
 const DETAIL_MIN = 320
 const DETAIL_MAX = 720
@@ -33,11 +35,12 @@ type Persisted = {
   lastSessionId: string | undefined
   detailOpen: boolean
   detailWidth: number
+  sidebarSortBy: SidebarSortBy
 }
 
 /** localStorage is outside the app: read it once, keeping only well-formed fields. */
 function readPersisted(): Persisted {
-  const fallback: Persisted = { sidebarCollapsed: false, collapsedWorkspaces: [], lastSessionId: undefined, detailOpen: false, detailWidth: 420 }
+  const fallback: Persisted = { sidebarCollapsed: false, collapsedWorkspaces: [], lastSessionId: undefined, detailOpen: false, detailWidth: 420, sidebarSortBy: "recentActive" }
   try {
     const value: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null")
     if (value === null || typeof value !== "object") return fallback
@@ -52,6 +55,7 @@ function readPersisted(): Persisted {
       detailOpen: stored.detailOpen === true,
       extension: stored.extension !== null && typeof stored.extension === "object" && "pluginName" in stored.extension && "panelId" in stored.extension && typeof stored.extension.pluginName === "string" && typeof stored.extension.panelId === "string" ? { pluginName: stored.extension.pluginName, panelId: stored.extension.panelId } : undefined,
       detailWidth: width,
+      sidebarSortBy: stored.sidebarSortBy === "recentCreated" ? "recentCreated" : "recentActive",
     }
   } catch {
     return fallback
@@ -70,6 +74,7 @@ export const useUiStore = defineStore("ui", () => {
   const extension = ref(persisted.extension)
   const detailOpen = ref(persisted.detailOpen)
   const detailWidth = ref(persisted.detailWidth)
+  const sidebarSortBy = ref<SidebarSortBy>(persisted.sidebarSortBy)
   const detailExpanded = ref(false)
   const detailFocused = ref(false)
   const lineTabs = ref<Record<string, string[]>>({})
@@ -77,7 +82,7 @@ export const useUiStore = defineStore("ui", () => {
   const newLine = ref<NewLineRequest | undefined>()
   const endingLine = ref<EndLineRequest | undefined>()
 
-  watch([sidebarCollapsed, collapsedWorkspaces, lastSessionId, detailOpen, detailWidth, extension], () => {
+  watch([sidebarCollapsed, collapsedWorkspaces, lastSessionId, detailOpen, detailWidth, extension, sidebarSortBy], () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         sidebarCollapsed: sidebarCollapsed.value,
@@ -86,6 +91,7 @@ export const useUiStore = defineStore("ui", () => {
         detailOpen: detailOpen.value,
         extension: extension.value,
         detailWidth: detailWidth.value,
+        sidebarSortBy: sidebarSortBy.value,
       }))
     } catch {
     }
@@ -198,7 +204,7 @@ export const useUiStore = defineStore("ui", () => {
 
   return {
     sidebarCollapsed, lastSessionId, drawerOpen, shellWidth, shellMode, setShellWidth,
-    isWorkspaceExpanded, toggleWorkspace,
+    isWorkspaceExpanded, toggleWorkspace, sidebarSortBy,
     extension, detailOpen, detailWidth, detailExpanded, detailFocused, lineTabs, activeLineTab, newLine, endingLine,
     setDetailWidth, openLines, toggleLines, openLine, activateLine, closeLineTab, closeDetail,
     approvalKeyboard,

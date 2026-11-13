@@ -2,6 +2,7 @@
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
+    loops::Lookup,
     runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -119,6 +120,9 @@ impl DynPlugin for SchedulerPlugin {
                 pruning: tokio::sync::Mutex::new(()),
                 settling: tokio::sync::Mutex::new(()),
                 wakeups: tokio::sync::Mutex::new(()),
+                loops: tokio::sync::Mutex::new(()),
+                live_loops: std::sync::atomic::AtomicBool::new(false),
+                loop_lookup: std::sync::atomic::AtomicBool::new(false),
                 stop: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
                 retention: Default::default(),
@@ -162,6 +166,14 @@ impl DynPlugin for SchedulerPlugin {
             ctx.provide_at(
                 host_key("wakeups"),
                 Arc::new(crate::wakeups::WakeupsFace(wakeups.clone())),
+            )?;
+            let loops = Arc::new(crate::loops::Loops {
+                shared: shared.clone(),
+            });
+            ctx.provide_as::<crate::loops::Loops>(loops.clone())?;
+            ctx.provide_at(
+                host_key("loops"),
+                Arc::new(crate::loops::LoopsFace(loops.clone())),
             )?;
             methods.register(
                 ctx,
@@ -208,6 +220,16 @@ impl DynPlugin for SchedulerPlugin {
                     format!("scheduler wakeups: {error}").into(),
                 ))
             })?;
+            // The same rule for a loop file: an invalid v1 fails the row and
+            // the bytes stay unchanged. This read is also where the live-loop
+            // flag starts: a daemon whose file holds no live loop takes no
+            // loop work at all.
+            let looped = crate::loops::read(&shared.files).await.map_err(|error| {
+                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    format!("scheduler loops: {error}").into(),
+                ))
+            })?;
+            loops.note_live(&looped);
             // A delivery still in flight when the previous process stopped
             // keeps its record; only a launch record this design wrote has a
             // stop timer to resume (§3.2). A record written by an earlier
@@ -222,11 +244,16 @@ impl DynPlugin for SchedulerPlugin {
                     .collect(),
             );
             // Every `delivering` record is settled by lookup at the next
-            // start, before any window writes again (A.6).
+            // start, before any window writes again (A.6). A lookup that
+            // answers nothing leaves the round unsettled for as long as the
+            // answer is missing, so the timer repeats the pass on its next
+            // tick rather than waiting for the minute-long one (§12.1).
             {
                 let startup = shared.clone();
+                let loops_startup = loops.clone();
                 shared.spawn(async move {
                     crate::engine::settle_delivering(&startup).await;
+                    note_loop_lookup(&startup, loops_startup.settle_delivering().await);
                 });
             }
             shared.spawn(crate::engine::prune(shared.clone()));
@@ -252,12 +279,19 @@ impl DynPlugin for SchedulerPlugin {
                     if let Err(error) = wakeups.evaluate().await {
                         tracing::warn!(%error, "scheduler wakeup pass failed");
                     }
+                    if let Err(error) = loops.evaluate().await {
+                        tracing::warn!(%error, "scheduler loop pass failed");
+                    }
                     ticks += 1;
-                    if ticks.is_multiple_of(60) {
+                    let minute = ticks.is_multiple_of(60);
+                    if minute {
                         crate::engine::settle_delivering(&timer).await;
-                        if timer.retention_pending() {
-                            crate::engine::prune(timer.clone()).await;
-                        }
+                    }
+                    if minute || timer.loop_lookup_pending() {
+                        note_loop_lookup(&timer, loops.settle_delivering().await);
+                    }
+                    if minute && timer.retention_pending() {
+                        crate::engine::prune(timer.clone()).await;
                     }
                 }
             });
@@ -284,6 +318,29 @@ pub(crate) struct Shared {
     /// record level: a cancel that takes it first prevents the input, one
     /// that takes it after reports the settled state (design §10.3).
     pub(crate) wakeups: tokio::sync::Mutex<()>,
+    /// Serializes every read-modify-write of the loop records and every
+    /// refresh of `live_loops`: the timer pass, recovery, `start` and `change`
+    /// for `next` and `stop` hold it for the whole operation, so they are one
+    /// serial order at the record level (design §12.3), and the flag can only
+    /// ever store a snapshot no later write has superseded.
+    ///
+    /// A holder may await only these external calls, and none of them takes
+    /// this lock: `sessions.pending` reads the branch's InputQueue,
+    /// `sessions.lookup` reads the Timeline by submission id, and
+    /// `sessions.input` in queue mode returns once the input is published.
+    /// Reads and writes of the loop file through `pluginFiles` never take it
+    /// either. A holder must never await a round's turn, or anything else
+    /// that can take this lock; a new external call under it joins this list
+    /// first.
+    pub(crate) loops: tokio::sync::Mutex<()>,
+    /// Whether any live loop exists. A daemon with none does no loop work, so
+    /// the pass takes no process hold and reads no file (design 12.2). Every
+    /// write under `loops` recomputes it.
+    pub(crate) live_loops: std::sync::atomic::AtomicBool,
+    /// Whether the last loop lookup pass left a round whose answer says the
+    /// service is not ready yet. While it holds, the timer runs the pass again
+    /// on its next tick instead of a minute later (§12.1).
+    pub(crate) loop_lookup: std::sync::atomic::AtomicBool,
     /// Cancelled when this generation starts to unload.
     pub(crate) stop: CancellationToken,
     /// The timer, delivery tasks and retention passes; cleanup waits for them.
@@ -310,6 +367,12 @@ impl Shared {
         self.retention.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the last loop lookup pass settled on [`Lookup::NextTick`], so the
+    /// timer repeats it on its next tick instead of a minute later.
+    pub(crate) fn loop_lookup_pending(&self) -> bool {
+        self.loop_lookup.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Waits `delay`; `false` once the owner is unloading, when the caller
     /// stops and leaves an unsettled delivery to the next generation's
     /// recovery.
@@ -319,6 +382,25 @@ impl Shared {
             _ = tokio::time::sleep(delay) => true,
         }
     }
+}
+
+/// Records the cadence the loop lookup pass settled on: only a round whose
+/// answer says the service is not ready yet keeps the retry pending, so the
+/// timer runs the pass on its next tick instead of a minute later (§12.1). Any
+/// other unresolved answer waits for the minute pass, and a pass that failed as
+/// a whole does the same.
+fn note_loop_lookup(shared: &Shared, answer: Result<Lookup, SchedulerError>) {
+    let tick = match answer {
+        Ok(Lookup::NextTick) => true,
+        Ok(Lookup::Settled | Lookup::NextMinute) => false,
+        Err(error) => {
+            tracing::warn!(%error, "scheduler loop lookup pass failed");
+            false
+        }
+    };
+    shared
+        .loop_lookup
+        .store(tick, std::sync::atomic::Ordering::Release);
 }
 
 fn handler(shared: Arc<Shared>) -> Handler {
