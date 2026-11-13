@@ -371,7 +371,11 @@ pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
         }
     };
     if let Some(error) = output_error {
-        return Err(format!("{error}; {}", result.unwrap_err()).into());
+        return Err(match result {
+            Ok(()) => format!("{error}; the update itself had finished"),
+            Err(update) => format!("{error}; {update}"),
+        }
+        .into());
     }
     if interactive {
         crossterm::execute!(
@@ -483,7 +487,7 @@ async fn install_exclusive(
     let lock = lease(install, legacy_exited)?;
     let result = match install.manager {
         #[cfg(unix)]
-        Manager::Staged => staged::update(install, cancel).await,
+        Manager::Staged => staged::update(install, &cancel).await,
         Manager::InPlace { .. } => run_manager(install, install.in_place_command(), cancel).await,
     };
     drop(lock);

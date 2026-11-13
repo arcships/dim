@@ -6513,7 +6513,8 @@
       "file": "crates/dim-cli/src/update/staged.rs",
       "unexpandedMacros": [
         "format",
-        "matches"
+        "matches",
+        "tokio::select"
       ]
     },
     {

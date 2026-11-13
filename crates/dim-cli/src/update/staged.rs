@@ -16,6 +16,9 @@ use tokio_util::sync::CancellationToken;
 /// and live packages share a filesystem and can be exchanged.
 const STAGING: &str = ".dimcode-staging";
 
+/// What an interruption during the post-switch check reports.
+const INTERRUPTED: &str = "Update interrupted while checking the installed commands";
+
 /// What one staged update left behind.
 enum Outcome {
     /// The new version is live and verified.
@@ -29,7 +32,7 @@ enum Outcome {
 
 /// Installs the new version beside the live package and switches it in, or
 /// leaves the live package as it was.
-pub(super) async fn update(install: &Install, cancel: CancellationToken) -> Result<(), String> {
+pub(super) async fn update(install: &Install, cancel: &CancellationToken) -> Result<(), String> {
     let root = install.directory.join(STAGING);
     clear(install, &root)?;
     let staging = root.join(format!("staging-{}", std::process::id()));
@@ -99,8 +102,9 @@ fn package_at(prefix: &Path, package: &str) -> PathBuf {
 
 /// Runs the manager into `staging`, proves the staged tree, switches it in and
 /// proves the result.
-async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -> Outcome {
-    if let Err(error) = run_manager(install, install.staging_command(staging), cancel).await {
+async fn replace(install: &Install, staging: &Path, cancel: &CancellationToken) -> Outcome {
+    if let Err(error) = run_manager(install, install.staging_command(staging), cancel.clone()).await
+    {
         return Outcome::Failed(error);
     }
     let live = package_at(&install.directory, &install.package);
@@ -130,13 +134,13 @@ async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -
         staging,
         &mut changes,
     ) {
-        Ok(()) => verify_entries(&install.directory, &new, &version).await,
+        Ok(()) => verify_entries(&install.directory, &new, &version, cancel).await,
         Err(error) => Err(error),
     };
     if let Err(error) = checked {
         let undone = undo(&changes, staging);
         return match switch.revert() {
-            Ok(()) => Outcome::Failed(format!("{error}{}", notes(undone))),
+            Ok(settled) => Outcome::Failed(format!("{error}{}; {settled}", notes(undone))),
             Err(revert) => Outcome::Stranded(format!("{error}{}; {revert}", notes(undone))),
         };
     }
@@ -413,23 +417,28 @@ fn switch_in(live: &Path, staged: &Path, retired: PathBuf) -> Result<Switch, Out
 }
 
 impl Switch {
-    /// Puts the previous package back at the live path.
-    fn revert(self) -> Result<(), String> {
+    /// Puts the previous package back at the live path, and says what the
+    /// installation is left with.
+    fn revert(self) -> Result<String, String> {
         match self {
             Switch::Placed { live } => std::fs::remove_dir_all(&live)
+                .map(|()| "the staged package was removed".to_owned())
                 .map_err(|error| format!("cannot remove {} ({error})", live.display())),
-            Switch::Exchanged { live, staged } => exchange(&live, &staged).map_err(|error| {
-                format!(
-                    "cannot exchange back ({error}); the previous version is {}",
-                    staged.display()
-                )
-            }),
+            Switch::Exchanged { live, staged } => exchange(&live, &staged)
+                .map(|()| "the previous version is back".to_owned())
+                .map_err(|error| {
+                    format!(
+                        "cannot exchange back ({error}); the previous version is {}",
+                        staged.display()
+                    )
+                }),
             Switch::Renamed {
                 live,
                 staged,
                 retired,
             } => std::fs::rename(&live, &staged)
                 .and_then(|()| std::fs::rename(&retired, &live))
+                .map(|()| "the previous version is back".to_owned())
                 .map_err(|error| {
                     format!(
                         "cannot put the previous version back ({error}); the previous one is {}",
@@ -596,10 +605,15 @@ fn undo(changes: &[BinChange], staging: &Path) -> Vec<String> {
 /// Runs every command the new version installs and checks that it reports the
 /// version the package declares, which is the proof the switch left a working
 /// command rather than a folder of files.
-async fn verify_entries(prefix: &Path, new: &[Command], version: &str) -> Result<(), String> {
+async fn verify_entries(
+    prefix: &Path,
+    new: &[Command],
+    version: &str,
+    cancel: &CancellationToken,
+) -> Result<(), String> {
     for command in new {
         let path = prefix.join("bin").join(&command.name);
-        let reported = reported_version(&path).await?;
+        let reported = reported_version(&path, cancel).await?;
         if reported != version {
             return Err(format!(
                 "{} reports {reported} after the switch, not {}",
@@ -615,8 +629,11 @@ async fn verify_entries(prefix: &Path, new: &[Command], version: &str) -> Result
 /// its end, so the check carries its own bound rather than waiting on one.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What a command reports for `--version`: the last word of its last line.
-async fn reported_version(command: &Path) -> Result<String, String> {
+/// What a command reports for `--version`: the last word of its last line. A
+/// command still running when the update is cancelled is killed with its
+/// handle, and the check reports the interruption, so the update rolls back and
+/// exits nonzero rather than reporting a version it never read.
+async fn reported_version(command: &Path, cancel: &CancellationToken) -> Result<String, String> {
     let child = tokio::process::Command::new(command)
         .arg("--version")
         .stdin(std::process::Stdio::null())
@@ -625,16 +642,20 @@ async fn reported_version(command: &Path) -> Result<String, String> {
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("cannot run {}: {error}", command.display()))?;
-    let output = match tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => return Err(format!("cannot run {}: {error}", command.display())),
-        Err(_) => {
-            return Err(format!(
-                "{} --version did not answer within {}s, so it is unverified",
-                command.display(),
-                CHECK_TIMEOUT.as_secs()
-            ));
-        }
+    let output = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Err(INTERRUPTED.to_owned()),
+        output = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()) => match output {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => return Err(format!("cannot run {}: {error}", command.display())),
+            Err(_) => {
+                return Err(format!(
+                    "{} --version did not answer within {}s, so it is unverified",
+                    command.display(),
+                    CHECK_TIMEOUT.as_secs()
+                ));
+            }
+        },
     };
     if !output.status.success() {
         return Err(format!(

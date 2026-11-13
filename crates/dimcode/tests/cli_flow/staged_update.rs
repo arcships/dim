@@ -44,6 +44,28 @@ sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$directory/package.json"
 /// A command that fails, so the post-switch check has something to catch.
 const BREAKS: &str = "#!/bin/sh\nexit 1\n";
 
+/// A command that reports its package's version only after it has printed a
+/// marker and waited, so a flow can interrupt the update while it checks. The
+/// wait happens only for the CLI the flow gave `UPDATE_SLOW`, so the test's own
+/// version reads stay quick.
+const SLOW_VERSION: &str = r#"#!/bin/sh
+target=$0
+while [ -L "$target" ]; do
+  link=$(readlink "$target")
+  case $link in
+    /*) target=$link ;;
+    *) target=$(dirname "$target")/$link ;;
+  esac
+done
+directory=$(cd "$(dirname "$target")" && pwd)
+while [ ! -f "$directory/package.json" ]; do directory=$(dirname "$directory"); done
+if [ -n "$UPDATE_SLOW" ]; then
+  printf 'checking %s\n' "$directory" >> "$UPDATE_CHECKING"
+  sleep 2
+fi
+sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$directory/package.json"
+"#;
+
 /// A global npm installation of `dimcode-alpha` at `version`, with `commands`
 /// linked into its `bin` directory.
 struct Installed {
@@ -496,5 +518,58 @@ fn a_command_another_package_owns_is_never_taken() {
     assert!(
         !installed.staging().exists(),
         "the refused update must leave no staging directory"
+    );
+}
+
+#[test]
+fn an_interruption_during_the_post_switch_check_puts_the_previous_version_back() {
+    let installed = Installed::new(CURRENT, &["dima"]);
+    installed.mock_npm();
+    installed.release();
+    let checking = installed.home.0.join("checking");
+    let mut command = installed.update(
+        &next_version(),
+        &[("dima", "bin/dimcode.mjs")],
+        &[("UPDATE_COMMAND", SLOW_VERSION), ("UPDATE_SLOW", "1")],
+    );
+    command.env("UPDATE_CHECKING", &checking);
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + HANG_GUARD;
+    while !checking.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the switched-in command never reached its check"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) },
+        0,
+        "the flow must be able to interrupt the update while it checks"
+    );
+    let output = wait(child);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("interrupted while checking"),
+        "an interrupted check must say so: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Updated "),
+        "an interrupted check must not report success: {stderr}"
+    );
+    assert_eq!(
+        installed.installed(),
+        CURRENT,
+        "the previous version must be live again: {stderr}"
+    );
+    assert!(
+        !installed.staging().exists(),
+        "an interrupted check must clear its staging directory: {stderr}"
     );
 }
