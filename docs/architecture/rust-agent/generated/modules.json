@@ -22077,6 +22077,7 @@
         "path crate::EventKind::ContextPrepare",
         "path crate::EventKind::InputMessage",
         "path crate::EventKind::ModelCall",
+        "path crate::EventKind::ModelUsage",
         "path crate::EventKind::ToolCompleted",
         "path crate::EventKind::ToolResult",
         "path crate::InputAppliedData",
@@ -22105,8 +22106,10 @@
         "path CompactionUsage",
         "path ModelRequest",
         "path ProviderOutputBudgetFacts",
+        "path Usage",
         "path crate::ModelRequest",
-        "path crate::ProviderOutputBudgetFacts"
+        "path crate::ProviderOutputBudgetFacts",
+        "path crate::Usage"
       ]
     },
     {
