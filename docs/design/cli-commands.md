@@ -2231,13 +2231,18 @@ The staged package then replaces the live one in a single atomic exchange:
 `renamex_np(..., RENAME_SWAP)` on macOS and `renameat2(..., RENAME_EXCHANGE)` on Linux.
 The previous version exists only in staging until the new one has proved itself. The
 update points every command the new package installs at the new package, leaves a command
-whose target is already correct alone, removes a link of the old version that the new one
-no longer installs, and then runs each installed command with `--version`, requiring the
-version the package declares. When that check fails, when a command does not answer within
-30 seconds, or when Ctrl+C or SIGTERM arrives while the check runs, the command being
-checked is killed and the same exchange puts the previous version back; the update exits
-nonzero with a message that names the command or states the interruption, and says that
-the previous version is back. A crash during the exchange leaves one version complete and
+whose target is already correct alone, and removes a command the previous version declared
+and the new one no longer does. The set it may remove is the previous version's declared
+commands, normalized as npm normalizes them before linking, intersected with the links in
+`<prefix>/bin` that resolve into this package; a link outside that set is never touched, so
+an alias an operator added to the package's own launcher survives the update. When the live
+`package.json` cannot be read or parsed, the update removes no command and says so. The
+update then runs each installed command with `--version`, requiring the version the package
+declares. When that check fails, when a command does not answer within 30 seconds, or when
+Ctrl+C or SIGTERM arrives while the check runs, the check's whole process tree is ended and
+waited for, so nothing it started outlives the update, and the same exchange puts the
+previous version back; the update exits nonzero with a message that names the command or
+states the interruption, and says that the previous version is back. A crash during the exchange leaves one version complete and
 the other in staging, never neither. Only where the filesystem refuses the exchange
 (`ENOTSUP`, `EINVAL`, `ENOSYS`) does the update fall back to two renames, with a window of
 a few system calls between them; a crash in that window leaves the previous version at
