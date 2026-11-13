@@ -2,8 +2,8 @@
 //!
 //! Identification runs first: a vendor's own entries name the model, by its
 //! declared id, by its own tokens, by the upstream canonical id it publishes
-//! or by the name it displays. Only when none of them names one model does the
-//! projection fall back to the older walk over a fixed list of sellers.
+//! or by the name it displays. Only when no step names one model do the
+//! aggregator rows that name it merge, in the safe direction.
 
 use super::*;
 
@@ -20,6 +20,10 @@ pub(super) enum Rule {
     Canonical { narrowed: bool },
     /// A row the `custom-provider` list declares.
     CustomProvider,
+    /// No step named one row, so the aggregator rows that join supply the
+    /// numbers: the smallest window, the smallest output cap and the
+    /// intersection of the efforts.
+    Merge,
 }
 
 impl Rule {
@@ -31,6 +35,7 @@ impl Rule {
             Rule::Token => format!("{provider_id}-token"),
             Rule::Canonical { .. } => format!("{provider_id}-canonical"),
             Rule::CustomProvider => "custom-provider".into(),
+            Rule::Merge => format!("{provider_id}-merged"),
         }
     }
 
@@ -38,6 +43,7 @@ impl Rule {
         match self {
             Rule::ProviderExact | Rule::Token | Rule::CustomProvider => 1.,
             Rule::Canonical { .. } => 0.95,
+            Rule::Merge => 0.9,
         }
     }
 
@@ -48,6 +54,7 @@ impl Rule {
             Rule::Token => "token",
             Rule::Canonical { .. } => "canonical",
             Rule::CustomProvider => "custom-provider",
+            Rule::Merge => "merge",
         }
     }
 }
@@ -108,6 +115,28 @@ impl Row<'_> {
     }
 }
 
+/// The `(window, output)` pair a provider prints on many of its rows as a
+/// default rather than a declaration. The merge and the fill read the pairs
+/// here; the catalog keeps no record of its own for them.
+const PLACEHOLDER_LIMITS: &[(&str, u64, u64)] = &[
+    ("tokenflux", 4096, 4096),
+    ("aihubmix", 8192, 8192),
+    ("siliconflow", 131072, 8192),
+];
+
+/// Whether this row's limits are its provider's default rather than a
+/// declaration.
+pub(super) fn is_placeholder(provider_id: &str, entry: &ModelEntry) -> bool {
+    let Some((_, window, output)) = PLACEHOLDER_LIMITS
+        .iter()
+        .find(|(id, _, _)| *id == provider_id)
+    else {
+        return false;
+    };
+    entry.capabilities.context_window == Some(*window)
+        && entry.capabilities.max_output_tokens == Some(*output)
+}
+
 /// The bundled row an id names, plus the step's strategy word and score.
 pub(super) struct Lookup {
     pub(super) provider_id: String,
@@ -116,8 +145,8 @@ pub(super) struct Lookup {
     pub(super) strategy: String,
     pub(super) score: f64,
     /// The step that named the row, as `metadata.identification.rule` carries
-    /// it: `provider-exact`, `token`, `canonical`, `custom-provider`, or
-    /// `legacy` for the older walk.
+    /// it: `provider-exact`, `token`, `canonical`, `custom-provider` or
+    /// `merge`.
     pub(super) rule: &'static str,
     /// Step 3's display name settled several canonical hits.
     pub(super) narrowed: bool,
@@ -153,12 +182,15 @@ pub(super) struct IdIndex {
 }
 
 /// One row of the index. `provider` and `model` address
-/// `providers[provider].models[model]`.
+/// `providers[provider].models[model]`. `index` is the list whose token and
+/// name steps read the row; a row in neither list is only read by the merge.
 struct IndexedRow {
     provider: usize,
     model: usize,
-    role_is_vendor: bool,
+    index: Option<Index>,
     tokens: Vec<String>,
+    /// The `:tag` the row's own id carries, lowercased.
+    tag: Option<String>,
     canonical: Option<Vec<String>>,
     display: Vec<String>,
 }
@@ -169,25 +201,39 @@ impl IdIndex {
         let mut custom_tokens: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut rows = Vec::new();
         for (provider, catalog) in providers.iter().enumerate() {
-            let role_is_vendor = catalog.metadata.as_ref().and_then(|metadata| metadata.role)
-                == Some(ProviderRole::Vendor);
-            if !role_is_vendor && catalog.provider_id != "custom-provider" {
-                continue;
-            }
-            let map = if role_is_vendor {
-                &mut vendor_tokens
-            } else {
-                &mut custom_tokens
-            };
+            let role = catalog.metadata.as_ref().and_then(|metadata| metadata.role);
+            let role_is_vendor = role == Some(ProviderRole::Vendor);
+            let custom = catalog.provider_id == "custom-provider";
+            // Every row is indexed: steps 2 and 3 read vendor rows, step 4 the
+            // `custom-provider` rows, and step 7 every other aggregator row.
             for (model, entry) in catalog.models.iter().enumerate() {
                 let model_tokens = split_id(&entry.model_id);
-                map.entry(model_tokens.clone())
-                    .or_default()
-                    .push(rows.len());
+                let position = rows.len();
+                if role_is_vendor {
+                    vendor_tokens
+                        .entry(model_tokens.clone())
+                        .or_default()
+                        .push(position);
+                } else if custom {
+                    custom_tokens
+                        .entry(model_tokens.clone())
+                        .or_default()
+                        .push(position);
+                }
                 rows.push(IndexedRow {
                     provider,
                     model,
-                    role_is_vendor,
+                    index: if role_is_vendor {
+                        Some(Index::Vendor)
+                    } else if custom {
+                        Some(Index::CustomProvider)
+                    } else {
+                        None
+                    },
+                    tag: entry
+                        .model_id
+                        .rsplit_once(':')
+                        .map(|(_, tag)| tag.to_lowercase()),
                     tokens: model_tokens,
                     canonical: entry
                         .metadata
@@ -231,11 +277,7 @@ impl IdIndex {
         let mut canonical = Vec::new();
         let mut display = Vec::new();
         for (position, row) in self.rows.iter().enumerate() {
-            let wanted = match index {
-                Index::Vendor => row.role_is_vendor,
-                Index::CustomProvider => !row.role_is_vendor,
-            };
-            if !wanted {
+            if row.index != Some(index) {
                 continue;
             }
             if row
@@ -300,7 +342,11 @@ impl BundledCatalog {
             Outcome::None => {}
             found => return found,
         }
-        self.identify_by_names_in(Index::CustomProvider, &query, provider, namespace, id)
+        match self.identify_by_names_in(Index::CustomProvider, &query, provider, namespace, id) {
+            Outcome::None => {}
+            found => return found,
+        }
+        self.merge_rows(id, &query)
     }
 
     /// Step 1: the projection's own list, by exact id. The row answers with
@@ -453,9 +499,9 @@ impl BundledCatalog {
 
     /// Collapse the rows that declare one set of numbers, then settle which
     /// group answers. More than one group left is an ambiguity. A row that
-    /// does not declare both limits cannot supply numbers on its own, so it
-    /// is no candidate here and the caller keeps its own answer for the id;
-    /// the fill that supplies an undeclared limit arrives with the merge.
+    /// declares no limit is still a candidate: the fill supplies the pair, and
+    /// refusing it here would send an id whose only row declares nothing to the
+    /// merge, where nothing else names it.
     fn settle(
         &self,
         rows: Vec<Row<'_>>,
@@ -465,8 +511,6 @@ impl BundledCatalog {
         query: &Query,
         input: &str,
     ) -> Outcome {
-        let mut rows = rows;
-        rows.retain(|row| row.entry.capabilities.missing_limits().is_empty());
         if rows.is_empty() {
             return Outcome::None;
         }
@@ -683,183 +727,130 @@ fn collapse(rows: Vec<Row<'_>>) -> Vec<Vec<Row<'_>>> {
 }
 
 impl BundledCatalog {
-    /// The bundled row an id names. Identification runs first; the older
-    /// walk serves an id that no step named.
+    /// The bundled row an id names. Identification runs first; the merge
+    /// serves an id that no step named.
     pub(super) fn lookup(&self, provider: &ProviderProjection, id: &str) -> Option<Lookup> {
         match self.identify(provider, id) {
-            Ok(Some(found)) => return Some(found),
+            Ok(Some(found)) => Some(found),
             // Several rows claim the id and disagree, so none may supply
-            // numbers; the older walk is not allowed to answer something
-            // weaker than the conflict it would be hiding.
-            Err(_) => return None,
-            Ok(None) => {}
-        }
-        self.lookup_legacy(provider, id)
-    }
-
-    /// The older walk: the projection's own list by exact id, then a fixed
-    /// list of family and aggregator sources, then any provider by exact id
-    /// and by a normalized id.
-    fn lookup_legacy(&self, provider: &ProviderProjection, id: &str) -> Option<Lookup> {
-        let mut ids = vec!["custom-provider"];
-        let normalized = variants(id);
-        for (prefix, sources) in [
-            ("deepseek-", &["deepseek"][..]),
-            ("glm-", &["zai", "zhipuai"]),
-            ("qwen", &["bailian-coding-plan", "bailian"]),
-            ("kimi-", &["moonshot", "moonshot-ai"]),
-            ("claude-", &["anthropic"]),
-            ("gemini-", &["google"]),
-            ("gpt-", &["openai"]),
-            ("minimax-", &["minimax", "minimax-cn"]),
-            ("seed-", &["doubao-seed"]),
-        ] {
-            if normalized.iter().any(|variant| variant.starts_with(prefix)) {
-                ids.extend_from_slice(sources);
-            }
-        }
-        ids.extend([
-            "openrouter",
-            "zenmux",
-            "vercel-ai-gateway",
-            "jiekou",
-            "ppinfra",
-            "aihubmix",
-        ]);
-        for pid in ids {
-            if let Some(models) = self.bundled_models(pid)
-                && let Some((m, kind, score)) = match_models(models, id)
-            {
-                return Some(Lookup::new(
-                    pid.into(),
-                    m.clone(),
-                    format!("{pid}-{kind}"),
-                    score,
-                    "legacy",
-                    false,
-                ));
-            }
-        }
-        for exact in [true, false] {
-            let candidates: Vec<_> = self
-                .providers
-                .iter()
-                .filter(|p| !matches!(p.provider_id.as_str(), "custom-provider" | "aihubmix"))
-                .flat_map(|p| p.models.iter().map(move |m| (p, m)))
-                .filter(|(_, m)| {
-                    if exact {
-                        m.model_id == id
-                    } else {
-                        !variants(&m.model_id).is_disjoint(&normalized)
-                    }
-                })
-                .filter_map(|(p, m)| media_signature(m).map(|signature| (p, m, signature)))
-                .collect();
-            if let Some((p, m, signature)) = candidates.first()
-                && candidates.iter().all(|(_, _, other)| other == signature)
-            {
-                let kind = if exact { "exact" } else { "normalized" };
-                return Some(Lookup::new(
-                    p.provider_id.clone(),
-                    (*m).clone(),
-                    format!("{}-{kind}", p.provider_id),
-                    if exact { 1. } else { 0.98 },
-                    "legacy",
-                    false,
-                ));
-            }
-        }
-        if provider.source == Some(ModelSource::Custom) {
-            provider.models.iter().find(|m| m.model_id == id).map(|m| {
-                Lookup::new(
-                    provider.provider_id.clone(),
-                    m.clone(),
-                    "custom-config-exact".into(),
-                    1.,
-                    "legacy",
-                    false,
-                )
-            })
-        } else {
-            None
+            // numbers; the merge is not allowed to answer something weaker
+            // than the conflict it would be hiding.
+            Err(_) | Ok(None) => None,
         }
     }
-}
 
-fn media_signature(model: &ModelEntry) -> Option<Value> {
-    let raw = model.metadata.as_ref().map(|m| &m.raw);
-    let get = |name: &str| raw.and_then(|r| r.get(name));
-    let sorted = |values: Vec<String>| {
-        let mut values: Vec<_> = values
-            .into_iter()
-            .map(|v| v.trim().to_lowercase())
-            .filter(|v| !v.is_empty())
-            .collect();
-        values.sort();
-        values.dedup();
-        values
-    };
-    let list = |value: Option<&Value>| {
-        value
-            .and_then(Value::as_array)
-            .map(|v| strings(v))
-            .unwrap_or_default()
-    };
-    let kind = model.metadata.as_ref().and_then(model_kind);
-    let hints = sorted(list(get("typeHints").or_else(|| get("type_hints"))));
-    let actions = sorted(list(
-        get("modalityCapabilities").or_else(|| get("modality_capabilities")),
-    ));
-    let input = sorted(list(get("modalities").and_then(|v| v.get("input"))));
-    let output = sorted(list(get("modalities").and_then(|v| v.get("output"))));
-    let modalities = sorted(model.capabilities.modalities.clone());
-    let is_media = model.capabilities.audio
-        || model.capabilities.vision
-        || kind.as_ref().is_some_and(|kind| kind != "chat")
-        || !actions.is_empty()
-        || hints.iter().any(|kind| kind != "chat")
-        || input
+    /// Step 7: every aggregator row whose own id names the same model with the
+    /// same tag joins, and only the safe direction is taken -- the smallest
+    /// window, the smallest output cap and the intersection of the efforts.
+    /// A row whose pair is its provider's default contributes to neither
+    /// minimum, but it still answers when it is the only row.
+    fn merge_rows(&self, id: &str, query: &Query) -> Outcome {
+        let input_tag = id.rsplit_once(':').map(|(_, tag)| tag.to_lowercase());
+        let mut joining: Vec<Row<'_>> = Vec::new();
+        let mut declaring: Vec<Row<'_>> = Vec::new();
+        for row in &self.ids.rows {
+            let provider_id = self.providers[row.provider].provider_id.as_str();
+            let entry = &self.providers[row.provider].models[row.model];
+            if !same_model_with_tag(
+                &row.tokens,
+                row.tag.as_deref(),
+                &query.tokens,
+                input_tag.as_deref(),
+            ) {
+                continue;
+            }
+            let row = Row {
+                provider_id,
+                entry,
+                tokens: &row.tokens,
+            };
+            joining.push(row);
+            // A provider's placeholder pair is its default, not a declaration,
+            // so the row contributes nothing to the minimum; neither does a row
+            // that declares no limit at all.
+            if !is_placeholder(provider_id, entry) && entry.capabilities.missing_limits().is_empty()
+            {
+                declaring.push(row);
+            }
+        }
+        if joining.is_empty() {
+            return Outcome::None;
+        }
+        let first = joining[0];
+        let mut entry = first.entry.clone();
+        // The minimum over the rows that declare a limit. When none does, the
+        // joining row's own pair is the only number there is and answers as it
+        // does today, so the id is not left unselectable for want of a
+        // declaration that no seller ever made.
+        let fallback = declaring.is_empty().then_some(&first.entry.capabilities);
+        let window = declaring
             .iter()
-            .chain(&output)
-            .chain(&modalities)
-            .any(|v| v != "text");
-    is_media.then(|| {
-        serde_json::json!({
-            "type": kind, "typeHints": hints, "modalityCapabilities": actions,
-            "input": input, "output": output, "modalities": modalities,
-            "audio": model.capabilities.audio, "vision": model.capabilities.vision,
-        })
-    })
+            .filter_map(|row| row.entry.capabilities.context_window)
+            .min()
+            .or_else(|| fallback.and_then(|capabilities| capabilities.context_window));
+        let output = declaring
+            .iter()
+            .filter_map(|row| row.entry.capabilities.max_output_tokens)
+            .min()
+            .or_else(|| fallback.and_then(|capabilities| capabilities.max_output_tokens));
+        let efforts = intersection(declaring.iter());
+        entry.capabilities.context_window = window;
+        entry.capabilities.max_output_tokens = output;
+        // The intersection is the merged entry's own statement, so it is
+        // written even when the row the entry is copied from declares none.
+        if let Some(efforts) = efforts {
+            let metadata = entry.metadata.get_or_insert_default();
+            metadata.reasoning.get_or_insert_default().effort_options = Some(efforts);
+        }
+        self.one(
+            first.provider_id.to_owned(),
+            entry,
+            Rule::Merge.strategy(first.provider_id, &first.entry.model_id, id),
+            Rule::Merge,
+        )
+    }
 }
 
-fn match_models<'a>(
-    models: &'a [ModelEntry],
-    id: &str,
-) -> Option<(&'a ModelEntry, &'static str, f64)> {
-    if let Some(m) = models.iter().find(|m| m.model_id == id) {
-        return Some((m, "exact", 1.));
+/// Whether an aggregator row's tokens name the same model as the input, with
+/// the same tag. A `:batch` row joins only a `:batch` input, and a `-fast` or
+/// `-highspeed` row joins nothing because the tail check rejects both sides.
+fn same_model_with_tag(
+    row_tokens: &[String],
+    row_tag: Option<&str>,
+    input: &[String],
+    input_tag: Option<&str>,
+) -> bool {
+    if row_tag != input_tag {
+        return false;
     }
-    let target = variants(id);
-    let normalized: Vec<_> = models
-        .iter()
-        .filter(|m| variants(&m.model_id).iter().any(|v| target.contains(v)))
+    if row_tokens == input {
+        return true;
+    }
+    row_tokens.len() < input.len()
+        && input[..row_tokens.len()] == *row_tokens
+        && tail_allowed(&input[row_tokens.len()..])
+}
+
+/// The efforts every row that declares any agrees on, in the first row's
+/// order. Empty when at least one row declares any and none of them agree.
+fn intersection<'a>(rows: impl Iterator<Item = &'a Row<'a>>) -> Option<Vec<String>> {
+    let declared: Vec<Vec<String>> = rows
+        .filter_map(|row| {
+            row.entry
+                .metadata
+                .as_ref()
+                .and_then(|m| m.reasoning.as_ref())
+                .and_then(|r| r.effort_options.clone())
+        })
         .collect();
-    if normalized.len() == 1 {
-        return Some((normalized[0], "normalized", 0.98));
-    }
-    let nums = numbers(id);
-    let mut scored: Vec<_> = models
-        .iter()
-        .filter(|m| numbers(&m.model_id) == nums)
-        .map(|m| (m, similarity(id, &m.model_id)))
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let best = scored.first()?;
-    if best.1 >= 0.82 && best.1 - scored.get(1).map(|x| x.1).unwrap_or(0.) >= 0.08 {
-        Some((best.0, "fuzzy", best.1))
-    } else {
-        None
-    }
+    let first = declared.first()?;
+    Some(
+        first
+            .iter()
+            .filter(|effort| declared.iter().all(|list| list.contains(effort)))
+            .cloned()
+            .collect(),
+    )
 }
 
 pub(super) fn variants(s: &str) -> HashSet<String> {
@@ -887,32 +878,4 @@ pub(super) fn canonical(s: &str) -> String {
         }
     }
     result
-}
-
-fn numbers(s: &str) -> Vec<String> {
-    s.split(|ch: char| !ch.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-
-fn similarity(a: &str, b: &str) -> f64 {
-    let (a, b) = (canonical(a), canonical(b));
-    let max = a.len().max(b.len());
-    if max == 0 {
-        return 1.;
-    }
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.bytes().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.bytes().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (row[j + 1] + 1)
-                .min(row[j] + 1)
-                .min(prev + usize::from(ca != cb));
-            prev = old;
-        }
-    }
-    1. - row[b.len()] as f64 / max as f64
 }

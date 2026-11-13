@@ -2926,7 +2926,6 @@
       "unexpandedMacros": [
         "format",
         "matches",
-        "serde_json::json",
         "vec"
       ]
     },
@@ -28642,6 +28641,7 @@
         "path id",
         "path id::IdIndex",
         "path id::IdIndex::new",
+        "path id::is_placeholder",
         "path variants",
         "use self::id::variants"
       ]
@@ -28655,9 +28655,7 @@
         "path ModelEntry",
         "path ModelSource::Custom",
         "path ProviderProjection",
-        "path ProviderRole::Vendor",
-        "path model_kind",
-        "path strings"
+        "path ProviderRole::Vendor"
       ]
     },
     {

@@ -466,6 +466,67 @@ impl BundledCatalog {
         }
     }
 
+    /// A limit the row does not declare, supplied by the entry the id
+    /// identifies and recorded in `identification.filled` so it never reads as
+    /// the row's own declaration.
+    fn fill_undeclared(&self, model: &mut ModelEntry, provider_id: &str) {
+        // The row's own provider writes a default pair rather than declaring a
+        // limit, so such a row counts as undeclared here.
+        let placeholder = id::is_placeholder(provider_id, model);
+        let needs_window = model.capabilities.context_window.is_none() || placeholder;
+        let needs_output = model.capabilities.max_output_tokens.is_none() || placeholder;
+        if !needs_window && !needs_output {
+            return;
+        }
+        // The identified entry supplies the pair. The row itself answers step 1
+        // on its own provider, so the entry is looked up outside that list.
+        let Some(found) = self.lookup(&ProviderProjection::default(), &model.model_id) else {
+            return;
+        };
+        let mut filled = Vec::new();
+        for (field, needs, value, own) in [
+            (
+                "contextWindow",
+                needs_window,
+                found.entry.capabilities.context_window,
+                &mut model.capabilities.context_window,
+            ),
+            (
+                "maxOutputTokens",
+                needs_output,
+                found.entry.capabilities.max_output_tokens,
+                &mut model.capabilities.max_output_tokens,
+            ),
+        ] {
+            let Some(value) = value.filter(|_| needs) else {
+                continue;
+            };
+            *own = Some(value);
+            filled.push(FilledLimit {
+                field: field.into(),
+                value,
+                provider_id: found.provider_id.clone(),
+                model_id: found.entry.model_id.clone(),
+                rule: found.rule.to_owned(),
+            });
+        }
+        if filled.is_empty() {
+            return;
+        }
+        let metadata = model.metadata.get_or_insert_default();
+        match &mut metadata.identification {
+            Some(identification) => identification.filled = filled,
+            None => {
+                metadata.identification = Some(ModelIdentification {
+                    rule: "provider-exact".into(),
+                    narrowed_by_display_name: false,
+                    candidates: Vec::new(),
+                    filled,
+                })
+            }
+        }
+    }
+
     pub fn effective_models(
         &self,
         provider: &ProviderProjection,
@@ -478,25 +539,27 @@ impl BundledCatalog {
                 let mut model = model.clone();
                 let identification = self.identify_record(provider, &model.model_id);
                 if let Some(found) = self.lookup(provider, &model.model_id) {
-                    let provider_id = found.provider_id;
-                    let fallback = found.entry;
-                    let strategy = found.strategy;
+                    let provider_id = found.provider_id.clone();
+                    let strategy = found.strategy.clone();
                     let score = found.score;
                     let explicit = model
                         .metadata
                         .as_ref()
                         .map(|m| m.capability_override_fields.clone())
                         .unwrap_or_default();
-                    model = merge_entry(model, &fallback, &explicit);
+                    model = merge_entry(model, &found.entry, &explicit);
                     let metadata = model.metadata.get_or_insert_default();
                     metadata.metadata_source = Some(provider_id.clone());
-                    metadata.matched_provider_id = Some(provider_id);
-                    metadata.matched_model_id = Some(fallback.model_id.clone());
+                    metadata.matched_provider_id = Some(provider_id.clone());
+                    metadata.matched_model_id = Some(found.entry.model_id.clone());
                     metadata.match_strategy = Some(strategy);
                     metadata.match_score = Some(score);
                     metadata.metadata_match_reason = None;
+                    model.metadata.get_or_insert_default().identification = identification;
+                    self.fill_undeclared(&mut model, &provider_id);
+                } else {
+                    model.metadata.get_or_insert_default().identification = identification;
                 }
-                model.metadata.get_or_insert_default().identification = identification;
                 self.apply_provider_rules(provider, &mut model);
                 model
             })
