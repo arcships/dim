@@ -52994,6 +52994,18 @@
     },
     {
       "module": "dim_cli::ui::tui",
+      "path": "PermissionPreset::FullAccess"
+    },
+    {
+      "module": "dim_cli::ui::tui",
+      "path": "PermissionPreset::ReadOnly"
+    },
+    {
+      "module": "dim_cli::ui::tui",
+      "path": "PermissionPreset::WorkspaceWrite"
+    },
+    {
+      "module": "dim_cli::ui::tui",
       "path": "Recorded::Failed"
     },
     {
