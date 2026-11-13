@@ -553,11 +553,10 @@ async fn deleting_a_subscribed_session_removes_its_subscriptions() {
 
 /// EventHub §9.1 with a delete and a subscribe in flight. A write held on
 /// the store keeps the delete inside `delete_session` with the Session's
-/// admission gate in hand, and a subscribe starts into that gate, holding
-/// the EventHub Session lock across `sessions.input`. The delete must
-/// release the gate before it announces: its listener takes that lock, so
-/// announcing under the gate would deadlock the two, and neither call would
-/// return after the write is committed.
+/// admission gate in hand; the subscribe then waits for that gate in
+/// `acquire`, holding the EventHub Session lock across `sessions.input`.
+/// The delete must release the gate before it announces: its listener takes
+/// that lock, so announcing under the gate would deadlock the two.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delete_announces_after_its_gate_is_released() {
     let home = home();
@@ -573,12 +572,12 @@ async fn a_delete_announces_after_its_gate_is_released() {
     let connection = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE").unwrap();
 
-    // This transaction keeps the delete inside `delete_session`, its
-    // admission gate in hand, while the subscribe starts behind it. Whether
-    // the subscribe is already at the gate or still on its way is not
-    // asserted: a wait fixed to a duration would decide that by scheduling.
-    // The ordering this test proves is the one after the commit, where the
-    // delete must return and the deleted Session must keep no subscription.
+    // Of the two calls, the delete is the one held: this transaction keeps it
+    // inside `delete_session`, its admission gate in hand, so the subscribe
+    // that arrives next takes the EventHub Session lock and waits at the
+    // gate. On a machine slow enough for the delete to reach its store write
+    // only after the commit, no cycle forms and the assertions below pass
+    // without proving the fix; a correct build is never failed by that.
     let mut deleter = connect(&server).await;
     let target = session.clone();
     let deleting = tokio::spawn(async move {
@@ -592,8 +591,8 @@ async fn a_delete_announces_after_its_gate_is_released() {
         "the delete is held by the store write, its gate in hand"
     );
 
-    // The subscribe reaches the gate inside `sessions.input`, its EventHub
-    // Session lock taken, or is still on its way when the commit frees it.
+    // The subscribe waits for the gate inside `sessions.input`, its EventHub
+    // Session lock taken.
     let mut subscriber = connect(&server).await;
     let target = session.clone();
     let subscribing = tokio::spawn(async move {
@@ -604,6 +603,12 @@ async fn a_delete_announces_after_its_gate_is_released() {
             )
             .await
     });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !subscribing.is_finished(),
+        "the subscribe waits for the delete's gate"
+    );
+
     connection.execute_batch("COMMIT").unwrap();
 
     let deleted = tokio::time::timeout(Duration::from_secs(5), deleting)
