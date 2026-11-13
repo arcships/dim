@@ -165,13 +165,7 @@ impl ProviderService {
                                 let tx = connection.transaction()?;
                                 let mut record = read_catalog(&tx, &provider_id)?
                                     .ok_or(ProviderError::NotFound)?;
-                                if record.version != expected_version
-                                    || !same_account(&record.account, &current)
-                                {
-                                    return Err(ProviderError::Conflict(
-                                        "Provider version or account changed".into(),
-                                    ));
-                                }
+                                record.check_write(&provider_id, expected_version, &current)?;
                                 let model = record
                                     .catalog(&catalog_bundled)
                                     .models
@@ -466,13 +460,7 @@ impl ProviderService {
                             let tx = connection.transaction()?;
                             let mut record =
                                 read_catalog(&tx, &provider_id)?.ok_or(ProviderError::NotFound)?;
-                            if !same_account(&record.account, &account)
-                                || record.version != expected_version
-                            {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or account changed".into(),
-                                ));
-                            }
+                            record.check_write(&provider_id, expected_version, &account)?;
                             let index = record
                                 .model_config_overrides
                                 .iter()
@@ -578,13 +566,7 @@ impl ProviderService {
                             let tx = connection.transaction()?;
                             let mut record =
                                 read_catalog(&tx, &provider_id)?.ok_or(ProviderError::NotFound)?;
-                            if !same_account(&record.account, &account)
-                                || record.version != expected_version
-                            {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or account changed".into(),
-                                ));
-                            }
+                            record.check_write(&provider_id, expected_version, &account)?;
                             if ids.iter().any(|id| {
                                 !record
                                     .models

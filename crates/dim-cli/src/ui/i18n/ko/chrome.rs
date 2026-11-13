@@ -7,13 +7,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "대기열에 메시지가 없습니다.",
         "Held · awaiting application" => "보류 중 · 적용 대기",
-        "Incorporating · awaiting model consumption" => "반영 중 · 모델 읽기 대기",
         "Held" => "보류 중",
-        "Incorporating" => "반영 중",
         "Unread" => "읽지 않음",
-        "Unread · waiting for your next message" => "읽지 않음 · 다음 메시지 대기",
-        "/queue view · awaiting model consumption" => "/queue 보기 · 모델 읽기 대기",
-        "/queue view · waiting for your next message" => "/queue 보기 · 다음 메시지 대기",
         "Enter export · Esc cancel" => "Enter 내보내기 · Esc 취소",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "첨부 파일이 있는 메시지는 대기열에 남습니다. /queue에서 steer하거나 삭제하세요"

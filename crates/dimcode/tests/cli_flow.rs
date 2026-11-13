@@ -1865,6 +1865,114 @@ fn line_mode_reports_each_retry_attempt_once_on_stderr() {
 }
 
 #[test]
+fn exec_exits_zero_when_the_turn_completed_at_its_output_limit() {
+    for json_mode in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.start(false);
+            let submit = wire.read("session.submit");
+            wire.reply(&submit, json!({"event":{}}));
+            let idle = wire.read("session.idle");
+            // An output-limit stop: the request keeps its failure fact with
+            // its presentation, and the turn ends Completed.
+            wire.event(
+                9,
+                "model-output-end",
+                json!({
+                    "turn_id": "turn", "request_id": "model-request", "status": "failed",
+                    "error": "Model local/fixture stopped at max_tokens",
+                    "presentation": {
+                        "source": "local", "reason": "max_tokens",
+                        "serverMessage": "Model local/fixture stopped at max_tokens",
+                        "action": "Increase the output token limit and retry.",
+                    },
+                    "failure": {
+                        "kind": "output_limit", "reason": "stopped at max_tokens",
+                        "attempts": 1, "waitedMs": 0,
+                    },
+                }),
+            );
+            wire.end(json!({"turn_id":"turn","status":"completed","reason":"output_limit"}));
+            wire.reply(&idle, json!({"sequence":3}));
+            wire.detach();
+        });
+        let mut args = vec!["exec", "-p", "go"];
+        if json_mode {
+            args.push("--json");
+        }
+        let output = home.command().args(&args).output().unwrap();
+        daemon.join().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "json {json_mode}: status {:?} stdout {} stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Line mode writes the human line to stderr; `--json` writes the events
+        // to stdout and keeps stderr for the daemon notes.
+        let (shown, other) = if json_mode {
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        } else {
+            (
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            )
+        };
+        if json_mode {
+            assert!(
+                shown.contains("\"model-output-end\"") || shown.contains("step"),
+                "{shown}"
+            );
+        } else {
+            assert!(
+                shown.contains("stopped at max_tokens"),
+                "no failure line: {shown:?}"
+            );
+            assert_eq!(
+                shown.matches("[failed]").count(),
+                1,
+                "one failure line, no turn repeat: {shown}"
+            );
+        }
+        assert!(other.is_empty() || other.contains("workspace:"), "{other}");
+    }
+}
+
+#[test]
+fn exec_keeps_exit_two_for_a_failure_with_no_calls() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.start(false);
+        let submit = wire.read("session.submit");
+        wire.reply(&submit, json!({"event":{}}));
+        let idle = wire.read("session.idle");
+        wire.event(
+            9,
+            "model-output-end",
+            json!({
+                "turn_id": "turn", "request_id": "model-request", "status": "failed",
+                "error": "The provider rejected the request: bad tool schema.",
+                "failure": {
+                    "kind": "invalid_request", "reason": "bad tool schema",
+                    "attempts": 1, "waitedMs": 0,
+                },
+            }),
+        );
+        wire.end(json!({"turn_id":"turn","status":"failed","error":"The provider rejected the request: bad tool schema."}));
+        wire.reply(&idle, json!({"sequence":2}));
+        wire.detach();
+    });
+    let output = home.command().args(["exec", "-p", "go"]).output().unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn exec_prints_the_model_failure_line_not_the_daemon_sentence() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
@@ -9421,7 +9529,7 @@ fn tui_export_dialog_matches_the_subcommand_and_cancel_sends_nothing() {
 }
 
 #[test]
-fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
+fn tui_queue_panel_deletes_steers_and_moves_applied_inputs_to_the_transcript() {
     for fullscreen in [false, true] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
@@ -9479,16 +9587,28 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
         terminal.until("steer this");
         terminal.write(b"\r");
         terminal.until("already left the queue");
-        terminal.until("Incorporating");
+        terminal.until("No queued messages.");
         terminal.until("\x1b[?2026l");
+        let applied_start = terminal.transcript.len();
         terminal.write(b"\x1b");
-        terminal.until("/queue view");
+        terminal.until("steer this");
+        terminal.until("\x1b[?2026l");
+        let applied = strip_ansi(&terminal.transcript[applied_start..]);
+        assert!(
+            !applied.contains("Queue (") && !applied.contains("Incorporating"),
+            "{applied}"
+        );
+        let stopped_start = terminal.transcript.len();
         terminal.write(b"\x1b");
-        terminal.until("Unread");
-        terminal.until("waiting for your next message");
+        terminal.until("\x1b[?2026l");
+        let stopped = strip_ansi(&terminal.transcript[stopped_start..]);
+        assert!(
+            !stopped.contains("Unread") && !stopped.contains("Queue ("),
+            "{stopped}"
+        );
         let panel_start = terminal.transcript.len();
         terminal.write(b"/queue\r");
-        terminal.until("Unread · waiting for your next message");
+        terminal.until("No queued messages.");
         terminal.until("\x1b[?2026l");
         let panel = strip_ansi(&terminal.transcript[panel_start..]);
         assert!(
@@ -9496,7 +9616,7 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             "{panel}"
         );
         terminal.write(b"x\r\x1b");
-        terminal.until("/queue view");
+        terminal.until("\x1b[?2026l");
         terminal.write(b"next input\r/queue\r");
         terminal.until("No queued messages.");
         let shown = strip_ansi(&terminal.transcript);
@@ -9764,7 +9884,7 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     terminal.until("first");
     terminal.until("background task finished");
     terminal.write(b"second\r");
-    terminal.until("Queue (3)");
+    terminal.until("Queue (1)");
     assert!(
         !terminal.transcript.contains("Queue (0)"),
         "{}",
@@ -9779,7 +9899,7 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     );
     terminal.write(b"\x13");
     terminal.write(b"third\r");
-    terminal.until("Queue (4)");
+    terminal.until("Queue (1)");
     terminal.until("Held · third");
     terminal.write(b"\x1b[1;2D");
     terminal.until("third");

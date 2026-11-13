@@ -7,19 +7,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "No hay mensajes en cola.",
         "Held · awaiting application" => "Retenido · pendiente de aplicación",
-        "Incorporating · awaiting model consumption" => {
-            "Incorporando · pendiente de procesamiento por el modelo"
-        }
         "Held" => "Retenido",
-        "Incorporating" => "Incorporando",
         "Unread" => "Sin leer",
-        "Unread · waiting for your next message" => "Sin leer · esperando tu próximo mensaje",
-        "/queue view · awaiting model consumption" => {
-            "/queue ver · pendiente de procesamiento por el modelo"
-        }
-        "/queue view · waiting for your next message" => {
-            "/queue ver · esperando tu próximo mensaje"
-        }
         "Enter export · Esc cancel" => "Enter exportar · Esc cancelar",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Los mensajes con archivos adjuntos permanecen en cola; usa /queue para hacer steer o eliminarlos"

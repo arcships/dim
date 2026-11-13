@@ -226,6 +226,132 @@ impl Plugin for FixturePlugin {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_model_writes_expose_typed_catalog_recovery() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(
+            serde_json::from_value(json!({
+                "credentialEpoch":"private-epoch", "generation":1,
+                "account":{"issuer":"https://accounts.example", "subject":"fixture",
+                    "email":"private@example.com", "name":"Private name", "grantedScopes":[]}
+            }))
+            .unwrap(),
+        ),
+        limited: StdMutex::new(Limited::Absent),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let mut version = refreshed["result"]["version"].as_u64().unwrap();
+    for change in ["generation", "epoch", "identity", "logout"] {
+        let account = {
+            let mut account = fixture.account.lock().unwrap();
+            account.generation += 1;
+            match change {
+                "epoch" => account.credential_epoch = "private-recovered-epoch".into(),
+                "identity" => account.account.as_mut().unwrap().subject = "other-account".into(),
+                "logout" => account.account = None,
+                _ => {}
+            }
+            account.account.clone()
+        };
+        for (method, fields) in [
+            ("provider.models.set_enabled", json!({"modelIds":[]})),
+            (
+                "provider.models.edit",
+                json!({"modelId":"fixture-model","edit":{"displayName":"Edited"}}),
+            ),
+            ("provider.models.reset", json!({"modelId":"fixture-model"})),
+            (
+                "provider.preferences.update",
+                json!({"modelId":"fixture-model","patch":{"reasoningEffort":{"action":"set","value":"high"}}}),
+            ),
+        ] {
+            let mut params = fields.as_object().unwrap().clone();
+            params.insert("providerId".into(), json!("managed-fixture"));
+            params.insert("expectedVersion".into(), json!(version));
+            let stale = client.rpc(method, Value::Object(params.clone())).await;
+            assert_eq!(stale["error"]["code"], -32000, "{method}: {stale}");
+            assert_eq!(
+                stale["error"]["data"],
+                json!({
+                    "appError":"provider_catalog_stale", "providerId":"managed-fixture",
+                    "expectedVersion":version, "currentVersion":version,
+                    "issuer":account.as_ref().map(|account| &account.issuer),
+                    "subject":account.as_ref().map(|account| &account.subject),
+                    "requiredAction":if account.is_some() { "provider.refresh" } else { "account.login" }
+                }),
+                "{change}, {method}: {stale}"
+            );
+            params.insert("expectedVersion".into(), json!(version - 1));
+            let conflict = client.rpc(method, Value::Object(params)).await;
+            assert_eq!(
+                conflict["error"]["data"],
+                json!({"appError":"provider_conflict"}),
+                "{method}: {conflict}"
+            );
+        }
+        let read = client
+            .rpc(
+                "provider.management",
+                json!({"providerId":"managed-fixture"}),
+            )
+            .await;
+        assert_ok(&read);
+        assert_eq!(read["result"]["providers"][0]["version"], version);
+        if account.is_some() {
+            let refreshed = client
+                .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+                .await;
+            assert_ok(&refreshed);
+            assert_eq!(refreshed["result"]["version"], version + 1);
+            let retried = client
+                .rpc(
+                    "provider.models.set_enabled",
+                    json!({"providerId":"managed-fixture",
+                "expectedVersion":version + 1,"modelIds":[]}),
+                )
+                .await;
+            assert_ok(&retried);
+            assert_eq!(retried["result"]["version"], version + 2);
+            version += 2;
+        }
+    }
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials() {
     let home = std::env::temp_dir().join(format!(
         "dm-{}",

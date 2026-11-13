@@ -151,7 +151,7 @@ protocol, and the loaded body is the skill author's own text.
 | `S:SessionConfig` | Select the Session working directory. |
 | `S:SessionLoader` | Lock-free creation of Session-owned content instances. |
 | `S:SessionLifecycle` | Start catalog-driven replacement only after the Session is published. |
-| `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, and a profile that registers the parts without the install declares and reads none. |
+| `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, `skillsConfig.get` exposes it as data, and a profile that registers the parts without the install declares and reads none. |
 | `S:PromptRegistry` | Register the list and instructions sources, until this part unloads. |
 | `S:ToolRegistry` | Register the `skill` tool, until this part unloads. |
 | `S:SubmitChecks` | Register the check `skills` with the Session's submit checks, until this part unloads: `$skill: <name>` references in operator input load those Skills with the same input ([Skills §9](../../../design/plugins/Skills.md#9-references-load-with-the-operators-input)). |

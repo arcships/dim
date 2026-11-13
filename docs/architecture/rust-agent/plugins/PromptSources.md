@@ -60,6 +60,10 @@ from branch adoption.
 | `S:SessionConfig` | Working directory, Session context and the reply language a record carries. |
 | `S:PromptRegistry` | Register each of its sources by name, until this part unloads. |
 
+The Session's live reply-language cell is `S:SessionLanguage`; its `get` is the `sessionLanguage`
+data face, which a part of another language reads by name. The face has no write: an update also
+writes the Session record and has Prompt adopt the source, which stays the App Server's method.
+
 The policy texts — `dim/base`'s identity and rules, the shell guidance and the
 file-encoding guidance — are the plugin's factory configuration: an optional
 member each, the built-in text in force when none is set. The product installs
@@ -122,7 +126,7 @@ was applied (`a_branch_opened_after_the_value_was_applied_holds_one_block`).
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `P:HostPlatform`、`S:PromptRegistry`、`S:SessionConfig` |
-| 提供 | `S:SessionLanguage` |
+| 提供 | `S:SessionLanguage`、`S:dyn HostDispatch#sessionLanguage` |
 | 被注入于 | `PromptSourcesBranch` |
 <!-- /generated -->
 
