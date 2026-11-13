@@ -1046,6 +1046,7 @@ opens `/tasks` while it shows, once no held message is left to steer.
 | Fullscreen input | Effect |
 | --- | --- |
 | Mouse wheel, `PageUp` / `PageDown` | Scroll the transcript; new output does not move a scrolled view. A wheel notch scrolls three rows; a trackpad, once its dense reports are seen, one row per report; a fast streak speeds up to three (notch) or six (trackpad) times that |
+| Drag the scrollbar (last column) | Move the view with the thumb; a press on the track centres the thumb there first. Dragging to the bottom, or past it over the dock, follows new output again |
 | Sending a message | Follow the bottom again |
 | Mouse drag | Select transcript text; release copies it (OSC 52, plus `pbcopy` locally on macOS; inside tmux OSC 52 goes through passthrough, which needs `set -g allow-passthrough on`) |
 | Click a link | Opens it in the system browser (OSC 8 links, or a bare `http(s)://` URL); over SSH the status row shows the URL instead |
