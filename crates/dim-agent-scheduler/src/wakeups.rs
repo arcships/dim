@@ -225,6 +225,10 @@ impl Wakeups {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
+        #[cfg(feature = "testing")]
+        if let Some(holds) = &self.shared.holds {
+            holds.wakeup_create.notify_one();
+        }
         let now = Utc::now();
         let expired = now - request.at >= Duration::seconds(GRACE_SECONDS);
         let created = Wakeup {

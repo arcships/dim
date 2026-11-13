@@ -49,6 +49,7 @@ struct Rig {
     ctx: Ctx,
     host: Connection,
     client: Connection,
+    holds: Arc<dim_agent_scheduler::testing::Holds>,
 }
 
 impl Rig {
@@ -63,7 +64,13 @@ impl Rig {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::install(&mut builder);
         defaults::mock_hosts(&mut builder);
-        dim_agent_scheduler::install(&mut builder);
+        let holds = Arc::new(dim_agent_scheduler::testing::Holds::default());
+        dim_agent_scheduler::install_with_testing(
+            &mut builder,
+            dim_agent_scheduler::SchedulerTexts::default(),
+            holds.clone(),
+        )
+        .unwrap();
         let observed = Arc::new(OnceLock::new());
         let probe = observed.clone();
         builder.plugin(move |_| Ok(Box::new(Probe(probe.clone())) as Box<dyn DynPlugin>));
@@ -103,6 +110,7 @@ impl Rig {
             ctx,
             host,
             client,
+            holds,
         }
     }
 
@@ -362,11 +370,14 @@ async fn bridge_cancellation_accepts_signals_and_promises_and_keeps_committed_wr
         )
         .unwrap();
     let mut call = Box::pin(call);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut call)
-            .await
-            .is_err()
-    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = rig.holds.wakeup_create.notified() => (),
+            result = &mut call => panic!("the held write must stay pending: {result:?}"),
+        }
+    })
+    .await
+    .unwrap();
     drop(call);
     release.send(()).unwrap();
     held.await.unwrap();
@@ -395,11 +406,14 @@ async fn bridge_cancellation_accepts_signals_and_promises_and_keeps_committed_wr
             .invoke_settled("wakeups", "create", args)
             .unwrap(),
     );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut call)
-            .await
-            .is_err()
-    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = rig.holds.wakeup_create.notified() => (),
+            result = &mut call => panic!("the held write must stay pending: {result:?}"),
+        }
+    })
+    .await
+    .unwrap();
     cancel.cancel();
     assert!(
         tokio::time::timeout(Duration::from_millis(50), &mut call)
