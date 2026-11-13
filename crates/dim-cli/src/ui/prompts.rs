@@ -282,6 +282,10 @@ fn plain(key: KeyEvent) -> bool {
     key.mods.0 & !Modifiers::SHIFT.0 == 0
 }
 
+/// Cells one replacement's `oldText` or `newText` may take on its prompt line
+/// before it is cut; a short pair is shown whole.
+const REPLACEMENT_TEXT_CELLS: usize = 48;
+
 /// An `edit` preview states how many replacements the call carries and the
 /// file, instead of dumping every replacement into one line. A recorded call
 /// holding the older top-level `oldText`/`newText` form counts as one.
@@ -304,6 +308,49 @@ fn replacements(tool: &str, input: &Value) -> Option<String> {
         },
         &[("count", &count.to_string()), ("path", path)],
     ))
+}
+
+/// Every replacement the call carries, one line each under the count line: its
+/// 1-based position, its `oldText` and its `newText`, and `replaceAll` when the
+/// entry replaces every match. No entry is left out, so two calls that write
+/// opposite values into one file read differently before the decision. A text
+/// is folded to one line and cut at [`REPLACEMENT_TEXT_CELLS`]; one that fits
+/// stays whole.
+fn replacement_details(tool: &str, input: &Value) -> Vec<String> {
+    if tool != "edit" {
+        return Vec::new();
+    }
+    let entries: Vec<&Value> = match input.get("edits") {
+        Some(Value::Array(edits)) => edits.iter().collect(),
+        Some(_) => return Vec::new(),
+        None if input.get("oldText").is_some() => vec![input],
+        None => return Vec::new(),
+    };
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let text = |key: &str| {
+                truncate_cells(
+                    &crate::sanitize::safe_line(
+                        entry.get(key).and_then(Value::as_str).unwrap_or(""),
+                    ),
+                    REPLACEMENT_TEXT_CELLS,
+                )
+            };
+            let every = if entry.get("replaceAll") == Some(&Value::Bool(true)) {
+                " · replaceAll"
+            } else {
+                ""
+            };
+            format!(
+                "  {} · {} → {}{every}",
+                index + 1,
+                text("oldText"),
+                text("newText")
+            )
+        })
+        .collect()
 }
 
 fn collapse(text: &str) -> String {
@@ -592,10 +639,12 @@ impl PermissionPrompt {
         } else {
             collapse(&self.reason)
         };
-        vec![
+        let mut lines = vec![
             format!("# {description}"),
             format!("$ {}", self.command_preview()),
-        ]
+        ];
+        lines.extend(replacement_details(&self.tool_name, &self.input));
+        lines
     }
 
     fn decide(
@@ -1876,13 +1925,88 @@ mod tests {
             two[1].contains("$ edit 2 replacements in src/lib.rs"),
             "{two:#?}"
         );
-        assert!(!two[1].contains("oldText"), "{two:#?}");
+        assert!(
+            !two[1].contains("oldText") && !two[1].contains("first"),
+            "the count line carries the count, not the texts: {two:#?}"
+        );
+        assert!(
+            two[2..]
+                .iter()
+                .any(|line| line.contains("1") && line.contains("one") && line.contains("first")),
+            "{two:#?}"
+        );
+        assert!(
+            two[2..]
+                .iter()
+                .any(|line| line.contains("2") && line.contains("two") && line.contains("second")),
+            "{two:#?}"
+        );
         let recorded =
             preview(serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}));
         assert!(
             recorded[1].contains("$ edit 1 replacement in src/lib.rs"),
             "{recorded:#?}"
         );
+        assert!(
+            recorded[2].contains("1 · a → b"),
+            "a recorded pair shows its texts: {recorded:#?}"
+        );
+    }
+
+    #[test]
+    fn two_edit_prompts_for_one_file_read_differently() {
+        let preview = |input| {
+            PermissionPrompt::new(
+                "r1".into(),
+                "main".into(),
+                "source: tool_rule".into(),
+                "edit".into(),
+                input,
+                false,
+            )
+            .lines()
+        };
+        let on = preview(serde_json::json!({"path": "src/lib.rs", "edits": [
+            {"oldText": "enabled = false", "newText": "enabled = true", "replaceAll": true},
+        ]}));
+        let off = preview(serde_json::json!({"path": "src/lib.rs", "edits": [
+            {"oldText": "enabled = true", "newText": "enabled = false", "replaceAll": true},
+        ]}));
+        assert_eq!(
+            on[1], off[1],
+            "both calls count one replacement in one file"
+        );
+        assert_ne!(
+            on, off,
+            "opposite values into one file must not read the same"
+        );
+        assert!(
+            on[2].contains("1 · enabled = false → enabled = true · replaceAll"),
+            "{on:#?}"
+        );
+        assert!(
+            off[2].contains("1 · enabled = true → enabled = false · replaceAll"),
+            "{off:#?}"
+        );
+    }
+
+    #[test]
+    fn a_long_replacement_is_cut_but_every_entry_still_shows() {
+        let rows = PermissionPrompt::new(
+            "r1".into(),
+            "main".into(),
+            "source: tool_rule".into(),
+            "edit".into(),
+            serde_json::json!({"path": "src/lib.rs", "edits": [
+                {"oldText": "a", "newText": "x".repeat(400)},
+                {"oldText": "b", "newText": "c"},
+            ]}),
+            false,
+        )
+        .lines();
+        assert_eq!(rows.len(), 4, "{rows:#?}");
+        assert!(rows[2].contains('…'), "the long text is cut: {rows:#?}");
+        assert!(rows[3].contains("2 · b → c"), "{rows:#?}");
     }
 
     #[test]

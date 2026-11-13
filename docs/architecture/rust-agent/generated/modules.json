@@ -5747,6 +5747,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "assert_ne",
         "panic",
         "serde_json::json",
         "vec"
@@ -42888,7 +42889,8 @@
       "from": "dim_cli::ui::prompts",
       "to": "dim_cli::sanitize",
       "references": [
-        "path crate::sanitize::safe"
+        "path crate::sanitize::safe",
+        "path crate::sanitize::safe_line"
       ]
     },
     {
