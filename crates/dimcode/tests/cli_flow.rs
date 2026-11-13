@@ -515,6 +515,36 @@ fn wait(mut child: Child) -> Output {
     child.wait_with_output().unwrap()
 }
 
+/// A process a flow starts and must end. A `Child` does not end when it is
+/// dropped, so a flow that fails between its spawn and the step that ends it
+/// would leave it running after the test home is gone; this ends it there.
+struct OwnedChild(Option<Child>);
+impl OwnedChild {
+    fn spawn(command: &mut Command) -> Self {
+        Self(Some(command.spawn().unwrap()))
+    }
+    fn id(&self) -> u32 {
+        self.0.as_ref().unwrap().id()
+    }
+    /// Waits for the process to end, so its output can be read.
+    fn wait(mut self) -> Output {
+        wait(self.0.take().unwrap())
+    }
+}
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        // A process that already exited reports its status here; one that
+        // did not is killed. Neither may panic: this runs while unwinding.
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[test]
 fn empty_management_lists_explain_the_result() {
     for (area, method, reply, message) in [
@@ -601,8 +631,8 @@ while [ -L "$target" ]; do
     *) target=$(dirname "$target")/$link ;;
   esac
 done
-directory=$(cd "$(dirname "$target")" && pwd)
-while [ ! -f "$directory/package.json" ]; do directory=$(dirname "$directory"); done
+directory=$(cd "$(dirname "$target")" && pwd) || exit 1
+while [ ! -f "$directory/package.json" ] && [ "$directory" != / ]; do directory=$(dirname "$directory"); done
 sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$directory/package.json"
 "#;
 
