@@ -4284,6 +4284,7 @@
       "parent": "dim_cli",
       "file": "crates/dim-cli/src/member_approval.rs",
       "unexpandedMacros": [
+        "format",
         "matches",
         "vec"
       ]
@@ -42947,7 +42948,8 @@
       "to": "dim_cli::member_approval",
       "references": [
         "path crate::member_approval::DetailError",
-        "path crate::member_approval::lines"
+        "path crate::member_approval::lines",
+        "path crate::member_approval::tool_line"
       ]
     },
     {

@@ -539,7 +539,8 @@ impl PermissionPrompt {
     /// the hint always show; only the replacement rows scroll through the room
     /// left over, so a long batch answers to the same keys wherever it is
     /// drawn. Below five rows no panel fits, and the decision is what must stay
-    /// on screen, so both approvals fall back to [`Self::compact`].
+    /// on screen, so both approvals fall back to [`Self::compact`], which keeps
+    /// the line naming what is approved beside the choices.
     pub fn render_sized(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
         if self.tool_name == dim_agent_types::MEMBER_APPROVAL_ALLOW {
             return self.member_panel(width, height, p);
@@ -551,7 +552,7 @@ impl PermissionPrompt {
                 width,
                 height,
                 t("Permission required"),
-                target.first().map(String::as_str),
+                target.last().map(String::as_str),
                 &hint,
                 p,
             );
@@ -671,14 +672,14 @@ impl PermissionPrompt {
 
     /// The rows a panel of fewer than five rows carries, shared by both
     /// approvals: the decision first, then as much frame as the height allows.
-    /// The choices are the last thing to go, so a pending approval never holds
-    /// `y`, `n` and Enter while hidden.
+    /// Row 2 of the four-row form is `approved`, the line that names what the
+    /// decision allows, painted as the full panel paints it.
     fn compact(
         &self,
         width: usize,
         height: usize,
         title: &str,
-        first: Option<&str>,
+        approved: Option<&str>,
         hint: &str,
         p: &Palette,
     ) -> Vec<String> {
@@ -702,10 +703,10 @@ impl PermissionPrompt {
             3 => bordered(&[decision], width, None, &p.border, Some(title), Some(hint)),
             _ => bordered(
                 &[
-                    first.map_or_else(String::new, |line| {
+                    approved.map_or_else(String::new, |line| {
                         fg(
                             &truncate_cells(&crate::sanitize::safe(line), inner.saturating_sub(2)),
-                            &p.muted,
+                            &p.text,
                         )
                     }),
                     decision,
@@ -745,28 +746,34 @@ impl PermissionPrompt {
         } else {
             "Up/Down scroll · n reject"
         };
+        // The line that names what is approved, built once so the full panel
+        // and the compact form show the same string.
         let mut lines = vec![
             format!("Leader branch: {}", self.branch_id),
             format!("Leader reason: {}", self.reason),
         ];
-        match &self.member {
-            Some(Ok(detail)) => lines.extend(crate::member_approval::lines(detail)),
-            Some(Err(error)) => lines.push(format!("Cannot review member action: {error}")),
-            None => lines.push("Loading member action...".into()),
-        }
+        let approved = match &self.member {
+            Some(Ok(detail)) => {
+                lines.extend(crate::member_approval::lines(detail));
+                crate::member_approval::tool_line(detail)
+            }
+            Some(Err(error)) => {
+                let line = format!("Cannot review member action: {error}");
+                lines.push(line.clone());
+                line
+            }
+            None => {
+                let line = "Loading member action...".to_owned();
+                lines.push(line.clone());
+                line
+            }
+        };
         let wrapped: Vec<_> = lines
             .iter()
             .flat_map(|line| wrap_cells(&crate::sanitize::safe(line), inner))
             .collect();
         if height < 5 {
-            return self.compact(
-                width,
-                height,
-                title,
-                wrapped.first().map(String::as_str),
-                hint,
-                p,
-            );
+            return self.compact(width, height, title, Some(&approved), hint, p);
         }
         let budget = height.saturating_sub(5).max(1);
         let offset = window_offset(&self.offset, wrapped.len(), budget);
@@ -2203,6 +2210,14 @@ mod tests {
                 .map(|r| strip(r))
                 .collect()
         };
+        for height in 0..5 {
+            let rows = rows(height);
+            assert!(
+                rows.len() <= height,
+                "{height}: the panel is {} rows, {rows:#?}",
+                rows.len()
+            );
+        }
         assert!(
             rows(0).is_empty(),
             "no row is drawn in none: {:#?}",
@@ -2226,8 +2241,8 @@ mod tests {
         let four = rows(4);
         assert!(four[0].contains("Permission required"), "{four:#?}");
         assert!(
-            four[1].contains("# source: tool_rule"),
-            "the first target line survives: {four:#?}"
+            four[1].contains("$ edit 30 replacements in src/lib.rs"),
+            "the line naming the approved call survives: {four:#?}"
         );
         assert!(four[2].contains("Allow once"), "{four:#?}");
         assert!(four[3].contains("y allow"), "{four:#?}");
@@ -2249,19 +2264,22 @@ mod tests {
     }
 
     /// A member approval, which has no target lines of its own, keeps the same
-    /// shape below five rows: the choices always, then the title, then its
-    /// first detail line.
+    /// shape below five rows: the choices always, then the title, then the line
+    /// naming the member's action.
     #[test]
     fn a_member_approval_keeps_its_choices_below_five_rows() {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
-        let mut p = PermissionPrompt::new(
-            "r1".into(),
-            "main".into(),
-            "leader reason".into(),
-            dim_agent_types::MEMBER_APPROVAL_ALLOW.into(),
-            serde_json::Value::Null,
-            false,
-        );
+        let prompt = || {
+            PermissionPrompt::new(
+                "r1".into(),
+                "main".into(),
+                "leader reason".into(),
+                dim_agent_types::MEMBER_APPROVAL_ALLOW.into(),
+                serde_json::Value::Null,
+                false,
+            )
+        };
+        let mut p = prompt();
         p.set_member(Some(Ok(dim_agent_types::MemberApprovalDescriptor {
             delegation_id: "d1".into(),
             member: dim_agent_types::MemberApprovalTarget {
@@ -2276,42 +2294,52 @@ mod tests {
             },
             reason: "member reason".into(),
         })));
-        let rows = |height| -> Vec<String> {
+        let rows = |p: &PermissionPrompt, height| -> Vec<String> {
             p.render_sized(80, height, &theme.palette)
                 .iter()
                 .map(|r| strip(r))
                 .collect()
         };
         for height in 0..5 {
-            let rows = rows(height);
+            let rows = rows(&p, height);
             assert!(rows.len() <= height, "{height}: {rows:#?}");
         }
-        assert!(rows(0).is_empty(), "{:#?}", rows(0));
+        assert!(rows(&p, 0).is_empty(), "{:#?}", rows(&p, 0));
         assert!(
-            rows(1).iter().any(|row| row.contains("Allow once")),
+            rows(&p, 1).iter().any(|row| row.contains("Allow once")),
             "one row is the choices: {:#?}",
-            rows(1)
+            rows(&p, 1)
         );
-        let two = rows(2);
+        let two = rows(&p, 2);
         assert!(two[0].contains("Subagent tool approval"), "{two:#?}");
         assert!(two[1].contains("Allow once"), "{two:#?}");
-        let three = rows(3);
+        let three = rows(&p, 3);
         assert!(three[0].contains("Subagent tool approval"), "{three:#?}");
         assert!(three[1].contains("Allow once"), "{three:#?}");
         assert!(three[2].contains("Up/Down scroll"), "{three:#?}");
-        let four = rows(4);
+        let four = rows(&p, 4);
         assert!(four[0].contains("Subagent tool approval"), "{four:#?}");
         assert!(
-            four[1].contains("Leader branch: main"),
-            "the first detail line survives: {four:#?}"
+            four[1].contains("Tool: exec"),
+            "the line naming the member's action survives: {four:#?}"
         );
         assert!(four[2].contains("Allow once"), "{four:#?}");
         assert!(four[3].contains("Up/Down scroll"), "{four:#?}");
+        let loading = rows(&prompt(), 4);
+        assert!(
+            loading[0].contains("Subagent tool approval"),
+            "{loading:#?}"
+        );
+        assert!(
+            loading[1].contains("Loading member action..."),
+            "without the action, the line saying it is loading: {loading:#?}"
+        );
+        assert!(loading[2].contains("Allow once"), "{loading:#?}");
         assert_eq!(
-            rows(5).len(),
+            rows(&p, 5).len(),
             5,
             "five rows is the smallest full panel: {:#?}",
-            rows(5)
+            rows(&p, 5)
         );
     }
 
