@@ -12,6 +12,22 @@ use std::{
     time::Duration,
 };
 
+pub(crate) const STARTUP_RETRY: &str = "DIMCODE_STARTUP_RETRY";
+
+#[derive(Clone, Debug)]
+pub(crate) struct NewerStore {
+    pub(crate) format: u32,
+    pub(crate) diagnostic: String,
+}
+
+impl std::fmt::Display for NewerStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.diagnostic)
+    }
+}
+
+impl std::error::Error for NewerStore {}
+
 pub use dim_client::{
     Client, ConnectionConfig, DaemonProfile, Message, RequestTooLarge, RpcError, Server, app_error,
 };
@@ -882,6 +898,7 @@ pub async fn connect_inner(
     }
     command
         .current_dir(options.launch_dir())
+        .env_remove(STARTUP_RETRY)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
@@ -972,7 +989,15 @@ pub async fn connect_inner(
             let cause = startup_failure(&startup_note, child.id());
             let _ = std::fs::remove_file(&startup_note);
             return Err(match cause {
-                Some(cause) => format!("{cause}\n  Details: {}", log_path.display()).into(),
+                Some((cause, newer)) => {
+                    let diagnostic = format!("{cause}\n  Details: {}", log_path.display());
+                    match newer {
+                        Some(format) if server.embedded => {
+                            Box::new(NewerStore { format, diagnostic })
+                        }
+                        _ => diagnostic.into(),
+                    }
+                }
                 None if server.embedded => {
                     format!("App Server exited ({status}); see {}", log_path.display()).into()
                 }
@@ -1001,18 +1026,32 @@ pub async fn connect_inner(
 
 /// The storage startup note this child left, if it is a private file owned by
 /// the current user and the header names this child.
-fn startup_failure(path: &std::path::Path, pid: u32) -> Option<String> {
+fn startup_failure(path: &Path, pid: u32) -> Option<(String, Option<u32>)> {
     let text = read_note(path)?;
     let (header, body) = text.split_once('\n')?;
     if header != format!("dimcode-startup-failure v1 pid={pid}") {
         return None;
+    }
+    let mut body = body.trim_end();
+    let mut newer = None;
+    if let Some((diagnostic, metadata)) = body.rsplit_once('\n')
+        && let Some(formats) = metadata.strip_prefix("store-newer found=")
+    {
+        body = diagnostic;
+        newer = formats
+            .split_once(" supported=")
+            .and_then(|(found, supported)| {
+                let found = found.parse::<u32>().ok()?;
+                let supported = supported.parse::<u32>().ok()?;
+                (found > supported).then_some(found)
+            });
     }
     let body: String = body
         .chars()
         .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
         .collect();
     let body = body.trim_end();
-    (!body.is_empty()).then(|| body.to_owned())
+    (!body.is_empty()).then(|| (body.to_owned(), newer))
 }
 
 fn missing(error: &io::Error) -> bool {

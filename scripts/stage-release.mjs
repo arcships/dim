@@ -29,6 +29,13 @@ const repo = path.resolve(import.meta.dirname, '..');
 const productVersion = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/\[workspace.package\]\s+version = "([^"]+)"/)[1];
 assert.equal(version, productVersion, 'Version must match Cargo workspace');
 assert.equal(version, JSON.parse(readFileSync(path.join(repo, 'npm/package.json'))).version, 'Version must match npm wrapper');
+const storage = readFileSync(path.join(repo, 'crates/dim-app-server/src/storage/sqlite.rs'), 'utf8');
+const [, upgradeCount, upgrades] = storage.match(/^const UPGRADES: \[\(u32, &\[&str\]\); (\d+)\] = \[\n([\s\S]+?)^\];/m);
+const storeFormats = [...upgrades.matchAll(/^    \(\s*(\d+),/gm)].map(([, format]) => Number(format));
+assert.equal(storeFormats.length, Number(upgradeCount), 'Could not read every native store upgrade step');
+storeFormats.push(Number(storage.match(/^pub const FORMAT: u32 = (\d+);$/m)[1]));
+assert(storeFormats.every((format, index) => Number.isSafeInteger(format) && format > (storeFormats[index - 1] ?? 0)),
+  'Native store formats must be strictly increasing');
 const output = path.resolve(destination);
 assert(!existsSync(output), 'Destination already exists');
 const digest = (data) => createHash('sha256').update(data).digest('hex');
@@ -65,7 +72,7 @@ try {
     if (entry.isFile()) files[path.relative(output, path.join(entry.parentPath, entry.name)).split(path.sep).join('/')] = digest(readFileSync(path.join(entry.parentPath, entry.name)));
     else assert(entry.isDirectory(), 'Unexpected release file type');
   }
-  writeFileSync(path.join(output, 'release-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version, sourceCommit, platform, toolchain, account, files }, null, 2)}\n`);
+  writeFileSync(path.join(output, 'release-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version, sourceCommit, platform, toolchain, account, storeFormats, files }, null, 2)}\n`);
   console.log(`Staged ${platform} ${version} (${account ? 'with Dim account' : 'API key only'}).`);
 } catch (error) {
   rmSync(output, { recursive: true, force: true });

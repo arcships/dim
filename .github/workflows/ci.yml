@@ -155,6 +155,11 @@ jobs:
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           export DIM_TEST_NPM_WRAPPER="$PWD/npm/bin/dimcode.mjs"
           node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow --ignored --test-threads=2
+      - name: Verify startup recovery in a release-stamped CLI
+        if: needs.changes.outputs.rust == 'true'
+        env:
+          DIM_RELEASE_BUILD: '1'
+        run: cargo test --locked -p dimcode --test cli_flow a_newer_store_recovers_only_with_a_compatible_staged_release
       - name: Verify public Node bindings
         if: needs.changes.outputs.node == 'true'
         shell: bash

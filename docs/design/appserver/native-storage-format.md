@@ -131,7 +131,9 @@ in loader rows, events, diagnostics, Sessions or Timelines.
 启动说明 `<database>.startup`（Unix 上以 0600 创建；Windows 不自定义权限，沿用
 home 目录继承的 ACL；正常打开不写）。说明只描述本次启动看到的路径、标记、当前
 构建支持的格式和恢复办法，不复制历史日志，也不含业务内容或凭据。第一行是
-`dimcode-startup-failure v1 pid=<pid>`，后面是正文。
+`dimcode-startup-failure v1 pid=<pid>`，后面是正文。只有“更新格式”这一类在正文之后追加
+机器可读的末行 `store-newer found=<marker> supported=<format>`，其中两个值为十进制整数。
+新版 CLI 去掉这行后展示正文，并可根据这行进入[启动恢复](../cli-commands.md#update-recovery-for-a-newer-store)。
 
 **为什么是旁路文件，而不是子进程 stderr。** CLI 以 detached 方式启动守护进程：
 `setsid`，stdin/stdout 为 null，stderr 直接追加到 `daemon.log`。守护进程比客户端
@@ -235,7 +237,7 @@ Cannot open native store <path>.
 
 - **写入与清理**：拒绝前用同目录临时文件写入并原子替换；写入失败不改变返回值，原错误照常返回。正常打开、升级成功和其他启动失败不写失败说明；格式升级期间写进度说明，成功打开（含升级成功）时存储 owner 删除遗留说明，删除失败不影响启动，下一次成功打开再清理。说明的读取、打印和其余清理属于 CLI 启动，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)；说明不进入日志历史。
 - **位置**：说明是库的同级文件，不是新数据库格式，也不是 `daemon.log` 的一部分。CLI 启动的守护进程使用 `<native home>/dimcode.sqlite`，所以 CLI 读取 `<native home>/dimcode.sqlite.startup`。直接以 `--database` 启动的守护进程把说明写在它的库旁，CLI 的启动路径不读取。
-- **不自动恢复**：不删除、重建、降级、重置标记或复制库；`--home PATH` 只建立另一个环境。终端说明只给兼容构建和 `--home` 两条路；开发说明继续使用 `./dev` 的隔离 home。
+- **数据库恢复边界**：启动失败不删除、重建、降级、重置标记或复制库；`--home PATH` 只建立另一个环境。开发说明继续使用 `./dev` 的隔离 home。
 - **验证**：`storage_flow` 用一次性库覆盖全部分支：高于当前格式的标记配未知结构被拒绝、库字节不变，说明为“更新格式”；当前格式的库把标记改成 v29，以及 v13 结构配 v32 标记，都得到“标记与结构不符”而不是“更新格式”；当前格式的空标记表得到 `v<schema> (format marker is missing or ambiguous)`；未知结构配可读标记 v20 得到 `v20 (unrecognized schema)`，没有可读标记得到 `unrecognized`；v12 和已移除的 v14 得到“过旧”；正常打开和升级成功删除遗留说明，失败替换上一次留下的说明。CLI 启动流程另覆盖终端打印、PID、权限和控制字符，见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
 
 ## SQLite 运行参数与空间回收

@@ -253,6 +253,8 @@ fn an_incompatible_store_reports_the_startup_note() {
     );
     assert!(stderr.contains("Details:"), "{stderr}");
     assert!(!stderr.contains("App Server exited"), "{stderr}");
+    assert!(!stderr.contains("store-newer"), "{stderr}");
+    assert!(!stderr.contains("Checking dimcode"), "{stderr}");
     assert_eq!(fs::read(&database).unwrap(), original);
     assert!(!home.0.join("rust/dimcode.sqlite.startup").exists());
 }

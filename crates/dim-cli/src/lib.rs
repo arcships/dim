@@ -133,7 +133,14 @@ async fn open_tui(
     initial: Option<ui::Initial>,
     locale: locale::Locale,
 ) -> Result<i32> {
-    let (link, _connection) = daemon_link(root, options, true, locale).await?;
+    let (link, _connection) = match daemon_link(root, options, true, locale).await {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        Err(error) => match error.downcast_ref::<client::NewerStore>() {
+            Some(store) => return update::recover_startup(&options.home, store).await,
+            None => return Err(error),
+        },
+        result => result?,
+    };
     let env = ui::Env {
         home: options.home.clone(),
         workspace: options.workspace().as_str().to_owned(),
@@ -221,7 +228,12 @@ async fn disable_web(root: &rutis::Ctx, options: &Options, locale: locale::Local
 /// A failed load as the plugin reported it, without the framework's framing.
 fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
     match &*error {
-        rutis::host::ErrorKind::PluginFailed(source) => source.to_string().into(),
+        rutis::host::ErrorKind::PluginFailed(source) => {
+            if let Some(store) = source.downcast_ref::<client::NewerStore>() {
+                return Box::new(store.clone());
+            }
+            source.to_string().into()
+        }
         other => other.to_string().into(),
     }
 }

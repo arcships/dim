@@ -256,6 +256,12 @@ licenses/                     # Rust dependency texts and vendored notices
 release-manifest.json         # `account` records whether this is the account build
 ```
 
+Each platform's `release-manifest.json` declares `storeFormats` as the native
+store format numbers the packaged daemon opens or upgrades. Release staging
+derives the list from the storage owner's current format and migration starts,
+including for cross-built payloads. The staged startup updater reads the host
+platform's declaration before switching the installation.
+
 Workflow is excluded from the default manifest and from development, alpha and release payloads, including its production dependencies. Its TypeScript source remains available for [explicit installation](../../runtime/plugins/workflow/README.md#loading); external packaging and distribution are tracked in [#1091](https://github.com/arcships/dim/issues/1091).
 
 The alpha publisher stages the plugin tree once on the build host and gives every platform the same copy, as `publish-alpha.mjs` does, so it runs `stage-plugins.mjs --portable`. That refuses, before installing anything, a default plugin whose `package-lock.json` names a package with `os`, `cpu` or `libc`: one shared tree cannot carry another platform's package. An optional plugin's lock is not checked, because the tree carries none of its packages: they are installed on the user's machine when the plugin is installed. `release.yml` stages on each platform's own runner and does not pass the flag.

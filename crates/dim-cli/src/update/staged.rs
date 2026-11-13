@@ -30,6 +30,14 @@ enum Outcome {
 /// Installs the new version beside the live package and switches it in, or
 /// leaves the live package as it was.
 pub(super) async fn update(install: &Install, cancel: CancellationToken) -> Result<(), String> {
+    if install.store_format.is_some() {
+        let live = manifest(&package_at(&install.directory, &install.package))?;
+        if live.version != crate::version::VERSION {
+            return Err(
+                "The installed version changed during startup. Run the command again.".to_owned(),
+            );
+        }
+    }
     let root = install.directory.join(STAGING);
     clear(install, &root)?;
     let staging = root.join(format!("staging-{}", std::process::id()));
@@ -220,7 +228,65 @@ fn staged_package(install: &Install, staged: &Path) -> Result<Manifest, String> 
             staged.join("node_modules").display()
         )));
     }
+    if let Some(format) = install.store_format {
+        let launcher = super::entry_point(&install.package);
+        if !new.bins.iter().any(|(command, _)| command == launcher) {
+            return Err(incomplete(format!("missing the {launcher} command")));
+        }
+        if new.version != install.version {
+            return Err(format!(
+                "The staged release is {}, expected {}",
+                new.version, install.version
+            ));
+        }
+        verify_store_format(staged, &new.version, format)?;
+    }
     Ok(new)
+}
+
+fn verify_store_format(staged: &Path, version: &str, format: u32) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ReleaseManifest {
+        schema_version: u32,
+        version: String,
+        platform: String,
+        store_formats: Vec<u32>,
+    }
+
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        arch => arch,
+    };
+    let platform = format!("{platform}-{arch}");
+    let payload = staged
+        .join("node_modules")
+        .join(format!("dimcode-{platform}"));
+    let declaration = std::fs::read(payload.join("release-manifest.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ReleaseManifest>(&bytes).ok())
+        .filter(|manifest| {
+            manifest.schema_version == 1
+                && manifest.version == version
+                && manifest.platform == platform
+                && payload.join("bin/dimcode").is_file()
+        });
+    let Some(declaration) = declaration else {
+        return Err(format!(
+            "{version} does not declare support for native store v{format}."
+        ));
+    };
+    if !declaration.store_formats.contains(&format) {
+        return Err(format!(
+            "{version} does not support native store v{format}."
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a platform package, which holds the binary behind an entry point,

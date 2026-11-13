@@ -669,10 +669,15 @@ impl StartupFailure {
                 "Cannot open native store {path}.\n  Another dimcode-server is using the store.\n  Wait for it to finish, then run the command again."
             ),
         };
-        format!(
+        let mut note = format!(
             "dimcode-startup-failure v1 pid={}\n{body}",
             std::process::id()
-        )
+        );
+        if let Self::Newer { marker } = self {
+            use std::fmt::Write as _;
+            let _ = write!(note, "\nstore-newer found={marker} supported={FORMAT}");
+        }
+        note
     }
 }
 
