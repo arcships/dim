@@ -4,6 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -60,6 +61,7 @@ function mount(memberApproval) {
   const app = renderer.createApp(ApprovalPrompt, { sessionId: "leader", keyboard: false, request: {
     branchId: "review", requestId: "outer", reason: "Leader reason", call: { name: "member_approval_allow", input: { approvalId: "route" } },
   } })
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   return { root, app, answers }
 }

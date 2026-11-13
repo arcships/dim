@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { FilePen, Globe, Search, Terminal, Wrench } from "lucide-vue-next"
 import type { ApprovalDecision, ApprovalRequest, MemberApprovalDescriptor } from "../../rpc/protocol"
 import { RpcError } from "../../rpc/client"
 import { useChatStore } from "../../stores/chat"
@@ -45,7 +44,13 @@ async function loadMember(): Promise<boolean> {
 const action = computed(() => member.value?.call ?? props.request.call)
 const input = computed(() => action.value.input)
 const display = computed(() => resolveToolDisplay(action.value.name, input.value))
-const ICONS: Record<ToolRenderer, Component> = { command: Terminal, search: Search, file: FilePen, web: Globe, generic: Wrench }
+const ICONS: Record<ToolRenderer, string> = {
+  command: "i-lucide-terminal",
+  search: "i-lucide-search",
+  file: "i-lucide-file-pen",
+  web: "i-lucide-globe",
+  generic: "i-lucide-wrench",
+}
 
 function text(key: string): string | undefined {
   const value = input.value[key]
@@ -81,7 +86,7 @@ function onKeydown(event: KeyboardEvent): void {
   const decision = approvalKeyDecision(event, {
     keyboard: props.keyboard,
     pending: pending.value,
-    dialogOpen: document.querySelector("dialog[open]") !== null,
+    dialogOpen: document.querySelector('dialog[open], [role="dialog"]') !== null,
   })
   if (decision === undefined) return
   event.preventDefault()
@@ -109,9 +114,9 @@ watch(() => props.keyboard, () => props.keyboard === false ? detach() : attach()
 <template>
   <article class="prompt-card" data-inline-interaction-prompt>
     <header class="prompt-header">
-      <span class="prompt-icon" aria-hidden="true"><component :is="ICONS[display.renderer]" :size="12" :stroke-width="2.25" /></span>
+      <span class="prompt-icon" aria-hidden="true"><UIcon :name="ICONS[display.renderer]" class="size-3" /></span>
       <h2 class="prompt-title">{{ t("prompt.actionRequest", { action: display.renderer === "generic" ? request.call.name : t(display.labelKey) }) }}</h2>
-      <span class="ui-badge" data-tone="warning">{{ t("prompt.awaitingApproval") }}</span>
+      <UBadge color="warning" variant="subtle">{{ t("prompt.awaitingApproval") }}</UBadge>
     </header>
     <p v-if="request.reason" class="prompt-subtitle">{{ request.reason }}</p>
 
@@ -156,11 +161,11 @@ watch(() => props.keyboard, () => props.keyboard === false ? detach() : attach()
 
     <p v-if="error" class="prompt-error" role="alert">{{ error }}</p>
     <div class="prompt-buttons">
-      <button type="button" class="ui-button" data-size="md" data-variant="ghost" :disabled="pending" @click="respond('deny')">{{ t("prompt.reject") }}</button>
-      <button v-if="isMember && error && retryable" type="button" class="ui-button" :disabled="loading" @click="loadMember()">Retry</button>
-      <button v-if="sessionGrant" type="button" class="ui-button" data-size="md" data-variant="secondary" :disabled="pending" @click="respond('session')">{{ t("prompt.allowSession") }}</button>
-      <button v-if="alwaysAllowed" type="button" class="ui-button" data-size="md" data-variant="secondary" :disabled="pending" @click="respond('always')">{{ t("prompt.allowAlways") }}</button>
-      <button type="button" class="ui-button" data-size="md" data-variant="primary" :disabled="pending || (isMember && (loading || !member))" @click="respond('allow')">{{ t("prompt.allowOnce") }}</button>
+      <UButton color="neutral" variant="ghost" size="md" :disabled="pending" @click="respond('deny')">{{ t("prompt.reject") }}</UButton>
+      <UButton v-if="isMember && error && retryable" color="neutral" variant="outline" size="md" :disabled="loading" @click="loadMember()">Retry</UButton>
+      <UButton v-if="sessionGrant" color="neutral" variant="soft" size="md" :disabled="pending" @click="respond('session')">{{ t("prompt.allowSession") }}</UButton>
+      <UButton v-if="alwaysAllowed" color="neutral" variant="soft" size="md" :disabled="pending" @click="respond('always')">{{ t("prompt.allowAlways") }}</UButton>
+      <UButton color="primary" variant="solid" size="md" :disabled="pending || (isMember && (loading || !member))" @click="respond('allow')">{{ t("prompt.allowOnce") }}</UButton>
     </div>
   </article>
 </template>

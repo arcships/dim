@@ -10,8 +10,8 @@ use super::{
 };
 use crate::protocol::SessionOrigin;
 use dim_agent_capabilities::{
-    file_access::{AssociateWorktree, WorktreeAssociations},
-    host::{HostError, HostFuture, SessionFilesHost},
+    file_access::{WorktreeAssociation, WorktreeAssociationError, WorktreeAssociations},
+    host::SessionFilesHost,
 };
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
@@ -339,20 +339,12 @@ impl SqliteTimelineStore {
         if after > through {
             return Err(AgentError::InvalidInput("future Timeline cursor".into()));
         }
-        let session = key.session_id.clone();
-        self.segments(
-            &session,
-            vec![(key.branch_id.clone(), through..=through)],
-            request_bodies,
-        )
-        .await?;
+        if through > self.head(key).await? {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        self.batch_end(key, through).await?;
         if after > 0 && after != through {
-            self.segments(
-                &session,
-                vec![(key.branch_id.clone(), after..=after)],
-                request_bodies,
-            )
-            .await?;
+            self.batch_end(key, after).await?;
         }
         let mut end = through.min(after.saturating_add(limit as u64));
         if end <= after {
@@ -1621,21 +1613,6 @@ impl SessionStore {
     }
 }
 
-impl AssociateWorktree for SessionStore {
-    fn associate(
-        &self,
-        session: String,
-        directory: WorktreeDirectory,
-        subtree: PathBuf,
-    ) -> HostFuture<'_, ()> {
-        Box::pin(async move {
-            self.associate_worktree(&session, directory, subtree)
-                .await
-                .map_err(|error| HostError::failed(error.to_string()))
-        })
-    }
-}
-
 fn stored_worktree_path(path: &Path) -> Result<&str> {
     if !path.is_absolute()
         || path
@@ -1686,7 +1663,24 @@ impl DynPlugin for SessionStorePlugin {
             })?;
             files.start();
             ctx.provide_as::<SessionStore>(store.clone())?;
-            ctx.provide_as::<WorktreeAssociations>(Arc::new(WorktreeAssociations(store.clone())))?;
+            let associations = store.clone();
+            ctx.provide_as::<WorktreeAssociations>(Arc::new(WorktreeAssociations::new(Arc::new(
+                move |request: WorktreeAssociation| {
+                    let store = associations.clone();
+                    Box::pin(async move {
+                        store
+                            .associate_worktree(
+                                &request.session_id,
+                                request.directory(),
+                                PathBuf::from(&request.subtree),
+                            )
+                            .await
+                            .map_err(|error| WorktreeAssociationError::Failed {
+                                message: error.to_string(),
+                            })
+                    })
+                },
+            ))))?;
             ctx.provide_as::<SessionFilesHost>(Arc::new(SessionFilesHost(Arc::new(files))))?;
             ctx.provide_at(
                 host_key("sessionMetadata"),
@@ -3137,14 +3131,6 @@ impl TimelineStore for SqliteTimelineStore {
 }
 
 fn directory_rows(connection: &Connection, session: &str) -> Result<Vec<StoredBranch>> {
-    let config: String = connection
-        .query_row(
-            "SELECT config FROM agent_sessions WHERE session_id=?1",
-            [session],
-            |row| row.get(0),
-        )
-        .map_err(error)?;
-    let _: SessionConfig = serde_json::from_str(&config).map_err(error)?;
     let rows = connection
         .prepare("SELECT branch_id, info, sequence FROM timeline_branches WHERE session_id=?1 ORDER BY branch_id")
         .map_err(error)?

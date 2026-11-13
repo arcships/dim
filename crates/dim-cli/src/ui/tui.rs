@@ -282,6 +282,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     );
     app.fullscreen = full.is_some();
     app.initial = surroundings.initial;
+    app.awaiting_window = surroundings.resume;
     app.terminal_clipboard =
         terminal.clipboard_protocol() && crate::clipboard::terminal::native_unreachable();
     app.host.send(Command::LoginStatus(DIM_OAUTH_ID.into()));
@@ -473,7 +474,12 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             (true, Some(at)) if !terminal.writing() => {
                 FRAME_INTERVAL.saturating_sub(now.duration_since(at))
             }
-            _ if app.running() => FRAME_INTERVAL,
+            _ if app.running()
+                || terminal.writing()
+                || app.failure.is_none() && app.awaiting_window =>
+            {
+                FRAME_INTERVAL
+            }
             _ => SESSION_POLL,
         };
         // The first message waits for the first frame so it follows the
@@ -2098,6 +2104,8 @@ impl App {
                 self.apply_earlier(previous.as_ref());
                 self.refresh_compactions();
                 self.refresh_cards();
+                self.refresh_tool_origins();
+                self.sync_tool_origins();
                 if self.running() && !was_running {
                     self.run_started = Some(Instant::now());
                     self.last_pulse = 0;
@@ -2958,9 +2966,7 @@ impl App {
                 Prompt::Tasks(p) => p.handle_key(key),
                 Prompt::Lines(p) => p.handle_key(key),
                 Prompt::Timeline(p) => p.handle_key(key),
-                Prompt::Queue(p) => {
-                    p.handle_key(key, self.snapshot.as_ref().expect("attached queue"))
-                }
+                Prompt::Queue(p) => p.handle_key(key),
                 Prompt::Export(p) => match p.handle_key(key) {
                     ListEvent::Pick { id: format, .. } => Effect::Export(if format == "markdown" {
                         crate::export::Format::Markdown
@@ -4098,6 +4104,115 @@ impl App {
         }
     }
 
+    fn sync_tool_origins(&self) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if row.kind != RowKind::ToolCall || !opens_group(&snapshot.rows, index) {
+                continue;
+            }
+            let rows = group_rows(&snapshot.rows, index);
+            if rows.iter().all(|call| {
+                call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+            }) {
+                continue;
+            }
+            let group = self.fullscreen.then(|| {
+                project_fullscreen_group(
+                    &rows,
+                    self.tool_detail,
+                    self.tool_choices.get(&self.tool_scope()),
+                )
+            });
+            if group.is_none() && self.tool_detail != Detail::Expanded {
+                continue;
+            }
+            let single_root = rows
+                .iter()
+                .filter(|call| call.parent_call_id.is_none())
+                .count()
+                == 1;
+            for call in rows {
+                if call.pending
+                    || call.tool_lookup_done
+                    || call.tool_name.is_some() && call.tool_input.is_some()
+                {
+                    continue;
+                }
+                if let Some(group) = &group {
+                    let node = if single_root
+                        && call.parent_call_id.is_none()
+                        && call.tool_name.as_deref() == Some("codemode")
+                    {
+                        group.id.clone()
+                    } else {
+                        format!("call:{}", call.row_id)
+                    };
+                    if !group.is_open(&node) {
+                        continue;
+                    }
+                }
+                if let (Some(request_id), Some(call_id)) = (&call.batch, &call.call_id) {
+                    self.host.send(Command::ToolOrigin {
+                        session_id: snapshot.session_id.clone(),
+                        projection_id: snapshot.projection_id,
+                        branch_id: snapshot.focus.clone(),
+                        request_id: request_id.clone(),
+                        call_id: call_id.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn refresh_tool_origins(&mut self) {
+        let choices = self.tool_choices.get(&self.tool_scope());
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let mut changed = Vec::new();
+        for (index, block) in self.history.iter_mut().enumerate() {
+            let Block::ToolGroup(group) = block else {
+                continue;
+            };
+            if !group.awaiting_origins {
+                continue;
+            }
+            let Some(source) = snapshot
+                .rows
+                .iter()
+                .position(|row| row.row_id == group.source)
+            else {
+                continue;
+            };
+            let rows = group_rows(&snapshot.rows, source);
+            if rows
+                .iter()
+                .filter(|row| {
+                    row.tool_lookup_done || row.tool_name.is_some() && row.tool_input.is_some()
+                })
+                .count()
+                != group.known_origins
+            {
+                *group = if self.fullscreen {
+                    project_fullscreen_group(&rows, self.tool_detail, choices)
+                } else {
+                    project_group(&rows, group.detail)
+                };
+                changed.push(index + self.dropped);
+            }
+        }
+        if !changed.is_empty() {
+            for index in changed {
+                self.mark_rewritten(index);
+            }
+            self.request_reflow();
+        }
+    }
+
     fn release_compaction_details(&mut self) {
         if let Some((projection_id, _)) = self.compaction_targets.take() {
             self.host.send(Command::CompactionDetails {
@@ -4463,6 +4578,7 @@ impl App {
         self.refresh_tool_choices();
         self.request_reflow();
         self.sync_compaction_details();
+        self.sync_tool_origins();
         if let Some(error) =
             crate::ui::config::write(&self.home, TOOL_DETAILS_KEY, detail.label().into())
         {
@@ -5397,18 +5513,13 @@ impl App {
                 .as_ref()
                 .into_iter()
                 .flat_map(|snapshot| &snapshot.queued)
+                .filter(|input| input.held)
                 .map(|input| {
                     (
                         input.id.clone(),
                         format!(
                             "{} · {}",
-                            t(if input.held {
-                                "Held"
-                            } else if self.running() {
-                                "Incorporating"
-                            } else {
-                                "Unread"
-                            }),
+                            t("Held"),
                             input.display.as_deref().unwrap_or(&input.text)
                         ),
                     )
@@ -5422,17 +5533,11 @@ impl App {
                 self.queue_rows.max(queued.len().min(QUEUE_ROWS))
             };
             if self.queue_rows > 0 {
-                let hint = if !self.queued().is_empty() {
-                    let key = match self.default_send_mode {
-                        SubmitMode::Queue => "Ctrl+S",
-                        SubmitMode::Steer => "Enter",
-                    };
-                    tf(QUEUE_HINT, &[("key", key)])
-                } else if self.running() {
-                    t("/queue view · awaiting model consumption").to_owned()
-                } else {
-                    t("/queue view · waiting for your next message").to_owned()
+                let key = match self.default_send_mode {
+                    SubmitMode::Queue => "Ctrl+S",
+                    SubmitMode::Steer => "Enter",
                 };
+                let hint = tf(QUEUE_HINT, &[("key", key)]);
                 live.extend(queue_strip(
                     &queued,
                     self.queue_rows,
@@ -6712,6 +6817,7 @@ impl App {
                 .or_default()
                 .insert(node, !open);
             self.refresh_tool_choices();
+            self.sync_tool_origins();
             return true;
         }
         let Some(id) = block else { return false };
@@ -12641,6 +12747,40 @@ mod tests {
         toggle(&mut drawn.app, "Ran code · 2 tool calls", 80);
         assert!(text(&mut drawn.app, 80).contains("deep output"));
         assert!(!text(&mut drawn.app, 80).contains("second child"));
+
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+        let mut orphaned = vec![
+            call("lazy", "a", None, "alpha-tool", "alpha result"),
+            call("lazy", "b", None, "beta-tool", "beta result"),
+        ];
+        for row in &mut orphaned {
+            std::sync::Arc::make_mut(row).tool_input = None;
+        }
+        show(&mut drawn, orphaned.clone());
+        assert!(
+            sent.borrow().is_empty(),
+            "closed call details do not fetch origins"
+        );
+        toggle(&mut drawn.app, "Alpha-tool", 80);
+        assert!(matches!(sent.borrow().as_slice(), [Command::ToolOrigin {
+            request_id, call_id, ..
+        }] if request_id == "lazy" && call_id == "a"));
+        let resolved = std::sync::Arc::make_mut(&mut orphaned[0]);
+        resolved.tool_input = Some(serde_json::json!({"text": "loaded alpha argument"}));
+        resolved.tool_lookup_done = true;
+        sent.borrow_mut().clear();
+        show(&mut drawn, orphaned);
+        let visible = text(&mut drawn.app, 80);
+        assert!(visible.contains("loaded alpha argument"), "{visible}");
+        assert!(
+            !visible.contains("beta result"),
+            "origin arrival preserves sibling disclosure"
+        );
+        assert!(
+            sent.borrow().is_empty(),
+            "origin arrival does not fetch closed siblings"
+        );
     }
 
     #[test]
@@ -12836,8 +12976,8 @@ mod tests {
             let (block, row) = rows
                 .iter()
                 .find_map(|(block, row, line)| {
-                    strip_escapes(line)
-                        .contains("code")
+                    let line = strip_escapes(line);
+                    (line.contains("Ran code") || line.contains("Running code"))
                         .then_some((*block, *row))
                 })
                 .unwrap();
@@ -14517,6 +14657,67 @@ mod tests {
             ..ViewSnapshot::default()
         })));
         (app, sent, home)
+    }
+
+    #[test]
+    fn queue_display_keeps_applied_inputs_only_in_the_transcript() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for locale in [i18n::Locale::En, i18n::Locale::ZhCn] {
+            i18n::set(locale);
+            for fullscreen in [false, true] {
+                for width in [44, 100] {
+                    let (mut app, _sent, _home) = session_with_queue(
+                        true,
+                        &[("applied", "find the leak"), ("held", "then add a test")],
+                    );
+                    app.fullscreen = fullscreen;
+                    let mut snapshot = app.snapshot.as_ref().unwrap().clone();
+                    snapshot.rows = vec![message(true)];
+                    snapshot.queued[0].held = false;
+                    snapshot.queued[0].recallable = false;
+                    let mut draw = |snapshot: &ViewSnapshot| {
+                        app.apply(Update::Snapshot(Box::new(snapshot.clone())));
+                        let frame = app.frame((width, 30));
+                        let rendered = app.reflow_history(width as usize).join("\n")
+                            + "\n"
+                            + &frame.live.join("\n");
+                        strip_escapes(&rendered)
+                    };
+                    let mixed = draw(&snapshot);
+                    assert!(
+                        mixed.contains(&tf("Queue ({count})", &[("count", "1")])),
+                        "{mixed}"
+                    );
+                    assert_eq!(mixed.matches("find the leak").count(), 1, "{mixed}");
+                    assert!(mixed.contains("then add a test"), "{mixed}");
+                    snapshot.queued.pop();
+                    let applied = draw(&snapshot);
+                    assert!(!applied.contains(t("Queue")), "{applied}");
+                    assert!(!applied.contains(t("Unread")), "{applied}");
+                    assert_eq!(applied.matches("find the leak").count(), 1, "{applied}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.rows.push(stopped());
+                    let idle = draw(&snapshot);
+                    assert!(!idle.contains(t("Queue")), "{idle}");
+                    assert_eq!(idle.matches("find the leak").count(), 1, "{idle}");
+                    assert!(!idle.contains(t("Unread")), "{idle}");
+                    snapshot.running = true;
+                    snapshot.main_running = true;
+                    let resumed = draw(&snapshot);
+                    assert!(!resumed.contains(t("Unread")), "{resumed}");
+                    snapshot.running = false;
+                    snapshot.main_running = false;
+                    snapshot.queued.clear();
+                    snapshot.rows[0] = message(false);
+                    let consumed = draw(&snapshot);
+                    assert!(!consumed.contains(t("Unread")), "{consumed}");
+                    assert_eq!(consumed.matches("find the leak").count(), 1, "{consumed}");
+                }
+            }
+        }
+        i18n::set(i18n::Locale::En);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue"
+import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch } from "lucide-vue-next"
 import { MAIN_BRANCH } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useUiStore } from "../../stores/ui"
@@ -10,11 +9,16 @@ import { lineName, shortId } from "./line-state"
 const { t } = useI18n()
 const chat = useChatStore()
 const ui = useUiStore()
-const dialog = ref<HTMLDialogElement>()
 const prompt = ref("")
 const error = ref("")
 const creating = ref(false)
 const request = computed(() => ui.newLine)
+const open = computed({
+  get: () => request.value !== undefined,
+  set: (value: boolean) => {
+    if (!value) ui.closeNewLine()
+  },
+})
 
 const parentName = computed(() => {
   const current = request.value
@@ -38,10 +42,9 @@ function reset(): void {
 }
 
 watch(request, reset, { immediate: true })
-onMounted(() => dialog.value?.showModal())
 
 function close(): void {
-  dialog.value?.close()
+  ui.closeNewLine()
 }
 
 async function create(): Promise<void> {
@@ -67,46 +70,48 @@ async function create(): Promise<void> {
 </script>
 
 <template>
-  <dialog ref="dialog" class="ui-dialog" data-size="md" @cancel.prevent="close" @close="ui.closeNewLine()">
-    <form v-if="request" @submit.prevent="create">
-      <header class="ui-dialog-header">
-        <span class="ui-dialog-icon" data-tone="primary"><GitBranch :size="16" aria-hidden="true" /></span>
-        <div>
-          <h2 class="ui-dialog-title">{{ t("lines.newLineTitle") }}</h2>
-          <p class="ui-dialog-description">
+  <UModal v-model:open="open" :title="t('lines.newLineTitle')" :ui="{ footer: 'justify-end' }">
+    <template #header>
+      <div class="new-line-header">
+        <span class="new-line-icon" aria-hidden="true"><UIcon name="i-lucide-git-branch" class="size-4" /></span>
+        <div class="min-w-0 flex-1">
+          <h2 class="new-line-title">{{ t("lines.newLineTitle") }}</h2>
+          <p class="new-line-description">
             {{ t("lines.newLineFrom", { name: parentName }) }}<br>
             <span class="new-line-cut">{{ cutLabel }}</span>
           </p>
         </div>
-        <button type="button" class="ui-icon-button ui-dialog-close" data-variant="close" data-size="sm" :aria-label="t('common.close')" @click="close">
-          <span aria-hidden="true">×</span>
-        </button>
-      </header>
+      </div>
+    </template>
 
-      <label class="new-line-label" for="new-line-prompt">{{ t("lines.promptLabel") }}</label>
-      <textarea
-        id="new-line-prompt"
-        v-model="prompt"
-        class="ui-field new-line-input"
-        rows="4"
-        :placeholder="t('lines.promptPlaceholder')"
-        autofocus
-      />
+    <template #body>
+      <form v-if="request" id="new-line-form" @submit.prevent="create">
+        <UFormField :label="t('lines.promptLabel')">
+          <UTextarea
+            v-model="prompt"
+            :rows="4"
+            class="w-full"
+            :placeholder="t('lines.promptPlaceholder')"
+            autofocus
+          />
+        </UFormField>
+        <UAlert v-if="error" color="error" variant="subtle" :description="error" class="mt-3" />
+      </form>
+    </template>
 
-      <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }}</p>
-
-      <footer class="ui-dialog-footer">
-        <button type="button" class="ui-button" data-variant="ghost" data-size="md" :disabled="creating" @click="close">{{ t("common.cancel") }}</button>
-        <button type="submit" class="ui-button" data-variant="primary" data-size="md" :disabled="creating || prompt.trim() === ''">
-          {{ creating ? t("common.loading") : t("lines.create") }}
-        </button>
-      </footer>
-    </form>
-  </dialog>
+    <template #footer>
+      <UButton color="neutral" variant="ghost" size="md" :disabled="creating" @click="close">{{ t("common.cancel") }}</UButton>
+      <UButton type="submit" form="new-line-form" color="primary" variant="solid" size="md" :loading="creating" :disabled="creating || prompt.trim() === ''">
+        {{ creating ? t("common.loading") : t("lines.create") }}
+      </UButton>
+    </template>
+  </UModal>
 </template>
 
 <style scoped>
-.new-line-label { display: block; margin-top: var(--space-4); color: var(--foreground); font-size: var(--text-sm); font-weight: var(--weight-medium); }
-.new-line-input { width: 100%; min-height: 96px; margin-top: var(--space-2); resize: vertical; }
+.new-line-header { display: flex; align-items: flex-start; gap: var(--space-3); }
+.new-line-icon { display: grid; width: 32px; height: 32px; flex: none; place-items: center; border-radius: var(--radius-lg); background: color-mix(in oklab, var(--ui-primary) 14%, transparent); color: var(--ui-primary); }
+.new-line-title { margin: 0; font-size: var(--text-base); font-weight: var(--weight-semibold); }
+.new-line-description { margin: var(--space-1) 0 0; color: var(--muted-foreground); font-size: var(--text-sm); }
 .new-line-cut { color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); }
 </style>

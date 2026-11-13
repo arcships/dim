@@ -3078,8 +3078,10 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
                 {"id":"hooked-consumed","sequence":8,"create_at":1,"type":"input","name":"consumed",
                  "data":{"input_id":"hooked"}},
                 {"id":"follow-up","sequence":9,"create_at":1,"type":"input","name":"message",
-                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}}],
-                "through":9,"nextAfter":9,"done":true}),
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}},
+                {"id":"compact-start","sequence":10,"create_at":1,"type":"context","name":"compaction-start","data":{"trigger":"manual","through":9,"strategy":"summary"}},
+                {"id":"compact","sequence":11,"create_at":1,"type":"display","name":"compaction","data":{"start":10,"strategy":"summary"}}],
+                "through":11,"nextAfter":11,"done":true}),
         );
         // The client settles the queue and reads the context gauge in either
         // order, so answer by method until it leaves.
@@ -3113,6 +3115,7 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
     // history held, so a missing context line fails at its own assertion
     // rather than at a wait.
     terminal.until("> why does the parser stall?");
+    terminal.until("[context] Compacted");
     terminal.until("\n> ");
     home.kill(&terminal);
     terminal.wait();
@@ -9450,7 +9453,7 @@ fn tui_export_dialog_matches_the_subcommand_and_cancel_sends_nothing() {
 }
 
 #[test]
-fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
+fn tui_queue_panel_deletes_steers_and_moves_applied_inputs_to_the_transcript() {
     for fullscreen in [false, true] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
@@ -9508,16 +9511,28 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
         terminal.until("steer this");
         terminal.write(b"\r");
         terminal.until("already left the queue");
-        terminal.until("Incorporating");
+        terminal.until("No queued messages.");
         terminal.until("\x1b[?2026l");
+        let applied_start = terminal.transcript.len();
         terminal.write(b"\x1b");
-        terminal.until("/queue view");
+        terminal.until("steer this");
+        terminal.until("\x1b[?2026l");
+        let applied = strip_ansi(&terminal.transcript[applied_start..]);
+        assert!(
+            !applied.contains("Queue (") && !applied.contains("Incorporating"),
+            "{applied}"
+        );
+        let stopped_start = terminal.transcript.len();
         terminal.write(b"\x1b");
-        terminal.until("Unread");
-        terminal.until("waiting for your next message");
+        terminal.until("\x1b[?2026l");
+        let stopped = strip_ansi(&terminal.transcript[stopped_start..]);
+        assert!(
+            !stopped.contains("Unread") && !stopped.contains("Queue ("),
+            "{stopped}"
+        );
         let panel_start = terminal.transcript.len();
         terminal.write(b"/queue\r");
-        terminal.until("Unread · waiting for your next message");
+        terminal.until("No queued messages.");
         terminal.until("\x1b[?2026l");
         let panel = strip_ansi(&terminal.transcript[panel_start..]);
         assert!(
@@ -9525,7 +9540,7 @@ fn tui_queue_panel_deletes_steers_and_keeps_unconsumed_inputs_visible() {
             "{panel}"
         );
         terminal.write(b"x\r\x1b");
-        terminal.until("/queue view");
+        terminal.until("\x1b[?2026l");
         terminal.write(b"next input\r/queue\r");
         terminal.until("No queued messages.");
         let shown = strip_ansi(&terminal.transcript);
@@ -9793,7 +9808,7 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     terminal.until("first");
     terminal.until("background task finished");
     terminal.write(b"second\r");
-    terminal.until("Queue (3)");
+    terminal.until("Queue (1)");
     assert!(
         !terminal.transcript.contains("Queue (0)"),
         "{}",
@@ -9808,7 +9823,7 @@ fn tui_queue_shows_held_messages_and_steers_or_withdraws_them() {
     );
     terminal.write(b"\x13");
     terminal.write(b"third\r");
-    terminal.until("Queue (4)");
+    terminal.until("Queue (1)");
     terminal.until("Held · third");
     terminal.write(b"\x1b[1;2D");
     terminal.until("third");

@@ -22,8 +22,10 @@ use dim_app_server::{
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use rutis_bridge::session::{HostDispatch, host_key};
-use serde::Deserialize;
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Reference, Reply, Value as BridgeValue, host_key,
+};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -148,13 +150,19 @@ impl DynPlugin for SchedulerPlugin {
                         }
                     })?;
             }
-            ctx.provide_as::<ScheduleJobs>(Arc::new(ScheduleJobs {
+            let jobs = Arc::new(ScheduleJobs {
                 shared: shared.clone(),
-            }))?;
+            });
+            ctx.provide_as::<ScheduleJobs>(jobs.clone())?;
+            ctx.provide_at(host_key("scheduleJobs"), Arc::new(ScheduleJobsFace(jobs)))?;
             let wakeups = Arc::new(crate::wakeups::Wakeups {
                 shared: shared.clone(),
             });
             ctx.provide_as::<crate::wakeups::Wakeups>(wakeups.clone())?;
+            ctx.provide_at(
+                host_key("wakeups"),
+                Arc::new(crate::wakeups::WakeupsFace(wakeups.clone())),
+            )?;
             methods.register(
                 ctx,
                 NAMESPACE,
@@ -894,6 +902,8 @@ struct JobPatch {
 }
 
 /// The saving branch: the target a tool create saves (A.2, §2.1).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Caller {
     pub session_id: String,
     pub branch_id: String,
@@ -1162,4 +1172,150 @@ fn truncate(text: &str, limit: usize) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+pub(crate) struct ScheduleJobsFace(Arc<ScheduleJobs>);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JobRequestWire {
+    action: ToolAction,
+    #[serde(default, rename = "job_id")]
+    job_id: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    job: Option<JobPatch>,
+    caller: Caller,
+}
+
+impl HostDispatch for ScheduleJobsFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({ "call": "async" }))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "call" {
+            return Err(BridgeError::Value(format!(
+                "unknown scheduleJobs method {method}"
+            )));
+        }
+        let (request, cancelled) = match face_arguments::<JobRequestWire>(args, "schedule_invalid")
+        {
+            Ok(args) => args,
+            Err(error) => return face_failure(error),
+        };
+        let jobs = self.0.clone();
+        let interruptible = matches!(
+            request.action,
+            ToolAction::List | ToolAction::Get | ToolAction::History
+        );
+        Ok(face_call(
+            &jobs.shared.clone(),
+            cancelled,
+            interruptible,
+            async move {
+                let reply = jobs
+                    .call(
+                        ToolRequest {
+                            action: request.action,
+                            job_id: request.job_id,
+                            enabled: request.enabled,
+                            limit: request.limit,
+                            job: request.job,
+                        },
+                        request.caller,
+                    )
+                    .await?;
+                Ok(json!({ "content": reply.content, "records": reply.records }))
+            },
+        ))
+    }
+}
+
+pub(crate) fn face_arguments<T: DeserializeOwned>(
+    args: BridgeValue,
+    code: &'static str,
+) -> Result<(T, Option<Reference>), SchedulerError> {
+    let invalid = |error: String| SchedulerError::new(code, error);
+    let mut args = args
+        .list()
+        .map_err(|error| invalid(error.to_string()))?
+        .into_iter();
+    let request = args
+        .next()
+        .ok_or_else(|| invalid("request is required".into()))?;
+    let cancelled = match args.next() {
+        None | Some(BridgeValue::Signal) => None,
+        Some(BridgeValue::Reference(reference)) if reference.is_future() => Some(reference),
+        Some(_) => return Err(invalid("expected a cancellation signal or promise".into())),
+    };
+    if args.next().is_some() {
+        return Err(invalid("too many arguments".into()));
+    }
+    let request = request.json().map_err(|error| invalid(error.to_string()))?;
+    Ok((
+        serde_json::from_value(request).map_err(|error| invalid(error.to_string()))?,
+        cancelled,
+    ))
+}
+
+pub(crate) fn face_failure(error: SchedulerError) -> Reply {
+    Ok(json!({"code": error.code, "message": error.message}).into())
+}
+
+pub(crate) fn face_call(
+    shared: &Arc<Shared>,
+    cancelled: Option<Reference>,
+    interruptible: bool,
+    operation: impl Future<Output = Result<serde_json::Value, SchedulerError>> + Send + 'static,
+) -> BridgeValue {
+    let cancel = shared.stop.child_token();
+    let guard = cancel.clone().drop_guard();
+    let stopped = cancel.clone();
+    let shared = shared.clone();
+    BridgeValue::cancellable_future(async move {
+        let _guard = guard;
+        let signal = async {
+            match cancelled {
+                Some(reference) => {
+                    let _ = reference.wait_async().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let task = async move {
+            let task = shared.tasks.spawn(async move {
+                if stopped.is_cancelled() {
+                    return Err(SchedulerError::new("cancelled", "call cancelled before handover"));
+                }
+                if interruptible {
+                    tokio::select! {
+                        biased;
+                        _ = stopped.cancelled() => Err(SchedulerError::new("cancelled", "call cancelled")),
+                        result = operation => result,
+                    }
+                } else {
+                    operation.await
+                }
+            });
+            task.await
+        };
+        let mut task = std::pin::pin!(task);
+        let result = tokio::select! {
+            biased;
+            _ = signal => {
+                cancel.cancel();
+                task.await
+            }
+            result = &mut task => result,
+        };
+        match result {
+            Ok(Ok(reply)) => Ok(reply.into()),
+            Ok(Err(error)) => face_failure(error),
+            Err(error) => Err(BridgeError::Value(error.to_string())),
+        }
+    })
 }

@@ -1626,3 +1626,60 @@ async fn wakeup_notices_reach_a_client_attached_to_the_whole_session() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wakeup_tool_reports_the_owners_expired_state() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["wakeup"], true).await;
+    model.push(vec![ToolCall {
+        id: "expired-wakeup".into(),
+        name: "wakeup".into(),
+        input: json!({"at": instant_after(-120), "prompt": "Expired request."})
+            .as_object()
+            .unwrap()
+            .clone(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":session,"branchId":"main","text":"Record this wakeup."}),
+        )
+        .await
+        .unwrap();
+    wait_for("the expired tool result", || {
+        model.texts().contains("wakeup: created")
+    })
+    .await;
+    let records = stored_wakeups(home.path());
+    let record = &records[0];
+    assert_eq!(record["state"], "expired");
+    {
+        let requests = model.requests.lock().unwrap();
+        let text = requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .find_map(|message| {
+                let MessageContent::Parts(parts) = &message.content else {
+                    return None;
+                };
+                parts.iter().find_map(|part| match part {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content: ToolContent::Text(text),
+                        ..
+                    } if tool_use_id == "expired-wakeup" => Some(text),
+                    _ => None,
+                })
+            })
+            .expect("the next model request contains the tool result");
+        let reply: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(reply["state"], "expired");
+        assert_eq!(reply["wakeupId"], record["wakeup_id"]);
+    }
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}

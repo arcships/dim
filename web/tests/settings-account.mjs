@@ -5,6 +5,7 @@ import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive, ref } from "vue"
 import { createPinia } from "pinia"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
@@ -83,7 +84,7 @@ test("an uncertain reset reuses its key after a usage refresh, even when no cred
     return read({})
   } } }
   const root = node("root")
-  const app = renderer.createApp(AccountSettings).use(createPinia())
+  const app = renderer.createApp(AccountSettings).use(createPinia()).use(nuxtUiTestPlugin)
   app.mount(root)
   try {
     await flush()
@@ -120,7 +121,7 @@ test("account refresh retains usage on failure and reconnect never exposes the p
     return read({ enabled: false, eligible: false, invitedCount: 0, paidCount: 0, inviterRebateBp: 0, inviteeRebateBp: 0 })
   } } })
   const root = node("root")
-  const app = renderer.createApp(AccountSettings).use(createPinia())
+  const app = renderer.createApp(AccountSettings).use(createPinia()).use(nuxtUiTestPlugin)
   app.mount(root)
   try {
     await flush()
@@ -177,7 +178,7 @@ test("Dim device sign-in fetches models and the signed-in account can retry a fa
   } } }
   const root = node("root")
   const pinia = createPinia()
-  const app = renderer.createApp(AccountSettings).use(pinia)
+  const app = renderer.createApp(AccountSettings).use(pinia).use(nuxtUiTestPlugin)
   app.mount(root)
   try {
     await flush()
@@ -223,7 +224,7 @@ test("disabled third-party Provider refresh retries the remote listing and updat
     return read({})
   } } }
   const root = node("root")
-  const app = renderer.createApp(ProviderSettings).use(createPinia()).provide(settingsDirtyKey, ref(false))
+  const app = renderer.createApp(ProviderSettings).use(createPinia()).use(nuxtUiTestPlugin).provide(settingsDirtyKey, ref(false))
   app.mount(root)
   try {
     await flush()
@@ -260,7 +261,7 @@ test("a Provider save keeps the draft on failure and closes the dialog on succes
   } } }
   const root = node("root")
   const dirty = ref(false)
-  const app = renderer.createApp(ProviderSettings).use(createPinia()).provide(settingsDirtyKey, dirty)
+  const app = renderer.createApp(ProviderSettings).use(createPinia()).use(nuxtUiTestPlugin).provide(settingsDirtyKey, dirty)
   app.mount(root)
   try {
     await flush()
@@ -268,8 +269,8 @@ test("a Provider save keeps the draft on failure and closes the dialog on succes
     const field = (label) => all(root).find((element) => element.type === "label" && text(element) === label).children.find((element) => element.type === "input")
     await button("addCustomProvider").props.onClick()
     await flush()
-    const dialog = all(root).find((element) => element.type === "dialog")
-    assert.equal(dialog.open, true)
+    const dialog = () => all(root).find((element) => element.props.role === "dialog")
+    assert.ok(dialog())
     field("providerName").props["onUpdate:modelValue"]("My relay")
     field("baseUrl").props["onUpdate:modelValue"]("https://example.test/v1")
     field("enableProvider").props["onUpdate:modelValue"](false)
@@ -279,14 +280,14 @@ test("a Provider save keeps the draft on failure and closes the dialog on succes
     assert.equal(dirty.value, true)
     await submit()
     await flush()
-    assert.equal(dialog.open, true)
+    assert.ok(dialog())
     assert.match(text(root), /Provider store unavailable/)
     assert.equal(dirty.value, true)
     await submit()
     await flush()
     assert.deepEqual(drafts[1], drafts[0])
     assert.equal(route.name, "settings-providers")
-    assert.equal(dialog.open, false)
+    assert.equal(dialog(), undefined)
     assert.equal(dirty.value, false)
     assert.match(text(root), /providerSaved My relay/)
   } finally { app.unmount(); delete globalThis.settingsConnection; delete globalThis.settingsRoute; delete globalThis.settingsRouter }

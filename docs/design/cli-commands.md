@@ -93,12 +93,22 @@ updates do not invalidate a press on the same stable header.
 
 Hover highlights only the actionable title, pressed feedback is stronger without
 moving its text, and a successful click retains a subtle position indication.
+Tool-title feedback uses normal text on the theme's subtle surface, falling back
+to a neutral gray background where the terminal palette supports one. Without a
+subtle background, titles use an underline. Pressed and keyboard-focused titles
+also use bold text instead of accent colors.
 Neither feedback nor new output changes expansion. A click requires release on
 the same still-valid target without a drag. Text selection, safe links and the
 explicit member-conversation entry keep separate actions; the member's tool
 header toggles its details instead of navigating. Existing Tab/Shift+Tab
 transcript traversal includes committed tool headers; Enter/Space toggles only
-the focused tool. Mouse-off retains native
+the focused tool. A press on the scrollbar column drags the view instead of
+selecting: the view moves as far as the thumb moves with the pointer, so a
+drag along the grabbed row keeps the view; a press on the track centres the
+thumb there first. The first and last transcript rows reach the top and the
+bottom, and dragging past the last one follows new output again. Motion without
+the button, or another press, ends a drag whose release the terminal lost.
+Mouse-off retains native
 terminal selection. Free-motion reports are enabled and restored with fullscreen
 mouse mode; unsupported terminals retain click and keyboard operation.
 
@@ -298,10 +308,9 @@ the key submits nothing and opens nothing.
 
 ### Queued messages
 
-`/queue` requires an attached Session and opens the shown line's unconsumed
-messages in both terminal modes. Applied-but-unconsumed messages are labelled
-`Incorporating` while running and `Unread · waiting for your next message` while
-idle; unapplied messages are labelled `Held`. Up/Down selects a row,
+`/queue` requires an attached Session and opens only the shown line's held
+messages in both terminal modes, labelled `Held`. Applied messages remain in
+the transcript, not the queue panel or strip. Up/Down selects a row,
 Enter steers it and `x` deletes it through the existing withdrawal operation.
 Only held messages can change; `notHeld` is a notice, not a failed run. Esc
 closes the panel without interrupting. Committed events refresh the panel,
@@ -316,10 +325,11 @@ nothing. A failed request leaves the held input available for retry.
 With an empty draft and no held messages, Enter retains the task-line shortcut
 defined in [Run keys and queue](#run-keys-and-queue).
 
-The panel advertises steer and delete only when the selected message is held.
-An applied-only strip offers `/queue` to view the messages, not held-only edit
-or steer shortcuts. While idle it explains that the next message will carry the
-unread input; it neither discards the input nor starts a run automatically.
+The panel advertises steer and delete only when a message is selected.
+When no held messages remain, the strip disappears. Applied-but-unconsumed
+messages keep only their existing transcript style, including after a stop;
+there is no additional unread hint. This presentation neither discards input nor
+starts a run.
 
 Shift+Left only withdraws a message with one text block. Images and multi-block
 messages remain held with a notice directing the user to `/queue`; no partial
@@ -336,9 +346,9 @@ Steering always uses the owner's full held input.
 
 ### Queue strip
 
-The strip and `/queue` read the same unconsumed input projection: incorporating
-messages in transcript order, then held messages oldest first. Each strip row
-names its state. During a run, `Shift+Left` on an empty draft recalls the newest
+The strip and `/queue` show only held messages from the existing unconsumed
+input projection, oldest first; the strip count excludes applied messages.
+During a run, `Shift+Left` on an empty draft recalls the newest
 held message subject to the attachment rule above. The strip shows the shortcut
 that steers the oldest held message from an empty draft for the selected mode.
 With nothing held, the empty-composer Enter opens `/tasks` while the task line
@@ -346,8 +356,8 @@ shows, as the [run keys](#run-keys-and-queue) state. Up/Down remain input
 history outside the panel.
 
 ```text
-┌─ Queue (2) ───────────────────────────────────────────────────────┐
-│ › Incorporating · fix the failing test                            │
+  › fix the failing test
+┌─ Queue (1) ───────────────────────────────────────────────────────┐
 │ › Held · then update the design note                              │
 │ /queue manage · Shift+← edit last · empty draft: Ctrl+S steer     │
 └───────────────────────────────────────────────────────────────────┘
@@ -355,14 +365,12 @@ history outside the panel.
 
 A queued message the strip does not show adds its count to the hint. The strip shows at most five messages and keeps the height it reached while the queue drains.
 
-After a stop, an applied-only queue remains visible without held-input actions:
+After a stop, an unread applied message remains in the transcript without a
+queue strip when nothing is held:
 
 ```text
+  › fix the failing test
   stopped
-┌─ Queue (1) ──────────────────────────────────────────────┐
-│ › Unread · fix the failing test                          │
-│ /queue view · waiting for your next message              │
-└──────────────────────────────────────────────────────────┘
 ```
 
 ## Usage report
@@ -3186,3 +3194,9 @@ older requested rows
 initial window
 live output
 ```
+
+### Pending terminal frames
+
+While the initial transcript window is loading or a frame is queued to the terminal writer, the event loop rechecks at the frame interval. Once loading and writing finish and no frame is owed, the existing idle polling interval applies. This bounds a queued frame's extra scheduling delay without increasing steady idle polling.
+
+The CLI checks its newly spawned daemon after 5 ms, then backs off to 10/20/40/50 ms while opening. Existing startup deadlines and progress handling are unchanged. It does not impose an initial 50 ms delay on an already ready daemon.

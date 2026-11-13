@@ -193,6 +193,11 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
 async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
     match branch.service::<ContextPreparation>()?.usage(cancel).await {
         Ok(usage) => reply(usage),
+        Err(ContextOpError::NotReady) => Err(RpcError::app(
+            -32000,
+            "context_usage_unavailable",
+            ContextOpError::NotReady.to_string(),
+        )),
         Err(ContextOpError::NotConfigured) => Err(RpcError::app(
             -32000,
             "context_not_configured",

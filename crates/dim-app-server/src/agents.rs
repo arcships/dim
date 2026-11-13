@@ -871,6 +871,14 @@ impl AgentIndex {
         Some((host, slot))
     }
     pub(crate) async fn acquire(&self, id: &str) -> dim_agent_runtime::Result<SessionUse> {
+        self.acquire_checked(id, None).await
+    }
+
+    pub(crate) async fn acquire_checked(
+        &self,
+        id: &str,
+        expected_cwd: Option<&std::path::Path>,
+    ) -> dim_agent_runtime::Result<SessionUse> {
         let activity = self
             .activity
             .take_hold()
@@ -893,9 +901,21 @@ impl AgentIndex {
             return Err(AgentError::Closed(id.into()));
         }
         let (session, _gate, activity) = match host.agent.get_session(id) {
-            Some(session) => (session, gate, activity),
+            Some(session) => {
+                if let Some(expected) = expected_cwd
+                    && std::path::Path::new(&session.config().cwd) != expected
+                    && !tokio::fs::canonicalize(&session.config().cwd)
+                        .await
+                        .is_ok_and(|actual| actual == expected)
+                {
+                    return Err(AgentError::InvalidInput(
+                        "Session cwd does not match expectedCwd".into(),
+                    ));
+                }
+                (session, gate, activity)
+            }
             None if self.session_store.is_some() => {
-                if let Some(settings) = &self.settings {
+                if self.settings.is_some() || expected_cwd.is_some() {
                     let config = self
                         .session_store
                         .as_ref()
@@ -904,12 +924,24 @@ impl AgentIndex {
                         .session_config(id)
                         .await?
                         .ok_or_else(|| AgentError::Storage(format!("unknown session {id}")))?;
-                    settings
-                        .authorize_project(config.cwd.into(), &self.stopping)
-                        .await
-                        .map_err(|error| {
-                            AgentError::fault("project authorization", error.to_string())
-                        })?;
+                    if let Some(expected) = expected_cwd
+                        && std::path::Path::new(&config.cwd) != expected
+                        && !tokio::fs::canonicalize(&config.cwd)
+                            .await
+                            .is_ok_and(|actual| actual == expected)
+                    {
+                        return Err(AgentError::InvalidInput(
+                            "Session cwd does not match expectedCwd".into(),
+                        ));
+                    }
+                    if let Some(settings) = &self.settings {
+                        settings
+                            .authorize_project(config.cwd.into(), &self.stopping)
+                            .await
+                            .map_err(|error| {
+                                AgentError::fault("project authorization", error.to_string())
+                            })?;
+                    }
                 }
                 let version = self
                     .version_of(id)
