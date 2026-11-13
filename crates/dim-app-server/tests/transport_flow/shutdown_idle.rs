@@ -25,7 +25,7 @@ impl rutis::host::DynPlugin for ProcessOwner {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn accepted_process_work_refuses_idle_shutdown_before_any_session_exists() {
+async fn an_idle_shutdown_is_refused_for_process_work_and_accepted_once_the_first_session_idles() {
     let captured = Arc::new(std::sync::OnceLock::new());
     let (server, _) = launch_with(Arc::new(MockTools), ServerConfig::default(), {
         let captured = captured.clone();
