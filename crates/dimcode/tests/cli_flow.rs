@@ -5161,10 +5161,10 @@ fn interactive_configuration_commands_route_and_recover_without_submitting_comma
 #[test]
 fn explicit_model_selection_uses_protocol_field_names_from_tui_and_line_client() {
     for (tui, leaf) in [(true, true), (true, false), (false, false)] {
-        for (environment, argument, expected) in [
-            (None, None, "high"),
-            (Some("low"), None, "low"),
-            (Some("low"), Some("medium"), "medium"),
+        for (environment, argument, stated) in [
+            (None, None, None),
+            (Some("low"), None, Some("low")),
+            (Some("low"), Some("medium"), Some("medium")),
         ] {
             let home = Home::new();
             let daemon = home.daemon(move |wire| {
@@ -5178,13 +5178,21 @@ fn explicit_model_selection_uses_protocol_field_names_from_tui_and_line_client()
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
             }
-            let management = wire.read("provider.management");
-            assert_eq!(management["params"], json!({"providerId":"fixture"}));
-            wire.reply(&management, json!({"providers":[{"providerId":"fixture","source":"custom","displayName":"Fixture","enabled":true,"version":1,"connection":null,"preferences":{"fixture-model":{"reasoningEffort":"high","serviceTier":"priority"}}}],"errors":[]}));
             let create = wire.read("session.create");
             assert_eq!(create["params"]["model"], json!({"provider":"fixture","modelId":"fixture-model"}));
             assert_eq!(create["params"]["startup"], json!({}));
-            assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":expected,"serviceTier":"priority"}));
+            match stated {
+                Some(effort) => assert_eq!(
+                    create["params"]["modelPreferences"],
+                    json!({"reasoningEffort":effort}),
+                    "a stated effort is the only preference the client sends"
+                ),
+                None => assert!(
+                    create["params"].get("modelPreferences").is_none(),
+                    "nothing is stated, so the server applies the saved pair: {}",
+                    create["params"]
+                ),
+            }
             wire.send(json!({"jsonrpc":"2.0","id":create["id"],"error":{"code":-32000,"message":"fixture stops here","data":{"appError":"provider_failed"}}}));
             if tui {
                 let catalog = wire.read("provider.catalog");
@@ -5439,9 +5447,10 @@ fn a_new_session_shows_the_effort_its_creation_adopted() {
             .iter()
             .find(|call| call["method"] == "session.create")
             .expect("the Session was created");
-        assert_eq!(
-            create["params"]["modelPreferences"],
-            json!({"reasoningEffort":"high"})
+        assert!(
+            create["params"].get("modelPreferences").is_none(),
+            "nothing is stated, so the server applies the saved effort: {}",
+            create["params"]
         );
         assert_eq!(
             calls
@@ -12073,8 +12082,8 @@ fn tui_models_picker_cycles_reasoning_effort() {
         .expect("the model was adopted");
     assert_eq!(
         adopted["params"],
-        json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model",
-            "modelPreferences":{"reasoningEffort":"none","serviceTier":"priority"}})
+        json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model"}),
+        "Enter sends the target alone; the server applies the saved effort"
     );
 }
 

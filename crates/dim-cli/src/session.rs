@@ -224,7 +224,6 @@ pub async fn chat(
         id.clone()
     } else {
         let params = crate::session_create_from_options(client, options).await?;
-        let preferences = params.get("modelPreferences").cloned();
         let created: Created = match client.typed("session.create", params).await {
             Ok(created) => created,
             Err(error) => {
@@ -232,7 +231,6 @@ pub async fn chat(
                     client,
                     options.provider.as_deref().zip(options.model.as_deref()),
                     error,
-                    preferences.as_ref().filter(|_| options.effort.is_none()),
                 )
                 .await;
                 return Err(format!("Cannot create session: {error}. Configure a provider or use --model-config PATH with an API-key environment reference").into());
