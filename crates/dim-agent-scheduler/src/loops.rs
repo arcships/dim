@@ -96,8 +96,10 @@ impl Cadence {
         }
     }
 
-    /// The first window at or after `now`, for a fixed cadence: a stretch of
-    /// missed windows is one round, never a burst (§12.2).
+    /// The first window strictly after `now`, for a fixed cadence: a stretch of
+    /// missed windows is one round, never a burst (§12.2). Windows are counted
+    /// in milliseconds, so a `now` a fraction of a second past a window is
+    /// inside that window and the answer is the following one.
     pub fn next_window_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let Self::Every {
             every_seconds,
@@ -107,20 +109,13 @@ impl Cadence {
             return None;
         };
         let anchor = canonical_instant(anchor)?;
-        let step = Duration::seconds(*every_seconds as i64);
-        if now <= anchor {
+        if now < anchor {
             return Some(anchor);
         }
-        let elapsed = (now - anchor).num_seconds();
-        let step_seconds = step.num_seconds();
-        let whole = elapsed / step_seconds;
-        // i64 has no is_multiple_of on this toolchain; u64 does.
-        let steps = if (elapsed % step_seconds).abs() == 0 {
-            whole
-        } else {
-            whole + 1
-        };
-        Some(anchor + step * (steps as i32))
+        let step_ms = i64::try_from(*every_seconds).ok()?.checked_mul(1_000)?;
+        let elapsed_ms = (now - anchor).num_milliseconds();
+        let windows = elapsed_ms.checked_div(step_ms)?.checked_add(1)?;
+        Some(anchor + Duration::milliseconds(step_ms.checked_mul(windows)?))
     }
 }
 
@@ -970,3 +965,58 @@ impl Loops {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(text: &str) -> DateTime<Utc> {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn every_minute() -> Cadence {
+        Cadence::Every {
+            every_seconds: 60,
+            anchor: "2026-01-01T00:00:00.000Z".into(),
+        }
+    }
+
+    /// A fixed cadence arms the first window strictly after the pass's instant,
+    /// so a record written just past a window never holds a deadline that is
+    /// already due.
+    #[test]
+    fn a_fixed_cadence_arms_the_next_window_after_now() {
+        let cadence = every_minute();
+        assert_eq!(
+            cadence.next_window_at(at("2026-01-01T00:01:00.100Z")),
+            Some(at("2026-01-01T00:02:00.000Z")),
+            "a fraction of a second past a window is inside that window"
+        );
+        assert_eq!(
+            cadence.next_window_at(at("2026-01-01T00:01:00.000Z")),
+            Some(at("2026-01-01T00:02:00.000Z")),
+            "a window exactly now is not armed again"
+        );
+        assert_eq!(
+            cadence.next_window_at(at("2026-01-01T00:00:00.000Z")),
+            Some(at("2026-01-01T00:01:00.000Z"))
+        );
+        assert_eq!(
+            cadence.next_window_at(at("2025-12-31T23:59:30.000Z")),
+            Some(at("2026-01-01T00:00:00.000Z")),
+            "before the anchor the anchor is the first window"
+        );
+        assert_eq!(
+            cadence.next_window_at(at("2026-01-01T00:10:00.500Z")),
+            Some(at("2026-01-01T00:11:00.000Z")),
+            "ten missed windows are one round at the next window"
+        );
+    }
+
+    /// A self-paced loop has no window.
+    #[test]
+    fn a_self_paced_loop_has_no_window() {
+        assert_eq!(Cadence::SelfPaced.next_window_at(Utc::now()), None);
+    }
+}
