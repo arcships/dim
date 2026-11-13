@@ -33,7 +33,7 @@ impl ProcessActivity {
     #[rutis::service(skip)]
     pub fn take_hold(&self) -> Option<ProcessHold> {
         self.count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count & PAUSED == 0).then_some(count + 1)
             })
             .ok()?;

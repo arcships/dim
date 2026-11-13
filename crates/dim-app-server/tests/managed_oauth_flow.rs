@@ -191,7 +191,7 @@ async fn model(
         .unwrap()
         .push((uri.path().into(), headers, body.clone()));
     if f.model_rejections
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
         .is_ok()
     {
         return (

@@ -434,7 +434,7 @@ impl SessionLifecycle {
             return None;
         }
         self.holds
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |holds| {
                 (holds & RELEASING == 0).then_some(holds + 1)
             })
             .ok()?;
