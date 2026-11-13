@@ -538,16 +538,23 @@ impl PermissionPrompt {
     /// The panel drawn within `height` rows. The target lines, the choices and
     /// the hint always show; only the replacement rows scroll through the room
     /// left over, so a long batch answers to the same keys wherever it is
-    /// drawn.
+    /// drawn. Below five rows no panel fits, and the decision is what must stay
+    /// on screen, so both approvals fall back to [`Self::compact`].
     pub fn render_sized(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
-        // The target lines and the choices together need five rows: two target
-        // lines and one choice row between two borders. Below that there is no
-        // approval to draw.
-        if height < 5 {
-            return Vec::new();
-        }
         if self.tool_name == dim_agent_types::MEMBER_APPROVAL_ALLOW {
             return self.member_panel(width, height, p);
+        }
+        let hint = self.hint(false, p);
+        let target = self.target();
+        if height < 5 {
+            return self.compact(
+                width,
+                height,
+                t("Permission required"),
+                target.first().map(String::as_str),
+                &hint,
+                p,
+            );
         }
         let inner = width.saturating_sub(4).max(1);
         let title = paint(
@@ -558,8 +565,7 @@ impl PermissionPrompt {
                 ..Paint::default()
             },
         );
-        let target: Vec<String> = self
-            .target()
+        let target: Vec<String> = target
             .into_iter()
             .map(|line| {
                 let text = truncate_cells(&line, inner);
@@ -663,6 +669,63 @@ impl PermissionPrompt {
         )
     }
 
+    /// The rows a panel of fewer than five rows carries, shared by both
+    /// approvals: the decision first, then as much frame as the height allows.
+    /// The choices are the last thing to go, so a pending approval never holds
+    /// `y`, `n` and Enter while hidden.
+    fn compact(
+        &self,
+        width: usize,
+        height: usize,
+        title: &str,
+        first: Option<&str>,
+        hint: &str,
+        p: &Palette,
+    ) -> Vec<String> {
+        let labels: Vec<String> = self.actions.iter().map(|a| a.label().to_owned()).collect();
+        let decision = choices(&labels, self.selected, p);
+        let inner = width.saturating_sub(2).max(1);
+        match height {
+            0 => Vec::new(),
+            1 => vec![truncate_cells(&decision, width)],
+            2 => vec![
+                paint(
+                    &truncate_cells(title, width),
+                    Paint {
+                        fg: Some(&p.warning),
+                        bold: true,
+                        ..Paint::default()
+                    },
+                ),
+                truncate_cells(&decision, width),
+            ],
+            3 => bordered(
+                &[decision],
+                width,
+                None,
+                &p.border,
+                Some(title),
+                Some(hint),
+            ),
+            _ => bordered(
+                &[
+                    first.map_or_else(String::new, |line| {
+                        fg(
+                            &truncate_cells(&crate::sanitize::safe(line), inner.saturating_sub(2)),
+                            &p.muted,
+                        )
+                    }),
+                    decision,
+                ],
+                width,
+                None,
+                &p.border,
+                Some(title),
+                Some(hint),
+            ),
+        }
+    }
+
     /// The bottom-border hint: the decision keys, and the scroll keys when the
     /// replacement rows are cut.
     fn hint(&self, scrolls: bool, p: &Palette) -> String {
@@ -681,6 +744,14 @@ impl PermissionPrompt {
 
     fn member_panel(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
         let inner = width.saturating_sub(4).max(1);
+        let title = t("Subagent tool approval");
+        let hint = if matches!(&self.member, Some(Ok(_))) {
+            "Up/Down scroll · y allow once · n reject"
+        } else if self.actions.contains(&PermissionAction::Retry) {
+            "Up/Down scroll · r retry · n reject"
+        } else {
+            "Up/Down scroll · n reject"
+        };
         let mut lines = vec![
             format!("Leader branch: {}", self.branch_id),
             format!("Leader reason: {}", self.reason),
@@ -694,6 +765,9 @@ impl PermissionPrompt {
             .iter()
             .flat_map(|line| wrap_cells(&crate::sanitize::safe(line), inner))
             .collect();
+        if height < 5 {
+            return self.compact(width, height, title, wrapped.first().map(String::as_str), hint, p);
+        }
         let budget = height.saturating_sub(5).max(1);
         let offset = window_offset(&self.offset, wrapped.len(), budget);
         let mut content: Vec<_> = wrapped
@@ -714,14 +788,8 @@ impl PermissionPrompt {
             width,
             None,
             &p.border,
-            Some(t("Subagent tool approval")),
-            Some(if matches!(&self.member, Some(Ok(_))) {
-                "Up/Down scroll · y allow once · n reject"
-            } else if self.actions.contains(&PermissionAction::Retry) {
-                "Up/Down scroll · r retry · n reject"
-            } else {
-                "Up/Down scroll · n reject"
-            }),
+            Some(title),
+            Some(hint),
         )
     }
 
@@ -2119,9 +2187,9 @@ mod tests {
         assert!(rows[3].contains("2 · b → c"), "{rows:#?}");
     }
 
-    /// A thirty-entry batch drawn at every height the panel is offered: the
-    /// target lines and the choices are always there, and the panel never
-    /// outgrows the height it is given.
+    /// A thirty-entry batch drawn at every height the panel is offered: never
+    /// more rows than it is given, the choices at every height, the title and
+    /// the target from where they fit, and the compact form below five rows.
     #[test]
     fn a_sized_approval_keeps_the_target_and_the_choices_at_every_height() {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
@@ -2136,24 +2204,40 @@ mod tests {
             serde_json::json!({"path": "src/lib.rs", "edits": edits}),
             true,
         );
-        for height in 1..40 {
-            let rows: Vec<String> = p
-                .render_sized(80, height, &theme.palette)
+        let rows = |height| -> Vec<String> {
+            p.render_sized(80, height, &theme.palette)
                 .iter()
                 .map(|r| strip(r))
-                .collect();
+                .collect()
+        };
+        assert!(rows(0).is_empty(), "no row is drawn in none: {:#?}", rows(0));
+        assert!(
+            rows(1).iter().any(|row| row.contains("Allow once")),
+            "one row is the choices: {:#?}",
+            rows(1)
+        );
+        let two = rows(2);
+        assert!(two[0].contains("Permission required"), "{two:#?}");
+        assert!(two[1].contains("Allow once"), "{two:#?}");
+        let three = rows(3);
+        assert!(three[0].contains("Permission required"), "{three:#?}");
+        assert!(three[1].contains("Allow once"), "{three:#?}");
+        assert!(three[2].contains("y allow"), "the hint survives: {three:#?}");
+        let four = rows(4);
+        assert!(four[0].contains("Permission required"), "{four:#?}");
+        assert!(
+            four[1].contains("# source: tool_rule"),
+            "the first target line survives: {four:#?}"
+        );
+        assert!(four[2].contains("Allow once"), "{four:#?}");
+        assert!(four[3].contains("y allow"), "{four:#?}");
+        for height in 5..40 {
+            let rows = rows(height);
             assert!(
                 rows.len() <= height,
                 "{height}: the panel is {} rows, {rows:#?}",
                 rows.len()
             );
-            if height < 5 {
-                assert!(
-                    rows.is_empty(),
-                    "{height}: no room for the target and the choices: {rows:#?}"
-                );
-                continue;
-            }
             let text = rows.concat();
             assert!(text.contains("# source: tool_rule"), "{height}: {rows:#?}");
             assert!(
@@ -2162,6 +2246,73 @@ mod tests {
             );
             assert!(text.contains("Allow once"), "{height}: {rows:#?}");
         }
+    }
+
+    /// A member approval, which has no target lines of its own, keeps the same
+    /// shape below five rows: the choices always, then the title, then its
+    /// first detail line.
+    #[test]
+    fn a_member_approval_keeps_its_choices_below_five_rows() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut p = PermissionPrompt::new(
+            "r1".into(),
+            "main".into(),
+            "leader reason".into(),
+            dim_agent_types::MEMBER_APPROVAL_ALLOW.into(),
+            serde_json::Value::Null,
+            false,
+        );
+        p.set_member(Some(Ok(dim_agent_types::MemberApprovalDescriptor {
+            delegation_id: "d1".into(),
+            member: dim_agent_types::MemberApprovalTarget {
+                agent_id: "reviewer".into(),
+                session_id: "s2".into(),
+                branch_id: "main".into(),
+            },
+            request_id: "a1".into(),
+            call: dim_agent_types::ApprovalCallData {
+                name: "exec".into(),
+                input: serde_json::Map::new(),
+            },
+            reason: "member reason".into(),
+        })));
+        let rows = |height| -> Vec<String> {
+            p.render_sized(80, height, &theme.palette)
+                .iter()
+                .map(|r| strip(r))
+                .collect()
+        };
+        for height in 0..5 {
+            let rows = rows(height);
+            assert!(rows.len() <= height, "{height}: {rows:#?}");
+        }
+        assert!(rows(0).is_empty(), "{:#?}", rows(0));
+        assert!(
+            rows(1).iter().any(|row| row.contains("Allow once")),
+            "one row is the choices: {:#?}",
+            rows(1)
+        );
+        let two = rows(2);
+        assert!(two[0].contains("Subagent tool approval"), "{two:#?}");
+        assert!(two[1].contains("Allow once"), "{two:#?}");
+        let three = rows(3);
+        assert!(three[0].contains("Subagent tool approval"), "{three:#?}");
+        assert!(three[1].contains("Allow once"), "{three:#?}");
+        assert!(three[2].contains("Up/Down scroll"), "{three:#?}");
+        let four = rows(4);
+        assert!(four[0].contains("Subagent tool approval"), "{four:#?}");
+        assert!(
+            four[1].contains("Leader branch: main"),
+            "the first detail line survives: {four:#?}"
+        );
+        assert!(four[2].contains("Allow once"), "{four:#?}");
+        assert!(four[3].contains("Up/Down scroll"), "{four:#?}");
+        assert_eq!(
+            rows(5).len(),
+            5,
+            "five rows is the smallest full panel: {:#?}",
+            rows(5)
+        );
     }
 
     /// At 80 columns the window shows where it is, moves with the keys, and
