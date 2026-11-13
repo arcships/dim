@@ -101,14 +101,16 @@ impl Probes {
             .lines()
             .count()
     }
-    async fn entered(&self) {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !self.root.join("entered").exists() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+    async fn entered(
+        &self,
+        decision: &mut tokio::task::JoinHandle<std::result::Result<Decision, HostError>>,
+    ) {
+        while !self.root.join("entered").exists() {
+            tokio::select! {
+                result = &mut *decision => panic!("permission answered before the Git probe was held: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(5)) => {},
             }
-        })
-        .await
-        .unwrap();
+        }
     }
     fn call(&self, name: &str) -> ApprovalCallData {
         ApprovalCallData {
@@ -187,7 +189,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
     assert_eq!(probes.count(), 0);
     std::fs::write(probes.root.join("pause"), "").unwrap();
     let cancel = CancellationToken::new();
-    let first = {
+    let mut first = {
         let permission = permission.clone();
         let call = probes.call("cancelled.txt");
         let cancel = cancel.clone();
@@ -197,7 +199,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
                 .await
         })
     };
-    probes.entered().await;
+    probes.entered(&mut first).await;
     let second = {
         let permission = permission.clone();
         let call = probes.call("kept.txt");
@@ -289,7 +291,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
     std::fs::write(probes.root.join("pause"), "").unwrap();
-    let pending = {
+    let mut pending = {
         let permission = permission.clone();
         let call = probes.call("waiting.txt");
         tokio::spawn(async move {
@@ -298,7 +300,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
                 .await
         })
     };
-    probes.entered().await;
+    probes.entered(&mut pending).await;
     permission
         .update(
             0,
