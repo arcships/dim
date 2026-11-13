@@ -144,7 +144,7 @@ differences, and re-exposes the Session's reply-language cell on the branch.
 | `S:PromptHost` | Load the current source contents. |
 | `B:BranchLifecycle` | Activation and closing gates. |
 | `B:StateCell<PromptSnapshot>` | Compare with already adopted entries. |
-| `B:dyn ConfigureControl` | Request adoption of changed sources. |
+| `B:Prompt` | Adopt already loaded changed source values through the existing Prompt owner. |
 | `S:SessionLanguage` | The Session's reply-language cell, re-exposed on this branch. |
 
 ### Events and lifetime
@@ -167,7 +167,7 @@ configured checked set, not automatic adoption of every possible source.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl`、`S:PromptHost`、`S:SessionLanguage` |
+| 注入 | `B:BranchLifecycle`、`B:Prompt`、`B:StateCell<PromptSnapshot>`、`S:PromptHost`、`S:SessionLanguage` |
 | 提供 | `B:PromptSourcesBranch` |
 | 被注入于 | — |
 <!-- /generated -->

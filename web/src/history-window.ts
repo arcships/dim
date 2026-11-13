@@ -22,15 +22,20 @@ export class HistoryWindow {
   through: number | undefined
   before: number | undefined
 
-  constructor(before?: number, through?: number) {
+  private initial: boolean
+
+  constructor(before?: number, through?: number, private tail = false, private transcript = false) {
+    this.initial = before === undefined
     this.before = before
     this.through = through
   }
 
   params(sessionId: string, branchId: string): Record<string, unknown> {
-    return { sessionId, branchId, limit: 256, ...(this.before === undefined
-      ? { latestTurn: true }
-      : { before: this.before, through: this.through }) }
+    return { sessionId, branchId, limit: this.transcript && this.initial ? (this.pages.length === 0 ? 32 : 64) : 256,
+      ...(this.through === undefined ? {} : { through: this.through }),
+      ...(this.before === undefined ? (this.tail || this.transcript ? {} : { latestTurn: true }) : { before: this.before }),
+      ...(this.tail || this.transcript ? { tail: true } : {}),
+      ...(this.transcript ? { transcript: true } : {}) }
   }
 
   push(page: HistoryPage): boolean {
@@ -42,7 +47,8 @@ export class HistoryWindow {
     this.through = page.through
     this.before = page.nextBefore !== undefined && page.nextBefore > 1 ? page.nextBefore : undefined
     this.pages.unshift(page)
-    return this.before === undefined || this.pages.length >= 4 || identities(this.pages.flatMap(page => page.events)).size >= 100
+    const count = identities(this.pages.flatMap(page => page.events)).size
+    return this.before === undefined || this.pages.length >= 4 || count >= 100 || (this.transcript && this.initial && count > 0)
   }
 
   take(): SessionEvent[] {

@@ -53,6 +53,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("context-replay") => context_replay().await?,
         Some("restore-replay") => restore_replay().await?,
         Some("context-breakdown") => context_breakdown().await?,
+        Some("migrate-prompt-references") => migrate_prompt_references().await?,
         Some("summary-eval") => summary_eval::run().await?,
         Some("scenario-eval") => scenario_eval::run().await?,
         // The hidden serve entry of an isolated scenario run: `run_once`
@@ -68,11 +69,59 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("types") => types::write(&root())?,
         _ => {
             return Err(
-                "usage: cargo run -p xtask -- graph|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
+                "usage: cargo run -p xtask -- graph|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|migrate-prompt-references DB SESSION BRANCH|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+async fn migrate_prompt_references() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let args = std::env::args().skip(2).collect::<Vec<_>>();
+    let [database, session, branch] = args.as_slice() else {
+        return Err(
+            "usage: cargo run -p xtask -- migrate-prompt-references DB SESSION BRANCH".into(),
+        );
+    };
+    let storage = dim_app_server::storage::SqliteStorage::open(PathBuf::from(database))?;
+    let store = dim_app_server::storage::SqliteTimelineStore::new(storage);
+    let directory = store
+        .branches(session)
+        .await?
+        .into_iter()
+        .map(|stored| (stored.info.id.clone(), stored.info))
+        .collect::<BTreeMap<_, _>>();
+    let mut current = directory.get(branch).ok_or("branch not found")?;
+    let mut ancestors = Vec::new();
+    while let Some(parent) = &current.parent {
+        if ancestors.len() >= directory.len() {
+            return Err("branch directory cycle".into());
+        }
+        ancestors.push((
+            parent.clone(),
+            current.branch_point.ok_or("missing branch point")?,
+        ));
+        current = directory.get(parent).ok_or("parent branch not found")?;
+    }
+    ancestors.reverse();
+    let timeline = Arc::new(
+        Timeline::restore(
+            rutis::Ctx::root()?,
+            TimelineKey {
+                session_id: session.clone(),
+                branch_id: branch.clone(),
+            },
+            ancestors,
+            store,
+        )
+        .await?,
+    );
+    let result = dim_agent_capabilities::prompt::migrate_prompt_references(timeline.clone()).await;
+    dim_agent_runtime::core::close_timeline(&timeline).await?;
+    println!(
+        "{}",
+        json!({"sessionId":session,"branchId":branch,"written":result?})
+    );
     Ok(())
 }
 async fn agent() -> dim_agent_runtime::Result<MinimalHost> {

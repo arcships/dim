@@ -1,11 +1,10 @@
 //! Goal's language-neutral fold and decisions (design §2, appendix A.4, B).
 //!
-//! The fold is the state the newest Goal block states, over the branch's own
-//! consumed events, from its opening on: a `goal:state` record, or the two old
-//! keys while a branch still has only the history written before the record
-//! existed. The decisions read only that state.
+//! Current execution consumes Goal commands, model notifications and terminal
+//! facts. Reload installs the latest structured `goal/state`, pauses unfinished
+//! work and does not replay old model text or execution progress.
 
-use crate::text::{self, Judge, Marker, OBJECTIVE_KEY, STATE_KEY, STATUS_KEY};
+use crate::text::{self, Judge, Marker, STATE_KEY};
 use dim_agent_types::{
     AgentEvent, BranchSource, EventKind, InputBlock, InputMode, InterruptScope, TurnOutcome,
 };
@@ -287,29 +286,6 @@ fn apply_change(
     false
 }
 
-/// The state a live old `goal:status` block sets. An operation no status
-/// change defines sets a state without one, which no longer counts as active.
-fn legacy_state(attrs: &Marker, text: &str) -> text::State {
-    if attrs.get("kind").map(String::as_str) == Some("status") {
-        return text::State::Active;
-    }
-    match attrs.get("op").map(String::as_str) {
-        Some("pause") => text::State::Paused(
-            attrs
-                .get("reason")
-                .filter(|reason| !reason.is_empty())
-                .cloned()
-                .unwrap_or_else(|| "user".to_owned()),
-        ),
-        Some("resume") => text::State::Active,
-        Some("completed") => {
-            text::State::Completed(text::value(text, "Result:").unwrap_or_default())
-        }
-        Some("blocked") => text::State::Blocked(text::value(text, "Blocker:").unwrap_or_default()),
-        _ => text::State::None,
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct ConclusionRecord {
     sequence: u64,
@@ -382,11 +358,6 @@ pub struct Fold {
 
     pub(crate) driving: HashSet<String>,
 
-    pub(crate) invalidated_after: HashSet<u64>,
-    /// The highest `after` among the state records this fold has stepped,
-    /// deleted changes included; `0` before the first (sequences start at
-    /// one). A deletion asks whether a record naming the withdrawn change, or
-    /// a later record, exists (R2), which only the highest can answer.
     pub(crate) record_after: u64,
     /// A state record that names its trigger by submission id (R5): it states
     /// its change when the very next event is that trigger, and states
@@ -480,6 +451,9 @@ impl<'a> Source<'a> {
             EventKind::InputConsumed(data) => Self::Consumed {
                 input_id: &data.input_id,
             },
+            EventKind::InputDeleted(data) => Self::Consumed {
+                input_id: &data.input_id,
+            },
             EventKind::TurnStart(_) => Self::TurnStart,
             EventKind::TurnEnd(data) => Self::TurnEnd {
                 turn_id: &data.turn_id,
@@ -502,7 +476,7 @@ impl<'a> Source<'a> {
 }
 
 impl Fold {
-    /// Applies one delivered event. Input deletion is rebuilt by the owning part.
+    /// Applies one delivered event to this execution.
     pub fn apply(&mut self, event: &AgentEvent) {
         self.apply_source(event.sequence, Source::of(event));
     }
@@ -599,27 +573,6 @@ impl Fold {
         self.retain_requests();
     }
 
-    pub(crate) fn held_next(&self) -> Option<u64> {
-        self.held_record.as_ref()?.sequence.checked_add(1)
-    }
-
-    pub(crate) fn paired_record(
-        &self,
-        sequence: u64,
-        submission: Option<&str>,
-    ) -> Option<(&str, bool)> {
-        let held = self.held_record.as_ref()?;
-        (held.sequence.checked_add(1) == Some(sequence)
-            && submission == Some(held.trigger.as_str()))
-        .then_some((held.raw.as_str(), held.retire))
-    }
-
-    pub(crate) fn pair_next(&mut self, sequence: u64, submission: Option<&str>) {
-        if let Some(held) = self.held_record.take() {
-            self.pair(held, sequence, submission);
-        }
-    }
-
     fn pair(&mut self, held: HeldRecord, sequence: u64, submission: Option<&str>) {
         if held.sequence.checked_add(1) == Some(sequence)
             && submission == Some(held.trigger.as_str())
@@ -701,51 +654,23 @@ impl Fold {
                 }
             }
         }
-        // An input that carries a state record states the state; the old-key
-        // retires that ride with it (R1) are part of that statement, not a
-        // change of their own.
-        let stated = blocks.iter().any(
-            |block| matches!(block, InputBlock::Raw { key: Some(key), .. } if key == STATE_KEY),
-        );
-        for raw in blocks {
+        for block in blocks {
             let InputBlock::Raw {
-                text: raw_text,
-                key,
+                text: raw,
+                key: Some(key),
                 retire,
-            } = raw;
-            let Some(attrs) = text::marker(raw_text) else {
+            } = block
+            else {
                 continue;
             };
-            let key = key.as_deref();
-            if !matches!(
-                key,
-                Some(STATE_KEY) | Some(OBJECTIVE_KEY) | Some(STATUS_KEY)
-            ) {
+            if key != STATE_KEY {
                 continue;
             }
+            let Some(attrs) = text::marker(raw) else {
+                continue;
+            };
             self.local_blocks += 1;
-            // A state record is Goal's own statement of a change, not a change
-            // of its own: a record answering a trigger inside an evaluated turn
-            // may commit after the evaluation, and it must not make that
-            // evaluation stale. Only the old keys a *change* wrote advance the
-            // newest block the evaluation compares to.
-            if key != Some(STATE_KEY) && !stated {
-                self.last_block = sequence;
-            }
-            if key == Some(STATE_KEY) {
-                self.step_state(&attrs, raw_text, *retire, None, sequence);
-            } else if stated {
-                // The old-key retires that ride with a state record are part
-                // of that statement (R1): they end the key, and the state the
-                // record states stands.
-                match key {
-                    Some(OBJECTIVE_KEY) => self.live.objective = !retire,
-                    Some(STATUS_KEY) => self.live.status = !retire,
-                    _ => {}
-                }
-            } else {
-                self.step_legacy(key.unwrap_or_default(), &attrs, raw_text, *retire, sequence);
-            }
+            self.step_state(&attrs, raw, *retire, None, sequence);
         }
         if let Some((attrs, op)) = change_of(blocks) {
             self.local_blocks += 1;
@@ -758,8 +683,7 @@ impl Fold {
     /// Applies the state one `goal:state` record states (D2). A record whose
     /// `after` is older than the newest change trigger is stale: a later
     /// trigger already asked for another state, and its own record follows.
-    /// A record naming a withdrawn change (R2), or one older than the newest
-    /// record this fold already stepped (R4), states nothing. A record with
+    /// A record older than the newest record states nothing. A record with
     /// `trigger="<submission id>"` names its change instead of an `after` and
     /// is held until the next event, that trigger, arrives: `paired` carries
     /// the trigger's sequence when it does (R5).
@@ -797,7 +721,7 @@ impl Fold {
         if !restated {
             self.record_after = self.record_after.max(after);
         }
-        if restated || self.invalidated_after.contains(&after) {
+        if restated {
             return;
         }
         if after < self.last_change || after < self.state_after {
@@ -831,51 +755,6 @@ impl Fold {
             "blocked" => text::State::Blocked(summary.unwrap_or_default()),
             _ => text::State::None,
         };
-    }
-
-    /// Applies a live block under one of the old keys, by the rules the
-    /// history written before the state record existed uses (§3, A.3).
-    fn step_legacy(&mut self, key: &str, attrs: &Marker, raw: &str, retire: bool, sequence: u64) {
-        if key == OBJECTIVE_KEY {
-            self.live.objective = !retire;
-            if retire {
-                self.objective = None;
-                self.judge = Judge::Model;
-            } else {
-                self.objective = text::value(raw, "Objective:");
-                if attrs.get("op").map(String::as_str) == Some("set") {
-                    self.judge = Judge::of(attrs);
-                }
-            }
-            return;
-        }
-        self.live.status = !retire;
-        if retire {
-            self.state = text::State::None;
-            return;
-        }
-        let state = legacy_state(attrs, raw);
-        if matches!(state, text::State::Completed(_))
-            && attrs.get("by").map(String::as_str) != Some("evaluator")
-            && self.judge == Judge::Evaluator
-        {
-            // A16: under the evaluator judge the worker's `completed` is a
-            // request; only the evaluator completes the goal (§4.1).
-            self.requests.push(Request {
-                sequence,
-                summary: state.summary().unwrap_or_default().to_owned(),
-            });
-            return;
-        }
-        let active_now = state == text::State::Active
-            && (attrs.get("op").map(String::as_str) == Some("resume")
-                || attrs.get("kind").map(String::as_str) == Some("status"));
-        self.state = state;
-        if active_now {
-            self.active = sequence;
-            self.continuation_count = 0;
-            self.continuation_idle = 0;
-        }
     }
 
     /// Applies what a change trigger asked for (D3). The state record that
@@ -1002,8 +881,7 @@ impl Fold {
         !self.open_tasks.is_empty()
     }
     /// The `continue` conclusion still waiting for the branch to settle, with
-    /// its input sequence. It is re-derived from the fold, so a reload keeps
-    /// it (Pursuit §5).
+    /// its input sequence. Reload discards the old execution's wait.
     pub fn pending_conclusion(&self) -> Option<(u64, &Conclusion)> {
         let (evaluation, (sequence, conclusion)) = self.pending_conclusions.last_key_value()?;
         (self
@@ -1047,12 +925,6 @@ impl Fold {
     /// trigger does not answer a newer one.
     pub fn pending_change(&self) -> Option<u64> {
         (self.last_change > self.state_after).then_some(self.last_change)
-    }
-    /// Whether a state record naming `after` or a later change has been
-    /// stepped: the newest live record states that state, not the withdrawn
-    /// change's (R2).
-    pub fn recorded_at_or_after(&self, after: u64) -> bool {
-        self.record_after >= after
     }
 }
 

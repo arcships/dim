@@ -108,8 +108,8 @@ and its durable form is the
 Recovery fixes a published cutoff, selects ordinary and handover current members,
 then reads first applied/withdraw controls for each page of at most 128 identities.
 Two last turn boundaries and an interrupt only when needed determine turn/starting.
-It never reads input bodies to recover entries; old missing input modes use an
-identity-driven user-presence query. Applied mode defaults agree with Loop.
+It never reads input bodies to recover entries; old missing input modes use
+one identity-driven user-presence query for all missing modes in a page, returning only IDs. Applied mode defaults agree with Loop.
 Only an owed accepted withdrawal decision loads its optional full checked `steer`
 candidate, through the selected command's identity. Recovery never reruns external
 submission checks or falls back to full history. A committed replacement/deletion

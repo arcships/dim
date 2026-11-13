@@ -107,7 +107,7 @@ fn unsupported(field: &str) -> Error {
 }
 
 pub(crate) fn capabilities(fork: bool) -> Value {
-    let mut value = json!({"sessionHistory":{"version":1},"compaction":{"version":1},"tasks":{"version":1,"background":true},"subagentEvents":{"version":1}});
+    let mut value = json!({"sessionHistory":{"version":2},"compaction":{"version":1},"tasks":{"version":1,"background":true},"subagentEvents":{"version":1}});
     if fork {
         value["forkAtTurn"] = json!({"version":1});
     }

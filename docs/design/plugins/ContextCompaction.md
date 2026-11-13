@@ -1202,6 +1202,7 @@ ran with their exit status, and nothing else.
 | `session_invalid_input` | both | Unknown branch | No |
 | `session_closed` | both | Session or branch closing | No |
 | `context_not_configured` | usage | No `context/configured` in the branch's history | After a model is adopted |
+| `context_usage_unavailable` | usage | Current statistics have not been established; the model is configured | After the next actual model request; do not reselect the model |
 | `context_model_failed` | usage | `resolve` failed (no capability snapshot) | After selecting the model again |
 | `compaction_failed` | compact | Fact `failed`: strategy error after the shared failure policy, a reply with no text, a `retain_from` that fails validation, a compaction that reaches its summarizer retry limit, no reduction, no `context/configured`, or no snapshot | User's choice |
 | `compaction_cancelled` | compact | Fact `cancelled`: `stop/interrupt` or reload | User's choice |
@@ -2127,3 +2128,21 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
+
+### Request-local projection handoff
+
+Loop passes the projection it already read to ContextPreparation before publishing
+`context/prepare`. ContextPreparation retains at most one pending projection, bound
+to the request ID, fixed cutoff and the original request object. Delivery transfers
+it into the preparation task; cancellation, failure and closing discard it. It is
+not serialized, retained across requests or used to resume old execution. A request
+without a matching local handoff uses the existing fixed-cutoff projection path.
+The event remains the execution handoff; supplying projection data starts no work.
+
+Policy uses this same projection for budgeting and compaction. When Usage needs
+initialization and the host preserved the exact history prefix, Usage computes
+initial contributions and the request estimate once. Policy uses that estimate,
+and Usage saves the computed contributions only if the final request still uses
+the original projection cutoff and no later compaction was adopted. Unsupported
+counters and request-specific appended messages keep the actual-request counting
+path. The final request validation continues to reuse matching prepared estimates.

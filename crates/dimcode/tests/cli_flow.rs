@@ -3157,8 +3157,10 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
                 {"id":"hooked-consumed","sequence":8,"create_at":1,"type":"input","name":"consumed",
                  "data":{"input_id":"hooked"}},
                 {"id":"follow-up","sequence":9,"create_at":1,"type":"input","name":"message",
-                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}}],
-                "through":9,"nextAfter":9,"done":true}),
+                 "data":{"blocks":[{"type":"raw","text":"<dim-hooks kind=\"follow-up\">\nrun the suite\n</dim-hooks>"}],"mode":"queue"}},
+                {"id":"compact-start","sequence":10,"create_at":1,"type":"context","name":"compaction-start","data":{"trigger":"manual","through":9,"strategy":"summary"}},
+                {"id":"compact","sequence":11,"create_at":1,"type":"display","name":"compaction","data":{"start":10,"strategy":"summary"}}],
+                "through":11,"nextAfter":11,"done":true}),
         );
         // The client settles the queue and reads the context gauge in either
         // order, so answer by method until it leaves.
@@ -3192,6 +3194,7 @@ fn line_client_history_names_a_loaded_skill_and_a_hooks_context() {
     // history held, so a missing context line fails at its own assertion
     // rather than at a wait.
     terminal.until("> why does the parser stall?");
+    terminal.until("[context] Compacted");
     terminal.until("\n> ");
     home.kill(&terminal);
     terminal.wait();

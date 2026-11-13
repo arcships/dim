@@ -23,6 +23,11 @@ Store 的静态描述表记录：开始类型、终态类型、两端关联属�
 | step/tool-call.id | step/tool-result.call_event_id | 工具名称是公开数组属性，作为成员分组键；不在 Store 写 ask_user 特例。 |
 | exec/started.task_id | exec/ended.task_id | 无。 |
 | collaboration/request.id | result.request_event_id 或 delivered.op_event_id | delivered 只有 error 关闭该成员。 |
+| approval/request.approval_id | respond/cancelled.approval_id | v42；只读尚未答复的审批。 |
+| collaboration 四种操作的 id | delivered.op_event_id | v42；只读尚未交付的操作，不恢复调用栈。 |
+| exec/ended.id | input/message.tags 的固定前缀加 ID | v42；只有 completed/failed 且发生在有效代中的结果进入通知集合。 |
+
+v42 的通知资格、任务身份保留和事务升级由[原生格式 v42](native-storage-format.md#v42-indexes-for-unfinished-external-work)唯一规定。查询用公开 concat/root 表达完整关系；不向调用方暴露成员类型名称。exec 的历史起点定位记录保留，终态仍从当前未结束根移除它。
 
 索引描述必须与查询条件逐项等价；少一个终态、不同的关联字段或不同范围，不能套用近似结果。上述终态关联键是标量。复杂任意表达式仍沿用通用执行器，正常 owner inventory 只使用已验证支持的形状。
 
@@ -77,7 +82,7 @@ LIMIT 1;
 
 工具名称筛选定位对应分组根；同一 tool-call 含重复名称时，同一分组仅保留一个事件成员。每批问题的所有匹配 calls 仍保持原下标。
 
-输入和工具索引不另存一份无分组集合。输入查询必须带handover缺失或存在条件，工具查询必须带名称条件，才采用对应成员根。其余表达式保留通用执行，不是正常 inventory 的备用路径。每条分支的序号 0 空根只证明索引已初始化，不代表另一个待维护集合。
+输入和工具索引不另存一份无分组集合。输入查询必须带 handover 缺失或存在条件。指定工具名称时定位该名称的根；ToolExecutor 查询全部未完成批次时，通过主键的 group_key > 上一名称逐个定位不同名称，再读取各名称在固定 through 的根，按原事件位置合并、去重、限量。不使用 DISTINCT 枚举所有历史版本，也不退回全部 tool-call 排除终态。名称枚举成本按历史上不同工具名称数 G 计；根和事件读取仍按当前成员计。每条分支的序号 0 空根只证明索引已初始化，不代表另一个待维护集合。
 
 续页绑定索引描述版本、分组、原 through 和末尾成员位置；不绑定 SQLite 游标或进程内句柄。并发提交只生成新根，不改变旧页范围。
 
