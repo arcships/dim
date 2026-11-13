@@ -1277,14 +1277,15 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         assert_eq!(wire.trailing_request(), None, "unexpected member input/configuration or leader cleanup");
     });
     let mut launch = home.command();
-    launch.args(["--permission", "full-access"]);
+    launch.args(["--permission", "full-access", "--fullscreen"]);
     let mut terminal = Terminal::launch_tui(launch);
     terminal.until("Ask anything...");
     terminal.write(b"start leader\r");
     terminal.until("test / model");
-    terminal.write(b"kept leader draft\x0ftasks\r");
-    terminal.until("Inspect member code");
-    terminal.write(b"\r");
+    terminal.write(b"kept leader draft");
+    terminal.until("kept leader draft");
+    terminal.until("\x1b[?2026l");
+    terminal.write(b"\x1b[<0;5;18M\x1b[<0;5;18m");
     terminal.until("Member Session: member");
     terminal.until("member original + live");
     terminal.until("live member thought");
@@ -1322,9 +1323,6 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
             .transcript
             .contains("member original + live + live")
     );
-    terminal.write(b"\x1b[27u");
-    terminal.until("Background tasks");
-    terminal.until("Inspect member");
     terminal.write(b"\x1b[27u and continue\r");
     terminal.until("leader resumed after view");
     assert!(terminal.transcript.contains("leader notice while reading"));

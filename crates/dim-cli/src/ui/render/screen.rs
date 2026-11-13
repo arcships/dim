@@ -36,6 +36,8 @@ pub struct Frame {
     /// The live region, one string per row, already wrapped to the width.
     /// Styling escapes are allowed; control characters are not.
     pub live: Vec<String>,
+    /// Task ids by row in `live`, for fullscreen task-detail clicks.
+    pub task_rows: Vec<(usize, String)>,
     /// Cursor position inside the live region (row, column), `None` hides it.
     pub cursor: Option<(u16, u16)>,
     /// Index in `live` where the dock (queue, composer, panels, status)
@@ -849,6 +851,7 @@ mod tests {
         Frame {
             commits: commits.iter().map(|s| s.to_string()).collect(),
             live: live.iter().map(|s| s.to_string()).collect(),
+            task_rows: Vec::new(),
             cursor,
             dock: 0,
             anchor: 0,

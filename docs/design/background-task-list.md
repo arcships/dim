@@ -189,6 +189,44 @@ profile supplies its name immediately; an existing Agent uses its id until
 use the same projected task title and Agent identity, including after resume
 and when the originating branch is not the displayed line.
 
+Above the composer, each task occupies its own row; never concatenate several
+task labels horizontally. Show the task's status mark, title, member Agent name
+where applicable, and elapsed time. Truncate the title and then the Agent name
+to fit a narrow terminal, preserving the elapsed time when it fits. Running
+rows use an activity mark; terminal rows retain their actual outcome mark for
+five seconds and then disappear. With no visible task there is no task strip.
+
+Render every visible task as its own row, without a fixed row cap or a
+hidden-task count replacing task rows. The existing terminal viewport still
+preserves the composer when the rows exceed the available screen height.
+The existing empty-composer Enter shortcut opens `/tasks` while the strip
+shows, subject to the earlier shell/queue actions in
+[CLI run keys](cli-commands.md#run-keys-and-queue).
+
+In fullscreen mode, clicking a task row opens that task's existing detail
+directly; Esc returns to the composer with its draft preserved. Command rows
+open command output, and member rows use the existing
+[member conversation contract](member-conversation.md). A click requires press
+and release on the same cell with the same task identity still at that row.
+Dragging, resizing or replacing the task at that row cancels the click;
+elapsed-time updates do not. Rows clipped out of the viewport are not clickable,
+and an open prompt or overlay blocks task-row clicks. Scrollback mode retains
+its keyboard-only entry points.
+
+```text
+  ◐ Fix esbuild bundling · Builder                         27m57s
+  ◐ Review the runtime · Reviewer                          25m27s
+  ◐ Extend integration coverage · Test Explorer             13m01s
+  ◐ Check generated types · Type Checker                     8m42s
+  ◐ Audit cancellation · Safety Reviewer                     3m18s
+
+  ╭────────────────────────────────────────────────────────────╮
+  │ › Ask anything...                                          │
+  ╰────────────────────────────────────────────────────────────╯
+
+  Fullscreen: task row --click--> task detail --Esc--> kept draft
+```
+
 ```text
 +-- Background tasks --------------------------------------------+
 | > cargo build                 command   running    12s         |

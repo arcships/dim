@@ -285,6 +285,10 @@ queued message, and only with nothing held. The task line must show, as it does
 while a task runs or an ended one still fades; with nothing in the background
 the key submits nothing and opens nothing.
 
+Tasks above the composer use the
+[background-task title and row layout](background-task-list.md#task-titles-and-composer-rows)
+in both modes: one task per row, not a horizontal list of labels.
+
 - A queued message runs after the current run ends, one message per run. A
   steered message joins the current run at its next turn boundary.
 - Taking a message back, and interrupting, withdraw the message through

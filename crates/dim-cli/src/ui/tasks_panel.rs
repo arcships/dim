@@ -37,7 +37,7 @@ pub struct TasksPanel {
     list: ListPanel,
     tasks: Vec<TaskView>,
     detail: Option<Box<Detail>>,
-    /// Opened from a transcript card: leaving the detail returns to it.
+    /// Opened directly: leaving the detail returns to the composer.
     from_card: bool,
 }
 
@@ -356,7 +356,7 @@ impl TasksPanel {
         }
     }
 
-    /// A transcript card's delegation, which may have left the task list.
+    /// Opens a transcript card or background row directly, without the list.
     pub fn open_card(&mut self, task: TaskView) -> Effect {
         self.from_card = true;
         self.open(task)
