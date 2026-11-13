@@ -91,9 +91,10 @@ ModelFailure {
   are text only, with control characters stripped.
 - `error`, which old clients read, is the default English line
   `<meaning>: <reason>. <action>`, with `: <reason>` left out when there is
-  none. There is no `ApiCall:` prefix. The turn that the failure ends carries
-  the same string in `TurnOutcome::Failed.error`, so a client can tell the two
-  apart and drop the repeat.
+  none. There is no `ApiCall:` prefix. When the failure ends its turn Failed,
+  that turn carries the same string in `TurnOutcome::Failed.error`, so a client
+  can tell the two apart and drop the repeat. A failure that does not fail the
+  turn, such as an output-limit stop, carries nothing in the turn's outcome.
 - The `max_tokens` stop keeps its presentation and also writes
   `failure.kind = output_limit`. It does not fail the turn: the Loop ends the
   turn Completed with reason `output_limit` (Loop.md, the announced-call

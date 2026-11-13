@@ -57,21 +57,39 @@ whole evidence. ModelProvider has already closed every such call with an error
 result in the same batch as the terminal.
 
 When the request announced at least one such call, no driving input is pending,
-the turn is not interrupted, and the turn's continuation is unspent, the Loop
-releases the failed request's tool binding and starts one new request in the
-same turn. The order is fixed:
+the turn is not interrupted, the turn's continuation is unspent, and the failure
+is one a new request can settle, the Loop releases the failed request's tool
+binding and starts one new request in the same turn. The order is fixed:
 
 1. the context-budget fact applies: budget recovery runs, exactly as before,
    and it neither reads nor spends the turn's continuation;
-2. a call was announced and the continuation is unspent: one continuation;
+2. a call was announced, the continuation is unspent, the provider did not veto
+   retrying the failure, and its kind is one a new request can settle: one
+   continuation;
 3. the failure is an output-limit stop: `turn/end` Completed with reason
    `output_limit`, whether or not the slot is spent;
 4. otherwise `turn/end` Failed.
 
+A kind a new request can settle is `network`, `rate_limited`, `server_error`,
+`malformed_response`, `output_limit` or `unknown`. The kinds that need the user
+or another owner to act first never continue: `auth_rejected`,
+`quota_exhausted`, `not_found`, `invalid_request`, `content_filtered` and
+`context_too_long`. The same context fails the same way, an unrecoverable
+rejection is not repeated behind the user's back, and a context that is too
+long is budget recovery's case when its fact applies. The provider's veto is
+`ModelFailure.retryForbidden`, written by ModelProvider's failure policy; the
+model-failures contract says the prohibition covers a continuation
+([model-failures](../../../design/model-failures.md)). A failed terminal with no
+structured failure does not continue. The gate matches
+`ModelFailureKind` exhaustively, so a new kind forces a decision here.
+
 The continuation is a plain request with tools, as after a settled batch, so
 the model can re-issue the call it withdrew. It reads the committed error
-results and carries no injected instruction. It spends the same per-turn
-continuation that a disposer continuation spends (§6.2 of
+results and carries no injected instruction. Its `context/prepare` carries the
+failed request's `failure_chain`, its attempts and waited time, so both
+requests spend one 8-call, 300 s budget instead of the continuation taking a
+second one. It spends the same per-turn continuation that a disposer
+continuation spends (§6.2 of
 [model retry and recovery](../../../design/research/model-retry-recovery.md#62-预算与内容));
 there is no second counter. An output-limit stop is not a failure of the turn:
 it ends Completed, and its `step/model-output-end` stays for diagnostics.
@@ -209,11 +227,13 @@ ModelProvider inside the continuation request.
 
 ## Tests
 
+[host_flows.rs](../../../../crates/dim-agent-capabilities/tests/host_flows.rs),
 [flows.rs](../../../../crates/dim-agent-capabilities/tests/flows.rs),
 [interrupt_flow.rs](../../../../crates/dim-agent-capabilities/tests/interrupt_flow.rs),
 [context_flow.rs](../../../../crates/dim-agent-capabilities/tests/context_flow.rs)
-cover turn progression, interruption, pending-input restore and the manual
-compaction step.
+cover the failed-step settlements this page states, the continuation for calls
+that were never executed, the retry chain it shares, turn progression,
+interruption, pending-input restore and the manual compaction step.
 
 <!-- generated:plugin Loop — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
