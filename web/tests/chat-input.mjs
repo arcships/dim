@@ -425,6 +425,42 @@ test("a /loop submission reaches the loop callback, and is offered only when one
   )
 })
 
+test("a /loop stop without an ID stops a loop only when it is the line's only live one", async (t) => {
+  const stops = [], toasts = []
+  const live = [
+    { loopId: "newest", state: "running", round: 3, nextAt: "2026-11-13T09:41:00.000Z", prompt: "poll" },
+    { loopId: "older", state: "waiting", round: 2, nextAt: null, prompt: "wait" },
+  ]
+  const stopWith = async (words, listed) => {
+    const { root, view } = mount(t, "main", [], undefined, {
+      toast: { push(toast) { toasts.push(toast) } },
+    })
+    view.methods = ["session.loop.start", "session.loop.list", "session.loop.stop"]
+    const chat = globalThis.chatInputStores.chat
+    chat.readLoops = async () => listed
+    chat.stopLoop = async (sessionId, loopId) => { stops.push({ sessionId, loopId }) }
+    const field = all(root).find((element) => element.type === "textarea")
+    field.props.onFocus()
+    field.props["onUpdate:modelValue"](words)
+    await flush()
+    field.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+    await flush()
+  }
+
+  await stopWith("/loop stop", live)
+  assert.deepEqual(stops, [], "two live loops stop nothing")
+  assert.deepEqual(toasts.map((toast) => toast.title), ["loop.noSingle"])
+
+  stops.length = 0; toasts.length = 0
+  await stopWith("/loop stop", [live[1], { ...live[0], state: "stopped" }])
+  assert.deepEqual(stops, [{ sessionId: "session", loopId: "older" }], "the line's only live loop is stopped")
+  assert.deepEqual(toasts.map((toast) => toast.title), ["loop.stopped"])
+
+  stops.length = 0; toasts.length = 0
+  await stopWith("/loop stop newest", live)
+  assert.deepEqual(stops, [{ sessionId: "session", loopId: "newest" }], "an explicit ID stops that loop")
+})
+
 test("files picked with overlapping names keep their own paths in the submitted message", async (t) => {
   const { root, submissions } = mount(t, "main")
   const field = all(root).find((element) => element.type === "textarea")

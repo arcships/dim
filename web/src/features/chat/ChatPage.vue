@@ -205,10 +205,14 @@ async function loop(words: string): Promise<void> {
       toast.push({ tone: "success", title: t("loop.started", { id }) })
       return
     }
-    const loopId = request.loopId ?? (await chat.readLoops(props.sessionId)).filter((entry) => !["stopped", "expired"].includes(entry.state)).map((entry) => entry.loopId).at(0)
+    let loopId = request.loopId
     if (loopId === undefined) {
-      toast.push({ tone: "info", title: t("loop.noSingle") })
-      return
+      const live = (await chat.readLoops(props.sessionId)).filter((entry) => !["stopped", "expired"].includes(entry.state))
+      if (live.length !== 1) {
+        toast.push({ tone: "info", title: t("loop.noSingle") })
+        return
+      }
+      loopId = live[0]!.loopId
     }
     await chat.stopLoop(props.sessionId, loopId)
     toast.push({ tone: "success", title: t("loop.stopped", { id: loopId }) })
