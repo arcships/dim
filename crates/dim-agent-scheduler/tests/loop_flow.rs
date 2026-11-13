@@ -696,3 +696,93 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
         "round two is the second delivery"
     );
 }
+
+/// A `next` accepted while the delivery pass holds the loop lock keeps its
+/// deadline: the pass settles first and the next writes over the settled
+/// record, so the loop stays running with the deadline the model chose.
+///
+/// The pass persists `delivering_round` before its input write and settles
+/// after it, so holding the store's write connection keeps it between those two
+/// points with the loop lock taken. Without that lock the next would write
+/// inside the pass and the settle would overwrite the deadline with the state
+/// the pass computed before it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+
+    let created: Value = client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": "watch the deploy"}),
+        )
+        .await
+        .unwrap();
+    let loop_id = created["loop"]["loopId"].as_str().unwrap().to_owned();
+    wait_for("the loop to wait after round 1", || {
+        stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["state"] == json!("waiting"))
+    })
+    .await;
+
+    // The next window is due at once, so the pass reaches its input write while
+    // the store's write connection is held below.
+    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    edit_loops(home.path(), |loops| {
+        loops[0]["state"] = json!("running");
+        loops[0]["next_at"] = json!(due);
+        loops[0]["delivering_round"] = Value::Null;
+    });
+
+    let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
+    lock.busy_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    // The pass marks the round delivering, then waits on the held connection
+    // while it holds the loop lock.
+    wait_for("the pass to reach its input write", || {
+        stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["delivering_round"] == json!(2))
+    })
+    .await;
+
+    // A next accepted now is accepted well inside the pass. In the serialized
+    // order it waits for the loop lock, so it lands after the settle write; an
+    // unserialized one would land before it and be overwritten.
+    let loops = server
+        .service::<dim_agent_scheduler::Loops>()
+        .expect("the Scheduler process part provides its loop service");
+    let before = chrono::Utc::now();
+    let mut arming = Box::pin(loops.next(&session, &loop_id, 600));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut arming)
+            .await
+            .is_err(),
+        "the next waits for the pass's loop lock"
+    );
+
+    lock.execute_batch("COMMIT").unwrap();
+    drop(lock);
+    let armed = arming.await.unwrap();
+    assert_eq!(armed.state.name(), "running", "{armed:?}");
+
+    // The deadline the next stored is the one the file holds: the settle wrote
+    // first, so it cannot have replaced this deadline with the waiting state.
+    let record = &stored_loops(home.path())[0];
+    assert_eq!(record["state"], json!("running"), "{record}");
+    let at = chrono::DateTime::parse_from_rfc3339(
+        record["next_at"].as_str().expect("an armed deadline"),
+    )
+    .unwrap()
+    .with_timezone(&chrono::Utc);
+    let delta = (at - before).num_seconds();
+    assert!(
+        (590..=610).contains(&delta),
+        "the deadline is the 600 seconds the next chose, got {delta}"
+    );
+}

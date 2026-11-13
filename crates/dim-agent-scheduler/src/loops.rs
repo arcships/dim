@@ -519,6 +519,12 @@ impl Loops {
     /// Applies `change` to one record of the calling Session under the file
     /// lock and announces the result. A record that is absent, or belongs to
     /// another Session, is `loop_not_found`.
+    ///
+    /// Takes `shared.loops` for the whole read-modify-write, so a change and
+    /// the delivery pass are one serial order at the record level: a `next`
+    /// accepted while a pass holds the lock keeps its deadline, because the
+    /// pass settles before this change runs. `sessions.input` in queue mode
+    /// does not wait for the target's turn, so taking it here cannot deadlock.
     async fn change<R, F>(
         &self,
         session_id: &str,
@@ -529,6 +535,7 @@ impl Loops {
         F: FnOnce(&mut Loop) -> Result<(bool, R), SchedulerError> + Send + 'static,
         R: Send + 'static,
     {
+        let _hold = self.shared.loops.lock().await;
         let session_id = session_id.to_owned();
         let loop_id = loop_id.to_owned();
         let (record, answer, changed) = update(&self.shared.files, move |loops| {
@@ -962,3 +969,4 @@ impl Loops {
         Ok(())
     }
 }
+

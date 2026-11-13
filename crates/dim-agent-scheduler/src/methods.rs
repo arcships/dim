@@ -302,9 +302,15 @@ pub(crate) struct Shared {
     /// record level: a cancel that takes it first prevents the input, one
     /// that takes it after reports the settled state (design §10.3).
     pub(crate) wakeups: tokio::sync::Mutex<()>,
-    /// Serializes a loop change and the whole loop pass — the snapshot read,
-    /// the input writes and the settle batch — so the two order at the record
-    /// level (design §12.3).
+    /// Serializes every read-modify-write of the loop records: the timer pass,
+    /// recovery and `change` for `next` and `stop` hold it for the whole
+    /// operation, so they are one serial order at the record level (design
+    /// §12.3).
+    ///
+    /// A holder may await `sessions.pending` and `sessions.input` in queue
+    /// mode: both return once the input is published and neither takes this
+    /// lock. A holder must never await a round's turn, or anything else that
+    /// can take this lock.
     pub(crate) loops: tokio::sync::Mutex<()>,
     /// Whether any live loop exists. A daemon with none does no loop work, so
     /// the pass takes no process hold and reads no file (design 12.2). Every
