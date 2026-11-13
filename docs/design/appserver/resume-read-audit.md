@@ -6,7 +6,7 @@ Scope: [#1320](https://github.com/arcships/dim/issues/1320)，PR #1442。这里�
 
 发现并修复一个不必要的历史查询：无标题会话收到运行环境等内部输入时，SessionTitle 先找历史第一个有效输入，再判断当前输入没有资格触发标题。现在先按当前输入 ID 判断，不符合条件立即结束。保留同一个查询截止位置、第一条有效输入的标题来源和已有重试行为。
 
-另外发现一个业务流程问题：BackgroundExec 在重载时为丢失的进程写失败结果，然后通过 Steer 通知启动新 turn。新请求构造和首次 Usage 计算会读取旧上下文。未完成任务场景因此没有通过“不随已完成历史增长”的检查；不能用首屏或 pending 查询的低开销掩盖它。详见 §5。
+未完成后台任务样本包含两个操作：BackgroundExec 结算丢失的进程，以及 Steer 通知触发的新模型轮次。55.5 万→509.7 万 SQLite 指令是打开到新轮次结束的总量，不能作为 resume 成本随历史增长的证据。恢复成本、通知是否应启动执行、新请求成本分别判断，详见 §5。
 
 ## 2. 读取清单
 
@@ -103,9 +103,9 @@ SQL 跟踪读取 SQLite 3.54.1 的实际 statement VM/fullscan/sort/autoindex �
 
 普通/工具/大消息/压缩均一页、32 个所选事件；内部输入三页、160 个所选事件。长短样本页数相同，正文大小只因序号编码长度等有少量差异。大消息的半 MiB 仍需传递和解析；压缩样本返回字段很小却读取约 6 MiB SQLite 页，说明摘要字段投影并未消除原始 replacement 的物理页成本。此次不新增摘要缓存或持久化结构。
 
-## 5. 未完成后台任务：检查未通过
+## 5. 未完成后台任务：恢复与新执行分开计量
 
-实际流程如下；查询未完成对象本身已经使用索引。
+实际流程如下；查询未完成对象本身已经使用索引。旧命令进程不会重启；这里开始的是一次新的模型轮次。
 
 ```text
 打开 Session
@@ -114,9 +114,9 @@ SQL 跟踪读取 SQLite 3.54.1 的实际 statement VM/fullscan/sort/autoindex �
     -> ended / wake_input：input/message(mode=Steer)
   InputQueue：input/applied
   AgentLoop：turn/start -> step/model-start
-  ContextPreparation：context/prepare
-  ContextPolicy：读取旧上下文、计算预算
-  ContextUsage：首次请求建立统计
+  AgentLoop.start_preparation：读取当前上下文，写 context/prepare
+  ContextPolicy.prepare：缺少可用 Usage 时，再次读取当前上下文
+  ContextUsage：复用第二次读取的结果，建立统计
   ModelProvider：发起新的模型请求
 ```
 
@@ -131,17 +131,61 @@ SQL 跟踪读取 SQLite 3.54.1 的实际 statement VM/fullscan/sort/autoindex �
 | 守护进程匿名内存 | 19.25 MiB | 47.59 MiB |
 | 进程 read-call | 6.68 MiB | 36.95 MiB |
 
-其中上下文范围查询消耗约 30 万→371 万指令，正文按位置批量读取约 11 万→107 万；请求前缀定位还从约 1.1 万增至 10.8 万。即使 SQLite fullscan 计数很低，沿索引读取全部所需上下文仍会线性增长，不能只检查是否出现 `SCAN`。这个完整请求对照确认了流程问题，不能解释成首屏多取了几条消息。
+这两个跟踪样本中，第一条上下文范围 SQL 完成时间分别在 attach 返回后约 95 ms / 108 ms；这些是插桩时序证据，不能当作产品延迟。`TimelineContext::finish_opening` 等待打开事件、初始化回执及提交位置的分发，不等待新模型轮次完成；`AgentLoop::start_preparation` 在自己的异步任务中读取上下文。因此，打开之后等待 250 ms 或等待 turn 结束的进程总量都不能直接标成 resume 成本。异步执行可与客户端后续加载并发，RPC 返回时刻也不是通用的任务成本分界。
 
-这不是让 pending 接口改用另一个索引能解决的问题。`BackgroundExec::ended` 明确包含重载生成的 failed；`wake_input` 固定产生 Steer。现有 [BackgroundExec 合同](../../architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec)及 `idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_end` 流程明确保留补发唤醒。它与“打开只恢复和显示，不因旧任务自行开启模型轮次”的目标存在业务冲突。
+完整轮次总量的 SQL 拆分如下。指令数是 SQLite 虚拟机指令，不是 CPU 硬件指令；执行次数包括 SQLite 内部语句。
 
-建议的下一步业务决策是：重载结算和补发的旧结果仍保存、仍向用户展示、仍进入下一次请求的上下文，但使用不启动 turn 的 Append；本次运行中真正结束的后台任务继续 Steer。保留 exec 终态与通知身份标签，不新增快照、缓存或索引；同一结果不能因重载分支与实时 Dispatcher 各投递一次。落点是 BackgroundExec 的恢复/投递区分及已有重启流程测试，不改 ContextPreparation 的正常请求构造。
+| SQL 操作 | 128 个旧 turn | 1,280 个旧 turn |
+| --- | ---: | ---: |
+| 上下文位置查询，含每遍第一页 | 388,182 | 3,797,310 |
+| 每批 128 个位置的正文读取，含最后不足一批 | 111,744 | 1,075,968 |
+| 定位前一次 context/prepare 或 model/call | 11,154 | 107,922 |
+| timeline_content 内容去重写入 | 8,160 | 77,280 |
+| 其余 SQL，包含打开、客户端查询和新轮次其他操作 | 36,189 | 38,611 |
 
-本次未静默改变这项唤醒合同。协作补交付若同样产生 driving 输入，需要按操作本身的交付合同决定是否应开始新执行，不能把所有恢复通知机械改成 Append。这个检查结果也不允许把“六组都测了”写成“六组都通过”。
+`AgentLoop::start_preparation` 先调用 `History::rendered_stream` 构造请求。`ContextPolicy::prepare` 在统计可用且预算条件满足时直接返回；本样本没有保存 Usage，进入第二次 `rendered_stream`。两遍合计 10→82 次位置分页查询；`ContextUsage::initialize_from_history` 使用第二遍的结果，没有再读第三遍历史。两档样本均新增两条 usage/recovered，并非逐条历史写恢复事件。
+
+读取条件为 `context.render = true OR context.state = true`，从有效压缩检查点开始；无检查点时从分支链起点开始。它读取用于本次请求的内容及解释内容所需的控制事实，不是无条件读取所有 Timeline 事件。本样本没有压缩，当前上下文随旧 turn 数增长。
+
+样本的旧 turn 也没有 context/prepare、model/call。前次请求查询因此遇到无匹配的最坏情况；该查询的 1.1 万→10.8 万指令不能外推为每个生产会话都会发生。这里依然暴露了 LIMIT 1 无匹配时的扫描成本，但它属于保存新请求时的定位问题。
+
+应分别评估三件事：
+
+- 恢复：BackgroundExec 按未完成成员查询，写失败终态并补发未投递通知。它不需要构造模型上下文。这组总量没有单独隔离该路径的内存和 CPU，撤回“resume 检查未通过”的结论，也不据此宣布 resume 已通过全部验收。
+- 启动条件：`BackgroundExec::ended` 接受重载生成的 failed，`wake_input` 固定产生 Steer，`AgentLoop::driven` 将其作为启动条件。现有 [BackgroundExec 合同](../../architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec)及重启流程测试明确要求补发唤醒。是否改变旧结果的启动语义，是业务决策，不能以降低 resume 指标为由直接改成 Append。
+- 新请求：构造当前上下文有实际用途；缺少 Usage 时重复读取同一上下文，以及前次请求无匹配时的扫描，应独立评估。前者应研究如何复用已经取得的内容和计算结果，而不是通过禁止启动来掩盖请求成本。
+
+上述数据记录 cdfd1a914 的请求路径。后续请求内复用修改见下节；后台恢复、通知模式和请求内容不变。
+
+### 5.1 同次请求复用上下文与初始计数
+
+Loop 将已有投影交给 ContextPreparation，Policy 使用同一份消息与来源位置；交接只绑定本次请求对象、ID及截止位置，不进入事件载荷。没有 Usage 时，由 Usage 计算贡献和预算估算一次，最终请求保持该投影时保存同一份数字。恢复的未覆盖源探测与实时 context.render/控制源筛选一致，隐藏的子工具结果不使数字失效。后台任务结算、Steer 通知和模型请求内容不变。
+
+release 二进制 SHA-256：`edd7cbdd94008e7ad46fd46244bc85822a7e089bad9a27393184bd302adbf8a3`。沿用前述未完成任务样本和本地确定模型响应，每次复制数据库、启动新守护进程并检查 executable/数据库/配置页不驻留。测量截至自动启动的新轮次完成后250 ms，不含 shutdown。以下仍是**打开加一次执行**，不是纯 resume。
+
+| SQL 跟踪 | 128旧轮次：修改前→后 | 1,280旧轮次：修改前→后 |
+| --- | ---: | ---: |
+| 上下文位置分页次数 | 10→5 | 82→41 |
+| SQLite VM指令总量 | 555,429→305,325 | 5,097,091→2,659,921 |
+
+长样本无插桩各两次对照：
+
+| 守护进程指标 | 修改前 | 修改后 |
+| --- | ---: | ---: |
+| 进程累计CPU时间 | 0.61–0.63 s | 0.43–0.44 s |
+| read-call字节 | 36.55–36.60 MiB | 27.08–27.18 MiB |
+| 实际磁盘读取字节 | 53.65–53.78 MiB | 54.23–54.24 MiB |
+| 结束点匿名内存 | 47.13–47.53 MiB | 47.97–48.03 MiB |
+
+CPU使用/proc进程user+system计时；read-call包含缓存命中的读取，与实际磁盘字节不同。SQL指令降低47.8%，CPU约降低28%–32%；重复读取减少，但物理冷页仍需读取，磁盘量没有改善。匿名内存未下降，样本中反而高约0.5–0.9 MiB；它是结束点而非峰值，不宣称内存收益。投影的来源元数据现在保留到准备任务消费，消息正文使用已有Arc引用；本次消除重复工作，没有缩短模型请求本身的内容。
+
+模型替身捕获的长样本完整请求JSON逐字段相等，消息数同为2,575；首屏均32个事件。初始usage getter仍可能在首轮统计建立前返回未就绪，这是已有合同。剩余成本包括一次有效上下文投影、一次初始贡献计数、原请求保存与发送；前次请求无匹配的定位扫描及timeline_content去重写入并未由此次修改消除。
+
+136个context flow通过，覆盖一次投影、首次预算不再完整重计、子工具结果重载不失效、压缩、取消、provider校准和旧统计兼容。受影响crate的all-target Clippy、格式、生成依赖图/边界/服务检查和ADR检查通过。生产修改限5个文件；没有新事件字段、存储版本、索引或跨请求正文缓存。删减检查保留一个按请求对象匹配的临时交接槽（避免把其它请求或before修改后的请求误认成原投影），以及保存前的压缩/截止检查（避免将新压缩内容写成旧位置的统计）；不增加请求表或额外恢复状态。
 
 ## 6. 验证、范围与删减检查
 
-生产代码只调整 SessionTitle 的既有两个查询顺序；未新增类型、缓存、查询接口、索引或存储版本。同步其字段读取合同，修正总设计中已过时的首屏页尺寸描述并改为链接唯一的显示合同。
+§4标题修复的生产代码只调整 SessionTitle 的既有两个查询顺序；未新增类型、缓存、查询接口、索引或存储版本。同步其字段读取合同，修正总设计中已过时的首屏页尺寸描述并改为链接唯一的显示合同。
 
 复用 SessionTitle 全部 25 个流程用例，涵盖普通/Goal 标题来源、追加上下文、初始手工标题、恢复/fork/rename、取消和 Scheduler。首次并行执行时，一个初始标题等待通知测试超时；顺序重跑该文件及后续 native/Scheduler 文件全部通过。未改测试超时或降低断言。受影响 crate 的 all-target Clippy、workspace 格式检查通过；本次没有重跑完整 workspace CI。
 

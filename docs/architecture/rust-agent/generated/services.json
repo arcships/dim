@@ -770,6 +770,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::history::HistoryRenderer@session",
             "scope": null,
             "status": "Ready"
@@ -816,6 +821,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
+            "scope": null,
+            "provider": 40,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::history::HistoryRenderer@session",
             "scope": null,
@@ -872,6 +883,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
+            "provider": 40,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::history::HistoryRenderer@session",
             "provider": 21,

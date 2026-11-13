@@ -1,6 +1,6 @@
 use crate::{
     context_policy::ContextPolicy,
-    history::HistoryRenderer,
+    history::{HistoryRenderer, StreamedContext},
     host::*,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::{PromptSnapshot, scope_is_visible},
@@ -380,7 +380,15 @@ pub enum ContextOpError {
     Read(AgentError),
 }
 
+struct PreparedProjection {
+    request_id: String,
+    through: u64,
+    request: std::sync::Weak<ModelRequest>,
+    context: StreamedContext,
+}
+
 pub struct ContextPreparation {
+    projection: Mutex<Option<PreparedProjection>>,
     state: Mutex<PreparationState>,
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
@@ -400,6 +408,33 @@ pub struct ContextPreparation {
     identity: Arc<TimelineIdentity>,
 }
 impl ContextPreparation {
+    pub(crate) fn provide_projection(&self, source: &ContextPrepareData, context: StreamedContext) {
+        if self.policy.is_some() {
+            *self.projection.lock().unwrap() = Some(PreparedProjection {
+                request_id: source.request_id.clone(),
+                through: source.through,
+                request: Arc::downgrade(&source.request),
+                context,
+            });
+        }
+    }
+
+    fn take_projection(&self, source: &ContextPrepareData) -> Option<StreamedContext> {
+        self.projection
+            .lock()
+            .unwrap()
+            .take()
+            .filter(|projection| {
+                projection.request_id == source.request_id
+                    && projection.through == source.through
+                    && projection
+                        .request
+                        .upgrade()
+                        .is_some_and(|request| Arc::ptr_eq(&request, &source.request))
+            })
+            .map(|projection| projection.context)
+    }
+
     async fn rebuild(&self) -> dim_agent_runtime::Result<u64> {
         let through = self.timeline.committed();
         let mut request = TimelineQuery {
@@ -665,6 +700,7 @@ impl ContextPreparation {
         source: ContextPrepareData,
         result: std::result::Result<Arc<ModelRequest>, HostError>,
     ) -> dim_agent_runtime::Result<()> {
+        self.projection.lock().unwrap().take();
         if result.is_err() {
             self.references.lock().unwrap().remove(&source.request_id);
         }
@@ -806,6 +842,7 @@ impl ContextPreparation {
         cancel: CancellationToken,
         generation: &CancellationToken,
     ) -> std::result::Result<Arc<ModelRequest>, HostError> {
+        let projection = self.take_projection(&source);
         crate::context_policy::check_cancel(&cancel)?;
         let request = self
             .host
@@ -857,6 +894,7 @@ impl ContextPreparation {
                     .prepare(
                         request,
                         &source,
+                        projection,
                         exact_prefix.then_some(self.usage.as_ref()),
                         cancel.clone(),
                         &cancelled,
@@ -972,6 +1010,7 @@ impl DynPlugin for ContextPreparationPlugin {
             });
             ctx.provide_at(self.publisher.clone(), publisher)?;
             let service = Arc::new(ContextPreparation {
+                projection: Mutex::new(None),
                 state: Mutex::new(PreparationState::default()),
                 usage: ctx.require_at(&self.usage)?,
                 references: Mutex::new(std::collections::HashMap::new()),
@@ -994,6 +1033,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 }
                 owner.tasks.close();
                 owner.tasks.wait().await;
+                owner.projection.lock().unwrap().take();
                 owner.references.lock().unwrap().clear();
                 AgentError::aggregate(owner.errors.lock().unwrap().clone()).map_err(Into::into)
             })?;

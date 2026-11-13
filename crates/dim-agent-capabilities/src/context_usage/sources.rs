@@ -68,6 +68,35 @@ pub(super) fn message(
     Ok(())
 }
 
+fn source_filter() -> QueryFilter {
+    QueryFilter::And {
+        conditions: vec![
+            QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "kind".into(),
+                },
+                values: SOURCES.iter().map(|kind| (*kind).into()).collect(),
+            },
+            QueryFilter::Or {
+                conditions: vec![
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "context.render".into(),
+                        },
+                        values: vec![true.into()],
+                    },
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec!["context/configured".into(), "model/usage".into()],
+                    },
+                ],
+            },
+        ],
+    }
+}
+
 impl ContextUsage {
     pub(super) async fn run(&self, initial: u64) -> Result<()> {
         let mut machine = self.restore(initial).await?;
@@ -272,6 +301,7 @@ impl ContextUsage {
                 branch_id: position.branch_id.clone(),
                 sequence: saved.source_through.saturating_add(1),
             });
+            pending.query.filter = Some(source_filter());
             pending.query.select = QuerySelect::Exists;
             pending.page = None;
             if matches!(
@@ -665,27 +695,7 @@ impl ContextUsage {
             SOURCES,
             &["id", "kind", "position"],
         );
-        sources.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                sources.query.filter.take().expect("usage source kinds"),
-                QueryFilter::Or {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "context.render".into(),
-                            },
-                            values: vec![true.into()],
-                        },
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec!["context/configured".into(), "model/usage".into()],
-                        },
-                    ],
-                },
-            ],
-        });
+        sources.query.filter = Some(source_filter());
         sources.from = Some(TimelinePosition {
             branch_id: self.timeline.branch_id(),
             sequence: machine.source_through + 1,

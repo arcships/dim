@@ -291,7 +291,7 @@ pub(crate) struct ContextUsage {
     initial_history: Mutex<Option<InitialHistory>>,
 }
 
-struct InitialHistory {
+pub(crate) struct InitialHistory {
     through: u64,
     algorithm: String,
     summary: Summary,
@@ -516,27 +516,21 @@ fn reading(
 }
 
 impl ContextUsage {
-    pub(crate) async fn initialize_from_history(
+    pub(crate) async fn count_initial_history(
         &self,
         through: u64,
         history: &[crate::history::HistoryEntry],
         source: &crate::history::StreamedContext,
-        request: Arc<ModelRequest>,
+        request: &ModelRequest,
+        model: &dyn ContextModel,
         cancel: CancellationToken,
-    ) -> std::result::Result<bool, HostError> {
-        let _ = self.at(0, cancel.clone()).await;
+    ) -> std::result::Result<Option<(InitialHistory, Estimate)>, HostError> {
+        let _ = self.at(0, cancel).await;
         if !self.progress.borrow().needs_history {
-            return Ok(false);
+            return Ok(None);
         }
-        let model = self
-            .resolver
-            .0
-            .as_ref()
-            .expect("bound usage resolver")
-            .resolve(request, cancel.clone())
-            .await?;
         let Some(counter) = model.contribution_counter() else {
-            return Ok(false);
+            return Ok(None);
         };
         let mut summary = Summary::default();
         let key = |position: &TimelinePosition| -> Result<Key> {
@@ -597,11 +591,42 @@ impl ContextUsage {
                 replacement_messages: Some((replacement.len() + context_baseline.len()) as u64),
             });
         }
-        *self.initial_history.lock().unwrap() = Some(InitialHistory {
-            through,
-            algorithm: counter.algorithm().to_owned(),
-            summary,
-        });
+        let fixed = counter.fixed(
+            request.system.as_deref(),
+            request.tools.as_deref().map(Vec::as_slice),
+        );
+        let input = counter.estimate(
+            add(
+                fixed,
+                total(&summary).map_err(|error| HostError::failed(error.to_string()))?,
+            )
+            .map_err(|error| HostError::failed(error.to_string()))?,
+        );
+        Ok(Some((
+            InitialHistory {
+                through,
+                algorithm: counter.algorithm().to_owned(),
+                summary,
+            },
+            Estimate {
+                input,
+                source: BaselineSource::FullEstimate,
+                baseline: None,
+                delta: None,
+            },
+        )))
+    }
+
+    pub(crate) async fn initialize_counted(
+        &self,
+        initial: InitialHistory,
+        cancel: CancellationToken,
+    ) -> std::result::Result<bool, HostError> {
+        if !self.progress.borrow().needs_history {
+            return Ok(false);
+        }
+        let through = initial.through;
+        *self.initial_history.lock().unwrap() = Some(initial);
         self.wake.notify_one();
         let mut progress = self.progress.subscribe();
         loop {

@@ -8,6 +8,7 @@ exposes loop state without itself executing model or tool effects.
 
 | Service | Purpose |
 | --- | --- |
+| `B:ContextPreparation` | Transfer the request-local projection without another history read. |
 | `S:HistoryRenderer` | Render supported context history for requests. |
 | `S:ContextModelHost` | Window facts; with the strategy, context recovery and manual compaction are available. |
 | `S:CompactionStrategyHost` | The compaction strategy its manual step calls through ContextPolicy. |
@@ -168,7 +169,7 @@ compaction step.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
 | 提供 | `B:AgentLoop`、`B:StateCell<LoopSnapshot>`、`B:dyn LoopState` |
 | 被注入于 | — |
 <!-- /generated -->

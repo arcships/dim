@@ -2126,3 +2126,21 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
+
+### Request-local projection handoff
+
+Loop passes the projection it already read to ContextPreparation before publishing
+`context/prepare`. ContextPreparation retains at most one pending projection, bound
+to the request ID, fixed cutoff and the original request object. Delivery transfers
+it into the preparation task; cancellation, failure and closing discard it. It is
+not serialized, retained across requests or used to resume old execution. A request
+without a matching local handoff uses the existing fixed-cutoff projection path.
+The event remains the execution handoff; supplying projection data starts no work.
+
+Policy uses this same projection for budgeting and compaction. When Usage needs
+initialization and the host preserved the exact history prefix, Usage computes
+initial contributions and the request estimate once. Policy uses that estimate,
+and Usage saves the computed contributions only if the final request still uses
+the original projection cutoff and no later compaction was adopted. Unsupported
+counters and request-specific appended messages keep the actual-request counting
+path. The final request validation continues to reuse matching prepared estimates.

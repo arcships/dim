@@ -125,6 +125,7 @@ pub struct AgentLoop {
     /// turn ends.
     binding: Arc<ToolBinding>,
     history: Arc<HistoryRenderer>,
+    preparation: Arc<crate::context_preparation::ContextPreparation>,
     /// The Session's guide entries, for the host-prepared path.
     guide: Arc<crate::prompt_guide::GuideEntries>,
     /// This branch's timeline id, which selects the entries in force.
@@ -1178,7 +1179,7 @@ impl AgentLoop {
                         .map_err(AgentError::InvalidInput)?;
                     source.turn_id = turn_id.clone();
                     source.request_id = request_id.clone();
-                    return Ok(source);
+                    return Ok((source, None));
                 }
                 let streamed = owner
                     .history
@@ -1186,11 +1187,11 @@ impl AgentLoop {
                     .await?;
                 let (prefix, entries, configuration, prompt) = (
                     crate::context_policy::PolicyContext::from_stream(&streamed),
-                    streamed.history,
-                    streamed.configuration,
-                    streamed.prompt,
+                    &streamed.history,
+                    &streamed.configuration,
+                    streamed.prompt.clone(),
                 );
-                let history = prefix.messages(&entries);
+                let history = prefix.messages(entries);
                 let settings = match &configuration {
                     Some(data) => crate::host::ModelSettings {
                         provider_id: data.settings.provider_id.clone(),
@@ -1231,26 +1232,26 @@ impl AgentLoop {
                         settings
                     }
                 };
-                Ok(ContextPrepareData {
+                Ok((ContextPrepareData {
                     turn_id: turn_id.clone(),
                     request_id: request_id.clone(),
                     through,
                     request: Arc::new(settings.request(history)),
-                    configuration: configuration.map(|data| PromptReference {
-                        timeline: data.timeline,
-                        revision: data.revision,
+                    configuration: configuration.as_ref().map(|data| PromptReference {
+                        timeline: data.timeline.clone(),
+                        revision: data.revision.clone(),
                     }),
                     prompt,
                     recovery: None,
                     failure_chain: None,
-                })
+                }, Some(streamed)))
             }).catch_unwind();
             let result = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Ok(Err(AgentError::Cancelled("Context read cancelled".into()))),
                 result = work => result,
             };
-            let result: Result<ContextPrepareData> = match result {
+            let result: Result<(ContextPrepareData, Option<crate::history::StreamedContext>)> = match result {
                 Ok(result) => result,
                 Err(panic) => {
                     owner.dispatcher.fail(AgentError::fault(
@@ -1293,7 +1294,10 @@ impl AgentLoop {
                         outcome: ModelOutputOutcome::Cancelled { reason },
                     }),
                     None => match result {
-                        Ok(source) => {
+                        Ok((source, projection)) => {
+                            if let Some(projection) = projection {
+                                owner.preparation.provide_projection(&source, projection);
+                            }
                             request.source = Some(source.clone());
                             EventKind::ContextPrepare(source)
                         }
@@ -1689,6 +1693,7 @@ pub struct LoopPlugin {
     prepare: Key<PrepareModelHost>,
     binding: Key<ToolBinding>,
     history: Key<HistoryRenderer>,
+    preparation: Key<crate::context_preparation::ContextPreparation>,
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     guide: Key<crate::prompt_guide::GuideEntries>,
@@ -1705,6 +1710,7 @@ impl LoopPlugin {
             prepare: names.key()?,
             binding: names.key()?,
             history: names.key()?,
+            preparation: names.key()?,
             context: names.key()?,
             strategy: names.key()?,
             guide: names.key()?,
@@ -1723,6 +1729,7 @@ impl DynPlugin for LoopPlugin {
             self.prepare.erase(),
             self.binding.erase(),
             self.history.erase(),
+            self.preparation.erase(),
             self.context.erase(),
             self.strategy.erase(),
             self.guide.erase(),
@@ -1753,6 +1760,7 @@ impl DynPlugin for LoopPlugin {
                 prepare,
                 binding,
                 history,
+                preparation: ctx.require_at(&self.preparation)?,
                 guide,
                 branch: identity.branch_id.clone(),
                 policy,

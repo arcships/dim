@@ -535,8 +535,8 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         .unwrap();
     assert_eq!(
         store.context_pages.lock().unwrap().len(),
-        2,
-        "the first stable request uses the existing Loop and policy projections to initialize numbers"
+        1,
+        "the first stable request shares one projection between Loop, policy and usage"
     );
     let events = chain_events(&session, "main", ..).await.unwrap();
     assert_eq!(
@@ -3289,7 +3289,8 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     use dim_agent_capabilities::context_preparation::ContextPreparation;
     let counter = Arc::new(ObservedCounter::default());
     let mut profile = builder_with_usage_resolver(counter.clone());
-    profile.timeline_store(Arc::new(MemoryTimelineStore::default()));
+    let store = Arc::new(CountContextReads::default());
+    profile.timeline_store(store.clone());
     let cell = Arc::new(std::sync::OnceLock::new());
     let capture = cell.clone();
     profile.require_feature(Feature::new("test.raw-timeline").branch(
@@ -3344,6 +3345,17 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     session.idle("main").await.unwrap();
     let empty = preparation.usage(CancellationToken::new()).await.unwrap();
     let initial_messages = counter.messages.load(Ordering::SeqCst);
+    assert_eq!(
+        counter.full.load(Ordering::SeqCst),
+        0,
+        "the initial budget and final validation reuse Usage contributions"
+    );
+    assert_eq!(
+        store.context_pages.lock().unwrap().len(),
+        1,
+        "the first request shares Loop's projection with policy"
+    );
+
     assert!(
         counter
             .fixed_value
@@ -4064,14 +4076,17 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     agent.close().await.unwrap();
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent.restore_session(id.clone()).await.unwrap();
-    assert!(matches!(
+    assert_eq!(
         session
             .service::<ContextPreparation>("main")
             .unwrap()
             .usage(CancellationToken::new())
-            .await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
-    ));
+            .await
+            .unwrap()
+            .estimated_input_tokens,
+        before.estimated_input_tokens,
+        "non-rendered child results do not invalidate saved usage"
+    );
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
         counts,

@@ -9271,9 +9271,17 @@
     },
     {
       "from": "dim_agent_capabilities::agent_loop",
+      "to": "dim_agent_capabilities::context_preparation",
+      "references": [
+        "path crate::context_preparation::ContextPreparation"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::agent_loop",
       "to": "dim_agent_capabilities::history",
       "references": [
         "path HistoryRenderer",
+        "path crate::history::StreamedContext",
         "use crate::history::HistoryRenderer"
       ]
     },
@@ -10245,7 +10253,9 @@
       "to": "dim_agent_capabilities::history",
       "references": [
         "path HistoryRenderer",
-        "use crate::history::HistoryRenderer"
+        "path StreamedContext",
+        "use crate::history::HistoryRenderer",
+        "use crate::history::StreamedContext"
       ]
     },
     {
@@ -10931,6 +10941,7 @@
       "from": "dim_agent_capabilities::context_usage::sources",
       "to": "dim_agent_runtime::timeline_query::properties",
       "references": [
+        "path QueryFilter",
         "path QueryFilter::And",
         "path QueryOutput::Exists",
         "path QueryOutput::Rows",
@@ -38190,7 +38201,7 @@
       "from": "dim_cli::session_host",
       "to": "dim_cli::management::skills",
       "references": [
-        "path crate::management::skills::catalog"
+        "path crate::management::skills::Catalog"
       ]
     },
     {
@@ -38487,10 +38498,10 @@
         "path permission::Added::Present",
         "path permission::PRESET_METHODS",
         "path permission::RULE_METHODS",
+        "path permission::State",
         "path permission::add_rule",
         "path permission::always_command",
         "path permission::proposed",
-        "path permission::read",
         "path permission::select",
         "path permission::select_preset",
         "use crate::permission"

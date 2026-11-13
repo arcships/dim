@@ -76,6 +76,7 @@ flowchart LR
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p44
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p44
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p44
+  p40 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p43
   p21 -->|"dim_agent_capabilities::history::HistoryRenderer@session"| p43
   p21 -->|"dim_agent_capabilities::host::CompactionStrategyHost@session"| p43
   p21 -->|"dim_agent_capabilities::host::ContextModelHost@session"| p43

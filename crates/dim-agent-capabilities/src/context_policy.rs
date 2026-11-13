@@ -993,6 +993,7 @@ impl ContextPolicy {
         &self,
         request: Arc<ModelRequest>,
         source: &ContextPrepareData,
+        projection: Option<crate::history::StreamedContext>,
         usage: Option<&crate::context_usage::ContextUsage>,
         cancel: CancellationToken,
         cancelled: &(dyn Fn() -> String + Sync),
@@ -1126,11 +1127,14 @@ impl ContextPolicy {
             }
             preliminary = Some((model, evidence));
         }
-        let mut streamed = self
-            .history
-            .rendered_stream(&self.timeline, source.through, 256)
-            .await
-            .map_err(|error| HostError::failed(error.to_string()))?;
+        let mut streamed = match projection {
+            Some(projection) => projection,
+            None => self
+                .history
+                .rendered_stream(&self.timeline, source.through, 256)
+                .await
+                .map_err(|error| HostError::failed(error.to_string()))?,
+        };
         let boundary = streamed.history.last().map(|entry| entry.id.clone());
         let context = PolicyContext::from_stream(&streamed);
         let original = request.clone();
@@ -1143,6 +1147,7 @@ impl ContextPolicy {
                 reusable,
             )
             .await?;
+        let mut initial = None;
         let prepared = async {
             let prepared_through = view
                 .adopted
@@ -1174,10 +1179,36 @@ impl ContextPolicy {
                     (model, evidence)
                 }
             };
-            let estimate = evidence
+            let estimate = match evidence
                 .as_ref()
                 .and_then(|evidence| evidence.estimate(model.as_ref()))
-                .unwrap_or_else(|| Self::local_estimate(&view.prepared, model.as_ref()));
+            {
+                Some(estimate) => estimate,
+                None => {
+                    let counted = match usage.filter(|_| view.adopted.is_none()) {
+                        Some(usage) => {
+                            usage
+                                .count_initial_history(
+                                    source.through,
+                                    &view.history,
+                                    &streamed,
+                                    &view.prepared,
+                                    model.as_ref(),
+                                    cancel.clone(),
+                                )
+                                .await?
+                        }
+                        None => None,
+                    };
+                    match counted {
+                        Some((counted, estimate)) => {
+                            initial = Some(counted);
+                            estimate
+                        }
+                        None => Self::local_estimate(&view.prepared, model.as_ref()),
+                    }
+                }
+            };
             self.record_budget(source, boundary, &estimate, model.as_ref())?;
             let provider_budget = source.recovery.clone().or_else(|| {
                 (estimate.input > input_budget(model.as_ref())).then(|| ProviderOutputBudgetFacts {
@@ -1279,15 +1310,8 @@ impl ContextPolicy {
         if view.adopted.is_none()
             && Arc::ptr_eq(&prepared.request, &view.prepared)
             && let Some(usage) = usage
-            && usage
-                .initialize_from_history(
-                    source.through,
-                    &view.history,
-                    &streamed,
-                    prepared.request.clone(),
-                    cancel.clone(),
-                )
-                .await?
+            && let Some(initial) = initial
+            && usage.initialize_counted(initial, cancel.clone()).await?
         {
             usage
                 .reference(source, source.through, &prepared.request, None, cancel)
