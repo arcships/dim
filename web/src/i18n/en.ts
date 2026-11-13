@@ -51,6 +51,7 @@ const en = {
   "fork.confirm": "Fork this session at its last finished turn? The new session copies main up to that point.",
   "fork.confirmLabel": "Fork",
   "composer.command.goal": "Show or change the goal",
+  "composer.command.loop": "Run a prompt on a rhythm",
   "goal.action.clear": "cleared",
   "goal.action.edit": "edited",
   "goal.action.pause": "paused",

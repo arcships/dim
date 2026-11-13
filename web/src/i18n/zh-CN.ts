@@ -53,6 +53,7 @@ const zhCN: Messages = {
   "fork.confirm": "在最近一次完成的回合处分叉此会话？新会话会复制主线到该位置。",
   "fork.confirmLabel": "分叉",
   "composer.command.goal": "查看或修改目标",
+  "composer.command.loop": "按节奏重复运行提示词",
   "goal.action.clear": "清除",
   "goal.action.edit": "修改",
   "goal.action.pause": "暂停",

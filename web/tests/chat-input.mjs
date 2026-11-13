@@ -74,7 +74,7 @@ const question = (branchId, callId, multiSelect = false) => ({
   questions: [{ id: "1", question: `Choose ${callId}`, options: [{ label: "Alpha" }, { label: "Beta" }], multiSelect, allowCustom: true }],
 })
 
-function mount(t, branchId, questions = [], component, stores = {}) {
+function mount(t, branchId, questions = [], component, stores = {}, props = {}) {
   const replies = [], submissions = []
   globalThis.chatInputNavigations = []
   const view = reactive({
@@ -104,6 +104,7 @@ function mount(t, branchId, questions = [], component, stores = {}) {
   const app = renderer.createApp(component ?? (branchId === "main" ? ChatPage : LineConversation), {
     sessionId: "session", branchId,
     ...(component ? { running: false, modelSelectable: false, model: undefined, attachments: false, send: async () => {}, selectModel() {} } : {}),
+    ...props,
   })
   app.directive("tooltip", {})
   app.mount(root)
@@ -384,6 +385,44 @@ test("schedule commands navigate only when admitted and not escaped", async t =>
       }
     }
   }
+})
+
+test("a /loop submission reaches the loop callback, and is offered only when one is given", async (t) => {
+  const calls = []
+  const loop = async (words) => { calls.push(words) }
+  const { root, submissions } = mount(t, "main", [], ComposerPanel, {}, { sessionCommands: { loop } })
+  const field = all(root).find((element) => element.type === "textarea")
+  field.props.onFocus()
+  field.props["onUpdate:modelValue"]("/loop 5m check")
+  await flush()
+  field.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+  await flush()
+  assert.deepEqual(calls, ["5m check"], "the words after /loop reach the callback")
+  assert.deepEqual(submissions, [], "the command is not sent as model input")
+
+  const bare = mount(t, "main", [], ComposerPanel, {}, { sessionCommands: { loop } })
+  const bareField = all(bare.root).find((element) => element.type === "textarea")
+  const enter = () => bareField.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+  bareField.props.onFocus()
+  bareField.props["onUpdate:modelValue"]("/loop")
+  await flush()
+  await enter()
+  await flush()
+  assert.equal(bareField.value, "/loop ", "the menu completes the command without dispatching it")
+  await enter()
+  await flush()
+  assert.deepEqual(calls, ["5m check", ""], "a bare /loop asks for the line's loops")
+
+  const absent = mount(t, "main", [], ComposerPanel)
+  const absentField = all(absent.root).find((element) => element.type === "textarea")
+  absentField.props.onFocus()
+  absentField.props["onUpdate:modelValue"]("/loop")
+  await flush()
+  assert.equal(
+    all(absent.root).some((element) => element.type === "button" && text(element).startsWith("/loop")),
+    false,
+    "without a callback /loop is not offered",
+  )
 })
 
 test("files picked with overlapping names keep their own paths in the submitted message", async (t) => {
