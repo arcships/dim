@@ -1500,14 +1500,20 @@ impl AgentLoop {
                         // In order: the context-budget recovery keeps its own
                         // contract and reads neither the turn's continuation nor
                         // its slot; then one §6.2 continuation for a step whose
-                        // calls were announced and never executed; then an
+                        // calls were announced and never executed, when a new
+                        // request can settle the failure at all; then an
                         // output-limit stop, which ends the turn Completed because
                         // no answer can be completed rather than because one
                         // failed; then a failure.
-                        let limit = matches!(
-                            failure.as_deref().map(|failure| failure.kind),
-                            Some(ModelFailureKind::OutputLimit)
-                        );
+                        let limit = failure
+                            .as_deref()
+                            .is_some_and(|failure| failure.kind == ModelFailureKind::OutputLimit);
+                        // A continuation is worth one request only when the
+                        // provider did not veto retrying the failure and a new
+                        // request can settle it at all.
+                        let continues = failure.as_deref().is_some_and(|failure| {
+                            !failure.retry_forbidden && a_new_request_can_help(failure.kind)
+                        });
                         if self.policy.is_some()
                             && budget.is_some()
                             && request
@@ -1518,7 +1524,8 @@ impl AgentLoop {
                             let mut source = request.source.clone().expect("checked source");
                             source.recovery = budget.clone();
                             self.next_model(turn, Some(source), event.sequence)?;
-                        } else if !request.started.is_empty()
+                        } else if continues
+                            && !request.started.is_empty()
                             && !turn.continued
                             && turn.interrupted.is_none()
                             && !self.driven()
@@ -1758,5 +1765,26 @@ impl DynPlugin for LoopPlugin {
             ctx.provide_at(self.loop_state.clone(), service as Arc<dyn LoopState>)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+/// Whether a new request can settle a failure that announced calls. The kinds
+/// that need the user or the provider's owner to act first are excluded: the
+/// same context fails the same way, and an unrecoverable rejection is not
+/// repeated behind the user's back.
+fn a_new_request_can_help(kind: ModelFailureKind) -> bool {
+    match kind {
+        ModelFailureKind::Network
+        | ModelFailureKind::RateLimited
+        | ModelFailureKind::ServerError
+        | ModelFailureKind::MalformedResponse
+        | ModelFailureKind::OutputLimit
+        | ModelFailureKind::Unknown => true,
+        ModelFailureKind::AuthRejected
+        | ModelFailureKind::QuotaExhausted
+        | ModelFailureKind::NotFound
+        | ModelFailureKind::InvalidRequest
+        | ModelFailureKind::ContentFiltered
+        | ModelFailureKind::ContextTooLong => false,
     }
 }

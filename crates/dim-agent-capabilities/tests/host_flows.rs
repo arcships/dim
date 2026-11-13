@@ -501,6 +501,196 @@ async fn a_call_announced_and_never_executed_continues_the_turn_once() {
     }
 }
 
+/// A model that announces one call and fails before its arguments complete, so
+/// nothing reaches a tool. Its provider policy decides whether retrying that
+/// failure is forbidden, and every later request echoes.
+#[derive(Clone)]
+struct AnnouncingFailure {
+    failure: ModelFailureKind,
+    vetoed: bool,
+    seen: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl ModelFailurePolicy for AnnouncingFailure {
+    fn forbids_retry(&self, _: &HostError) -> bool {
+        self.vetoed
+    }
+}
+impl ResolveModelConnection for AnnouncingFailure {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: Some(Arc::new(self.clone())),
+                recovery: None,
+            })
+        })
+    }
+}
+impl ModelDriver for AnnouncingFailure {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        if self.seen.fetch_add(1, Ordering::SeqCst) > 0 {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let error = HostError::Failed {
+            message: "fixture rejection".into(),
+            budget: None,
+            kind: HostErrorKind::Other,
+            model: Some(Box::new(ModelFailureFacts {
+                kind: self.failure,
+                reason: Some("fixture rejection".into()),
+                status: None,
+                provider_code: None,
+                request_id: None,
+                cause: Vec::new(),
+                retry_after: None,
+                attempts: 1,
+                waited: Duration::ZERO,
+                retry_after_stop: None,
+                retry_forbidden: false,
+            })),
+            presentation: None,
+        };
+        Box::pin(async move {
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "announced".into(),
+                }),
+                Ok(ModelChunk::ToolStart {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                }),
+                Ok(ModelChunk::ToolArguments {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                    delta: "{\"text\":\"hel".into(),
+                }),
+                Err(error),
+            ])) as ModelStream)
+        })
+    }
+}
+
+struct AnnouncingHosts(AnnouncingFailure);
+impl Plugin for AnnouncingHosts {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.announcing-failure"
+    }
+    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
+        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        Ok(())
+    }
+}
+
+/// One turn against [`AnnouncingFailure`], with its policy on the invocation
+/// path as in production.
+async fn run_announcing_failure(
+    failure: ModelFailureKind,
+    vetoed: bool,
+) -> (Vec<std::sync::Arc<AgentEvent>>, MinimalHost) {
+    let model = AnnouncingFailure {
+        failure,
+        vetoed,
+        seen: Default::default(),
+    };
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = model.clone();
+    builder.plugin(move |_| Ok(Box::new(AnnouncingHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    (events, agent)
+}
+
+#[tokio::test]
+async fn a_vetoed_failure_does_not_continue_the_turn() {
+    let (events, agent) = run_announcing_failure(ModelFailureKind::ServerError, true).await;
+    assert_eq!(starts(&events), 1, "the provider vetoed the continuation");
+    assert!(matches!(
+        turn_outcome(&events),
+        Some(TurnOutcome::Failed { .. })
+    ));
+    // The veto does not change how the announced call is closed.
+    let closed = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) if data.call_event_id.is_none() => Some(data.clone()),
+            _ => None,
+        })
+        .expect("the announced call is closed");
+    assert_eq!(closed.results.len(), 1);
+    assert_eq!(closed.results[0].result.is_error, Some(true));
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failure_no_new_request_can_settle_ends_the_turn() {
+    for kind in [
+        ModelFailureKind::AuthRejected,
+        ModelFailureKind::QuotaExhausted,
+        ModelFailureKind::NotFound,
+        ModelFailureKind::InvalidRequest,
+        ModelFailureKind::ContentFiltered,
+        ModelFailureKind::ContextTooLong,
+    ] {
+        let (events, agent) = run_announcing_failure(kind, false).await;
+        assert_eq!(starts(&events), 1, "{kind:?}: no continuation");
+        assert!(
+            matches!(turn_outcome(&events), Some(TurnOutcome::Failed { .. })),
+            "{kind:?}: {:?}",
+            turn_outcome(&events)
+        );
+        agent.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_failure_a_new_request_can_settle_continues_the_turn() {
+    for kind in [
+        ModelFailureKind::Network,
+        ModelFailureKind::RateLimited,
+        ModelFailureKind::ServerError,
+        ModelFailureKind::MalformedResponse,
+        ModelFailureKind::Unknown,
+    ] {
+        let (events, agent) = run_announcing_failure(kind, false).await;
+        assert_eq!(starts(&events), 2, "{kind:?}: the turn continues once");
+        agent.close().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_second_truncated_call_settles_the_turn() {
     for (cut, expected) in [
