@@ -39,6 +39,8 @@ export type SessionSummary = SessionTitle & {
   parentSessionId?: string
   /** Unix milliseconds of the last main-branch event. */
   updatedAt: number
+  /** Whether this daemon closed the Session, reported by a read that asked for closed rows. */
+  closed?: boolean
 }
 
 export type CreateResult = { sessionId: string; model: ModelId; sequence: number }

@@ -217,6 +217,8 @@ export function readSummaries(value: unknown): SessionSummary[] {
     const origin = optStr(source, "origin", at)
     if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown" && origin !== "automation") fail(`${at}.origin`, "client, acp, internal, unknown or automation")
     const parentSessionId = optStr(source, "parentSessionId", at)
+    const closed = source.closed
+    if (closed !== undefined && typeof closed !== "boolean") fail(`${at}.closed`, "a boolean")
     return {
       ...readSessionTitle(source, at),
       sessionId: str(source, "sessionId", at),
@@ -228,6 +230,7 @@ export function readSummaries(value: unknown): SessionSummary[] {
       ...(preview === undefined ? {} : { preview }),
       ...(origin === undefined ? {} : { origin }),
       ...(parentSessionId === undefined ? {} : { parentSessionId }),
+      ...(closed === undefined ? {} : { closed: closed as boolean }),
       updatedAt: num(source, "updatedAt", at),
     }
   })
