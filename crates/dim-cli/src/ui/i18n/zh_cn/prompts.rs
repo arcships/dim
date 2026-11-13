@@ -21,28 +21,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "Y 退出 · N 留下 · ←→ 移动 · Enter 确认"
         }
-        "Restart dimcode?" => "重启 dimcode？",
-        "Restart" => "重启",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "Y 重启 · N 留下 · ←→ 移动 · Enter 确认"
-        }
         "Update available" => "有新版本",
         "Version {latest} is available (you have {current})." => {
             "{latest} 已发布（当前 {current}）。"
         }
-        "Will run: {command}" => "将执行：{command}",
         "To update, run: {command}" => "升级请执行：{command}",
-        "Update now" => "立即升级",
         "Skip this version" => "跳过此版本",
         "Skipped {version}." => "已跳过 {version}。",
-        "Later" => "稍后",
         "Close" => "关闭",
-        "Restart now" => "立即重启",
-        "Updating to {version}..." => "正在升级到 {version}...",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "已升级到 {version}，重启 DimCode 后生效。"
-        }
-        "Update failed: {error}" => "升级失败：{error}",
         "←→ move · Enter confirm · Esc close" => "←→ 移动 · Enter 确认 · Esc 关闭",
         "Permission required" => "需要授权",
         "Subagent tool approval" => "子智能体工具审批",

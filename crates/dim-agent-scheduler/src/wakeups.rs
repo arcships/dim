@@ -220,6 +220,9 @@ impl Wakeups {
     /// Records a one-shot wakeup. An instant already past the grace window is
     /// recorded `expired` at once; nothing is ever replayed (A.4's rule).
     pub async fn create(&self, request: WakeupRequest) -> Result<Wakeup, SchedulerError> {
+        let _activity = self.shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let now = Utc::now();
         let expired = now - request.at >= Duration::seconds(GRACE_SECONDS);
         let created = Wakeup {
@@ -272,6 +275,9 @@ impl Wakeups {
         session_id: &str,
         wakeup_id: &str,
     ) -> Result<(Wakeup, bool), SchedulerError> {
+        let _activity = self.shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let _hold = self.shared.wakeups.lock().await;
         let session_id = session_id.to_owned();
         let wakeup_id = wakeup_id.to_owned();
@@ -330,6 +336,9 @@ impl Wakeups {
     /// Nothing this pass awaits takes that lock again: `sessions.input` only
     /// queues an input on the target Session.
     pub async fn evaluate(&self) -> Result<(), SchedulerError> {
+        let Some(_activity) = self.shared.activity.take_hold() else {
+            return Ok(());
+        };
         let _hold = self.shared.wakeups.lock().await;
         let now = Utc::now();
         let snapshot = read(&self.shared.files).await?;

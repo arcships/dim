@@ -588,6 +588,423 @@ fn a_build_from_source_reports_its_version_as_source() {
 }
 
 #[test]
+fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
+    let home = Home::new();
+    fs::remove_dir_all(home.0.join("rust")).unwrap();
+    let prefix = home.0.join("node prefix");
+    let executable = prefix.join("lib/node_modules/dimcode-alpha/bin/dimcode");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_dimcode"), &executable).unwrap();
+    let executable = fs::canonicalize(executable).unwrap();
+    let prefix = fs::canonicalize(prefix).unwrap();
+    fs::create_dir(prefix.join("bin")).unwrap();
+    let npm = prefix.join("bin/npm");
+    fs::write(
+        &npm,
+        r#"#!/bin/sh
+printf '%s\n' "$@" > "$UPDATE_ARGS"
+if [ "$UPDATE_FAIL" = 1 ]; then
+  echo 'fixture install failed' >&2
+  exit 7
+fi
+echo 'Downloading package' >&2
+if [ -n "$UPDATE_CHILD" ]; then
+  echo $$ > "$UPDATE_PID"
+  sh -c '
+    if [ "$UPDATE_IGNORE_TERM" = 1 ]; then trap "" TERM; fi
+    echo $$ > "$UPDATE_CHILD"
+    while [ ! -f "$UPDATE_CONTINUE" ]; do sleep 0.1; done
+    echo installed > "$UPDATE_MARKER"
+  ' &
+  wait
+elif [ -n "$UPDATE_CONTINUE" ]; then
+  while [ ! -f "$UPDATE_CONTINUE" ]; do sleep 0.1; done
+fi
+echo 'Installed package'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o700)).unwrap();
+    let recorded = home.0.join("install-args");
+    let tag = env!("CARGO_PKG_VERSION")
+        .split_once('-')
+        .map_or("latest", |(_, prerelease)| {
+            prerelease.split('.').next().unwrap()
+        });
+    let refuse = |extra: &[&str]| {
+        Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .args(extra)
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .output()
+            .unwrap()
+    };
+    let output = refuse(&[]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--confirm-legacy-exited"),
+        "{output:?}"
+    );
+    assert!(
+        !recorded.exists(),
+        "an unconfirmed legacy installation must not start npm"
+    );
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(prefix.join(".dimcode-update.lock"))
+        .unwrap();
+    lease.try_lock_shared().unwrap();
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("in use by a client, server or update"),
+        "{output:?}"
+    );
+    assert!(
+        !recorded.exists() && !prefix.join(".dimcode-consumers").exists(),
+        "a live consumer must block the install and the baseline"
+    );
+    drop(lease);
+    fs::set_permissions(
+        prefix.join(".dimcode-update.lock"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+    let output = Command::new(&executable)
+        .args(["--home", home.0.to_str().unwrap(), "--version"])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "version is answered before any registration: {output:?}"
+    );
+    let output = Command::new(&executable)
+        .args(["--home", home.0.to_str().unwrap(), "daemon", "stop"])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Cannot register with installation"),
+        "an unreadable lock must stop a recognised consumer: {output:?}"
+    );
+    fs::set_permissions(
+        prefix.join(".dimcode-update.lock"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let served = Home::new();
+    let daemon_home = served.0.join("rust");
+    daemon_cleanup::mark_test_server(&served.0);
+    let mut daemon = Command::new(&executable)
+        .arg("app-server")
+        .arg("--unix")
+        .arg(daemon_home.join("daemon.sock"))
+        .args(["--no-ws", "--home"])
+        .arg(&daemon_home)
+        .arg("--product-home")
+        .arg(&served.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let socket = daemon_home.join("daemon.sock");
+    let deadline = Instant::now() + HANG_GUARD;
+    while !socket.exists() {
+        if daemon.try_wait().unwrap().is_some() {
+            let mut stderr = String::new();
+            std::io::Read::read_to_string(daemon.stderr.as_mut().unwrap(), &mut stderr).unwrap();
+            panic!("the packaged App Server exited before it served: {stderr}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the packaged App Server never served"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("in use by a client, server or update"),
+        "a running packaged App Server must block the update: {output:?}"
+    );
+    assert!(!recorded.exists() && !prefix.join(".dimcode-consumers").exists());
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
+    let output = refuse(&["--confirm-legacy-exited"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(prefix.join(".dimcode-consumers").exists());
+    fs::remove_file(&recorded).unwrap();
+    for (package, fail) in [
+        ("dimcode-alpha", false),
+        ("dimcode", false),
+        ("dimcode-alpha", true),
+    ] {
+        let output = Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", package)
+            .env("DIMCODE_UPDATE_CHECK", "0")
+            .env("DIM_EFFORT_LEVEL", "invalid")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_FAIL", if fail { "1" } else { "0" })
+            .output()
+            .unwrap();
+        assert_eq!(output.status.success(), !fail, "{output:?}");
+        assert_eq!(
+            fs::read_to_string(&recorded).unwrap(),
+            format!(
+                "install\n-g\n--prefer-online\n--prefix\n{}\n{package}@{tag}\n",
+                prefix.display()
+            )
+        );
+        if fail {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("fixture install failed"));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Updated "));
+        } else {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(&format!("Updated {package}"))
+            );
+            assert!(!String::from_utf8_lossy(&output.stderr).contains("Installed package"));
+        }
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("Updating {package}")));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stdout.contains(&0x1b));
+        assert!(!output.stderr.contains(&0x1b));
+    }
+    fs::remove_file(&recorded).unwrap();
+    for package in [
+        "other-package",
+        "dimcode-alpha@latest",
+        "--ignore-scripts",
+        "",
+    ] {
+        let output = Command::new(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", package)
+            .env("UPDATE_ARGS", &recorded)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("DIMCODE_NPM_PACKAGE must be dimcode or dimcode-alpha"),
+            "{output:?}"
+        );
+        assert!(!recorded.exists(), "an invalid package must not start npm");
+    }
+    let resume = home.0.join("continue-install");
+    let launch = |command, width| {
+        let terminal = Terminal::launch(command);
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: width,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    terminal.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
+        terminal
+    };
+    for (width, fail) in [(80, false), (24, false), (80, true)] {
+        let mut command = Command::new(&executable);
+        command
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_FAIL", if fail { "1" } else { "0" });
+        let mut terminal = launch(command, width);
+        if !fail {
+            terminal.until(&format!("({tag}) · 0s"));
+            terminal.until(&format!("({tag}) · 1s"));
+            assert!(
+                !terminal.transcript.contains('\n'),
+                "progress must stay on one row"
+            );
+            assert!(!terminal.transcript.contains("Downloading package"));
+            if width == 80 {
+                let other = Home::new();
+                let other_install = other.0.join("install-args");
+                let deadline = Instant::now() + HANG_GUARD;
+                while !recorded.exists() {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the first installer never started"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let output = Command::new(&executable)
+                    .args(["--home", other.0.to_str().unwrap(), "update"])
+                    .env("DIMCODE_NPM_PACKAGE", "dimcode")
+                    .env("UPDATE_ARGS", &other_install)
+                    .output()
+                    .unwrap();
+                assert!(!output.status.success(), "{output:?}");
+                assert!(
+                    String::from_utf8_lossy(&output.stderr)
+                        .contains("in use by a client, server or update"),
+                    "{output:?}"
+                );
+                assert!(
+                    !other_install.exists(),
+                    "the competing installer must not start"
+                );
+            }
+            fs::write(&resume, "continue").unwrap();
+        }
+        assert_eq!(terminal.wait().success(), !fail);
+        let outcome = if fail {
+            "Error: fixture install failed"
+        } else {
+            "Updated dimcode-alpha"
+        };
+        assert!(
+            terminal.transcript.contains(outcome),
+            "{}",
+            terminal.transcript
+        );
+        assert_eq!(terminal.transcript.matches('\n').count(), 1);
+        if !fail {
+            fs::remove_file(&resume).unwrap();
+        }
+    }
+    let log = home.0.join("update.log");
+    for redirect in ["stdout", "stderr"] {
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                if redirect == "stdout" {
+                    "exec \"$@\" > \"$UPDATE_LOG\""
+                } else {
+                    "exec \"$@\" 2> \"$UPDATE_LOG\""
+                },
+                "sh",
+            ])
+            .arg(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_LOG", &log);
+        let mut terminal = launch(command, 80);
+        if redirect == "stdout" {
+            terminal.until(&format!("({tag}) · 0s"));
+        } else {
+            let deadline = Instant::now() + HANG_GUARD;
+            while !fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("Updating dimcode-alpha")
+            {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        fs::write(&resume, "continue").unwrap();
+        assert!(terminal.wait().success());
+        let logged = fs::read_to_string(&log).unwrap();
+        if redirect == "stdout" {
+            assert!(logged.is_empty());
+            assert!(terminal.transcript.contains("Updated dimcode-alpha"));
+        } else {
+            assert!(terminal.transcript.is_empty());
+            assert!(logged.contains("Updating dimcode-alpha"));
+            assert!(logged.contains("Updated dimcode-alpha"));
+            assert!(!logged.contains('\u{1b}'));
+        }
+        fs::remove_file(&resume).unwrap();
+    }
+    let installer_pid = home.0.join("installer-pid");
+    let child_pid = home.0.join("child-pid");
+    let marker = home.0.join("installed");
+    for interruption in ["SIGTERM", "SIGINT", "closed terminal"] {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap '' HUP; exec \"$@\"", "sh"])
+            .arg(&executable)
+            .args(["--home", home.0.to_str().unwrap(), "update"])
+            .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
+            .env("UPDATE_ARGS", &recorded)
+            .env("UPDATE_CONTINUE", &resume)
+            .env("UPDATE_PID", &installer_pid)
+            .env("UPDATE_CHILD", &child_pid)
+            .env("UPDATE_MARKER", &marker)
+            .env(
+                "UPDATE_IGNORE_TERM",
+                if interruption == "SIGTERM" { "1" } else { "0" },
+            );
+        let mut terminal = launch(command, 80);
+        terminal.until(&format!("({tag}) · 0s"));
+        let deadline = Instant::now() + HANG_GUARD;
+        while fs::read_to_string(&child_pid)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(10));
+        }
+        let pids: Vec<i32> = [&installer_pid, &child_pid]
+            .into_iter()
+            .map(|path| fs::read_to_string(path).unwrap().trim().parse().unwrap())
+            .collect();
+        if interruption == "closed terminal" {
+            drop(terminal.master.take());
+            assert!(!terminal.wait_without_reading().success());
+        } else {
+            terminal.signal(if interruption == "SIGTERM" {
+                libc::SIGTERM
+            } else {
+                libc::SIGINT
+            });
+            assert!(!terminal.wait().success());
+            assert!(terminal.transcript.contains("Update interrupted"));
+            assert!(!terminal.transcript.contains("Updated dimcode-alpha"));
+        }
+        for pid in pids {
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "{interruption} left process {pid} alive"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
+        fs::write(&resume, "continue").unwrap();
+        assert!(!marker.exists(), "an interrupted install must not complete");
+        fs::remove_file(&resume).unwrap();
+        fs::remove_file(&installer_pid).unwrap();
+        fs::remove_file(&child_pid).unwrap();
+    }
+    let output = home.command().arg("update").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Cannot update this installation automatically")
+    );
+    let output = home.command().args(["update", "--help"]).output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Install the latest version"));
+    assert!(!home.0.join("rust").exists());
+}
+
+#[test]
 fn model_catalog_lists_safe_ids_and_availability_and_refreshes_explicitly() {
     for refresh in [false, true] {
         let home = Home::new();

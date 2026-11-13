@@ -468,6 +468,10 @@ impl SessionLifecycle {
             .compare_exchange(0, RELEASING, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
+
+    pub(crate) fn resume_holds(&self) {
+        self.holds.store(0, Ordering::Release);
+    }
 }
 
 /// An activity hold from [`SessionLifecycle::take_hold`]; dropping it releases it.

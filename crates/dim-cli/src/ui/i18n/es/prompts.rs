@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y salir · n quedarse · ←→ mover · enter confirmar"
         }
-        "Restart dimcode?" => "¿Reiniciar dimcode?",
-        "Restart" => "Reiniciar",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y reiniciar · n quedarse · ←→ mover · enter confirmar"
-        }
         // upgrade_dialog.rs
         "Update available" => "Actualización disponible",
         "Version {latest} is available (you have {current})." => {
             "Versión {latest} disponible (tienes {current})."
         }
-        "Will run: {command}" => "Se ejecutará: {command}",
         "To update, run: {command}" => "Para actualizar: {command}",
-        "Update now" => "Actualizar ahora",
         "Skip this version" => "Omitir esta versión",
         "Skipped {version}." => "{version} omitida.",
-        "Later" => "Más tarde",
         "Close" => "Cerrar",
-        "Restart now" => "Reiniciar ahora",
-        "Updating to {version}..." => "Actualizando a {version}…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "Actualizado a {version}. Reinicia DimCode para usarla."
-        }
-        "Update failed: {error}" => "Error al actualizar: {error}",
         "←→ move · Enter confirm · Esc close" => "←→ mover · Enter confirmar · Esc cerrar",
         // prompts.rs: permission request
         "Permission required" => "Permiso requerido",
