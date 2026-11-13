@@ -970,6 +970,94 @@ async fn occupying_task_settles_after_large_output() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn occupying_task_settles_when_the_output_bursts_past_the_retained_window() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": "seq 1 400000; sleep 1.2; seq 400001 400100",
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec wake", |events| {
+        !notifications(events).is_empty()
+    })
+    .await;
+    assert_eq!(ended(&events).len(), 1, "exactly one exec/ended");
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert!(
+        output.ends_with("400100\n"),
+        "{}",
+        &output[output.len() - 100..]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_foreground_result_past_the_limit_keeps_the_earliest_bytes() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(&session, &[("execute", json!({"command": "seq 1 30000"}))])
+        .await;
+    let events = until(&session, "tool result", |events| tool_results(events) == 1).await;
+    let result = &results(&events)[0];
+    let text = text(result);
+    assert!(
+        text.starts_with("1\n2\n3\n"),
+        "{}",
+        &text[..100.min(text.len())]
+    );
+    assert!(
+        text.contains("[Output truncated: ") && text.contains(" bytes omitted]"),
+        "{}",
+        &text[text.len() - 200..]
+    );
+    assert!(!text.contains("__DIM_"), "{}", &text[..100]);
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_that_converts_before_its_output_writes_only_the_command_output() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "echo first; echo second", "timeoutMs": 0}),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert_eq!(output, "first\nsecond\n");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shell_exit_kills_background_jobs() {
     let harness = Harness::new(platform(&[]).await).await;
     let session = harness.session().await;
