@@ -272,16 +272,40 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
 ///
 /// A few contexts differ by edition, and [`ShellReading`] holds them: whether
 /// `((` is an arithmetic command, whether `|&` is a pipe or a ksh coprocess
-/// marker, and whether `&>` and `&>>` are redirects or markers.
+/// marker, whether `&>` and `&>>` are redirects or markers, and whether an
+/// unquoted heredoc delimiter matches a line joined from several physical ones.
 ///
 /// A command this scan cannot read to the end falls back to
 /// [`quote_only_marker`], which refuses any `&` outside quotes, and `&>` and
 /// `&>>` in an edition without that redirect.
 fn has_unquoted_posix_background_ampersand(script: &str, edition: ShellEdition) -> bool {
-    let reading = ShellReading::of(edition);
+    readings(edition)
+        .iter()
+        .any(|reading| scan_marker(script, *reading))
+}
+
+/// Whether one reading refuses `script`.
+fn scan_marker(script: &str, reading: ShellReading) -> bool {
     let mut scan = ShellScan::new(script, reading);
     scan.text(None);
     scan.marker || (scan.unclosed && quote_only_marker(script, reading))
+}
+
+/// The readings a command may run under.
+///
+/// `sh` is bash on one host and dash on another, and the fields do not order:
+/// dash joins an operator across a continuation where bash does not, and bash
+/// joins a heredoc delimiter where dash does not, so neither is stricter.
+fn readings(edition: ShellEdition) -> &'static [ShellReading] {
+    match edition {
+        ShellEdition::Bash | ShellEdition::GitBash => &[BASH],
+        ShellEdition::Zsh => &[ZSH],
+        ShellEdition::Dash => &[DASH],
+        ShellEdition::Ksh => &[KSH],
+        ShellEdition::Sh => &[BASH, DASH],
+        // Never read: the guard runs only when the edition is POSIX.
+        ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => &[BASH],
+    }
 }
 
 /// How the running edition reads the constructs that differ between shells.
@@ -296,37 +320,38 @@ struct ShellReading {
     /// `&>` and `&>>` are redirects: bash and zsh. Elsewhere they are a marker
     /// followed by a redirect.
     amp_redirect: bool,
+    /// An unquoted heredoc delimiter matches a logical line joined from several
+    /// physical lines: bash and zsh. dash and ksh compare physical lines only.
+    joined_delimiter: bool,
 }
 
-impl ShellReading {
-    fn of(edition: ShellEdition) -> Self {
-        match edition {
-            ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh => Self {
-                arithmetic_command: true,
-                pipe_ampersand: true,
-                amp_redirect: true,
-            },
-            ShellEdition::Ksh => Self {
-                arithmetic_command: true,
-                pipe_ampersand: false,
-                amp_redirect: false,
-            },
-            // `sh` is bash in POSIX mode on one host and dash on another, so it
-            // takes the stricter reading of the two.
-            ShellEdition::Sh | ShellEdition::Dash => Self {
-                arithmetic_command: false,
-                pipe_ampersand: false,
-                amp_redirect: false,
-            },
-            // Never read: the guard runs only when the edition is POSIX.
-            ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => Self {
-                arithmetic_command: true,
-                pipe_ampersand: true,
-                amp_redirect: true,
-            },
-        }
-    }
-}
+/// How one shell reads the constructs that differ. Measured on bash 3.2.57,
+/// zsh 5.9, Apple dash-16 and ksh93u+ 2012-08-01; another program behind `ksh`
+/// or `dash` is read as the one measured here.
+const BASH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: true,
+    amp_redirect: true,
+    joined_delimiter: true,
+};
+const ZSH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: true,
+    amp_redirect: true,
+    joined_delimiter: true,
+};
+const DASH: ShellReading = ShellReading {
+    arithmetic_command: false,
+    pipe_ampersand: false,
+    amp_redirect: false,
+    joined_delimiter: false,
+};
+const KSH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: false,
+    amp_redirect: false,
+    joined_delimiter: false,
+};
 
 /// An `&` outside `' '` and `" "`, when neither neighbour makes it inert.
 fn quote_only_marker(script: &str, reading: ShellReading) -> bool {
@@ -794,34 +819,43 @@ impl ShellScan {
     }
 
     /// Reads the heredoc bodies queued on the line that just ended.
+    ///
+    /// A body is a run of logical lines. `<<-` strips the leading tabs of each
+    /// logical line's first physical line. The delimiter matches a logical line
+    /// of one physical line in every edition, and one joined across
+    /// continuations only where the edition joins it.
     fn read_heredocs(&mut self) {
         while !self.heredocs.is_empty() {
             let heredoc = self.heredocs.remove(0);
             let mut body = String::new();
             loop {
-                let start = self.index;
-                if start >= self.chars.len() {
+                let Some((first, terminated)) = self.physical_line() else {
                     self.unclosed = true;
                     break;
-                }
-                let mut end = start;
-                while end < self.chars.len() && self.chars[end] != '\n' {
-                    end += 1;
-                }
-                let line: String = self.chars[start..end].iter().collect();
-                let terminated = end < self.chars.len();
-                self.index = if terminated { end + 1 } else { end };
-                let candidate = if heredoc.strip_tabs {
-                    line.trim_start_matches('\t')
-                } else {
-                    line.as_str()
                 };
-                if candidate == heredoc.delimiter {
+                let mut logical = if heredoc.strip_tabs {
+                    first.trim_start_matches('\t').to_owned()
+                } else {
+                    first
+                };
+                let mut joined = false;
+                let mut last_terminated = terminated;
+                while heredoc.expand && last_terminated && ends_in_continuation(&logical) {
+                    logical.pop();
+                    let Some((next, terminated)) = self.physical_line() else {
+                        last_terminated = false;
+                        break;
+                    };
+                    logical.push_str(&next);
+                    joined = true;
+                    last_terminated = terminated;
+                }
+                if logical == heredoc.delimiter && (!joined || self.reading.joined_delimiter) {
                     break;
                 }
-                body.push_str(&line);
+                body.push_str(&logical);
                 body.push('\n');
-                if !terminated {
+                if !last_terminated {
                     self.unclosed = true;
                     break;
                 }
@@ -833,6 +867,22 @@ impl ShellScan {
                 self.unclosed |= inner.unclosed;
             }
         }
+    }
+
+    /// One physical line and whether a newline followed it.
+    fn physical_line(&mut self) -> Option<(String, bool)> {
+        if self.index >= self.chars.len() {
+            return None;
+        }
+        let start = self.index;
+        let mut end = start;
+        while end < self.chars.len() && self.chars[end] != '\n' {
+            end += 1;
+        }
+        let line: String = self.chars[start..end].iter().collect();
+        let terminated = end < self.chars.len();
+        self.index = if terminated { end + 1 } else { end };
+        Some((line, terminated))
     }
 
     /// `${ command; }` and `${|command; }` hold shell text rather than a
@@ -854,6 +904,12 @@ impl ShellScan {
             }
         }
     }
+}
+
+/// Whether a physical line ends in a line continuation: an odd run of
+/// backslashes before its newline.
+fn ends_in_continuation(line: &str) -> bool {
+    line.bytes().rev().take_while(|byte| *byte == b'\\').count() % 2 == 1
 }
 
 const HIGH_COST_BASENAMES: [&str; 5] = ["node_modules", ".git", "dist", "build", "target"];
@@ -2268,30 +2324,43 @@ const ALWAYS_REFUSED: &[&str] = &[
     "sleep 5 &|",
     "echo \"$((true) )\"; sleep 5 &",
     "echo \"$((true) )\" \"a & b\"; sleep 5 &",
+    "cat <<EOF\nabc\\\\\nEOF\nsleep 5 &\nEOF",
+    "cat <<'EOF'\nabc\\\nEOF\nsleep 5 &\nEOF",
+    "cat <<EOF\nabc\\\nEOF\n'\nEOF\nsleep 5 &\necho '",
 ];
 
-/// An `&` whose reading depends on the edition, with the editions that refuse
-/// it.
+/// An `&` whose verdict differs by edition, in [`EDITIONS`] order: `true` is
+/// refused. Every row follows the edition table on [`ShellReading`], and a
+/// `false` here is a row the shell accepts without starting the job.
 #[cfg(test)]
-const MARKERS: &[(ShellEdition, &str)] = &[
-    // `(( cmd & ))` under dash and sh: no arithmetic command, so two
-    // subshells.
-    (ShellEdition::Dash, "(( sleep 5 & ))"),
-    (ShellEdition::Sh, "(( sleep 5 & ))"),
-    // `|&` under ksh is a coprocess, which runs in the background.
-    (ShellEdition::Ksh, "sleep 5 |& cat"),
+const BY_EDITION: &[(&str, [bool; 6])] = &[
+    // An unquoted delimiter joined across a continuation: bash and zsh end the
+    // body there, dash and ksh do not, and `sh` may be either.
+    (
+        "cat <<true\ntr\\\nue\nsleep 5 &\ntrue",
+        [true, true, true, true, false, false],
+    ),
+    (
+        "cat <<-true\n\ttr\\\nue\nsleep 5 &\ntrue",
+        [true, true, true, true, false, false],
+    ),
+    // `(( cmd & ))` is arithmetic only where the shell has that command.
+    ("(( sleep 5 & ))", [false, false, false, true, true, false]),
+    ("(( a & b ))", [false, false, false, true, true, false]),
+    // The inner `)` closes the subshell before `))`, so `&` is a marker where
+    // the line parses at all; dash and ksh reject it instead of running it.
+    ("(( (1 & 2) ))", [false, false, false, true, true, false]),
+    // `|&` is a ksh coprocess, which runs in the background.
+    ("sleep 5 |& cat", [false, false, false, true, true, true]),
     // `&>` and `&>>` are a marker plus a redirect outside bash and zsh.
-    (ShellEdition::Ksh, "sleep 5 &> /dev/null"),
-    (ShellEdition::Ksh, "sleep 5 &>> /dev/null"),
-    (ShellEdition::Dash, "sleep 5 &> /dev/null"),
-    (ShellEdition::Dash, "sleep 5 &>> /dev/null"),
-    (ShellEdition::Sh, "sleep 5 &> /dev/null"),
-    (ShellEdition::Sh, "sleep 5 &>> /dev/null"),
-    // `sh` takes the stricter reading of bash and dash, so `((` is two
-    // subshells there even where the program behind `sh` is bash.
-    (ShellEdition::Sh, "(( a & b ))"),
-    (ShellEdition::Sh, "(( (1 & 2) ))"),
-    (ShellEdition::Sh, "sleep 5 |& cat"),
+    (
+        "sleep 5 &> /dev/null",
+        [false, false, false, true, true, true],
+    ),
+    (
+        "sleep 5 &>> /dev/null",
+        [false, false, false, true, true, true],
+    ),
 ];
 
 /// An `&` that no edition reads as a background marker.
@@ -2304,6 +2373,7 @@ const INERT: &[&str] = &[
     "cat <<EOF\na & b\nEOF",
     "cat <<-EOF\n\ta & b\n\tEOF",
     "cat <<\\EOF\na & b\nEOF",
+    "cat <<'true'\ntr\\\nue\nsleep 5 &\ntrue",
     "cat <<\"EOF\"\na & b\nEOF",
     "cat <<A <<B\nx & y\nA\na & b\nB",
     "v=$(cat <<'EOF'\na & b\nEOF\n)",
@@ -2342,14 +2412,6 @@ const INERT: &[&str] = &[
     "cat <<-EOF\n\t$(echo 'a & b')\n\tEOF",
 ];
 
-/// `(( ))` is arithmetic wherever the edition has the command; `|&` and
-/// `&>` are a pipe and a redirect only in bash and zsh.
-#[cfg(test)]
-const ARITHMETIC_COMMAND: &[&str] = &["(( a & b ))", "(( (1 & 2) ))"];
-
-#[cfg(test)]
-const BASH_PIPE_AND_REDIRECT: &[&str] = &["cmd1 |& cmd2", "cmd &> out.log", "cmd &>> out.log"];
-
 /// Every POSIX edition exec can run.
 #[cfg(test)]
 const EDITIONS: &[ShellEdition] = &[
@@ -2376,36 +2438,18 @@ fn the_shell_decides_which_ampersands_start_a_background_job() {
                 "{edition:?} accepts: {script:?}"
             );
         }
-        for script in ARITHMETIC_COMMAND {
-            let arithmetic = matches!(
-                edition,
-                ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh | ShellEdition::Ksh
-            );
-            assert_eq!(
-                refuses(script, *edition),
-                !arithmetic,
-                "{edition:?} on (( )): {script:?}"
-            );
-        }
-        for script in BASH_PIPE_AND_REDIRECT {
-            let bash_syntax = matches!(
-                edition,
-                ShellEdition::Bash | ShellEdition::GitBash | ShellEdition::Zsh
-            );
-            assert_eq!(
-                refuses(script, *edition),
-                !bash_syntax,
-                "{edition:?} on a bash construct: {script:?}"
-            );
-        }
-    }
-    for edition in EDITIONS {
         for script in ALWAYS_REFUSED {
             assert!(refuses(script, *edition), "{edition:?} refuses: {script:?}");
         }
     }
-    for (edition, script) in MARKERS {
-        assert!(refuses(script, *edition), "{edition:?} refuses: {script:?}");
+    for (script, verdicts) in BY_EDITION {
+        for (edition, refused) in EDITIONS.iter().zip(verdicts) {
+            assert_eq!(
+                refuses(script, *edition),
+                *refused,
+                "{edition:?} on {script:?}"
+            );
+        }
     }
     for script in [
         "echo \"$((true) )\"; sleep 5 &",
@@ -2413,12 +2457,14 @@ fn the_shell_decides_which_ampersands_start_a_background_job() {
         "echo \"$((true) )\" \"a & b\"",
     ] {
         for edition in EDITIONS {
-            let mut scan = ShellScan::new(script, ShellReading::of(*edition));
-            scan.text(None);
-            assert!(
-                !scan.unclosed,
-                "{edition:?} reads the arithmetic rewind to the end: {script:?}"
-            );
+            for reading in readings(*edition) {
+                let mut scan = ShellScan::new(script, *reading);
+                scan.text(None);
+                assert!(
+                    !scan.unclosed,
+                    "{edition:?} reads the arithmetic rewind to the end: {script:?}"
+                );
+            }
         }
     }
 }
