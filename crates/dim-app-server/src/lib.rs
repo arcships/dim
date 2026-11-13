@@ -1382,11 +1382,9 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
 /// The reasons for the product profile's internal names (#1300).
 pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
-        ("agentConfig", "legacy-no-consumer"),
         ("basePromptSettingsHost", "owner-api"),
         ("promptSourcesBranch", "hot-path"),
         ("scheduleJobs", "owner-api"),
-        ("sessionLanguage", "legacy-no-consumer"),
         ("skillsInstructionsSettingsHost", "owner-api"),
         ("summaryPromptSettingsHost", "owner-api"),
         ("wakeups", "owner-api"),
@@ -1400,7 +1398,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("branchOpening", "hot-path"),
         ("callers", "owner-api"),
         ("collaboration", "host-resource"),
-        ("collaborationConfig", "legacy-no-consumer"),
         ("collaborationSession", "legacy-no-consumer"),
         ("commandRulesHost", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
@@ -1454,7 +1451,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("settingsService", "owner-api"),
         ("skillsBranch", "host-resource"),
         ("skillsCatalog", "host-resource"),
-        ("skillsConfig", "legacy-no-consumer"),
         ("sqliteStorage", "object"),
         ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
@@ -1469,7 +1465,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("uiExtensions", "control"),
         ("uiHost", "control"),
         ("wait", "object"),
-        ("worktreeAssociations", "legacy-no-consumer"),
     ] {
         builder.internal_name(name, reason);
     }

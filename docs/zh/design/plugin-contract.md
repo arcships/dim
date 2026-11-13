@@ -107,6 +107,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | `sessionIdentity` | `session` | SessionScope | 是 | `get()`：`{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | 是 | `activated`、`closing`、`hold`、`release`：hold 是调用方的行拥有的 id，由 `release(id)` 或该行卸载结束 |
 | `sessionConfig` | `session` | SessionScope | 是 | `get()`：创建时的配置，即工具调用携带的快照 |
+| `agentConfig` | `session` | SessionScope | 是 | `get()`：Agent 的身份与默认模型 |
 | `timeline` | `branch` | BranchScope | 是，`before` 除外 | `append`、已发布序号与事件查询（§5.4）；查询随其声明到达其他语言 |
 | `dispatcher` | `branch` | BranchScope | 是，`consume`、`listen` 和读取；它们的 Rust 形式就是同一个 `consume`，以及仅限 Rust 的 `subscribe` | 有序消费（§5.2） |
 | `branchLifecycle` | `branch` | BranchScope | 是 | `activated`、`closing` |

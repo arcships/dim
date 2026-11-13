@@ -33,18 +33,69 @@ pub struct WorktreeDirectory {
     pub root: PathBuf,
 }
 
-/// Atomically persists a verified directory and its Session subtree. Missing
-/// Sessions and storage failures must fail without publishing either record.
-pub trait AssociateWorktree: Send + Sync + 'static {
-    fn associate(
-        &self,
-        session: String,
-        directory: WorktreeDirectory,
-        subtree: PathBuf,
-    ) -> HostFuture<'_, ()>;
+/// One worktree association to record: the Session, the Git common directory
+/// and worktree root it belongs to, and the Session's verified subtree. The
+/// paths are UTF-8 strings, as every path that crosses is ([service faces
+/// §1](../../../docs/design/service-faces.md#1-规则)).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorktreeAssociation {
+    pub session_id: String,
+    pub repository: String,
+    pub root: String,
+    pub subtree: String,
 }
-/// Optional process port provided by the association store.
-pub struct WorktreeAssociations(pub Arc<dyn AssociateWorktree>);
+
+impl WorktreeAssociation {
+    /// The recorded directory, as the file-access owner passes it.
+    pub fn directory(&self) -> WorktreeDirectory {
+        WorktreeDirectory {
+            repository: self.repository.clone().into(),
+            root: self.root.clone().into(),
+        }
+    }
+}
+
+/// What `worktreeAssociations.associate` fails with: `{code, message}`.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum WorktreeAssociationError {
+    #[error("{message}")]
+    Failed { message: String },
+}
+
+/// An owner's write of one association, bound as the face's one operation.
+/// Missing Sessions and storage failures fail without publishing either
+/// record; the closure says which by its message.
+pub type WorktreeAssociationWrite = Arc<
+    dyn Fn(WorktreeAssociation) -> BoxFuture<'static, Result<(), WorktreeAssociationError>>
+        + Send
+        + Sync,
+>;
+
+/// The `worktreeAssociations` face: the association store records a verified
+/// directory and its Session subtree atomically. The owner binds its write; a
+/// Rust reader calls [`Self::associate`] directly and a part of another
+/// language calls the same operation by name.
+pub struct WorktreeAssociations(WorktreeAssociationWrite);
+
+impl WorktreeAssociations {
+    /// Binds an owner's write as the face's operation.
+    pub fn new(associate: WorktreeAssociationWrite) -> Self {
+        Self(associate)
+    }
+}
+
+#[rutis::service]
+impl WorktreeAssociations {
+    /// Records `request`'s directory and Session subtree as one association.
+    pub async fn associate(
+        &self,
+        request: WorktreeAssociation,
+    ) -> Result<(), WorktreeAssociationError> {
+        (self.0)(request).await
+    }
+}
 
 /// Facts for one resolved path under one branch's file-access policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,14 +429,11 @@ impl Worktrees {
         if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
             return Err(cancelled());
         }
+        let request = association(&self.session, &root)?;
         associations
-            .0
-            .associate(
-                self.session.clone(),
-                root.directory.clone(),
-                root.subtree.clone(),
-            )
-            .await?;
+            .associate(request)
+            .await
+            .map_err(|error| HostError::failed(error.to_string()))?;
         if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
             return Err(cancelled());
         }
@@ -690,6 +738,20 @@ fn existing_directory(path: &Path) -> Result<PathBuf, HostError> {
             .parent()
             .ok_or_else(|| HostError::failed("No existing directory for worktree discovery"))?;
     }
+}
+/// The wire form of one association: its three paths as UTF-8 strings.
+fn association(session: &str, root: &Root) -> Result<WorktreeAssociation, HostError> {
+    let path = |path: &Path| {
+        path.to_str().map(str::to_owned).ok_or_else(|| {
+            HostError::failed(format!("worktree path is not UTF-8: {}", path.display()))
+        })
+    };
+    Ok(WorktreeAssociation {
+        session_id: session.to_owned(),
+        repository: path(&root.directory.repository)?,
+        root: path(&root.directory.root)?,
+        subtree: path(&root.subtree)?,
+    })
 }
 fn open_directory(path: &Path) -> io::Result<File> {
     let mut options = std::fs::OpenOptions::new();

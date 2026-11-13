@@ -90,6 +90,11 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
 | `sessionFiles` | `sessionFiles.put/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFilesHost` 是进程内绑定。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
+| `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
+| `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
+| `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
+| `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
+| `worktreeAssociations` | `worktreeAssociations.associate` | 形状见 §4.8。 |
 
 ### 3.3 所有者 API，已有数据兄弟
 
@@ -194,17 +199,12 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `sessionLanguage` | session | PromptSources | legacy-no-consumer | 按 #1292 定义操作面 |
 | `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
 | `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 按 #1292 定义操作面 |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
 | `selectableModelsHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
 | `modelSelectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
 | `modalityConnectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
-| `worktreeAssociations` | process | SessionStore | legacy-no-consumer | 按 #1292 定义操作面 |
-| `agentConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
-| `collaborationConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
-| `skillsConfig` | session | SessionScope | legacy-no-consumer | 按 #1292 定义操作面 |
 | `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 批次契约（#1292）
@@ -290,7 +290,31 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 `Wakeup` 持久化字段继续使用 snake_case，数据面用上面的 wire 字段。测试覆盖 create、list、cancel 和 loopback。
 
-### 4.8 旧主机端口：`credentialVariablesHost` 等六个
+### 4.8 旧主机端口：`agentConfig` 等五个
+
+这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 不在这五个操作面的范围内，按 §2.6 处理其公共操作或私有实现职责。
+
+```text
+agentConfig.get() -> {name, systemPrompt, model: {providerId, modelId}}
+  -- Agent 的身份与默认模型；SessionScope 提供
+sessionLanguage.get() -> {language?}
+  -- 只读：更新还要写 Session 记录并让 Prompt 采用来源，仍走 session.language.update
+skillsConfig.get() -> {instructions?}
+  -- Skills 的 factory 文本；null 表示内置
+collaborationConfig.get() -> {leaderDescription?, memberDescription?}
+  -- Collaboration 的 factory 文本；null 表示内置
+worktreeAssociations.associate {sessionId, repository, root, subtree} -> {}
+  -> error {code: failed, message}
+  -- 路径按 §1 是 UTF-8 字符串；一次写入仍由 SessionStore 的原子事务保证
+```
+
+- `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。
+- `skillsConfig`、`collaborationConfig` 的注册从 typed 改成 shared instance；值仍由 `install_with_config` 的 `session_value` 提供。
+- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
+- `worktreeAssociations` 去掉 `AssociateWorktree` trait：端口持有所有者的写闭包，Rust 调用方和 wire 调用同一个 `associate`。SessionStore 绑定 `associate_worktree`；字符串转回 `PathBuf`，绝对性和子树包含仍由所有者校验。
+- 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
+
+### 4.9 旧主机端口：`credentialVariablesHost` 等六个
 
 六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
 

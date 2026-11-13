@@ -41,6 +41,36 @@ export interface SessionClientsHost {
   presences(request: SessionPresenceRequest): Promise<SessionPresencesReply>
 }
 
+/**
+ * One worktree association to record: the Session, the Git common directory
+ * and worktree root it belongs to, and the Session's verified subtree. The
+ * paths are UTF-8 strings, as every path that crosses is ([service faces
+ * §1](../../../docs/design/service-faces.md#1-规则)).
+ */
+export interface WorktreeAssociation {
+  sessionId: string
+  repository: string
+  root: string
+  subtree: string
+}
+
+/** What `worktreeAssociations.associate` fails with: `{code, message}`. */
+export type WorktreeAssociationError = { code: "failed"; message: string }
+
+/**
+ * The `worktreeAssociations` face: the association store records a verified
+ * directory and its Session subtree atomically. The owner binds its write; a
+ * Rust reader calls [`Self::associate`] directly and a part of another
+ * language calls the same operation by name.
+ */
+export interface WorktreeAssociations {
+  /**
+   * Records `request`'s directory and Session subtree as one association.
+   * @throws {WorktreeAssociationErrorThrown}
+   */
+  associate(request: WorktreeAssociation): Promise<void>
+}
+
 /** The `variables` reply: the names only, never a credential value. */
 export interface CredentialVariablesReply {
   variables: string[]
@@ -90,6 +120,56 @@ export interface ReservedMethods {
    * @throws {ReservedMethodsErrorThrown}
    */
   check(request: ReservedMethodsRequest): Promise<void>
+}
+
+/**
+ * The operator's reply-language choices, by their stable wire codes. The
+ * names are the ones the operator selects, named in English for the prompt
+ * text ([PromptSources §3]).
+ *
+ * [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+ */
+export type ReplyLanguage = "en" | "zh-CN" | "zh-Hant" | "ja" | "ko" | "id" | "de" | "fr" | "es" | "pt-BR" | "pt-PT"
+
+/**
+ * The `get` reply: the Session's reply language when the operator selected
+ * one, `null` otherwise.
+ */
+export interface SessionLanguageReply {
+  language?: ReplyLanguage | null
+}
+
+/**
+ * The Session's reply language, when the operator selected one: the live
+ * value the `dim/language` source reads and the App Server's
+ * `session.language.*` methods change. It starts from `SessionConfig.language`
+ * when the Session is created or restored.
+ */
+export interface SessionLanguage {
+  /**
+   * The reply language the operator selected, as data. The App Server's
+   * `session.language.get` answers the same value; its update also writes
+   * the Session record and has Prompt adopt the source, so changing the
+   * value is not this face's operation.
+   */
+  get(): Promise<SessionLanguageReply>
+}
+
+/** The `get` reply: the factory instructions text, when the assembly set one. */
+export interface SkillsConfigReply {
+  instructions?: string | null
+}
+
+/**
+ * Skills' factory configuration: the text that replaces [`INSTRUCTIONS`]
+ * ([model-prompts §9.2](../../../docs/design/model-prompts.md#92-every-capability-that-writes-model-facing-text)).
+ */
+export interface SkillsConfig {
+  /**
+   * The instructions text the assembly configured, as data; `null` means
+   * the built-in [`INSTRUCTIONS`].
+   */
+  get(): Promise<SkillsConfigReply>
 }
 
 export type BranchSource =
@@ -301,6 +381,26 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   create(parent: string, at: number | bigint, options: BranchOptions, cancelled: () => void | Promise<void>): Promise<string>
+}
+
+export interface ModelId {
+  providerId: string
+  modelId: string
+}
+
+/** The `get` reply: the Agent's identity and default model. */
+export interface AgentConfigReply {
+  name: string
+  systemPrompt: string
+  model: ModelId
+}
+
+export interface AgentConfig {
+  /**
+   * The Agent's identity and default model as data, for parts in other
+   * languages.
+   */
+  get(): Promise<AgentConfigReply>
 }
 
 export interface SessionConfig {
@@ -518,6 +618,24 @@ export interface SessionPermissions {
   permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
 }
 
+/**
+ * The `get` reply: each description text the assembly configured, or `null`
+ * for the built-in one.
+ */
+export interface CollaborationConfigReply {
+  leaderDescription?: string | null
+  memberDescription?: string | null
+}
+
+/**
+ * Collaboration's factory configuration: the two `agent` descriptions, each
+ * a whole text in place of its built-in one (Collaboration §3).
+ */
+export interface CollaborationConfig {
+  /** The two `agent` descriptions the assembly configured, as data. */
+  get(): Promise<CollaborationConfigReply>
+}
+
 /** One member relation as `collaborationDirectory.relations` answers it. */
 export interface CollaborationRelation {
   memberSessionId: string
@@ -685,12 +803,19 @@ export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent
 /** What a method returning `Err(WorkflowFilesError)` throws. */
 export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>
 
+/** What a method returning `Err(WorktreeAssociationError)` throws. */
+export type WorktreeAssociationErrorThrown = RustError<"WorktreeAssociationError", "failed", WorktreeAssociationError>
+
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
   sessionClientsHost: SessionClientsHost
+  worktreeAssociations: WorktreeAssociations
   credentialVariablesHost: CredentialVariablesHost
   reservedMethods: ReservedMethods
+  sessionLanguage: SessionLanguage
+  skillsConfig: SkillsConfig
   treeCommands: TreeCommands
+  agentConfig: AgentConfig
   sessionConfig: SessionConfig
   timelineIdentity: TimelineIdentity
   sessionIdentity: SessionIdentity
@@ -700,6 +825,7 @@ export interface Services {
   timeline: Timeline
   partRegistry: PartRegistry
   sessionPermissions: SessionPermissions
+  collaborationConfig: CollaborationConfig
   collaborationDirectory: CollaborationDirectory
   processActivity: ProcessActivity
   workflowFiles: WorkflowFiles

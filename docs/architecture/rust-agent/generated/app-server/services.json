@@ -3683,6 +3683,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#worktreeAssociations",
+        "provider": 8,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "rutis_bridge::session::plugin::LocalId",
         "provider": 1,
         "generation": 0,
