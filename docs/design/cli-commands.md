@@ -1785,15 +1785,17 @@ the selection down.
   cursor and reads the first page again; the query stays and applies within the
   new scope.
 - The local scope is the launch workspace and the same relative directory in
-  every worktree of its git repository, read with `git rev-parse` and
-  `git worktree list --porcelain` in the background when the picker opens. The
-  first page does not wait for git, and both reads share a two-second bound. A
-  git that succeeds names the scope `This repository`; when the picker is
-  showing the local scope and the set holds more than one entry, the title
-  changes and the first page is read again, and a one-entry set changes only
-  the title, since the catalog's canonical `cwd` treats the single workspace as
-  the same filter. A git that fails or does not answer, and a daemon that reads
-  neither a workspace set (`session.catalog.workspaces`) nor
+  every worktree of its git repository, read with `git rev-parse` and `git
+  worktree list --porcelain` in the background when the picker opens. The first
+  page does not wait for git, and both reads share a two-second bound. A git
+  that succeeds names the scope `This repository`; when the picker is showing
+  the local scope and the set holds more than one entry, the title changes and
+  the first page is read again, and a one-entry set changes only the title,
+  since the catalog's canonical `cwd` treats the single workspace as the same
+  filter. The rows already drawn stay until the wider page replaces them, and
+  the selection stays on its row, or on the row the operator moved to while the
+  wider page was read. A git that fails or does not answer, and a daemon that
+  reads neither a workspace set (`session.catalog.workspaces`) nor
   `session.summaries`, leave the local scope named `This workspace` and listing
   exactly the launch workspace, without a notice. A bare worktree adds nothing.
 - The rows name their workspace inside the local scope only when it holds more

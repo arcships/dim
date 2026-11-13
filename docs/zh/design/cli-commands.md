@@ -1084,7 +1084,8 @@ git 回答前是 `Sessions · This workspace`，回答后是 `Sessions · This r
 - 本地范围是启动工作区，以及它所在 git 仓库每个 worktree 中同一个相对目录；选择面板打开时在后台用
   `git rev-parse` 与 `git worktree list --porcelain` 读取。第一页不等 git，两次读取共用一个两秒的时限。
   git 成功时该范围名为 `This repository`；当面板正显示本地范围且集合多于一个条目时，标题改变并重新读
-  第一页；单条目集合只改变标题，因为目录的规范化 `cwd` 把这一个工作区当作同一个过滤条件。git 失败或
+  第一页；单条目集合只改变标题，因为目录的规范化 `cwd` 把这一个工作区当作同一个过滤条件。已经画出的行
+  会保留到更宽的一页替换它们，选择停在该行上，或停在读取更宽一页期间操作者移到的行上。git 失败或
   不回答、守护进程既不读一组工作区（`session.catalog.workspaces`）也不经 `session.summaries` 列目录时，
   本地范围保持名为 `This workspace`，只列启动工作区，也不提示。bare worktree 不加入。
 - 在本地范围中，只有当它包含多于一个工作区时，每行才写明所属工作区，因此单 worktree 仓库不会给每行加
