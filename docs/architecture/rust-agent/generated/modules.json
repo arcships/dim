@@ -1943,6 +1943,15 @@
       ]
     },
     {
+      "id": "dim_agent_scheduler::loops::tests",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler::loops",
+      "file": "crates/dim-agent-scheduler/src/loops.rs",
+      "unexpandedMacros": [
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_agent_scheduler::methods",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
@@ -21119,6 +21128,13 @@
     },
     {
       "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::loops::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Shared",
@@ -21147,6 +21163,14 @@
       "to": "dim_app_server::plugin_files",
       "references": [
         "path dim_app_server::plugin_files::PluginFileTransactions"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops::tests",
+      "to": "dim_agent_scheduler::loops",
+      "references": [
+        "path Cadence",
+        "path Cadence::Every"
       ]
     },
     {
