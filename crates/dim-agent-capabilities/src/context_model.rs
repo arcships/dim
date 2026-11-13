@@ -39,7 +39,9 @@ pub fn output_allowance(context_window: u64, declared_max_output: u64) -> u64 {
 /// The part of the output allowance a reply keeps for its answer when it may
 /// think (#1466): a quarter of the allowance, at least 4096 tokens, never more
 /// than half of it, and at least 1. Thinking can therefore never take the whole
-/// allowance, and `allowance - answer_tokens` is the thinking room.
+/// allowance, and `allowance - answer_tokens` is the thinking room. The value
+/// is `max(1, round(allowance / 4), min(4096, allowance / 2))`, then capped at
+/// `allowance`.
 pub fn answer_tokens(allowance: u64) -> u64 {
     let allowance_f = allowance as f64;
     (1_u64)
