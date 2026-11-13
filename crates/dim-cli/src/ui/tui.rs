@@ -10622,12 +10622,14 @@ mod tests {
                     MouseOutcome::Models
                 );
                 screen.render(&app.frame(size), size, &app.palette, app);
-                screen.mouse(event(MouseKind::Press, column), app);
-                screen.render(&app.frame(size), size, &app.palette, app);
-                assert_eq!(
-                    screen.mouse(event(MouseKind::Release, column), app),
-                    MouseOutcome::Models
-                );
+                for column in [column, column + label.unwrap().chars().count() - 1] {
+                    screen.mouse(event(MouseKind::Press, column), app);
+                    screen.render(&app.frame(size), size, &app.palette, app);
+                    assert_eq!(
+                        screen.mouse(event(MouseKind::Release, column), app),
+                        MouseOutcome::Models
+                    );
+                }
                 app.run_command("models", "");
                 let frame = app.frame(size);
                 emu.feed(&screen.render(&frame, size, &app.palette, app));

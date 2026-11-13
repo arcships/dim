@@ -46852,6 +46852,7 @@
         "path MouseOutcome::Click",
         "path MouseOutcome::Copy",
         "path MouseOutcome::Ignored",
+        "path MouseOutcome::Models",
         "path MouseOutcome::Open",
         "path MouseOutcome::Overlay",
         "path MouseOutcome::Redraw",
@@ -47324,6 +47325,13 @@
       "to": "dim_agent_types::events",
       "references": [
         "path dim_agent_types::UserInput"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path dim_agent_types::ModelPreferences"
       ]
     },
     {
