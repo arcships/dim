@@ -292,8 +292,8 @@ budget cannot sit beside. On Anthropic the request sends the answer room as
 `max_tokens` and the budget as `thinking.budget_tokens`, which the adapter sums
 back into the allowance; Bedrock sends the allowance as `maxTokens` with the
 budget beside it; Gemini keeps `maxOutputTokens` at the allowance and sends the
-room as `thinkingBudget`, lowered to the model's declared maximum and never
-raised to its minimum.
+room as `thinkingBudget`, lowered to the model's declared maximum; a room below
+the declared minimum sends no budget, and the paragraph below gives the rule.
 
 A configured budget is an upper bound: it is validated as it always was, then
 capped by the thinking room, so the answer never falls below `answer_tokens`. It
