@@ -18467,6 +18467,14 @@
     },
     {
       "from": "dim_agent_capabilities::workspace_tools::files::edit",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ToolContent::Text",
+        "use dim_agent_types::ToolContent"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::files::edit",
       "to": "dim_agent_types::tool",
       "references": [
         "path ToolResult",

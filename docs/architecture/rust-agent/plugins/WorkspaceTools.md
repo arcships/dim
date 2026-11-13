@@ -293,6 +293,22 @@ replacement, folding CRLF to LF and excluding the BOM. It begins with
 text. Its hunks use the same three context lines as `edit`; `edit` retains its
 existing hunk-only format. These display diffs are not byte patches.
 
+A successful `edit` returns `path`, `replacementCount`, `revision` and `diff` in
+structured content. `replacementCount` is the total over every replacement the
+call applied. The call takes `{path, edits: [{oldText, newText, replaceAll?}]}`
+and applies the replacements in order, each matched against the text the
+previous one produced, so the later entries can depend on the earlier ones and
+no overlap between them needs a rule. One read, one revision check, one path
+lock and one write carry the whole list: a failure in any entry writes nothing
+and returns that entry's `index`, in the structured result and as the
+`edits[<index>]:` prefix of the message. The failure codes are the single
+replacement's (`oldtext_not_found`, `multiple_matches`, `no_change`) and
+`EDIT_INPUT_MAX_CHARS` bounds the sum over the entries. `parse` folds a
+recorded call that carries the top-level `oldText` and `newText` instead into a
+one-entry list, so a resumed history still replays; a call that carries both
+shapes, or an empty list, is `invalid_input`. `diff` stays one whole-file
+comparison.
+
 Write comparisons have a 64 KiB budget: an old file larger than that is not
 decoded for display, the combined decoded old and replacement text must fit
 before diff generation, and the complete resulting diff, including headers,
@@ -348,8 +364,9 @@ how to use it is policy. A name that a policy sentence states stays protocol.
 - `write` — protocol throughout: it states what the call writes, that it creates
   the file and that it overwrites the whole content.
 - `edit` — protocol: "Edit an existing file by replacing exact text matches."
-  and "Supports single replacement (default) or replacing all matches with
-  replaceAll."; policy: "Read the file first, then derive oldText and newText
+  and "Pass every change to one file in one call as edits; they apply in order,
+  each against the text the previous one produced, and nothing is written if any
+  of them fails."; policy: "Read the file first, then derive oldText and newText
   from the latest read result." and "Use this tool for ordinary incremental text
   edits instead of shell commands or Python."
 - `glob` — protocol: "Find files with a safe case-insensitive git-style glob."
@@ -407,6 +424,15 @@ tool that starts writing one into `content` moves that text into this section.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs),
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs),
 [local_product.rs](../../../../tests/integration/tests/local_product.rs).
+
+[workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
+drives `edit` over its replacement list:
+`edit_applies_every_replacement_in_order_in_one_call`,
+`a_later_replacement_matches_the_text_the_previous_one_produced`,
+`a_failed_replacement_writes_nothing_and_names_its_index`,
+`edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once` and
+`the_replacement_list_is_bounded_by_one_total`. [local_product.rs](../../../../tests/integration/tests/local_product.rs)
+asserts the declaration the model reads.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of
