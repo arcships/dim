@@ -5288,6 +5288,12 @@ async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
         HistoryRenderer::default(),
         Context::default(),
     );
+    // The branch's Prompt restore pages through the 1,200 refreshes this
+    // test wrote and reports no progress to `startup_timeout` while it does,
+    // so the default 10 s no-progress bound expires under load. This profile
+    // asserts the width of each consumption query, not how fast startup is;
+    // 120 s is ten times the 12 s one local run spent paging the suffix.
+    profile.startup_timeout(std::time::Duration::from_secs(120));
     profile.timeline_store(store.clone());
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent
