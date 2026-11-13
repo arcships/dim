@@ -297,6 +297,10 @@ fn usage_chunk(usage: NativeUsage) -> Option<Usage> {
         total_tokens: (u64::from(prompt_tokens) + u64::from(completion_tokens)) as f64,
         cache_read_tokens: usage.input_tokens.cache_read.map(f64::from),
         cache_write_tokens: usage.input_tokens.cache_write.map(f64::from),
+        // The Chat-shaped adapters and Anthropic leave this absent when the reply carries
+        // none; Gemini and the Responses adapters read a missing field as zero; Bedrock
+        // reports none.
+        reasoning_tokens: usage.output_tokens.reasoning.map(f64::from),
         cost: None,
         currency: None,
     })

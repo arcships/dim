@@ -160,7 +160,6 @@ struct Prompt {
     cancel_uncertain: bool,
     consumed: HashMap<String, String>,
     ended: HashMap<String, TurnOutcome>,
-    max_tokens: HashSet<String>,
     deleted: HashSet<String>,
 }
 impl Prompt {
@@ -174,31 +173,26 @@ impl Prompt {
         self.consumed.clear();
         let outcome = self.turn.as_ref().and_then(|turn| self.ended.remove(turn));
         self.ended.clear();
-        self.max_tokens
-            .retain(|turn| Some(turn) == self.turn.as_ref());
         if deleted {
             Some(Ok(json!({"stopReason":"cancelled"})))
         } else {
-            let max_tokens = self
-                .turn
-                .as_ref()
-                .is_some_and(|turn| self.max_tokens.contains(turn));
-            outcome.map(|outcome| prompt_outcome(self.cancelled, max_tokens, &outcome))
+            outcome.map(|outcome| prompt_outcome(self.cancelled, &outcome))
         }
     }
 }
-fn prompt_outcome(
-    cancelled: bool,
-    max_tokens: bool,
-    outcome: &TurnOutcome,
-) -> Result<Value, Error> {
+fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<Value, Error> {
     if cancelled {
         return Ok(json!({"stopReason":"cancelled"}));
     }
+    // The turn's own end decides: an output-limit stop completes with that
+    // reason, and a turn whose earlier step hit the limit but then continued
+    // to a normal end did not stop at its limit.
     match outcome {
+        TurnOutcome::Completed { reason } if reason == "output_limit" => {
+            Ok(json!({"stopReason":"max_tokens"}))
+        }
         TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
         TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
-        TurnOutcome::Failed { .. } if max_tokens => Ok(json!({"stopReason":"max_tokens"})),
         TurnOutcome::Failed { error } => {
             Err(Error::new(-32001, error.clone()).data(json!({"code":"turn_failed"})))
         }
@@ -812,7 +806,6 @@ impl Gateway {
                     cancel_uncertain: false,
                     consumed: HashMap::new(),
                     ended: HashMap::new(),
-                    max_tokens: HashSet::new(),
                     deleted: HashSet::new(),
                 });
                 let mcp = self.mcp.clone();
@@ -2215,30 +2208,8 @@ impl Gateway {
                 EventContent::InputDeleted(data) if prompt.input.is_none() => {
                     prompt.deleted.insert(data.input_id.clone());
                 }
-                EventContent::ModelEnd(data)
-                    if prompt.input.is_none() || prompt.turn.as_deref() == Some(&data.turn_id) =>
-                {
-                    let output_limit = match &data.outcome {
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            failure: Some(failure),
-                            ..
-                        } => failure.kind == dim_agent_types::ModelFailureKind::OutputLimit,
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            presentation: Some(presentation),
-                            ..
-                        } => presentation.reason == "max_tokens",
-                        _ => false,
-                    };
-                    if output_limit {
-                        prompt.max_tokens.insert(data.turn_id.clone());
-                    }
-                }
                 EventContent::TurnEnd(data) if prompt.turn.as_deref() == Some(&data.turn_id) => {
-                    finish = Some(prompt_outcome(
-                        prompt.cancelled,
-                        prompt.max_tokens.contains(&data.turn_id),
-                        &data.outcome,
-                    ));
+                    finish = Some(prompt_outcome(prompt.cancelled, &data.outcome));
                 }
                 EventContent::TurnEnd(data) if prompt.input.is_none() => {
                     prompt
@@ -2403,18 +2374,49 @@ impl Gateway {
                 message = incoming.recv() => match message {
                     Some(Incoming::Request(request, reply)) => self.request(request, *reply)?,
                     Some(Incoming::Notification(notification)) => self.cancel(notification)?,
-                    Some(Incoming::Work(generation,work)) => self.work(generation,*work).await?,
+                    Some(Incoming::Work(generation,work)) => {
+                        // The App Server publishes a command's facts before it
+                        // replies, so a notice queued here happened first.
+                        // Applying the result before it would read a
+                        // configuration the owner has already replaced.
+                        for _ in 0..native.len() {
+                            let Ok(message) = native.try_recv() else { break };
+                            if self.handle_native(Some(message)).await? {
+                                return Ok(());
+                            }
+                        }
+                        self.work(generation,*work).await?;
+                    }
                     None => return Ok(()),
                 },
-                message = native.recv() => match message {
-                    Some(Native::Notice { method, params }) => self.notice(method, params)?,
-                    Some(Native::Lost) => self.lost()?,
-                    Some(Native::Restored { same_instance,generation,deadline }) if generation == self.rpc.generation() && self.rpc.ready() => self.restore(same_instance,generation,deadline),
-                    Some(Native::Restored { .. })=>{},
-                    Some(Native::Closed) | None => return self.fail_connection().await,
+                message = native.recv() => {
+                    if self.handle_native(message).await? {
+                        return Ok(());
+                    }
                 },
             }
         }
+    }
+
+    /// Handles one native message, and reports whether the connection ends.
+    async fn handle_native(&mut self, message: Option<Native>) -> Result<bool, Error> {
+        match message {
+            Some(Native::Notice { method, params }) => self.notice(method, params)?,
+            Some(Native::Lost) => self.lost()?,
+            Some(Native::Restored {
+                same_instance,
+                generation,
+                deadline,
+            }) if generation == self.rpc.generation() && self.rpc.ready() => {
+                self.restore(same_instance, generation, deadline)
+            }
+            Some(Native::Restored { .. }) => {}
+            Some(Native::Closed) | None => {
+                self.fail_connection().await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

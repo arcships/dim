@@ -262,6 +262,7 @@ const zhCN: Messages = {
   "timeline.copy": "复制",
   "timeline.final": "最后",
   "timeline.fromLine": "◂ 来自 {id}",
+  "timeline.hookFollowUp": "Stop 钩子后续输入 · {count} 行 | Stop 钩子后续输入 · {count} 行",
   "timeline.lineEnded": "◂ {id} 已结束",
   "timeline.lineEndedByOperation": "这条线已结束（由操作结束）",
   "timeline.lineEndedItself": "这条线已结束（自行结束）",

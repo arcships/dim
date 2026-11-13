@@ -2,7 +2,7 @@
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
-    runs::{self, Delivery, SchedulerError, SessionOrigin, stamp},
+    runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::{
@@ -15,6 +15,7 @@ use dim_agent_capabilities::{
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use dim_agent_types::InputMode;
 use dim_app_server::{
+    ProcessActivity,
     methods::ManagementMethods,
     plugin_files::PluginFileTransactions,
     settings::{BusinessDocument, SettingsError, SettingsService},
@@ -22,9 +23,9 @@ use dim_app_server::{
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{
-    Error as BridgeError, HostDispatch, Reply, Value as BridgeValue, host_key,
+    Error as BridgeError, HostDispatch, Reference, Reply, Value as BridgeValue, host_key,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -33,8 +34,13 @@ const NAMESPACE: &str = "schedule";
 const DEFAULT_HISTORY_LIMIT: u32 = 20;
 const MAX_HISTORY_LIMIT: u32 = 50;
 
+pub(crate) type DeliveryHolds =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<dim_app_server::ProcessHold>>>>;
+
 /// Process owner of the `schedule` namespace.
 pub struct SchedulerPlugin {
+    activity: Key<ProcessActivity>,
+    pub(crate) deliveries: DeliveryHolds,
     settings: Key<SettingsService>,
     files: Key<PluginFileTransactions>,
     methods: Key<ManagementMethods>,
@@ -48,6 +54,8 @@ pub struct SchedulerPlugin {
 impl SchedulerPlugin {
     pub fn new(names: &Names<'_>, texts: Arc<crate::SchedulerTexts>) -> rutis::Result<Self> {
         Ok(Self {
+            activity: names.key()?,
+            deliveries: Default::default(),
             settings: names.key()?,
             files: names.key()?,
             methods: names.key()?,
@@ -80,6 +88,7 @@ impl DynPlugin for SchedulerPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.activity.erase(),
             self.settings.erase(),
             self.files.erase(),
             self.methods.erase(),
@@ -89,6 +98,12 @@ impl DynPlugin for SchedulerPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let activity = ctx.require_at(&self.activity)?;
+            let startup = Arc::new(activity.take_hold().ok_or_else(|| {
+                rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                    "Process admission is paused".into(),
+                ))
+            })?);
             let settings = ctx.require_at(&self.settings)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
@@ -96,6 +111,8 @@ impl DynPlugin for SchedulerPlugin {
             settings.register::<crate::document::ScheduleDocument>(ctx)?;
             let shared = Arc::new(Shared {
                 ctx: ctx.clone(),
+                activity,
+                deliveries: self.deliveries.clone(),
                 sessions,
                 settings,
                 files,
@@ -136,13 +153,12 @@ impl DynPlugin for SchedulerPlugin {
             let jobs = Arc::new(ScheduleJobs {
                 shared: shared.clone(),
             });
-            ctx.provide_at(
-                host_key("scheduleJobs"),
-                Arc::new(ScheduleJobsFace(jobs.clone())),
-            )?;
+            ctx.provide_as::<ScheduleJobs>(jobs.clone())?;
+            ctx.provide_at(host_key("scheduleJobs"), Arc::new(ScheduleJobsFace(jobs)))?;
             let wakeups = Arc::new(crate::wakeups::Wakeups {
                 shared: shared.clone(),
             });
+            ctx.provide_as::<crate::wakeups::Wakeups>(wakeups.clone())?;
             ctx.provide_at(
                 host_key("wakeups"),
                 Arc::new(crate::wakeups::WakeupsFace(wakeups.clone())),
@@ -169,6 +185,22 @@ impl DynPlugin for SchedulerPlugin {
                     format!("scheduler delivery history: {error}").into(),
                 ))
             })?;
+            {
+                let mut holds = shared.deliveries.lock().expect("delivery admission");
+                holds.retain(|id, _| {
+                    active
+                        .iter()
+                        .any(|run| run.run_id == *id && run.state == DeliveryState::Delivering)
+                });
+                for run in active
+                    .iter()
+                    .filter(|run| run.state == DeliveryState::Delivering)
+                {
+                    holds
+                        .entry(run.run_id.clone())
+                        .or_insert_with(|| startup.clone());
+                }
+            }
             // A wakeup file that is not valid v1 fails the row like an invalid
             // delivery history; the bytes stay unchanged (A.7's rule).
             crate::wakeups::read(&shared.files).await.map_err(|error| {
@@ -238,6 +270,8 @@ pub(crate) struct Shared {
     /// This generation's context, used to announce committed changes on a
     /// Session's channel (design §11).
     pub(crate) ctx: Ctx,
+    pub(crate) activity: Arc<ProcessActivity>,
+    pub(crate) deliveries: DeliveryHolds,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) files: Arc<PluginFileTransactions>,
@@ -303,7 +337,7 @@ fn handler(shared: Arc<Shared>) -> Handler {
 
 impl From<SchedulerError> for RpcError {
     fn from(error: SchedulerError) -> Self {
-        RpcError::service(&error.code, error.message)
+        RpcError::service(error.code, error.message)
     }
 }
 
@@ -838,7 +872,7 @@ pub struct ToolRequest {
     job: Option<JobPatch>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ToolAction {
     List,
@@ -854,7 +888,7 @@ enum ToolAction {
 /// The fields a tool `create` or `update` may write (A.2): no target, cwd,
 /// model, Agent or policy. A create fills the target from the calling
 /// Session and branch.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JobPatch {
     #[serde(default)]
@@ -868,7 +902,7 @@ struct JobPatch {
 }
 
 /// The saving branch: the target a tool create saves (A.2, §2.1).
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Caller {
     pub session_id: String,
@@ -976,6 +1010,9 @@ impl ScheduleJobs {
         caller: Caller,
     ) -> Result<JobReply, SchedulerError> {
         let shared = &*self.shared;
+        let _activity = shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let cancel = CancellationToken::new();
         match request.action {
             ToolAction::Create | ToolAction::Update => {
@@ -1137,57 +1174,7 @@ fn truncate(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
-/// The typed binding over the `scheduleJobs` face. It calls the same
-/// operations; it is not a second service.
-pub(crate) async fn call_schedule(
-    dispatch: &Arc<dyn HostDispatch>,
-    request: ToolRequest,
-    caller: Caller,
-) -> Result<JobReply, SchedulerError> {
-    let args = json!({
-        "action": request.action,
-        "job_id": request.job_id,
-        "enabled": request.enabled,
-        "limit": request.limit,
-        "job": request.job,
-        "caller": caller,
-    });
-    let value = resolve_face_value(
-        dispatch
-            .invoke("call", BridgeValue::Data(args))
-            .map_err(|error| SchedulerError::new("schedule_face", error.to_string()))?,
-    )
-    .await?
-    .json()
-    .map_err(|error| SchedulerError::new("schedule_face", error.to_string()))?;
-    if let Some(code) = value.get("code").and_then(Value::as_str) {
-        let message = value
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("schedule call failed");
-        return Err(SchedulerError::new(code, message));
-    }
-    Ok(JobReply {
-        content: value
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        records: value.get("records").cloned().unwrap_or(Value::Null),
-    })
-}
-
-async fn resolve_face_value(value: BridgeValue) -> Result<BridgeValue, SchedulerError> {
-    match value {
-        BridgeValue::Reference(reference) if reference.is_future() => reference
-            .wait_async()
-            .await
-            .map_err(|error| SchedulerError::new("schedule_face", error.to_string())),
-        value => Ok(value),
-    }
-}
-
-pub struct ScheduleJobsFace(Arc<ScheduleJobs>);
+pub(crate) struct ScheduleJobsFace(Arc<ScheduleJobs>);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1215,33 +1202,120 @@ impl HostDispatch for ScheduleJobsFace {
                 "unknown scheduleJobs method {method}"
             )));
         }
-        let value = args
-            .json()
-            .map_err(|error| BridgeError::Value(error.to_string()))?;
-        let value = match value {
-            Value::Array(mut values) => values.drain(..).next().unwrap_or(Value::Null),
-            value => value,
+        let (request, cancelled) = match face_arguments::<JobRequestWire>(args, "schedule_invalid")
+        {
+            Ok(args) => args,
+            Err(error) => return face_failure(error),
         };
-        let request: JobRequestWire =
-            serde_json::from_value(value).map_err(|error| BridgeError::Value(error.to_string()))?;
         let jobs = self.0.clone();
-        Ok(BridgeValue::future(async move {
-            let reply = jobs
-                .call(
-                    ToolRequest {
-                        action: request.action,
-                        job_id: request.job_id,
-                        enabled: request.enabled,
-                        limit: request.limit,
-                        job: request.job,
-                    },
-                    request.caller,
-                )
-                .await;
-            Ok(match reply {
-                Ok(reply) => json!({ "content": reply.content, "records": reply.records }).into(),
-                Err(error) => json!({ "code": error.code, "message": error.message }).into(),
-            })
-        }))
+        let interruptible = matches!(
+            request.action,
+            ToolAction::List | ToolAction::Get | ToolAction::History
+        );
+        Ok(face_call(
+            &jobs.shared.clone(),
+            cancelled,
+            interruptible,
+            async move {
+                let reply = jobs
+                    .call(
+                        ToolRequest {
+                            action: request.action,
+                            job_id: request.job_id,
+                            enabled: request.enabled,
+                            limit: request.limit,
+                            job: request.job,
+                        },
+                        request.caller,
+                    )
+                    .await?;
+                Ok(json!({ "content": reply.content, "records": reply.records }))
+            },
+        ))
     }
+}
+
+pub(crate) fn face_arguments<T: DeserializeOwned>(
+    args: BridgeValue,
+    code: &'static str,
+) -> Result<(T, Option<Reference>), SchedulerError> {
+    let invalid = |error: String| SchedulerError::new(code, error);
+    let mut args = args
+        .list()
+        .map_err(|error| invalid(error.to_string()))?
+        .into_iter();
+    let request = args
+        .next()
+        .ok_or_else(|| invalid("request is required".into()))?;
+    let cancelled = match args.next() {
+        None | Some(BridgeValue::Signal) => None,
+        Some(BridgeValue::Reference(reference)) if reference.is_future() => Some(reference),
+        Some(_) => return Err(invalid("expected a cancellation signal or promise".into())),
+    };
+    if args.next().is_some() {
+        return Err(invalid("too many arguments".into()));
+    }
+    let request = request.json().map_err(|error| invalid(error.to_string()))?;
+    Ok((
+        serde_json::from_value(request).map_err(|error| invalid(error.to_string()))?,
+        cancelled,
+    ))
+}
+
+pub(crate) fn face_failure(error: SchedulerError) -> Reply {
+    Ok(json!({"code": error.code, "message": error.message}).into())
+}
+
+pub(crate) fn face_call(
+    shared: &Arc<Shared>,
+    cancelled: Option<Reference>,
+    interruptible: bool,
+    operation: impl Future<Output = Result<serde_json::Value, SchedulerError>> + Send + 'static,
+) -> BridgeValue {
+    let cancel = shared.stop.child_token();
+    let guard = cancel.clone().drop_guard();
+    let stopped = cancel.clone();
+    let shared = shared.clone();
+    BridgeValue::cancellable_future(async move {
+        let _guard = guard;
+        let signal = async {
+            match cancelled {
+                Some(reference) => {
+                    let _ = reference.wait_async().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let task = async move {
+            let task = shared.tasks.spawn(async move {
+                if stopped.is_cancelled() {
+                    return Err(SchedulerError::new("cancelled", "call cancelled before handover"));
+                }
+                if interruptible {
+                    tokio::select! {
+                        biased;
+                        _ = stopped.cancelled() => Err(SchedulerError::new("cancelled", "call cancelled")),
+                        result = operation => result,
+                    }
+                } else {
+                    operation.await
+                }
+            });
+            task.await
+        };
+        let mut task = std::pin::pin!(task);
+        let result = tokio::select! {
+            biased;
+            _ = signal => {
+                cancel.cancel();
+                task.await
+            }
+            result = &mut task => result,
+        };
+        match result {
+            Ok(Ok(reply)) => Ok(reply.into()),
+            Ok(Err(error)) => face_failure(error),
+            Err(error) => Err(BridgeError::Value(error.to_string())),
+        }
+    })
 }

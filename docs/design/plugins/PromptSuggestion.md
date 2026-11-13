@@ -246,14 +246,14 @@ The CLI sends `session.suggestion.request` only after it witnessed a `turn/end` 
 ```text
 scrollback, empty composer            fullscreen, empty composer
 ┌──────────────────────────────┐      ┌──────────────────────────────┐
-│ › run the tests              │      │                              │
-│                              │      │ run the tests                │
+│ › run the tests              │      │ run the tests                │
+│                              │      │                              │
 └──────────────────────────────┘      └──────────────────────────────┘
-   the placeholder is replaced          the empty composer slot holds it
-   by the offer                         (the fullscreen placeholder is empty)
+   the hint placeholder is              the hint placeholder is
+   replaced by the offer                replaced by the offer
 ```
 
-The offer is muted text in the empty composer row in both layouts, truncated with `…` to the text width and hidden below 20 columns. It never changes the composer's height and never wraps.
+The offer replaces the default hint placeholder with muted text in the empty composer row in both layouts, truncated with `…` to the text width and hidden below 20 columns. It never changes the composer's height and never wraps.
 
 | Input | Effect |
 | --- | --- |

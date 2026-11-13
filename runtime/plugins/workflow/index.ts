@@ -1,6 +1,6 @@
 import { definePlugin } from '@arcships/rutis'
 import { z } from 'zod'
-import type { ManagementMethods, MethodReply, PartRegistry, PluginFiles, Sessions, Settings, WorkflowFiles } from '../../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, PartRegistry, PluginFiles, ProcessActivity, Sessions, Settings, WorkflowFiles } from '../../../npm/plugin.js'
 import { Catalog, type DefinitionEntry } from './catalog.ts'
 import { WorkflowError, payloadBytes } from './definition.ts'
 import { Workflow } from './engine.ts'
@@ -68,16 +68,16 @@ export default definePlugin({
   // A plain JSON Schema: zod's result also carries `~standard`, which
   // rutis refuses as a Standard Schema.
   config: JSON.parse(JSON.stringify(z.toJSONSchema(options))),
-  inject: ['sessions', 'settings', 'pluginFiles', 'workflowFiles', 'managementMethods', 'partRegistry'],
+  inject: ['sessions', 'settings', 'pluginFiles', 'workflowFiles', 'managementMethods', 'partRegistry', 'processActivity'],
   provides,
   async apply(ctx, config: z.infer<typeof options>) {
     config = options.parse(config)
     await ctx.use<Settings>('settings').register(settings)
     const catalog = new Catalog(ctx.use<Settings>('settings'), ctx.use<WorkflowFiles>('workflowFiles'), config.packages)
     const scope = await ctx.use<PluginFiles>('pluginFiles').open()
-    const workflow = new Workflow(catalog, ctx.use<Sessions>('sessions'), new RunStore(scope), config.report_guidance)
+    const workflow = new Workflow(catalog, ctx.use<Sessions>('sessions'), new RunStore(scope), ctx.use<ProcessActivity>('processActivity'), config.report_guidance)
     ctx.effect(() => workflow.close())
-    try { await workflow.restore() }
+    try { await workflow.track(() => workflow.restore()) }
     catch (error) {
       workflow.fault = error instanceof Error ? error : new Error(String(error))
       console.error('Workflow', workflow.fault.message)

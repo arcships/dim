@@ -18,8 +18,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "첨부 파일이 있는 메시지는 대기열에 남습니다. /queue에서 steer하거나 삭제하세요"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 관리 · shift+← 마지막 편집 · ctrl+s 지금 steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 관리 · Shift+← 마지막 편집 · 초안이 비어 있으면 {key}로 steer"
         }
         "+{count} more · {hint}" => "+{count}개 더 · {hint}",
         "steer or delete queued messages" => "대기열 메시지 steer 또는 삭제",
@@ -111,6 +111,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "이 데몬은 세션 이름 바꾸기를 지원하지 않습니다"
         }
         "Renaming failed" => "이름 바꾸기에 실패했습니다",
+        "Delete \"{name}\"?" => "“{name}”을(를) 삭제할까요?",
+        "Deleted {name}." => "{name} 삭제했습니다.",
+        "Nothing was removed: no stored Session {name}." => {
+            "삭제된 항목이 없습니다: 저장된 세션 {name}이(가) 없습니다."
+        }
+        "Delete failed" => "삭제에 실패했습니다",
+        "This daemon does not support deleting Sessions" => {
+            "이 데몬은 세션 삭제를 지원하지 않습니다"
+        }
         "Starting" => "시작 중",
         "Delegation result" => "위임 결과",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -209,6 +218,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "연결 끊김, 초안 보존됨. 종료 후 세션 재개"
         }
+        "Cannot open this Session; draft kept." => "이 세션을 열 수 없습니다, 초안 보존됨.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "연결 끊김, 초안 보존됨. 종료 후 실행: {command}"
         }
@@ -273,7 +283,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "오류: {message}",
         "working…  {elapsed}" => "작업 중…  {elapsed}",
         "thinking…  {elapsed}" => "생각 중…  {elapsed}",
-        "Ask anything..." => "무엇이든 물어보세요…",
+        "Ask anything... · Ctrl+J newline" => "무엇이든 물어보세요… · Ctrl+J 줄바꿈",
         "Earlier history · {id} · {count} messages" => "이전 기록 · {id} · 메시지 {count}개",
         "No active session" => "활성 세션 없음",
         "answer required" => "답변 필요",
@@ -331,9 +341,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "종료",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 선택 · ←/→ 추론 강도 · Ctrl+X 저장값 지우기 · Esc 지우기/닫기"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 선택 및 기본 설정 · ←/→ 추론 강도 · Ctrl+X 저장값 지우기 · Esc 지우기/닫기"
         }
+        "Default for new sessions in {folder}: {model}" => "새 세션의 {folder} 기본 모델: {model}",
+        "Default for new sessions: {model}" => "새 세션 기본 모델: {model}",
         "Enter select · Esc clear/close" => "Enter 선택 · Esc 지우기/닫기",
         "esc close" => "esc 닫기",
         "Suggestions" => "추천",
@@ -341,6 +353,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "스킬 로드됨: {name}",
         "Hook context · {count} line" => "훅 컨텍스트 · {count}줄",
         "Hook context · {count} lines" => "훅 컨텍스트 · {count}줄",
+        "Stop hook follow-up · {count} line" => "Stop 훅 후속 입력 · {count}줄",
+        "Stop hook follow-up · {count} lines" => "Stop 훅 후속 입력 · {count}줄",
         "Commands" => "명령",
         "Command Palette" => "명령 팔레트",
         "No matches" => "결과 없음",
@@ -360,6 +374,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "테마",
         "Language" => "언어",
         "Startup UI form" => "시작 UI 형태",
+        "Default send mode" => "기본 전송 모드",
         "fullscreen" => "전체 화면",
         "scrollback" => "스크롤백",
         "Tool details" => "도구 상세",
@@ -393,8 +408,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "이 워크스페이스에 저장된 세션 없음. Ctrl+S로 더 보기."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 열기 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 열기 · Ctrl+X 삭제 · Ctrl+S 범위 · Ctrl+R 새로고침 · Esc 닫기"
         }
         "Loading sessions..." => "세션 불러오는 중…",
         "No saved sessions yet." => "저장된 세션 없음",
@@ -495,11 +510,17 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "단축키 보기",
         "Application keys" => "앱 단축키",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 제출 또는 대기열 추가 · 빈 입력: 첫 대기 메시지 steer · Shift+Enter/Ctrl+J 줄바꿈 · ↑↓ 기록"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "대기 중 Enter로 제출 · Shift+Enter / Alt+Enter / Ctrl+J 줄바꿈 · ↑↓ 기록"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P 명령 · Esc 중단, 대기 메시지는 입력란으로 복귀 · Ctrl+S 입력 또는 첫 대기 메시지 steer · Shift+← 마지막 대기 메시지 편집"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "실행 중 초안 전송: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "초안이 비어 있으면 {keys}로 대기열 첫 메시지 steer"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P 명령 · Esc 중단, 대기 메시지는 입력란으로 복귀 · Shift+← 마지막 대기 메시지 편집"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 지우기, 두 번 누르면 종료 · 빈 초안에서 Ctrl+D 종료"
@@ -549,6 +570,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이라 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이고, 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중이며(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}), 이 서버는 프로토콜 v{protocol}을(를) 사용하므로 이 {client} 클라이언트는 사용할 수 없습니다. 세션은 시작되지 않았습니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중입니다(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}). 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."

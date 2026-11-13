@@ -7,8 +7,9 @@
 use crate::{
     document::{MAX_PROMPT_BYTES, canonical_instant, format_instant},
     engine::{GRACE_SECONDS, lookup_input, sessions, target_gone},
-    methods::Shared,
+    methods::{Shared, face_arguments, face_call, face_failure},
     runs::SchedulerError,
+    session::{CancelParams, CreateParams, ListParams, nonempty, wakeup_request, wire_scheduled},
 };
 use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
@@ -221,6 +222,9 @@ impl Wakeups {
     /// Records a one-shot wakeup. An instant already past the grace window is
     /// recorded `expired` at once; nothing is ever replayed (A.4's rule).
     pub async fn create(&self, request: WakeupRequest) -> Result<Wakeup, SchedulerError> {
+        let _activity = self.shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let now = Utc::now();
         let expired = now - request.at >= Duration::seconds(GRACE_SECONDS);
         let created = Wakeup {
@@ -273,6 +277,9 @@ impl Wakeups {
         session_id: &str,
         wakeup_id: &str,
     ) -> Result<(Wakeup, bool), SchedulerError> {
+        let _activity = self.shared.activity.take_hold().ok_or_else(|| {
+            SchedulerError::new("service_reloading", "Process admission is paused")
+        })?;
         let _hold = self.shared.wakeups.lock().await;
         let session_id = session_id.to_owned();
         let wakeup_id = wakeup_id.to_owned();
@@ -331,6 +338,9 @@ impl Wakeups {
     /// Nothing this pass awaits takes that lock again: `sessions.input` only
     /// queues an input on the target Session.
     pub async fn evaluate(&self) -> Result<(), SchedulerError> {
+        let Some(_activity) = self.shared.activity.take_hold() else {
+            return Ok(());
+        };
         let _hold = self.shared.wakeups.lock().await;
         let now = Utc::now();
         let snapshot = read(&self.shared.files).await?;
@@ -503,239 +513,7 @@ impl Wakeups {
     }
 }
 
-async fn resolve_face_value(value: BridgeValue) -> Result<BridgeValue, SchedulerError> {
-    match value {
-        BridgeValue::Reference(reference) if reference.is_future() => reference
-            .wait_async()
-            .await
-            .map_err(|error| SchedulerError::new("wakeup_face", error.to_string())),
-        value => Ok(value),
-    }
-}
-
-fn code_error(value: &serde_json::Value) -> Option<SchedulerError> {
-    let code = value.get("code")?.as_str()?;
-    let message = value
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("wakeup call failed");
-    Some(SchedulerError::new(code, message))
-}
-
-fn state_of(text: &str) -> WakeupState {
-    match text {
-        "fired" => WakeupState::Fired,
-        "cancelled" => WakeupState::Cancelled,
-        "expired" => WakeupState::Expired,
-        _ => WakeupState::Scheduled,
-    }
-}
-
-fn synthetic(
-    session_id: &str,
-    branch_id: &str,
-    wakeup_id: String,
-    at: String,
-    prompt: String,
-    state: WakeupState,
-) -> Wakeup {
-    Wakeup {
-        wakeup_id,
-        session_id: session_id.to_owned(),
-        branch_id: branch_id.to_owned(),
-        at: at.clone(),
-        prompt,
-        state,
-        created_at: at,
-        settled_at: None,
-    }
-}
-
-pub(crate) async fn create_wakeup(
-    dispatch: &Arc<dyn HostDispatch>,
-    request: WakeupRequest,
-) -> Result<Wakeup, SchedulerError> {
-    let at = format_instant(request.at);
-    let args = json!({
-        "sessionId": request.session_id,
-        "branchId": request.branch_id,
-        "at": at,
-        "prompt": request.prompt,
-    });
-    let value = dispatch
-        .invoke("create", BridgeValue::Data(args))
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    let value = resolve_face_value(value).await?;
-    let value = value
-        .json()
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    if let Some(error) = code_error(&value) {
-        return Err(error);
-    }
-    let wakeup_id = value
-        .get("wakeupId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| SchedulerError::new("wakeup_face", "create reply had no wakeupId"))?
-        .to_owned();
-    if let Ok(records) = list_wakeups(dispatch, &request.session_id, &request.branch_id).await
-        && let Some(record) = records
-            .into_iter()
-            .find(|record| record.wakeup_id == wakeup_id)
-    {
-        return Ok(record);
-    }
-    Ok(synthetic(
-        &request.session_id,
-        &request.branch_id,
-        wakeup_id,
-        at,
-        request.prompt,
-        WakeupState::Scheduled,
-    ))
-}
-
-pub(crate) async fn list_wakeups(
-    dispatch: &Arc<dyn HostDispatch>,
-    session_id: &str,
-    branch_id: &str,
-) -> Result<Vec<Wakeup>, SchedulerError> {
-    let args = json!({ "sessionId": session_id, "branchId": branch_id });
-    let value = dispatch
-        .invoke("list", BridgeValue::Data(args))
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    let value = resolve_face_value(value).await?;
-    let value = value
-        .json()
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    if let Some(error) = code_error(&value) {
-        return Err(error);
-    }
-    let records = value
-        .get("wakeups")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(records
-        .into_iter()
-        .filter_map(|record| {
-            Some(synthetic(
-                session_id,
-                branch_id,
-                record.get("wakeupId")?.as_str()?.to_owned(),
-                record.get("at")?.as_str()?.to_owned(),
-                record.get("prompt")?.as_str()?.to_owned(),
-                state_of(
-                    record
-                        .get("state")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(""),
-                ),
-            ))
-        })
-        .collect())
-}
-
-pub(crate) async fn cancel_wakeup(
-    dispatch: &Arc<dyn HostDispatch>,
-    session_id: &str,
-    wakeup_id: &str,
-) -> Result<(Wakeup, bool), SchedulerError> {
-    let args = json!({ "sessionId": session_id, "wakeupId": wakeup_id });
-    let value = dispatch
-        .invoke("cancel", BridgeValue::Data(args))
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    let value = resolve_face_value(value).await?;
-    let value = value
-        .json()
-        .map_err(|error| SchedulerError::new("wakeup_face", error.to_string()))?;
-    if let Some(error) = code_error(&value) {
-        return Err(error);
-    }
-    let changed = value.get("state").is_none();
-    let state = value
-        .get("state")
-        .and_then(serde_json::Value::as_str)
-        .map(state_of)
-        .unwrap_or(WakeupState::Cancelled);
-    Ok((
-        synthetic(
-            session_id,
-            "main",
-            wakeup_id.to_owned(),
-            String::new(),
-            String::new(),
-            state,
-        ),
-        changed,
-    ))
-}
-pub struct WakeupsFace(pub(crate) Arc<Wakeups>);
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateWire {
-    session_id: String,
-    branch_id: String,
-    at: String,
-    prompt: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListWire {
-    session_id: String,
-    #[serde(default)]
-    branch_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CancelWire {
-    session_id: String,
-    wakeup_id: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WakeupWire<'a> {
-    wakeup_id: &'a str,
-    at: &'a str,
-    prompt: &'a str,
-    state: &'static str,
-}
-
-fn wire(wakeup: &Wakeup) -> WakeupWire<'_> {
-    WakeupWire {
-        wakeup_id: &wakeup.wakeup_id,
-        at: &wakeup.at,
-        prompt: &wakeup.prompt,
-        state: wakeup.state.name(),
-    }
-}
-
-fn invalid(message: impl Into<String>) -> BridgeError {
-    BridgeError::Value(message.into())
-}
-
-fn parse_at(at: &str) -> Result<DateTime<Utc>, BridgeError> {
-    DateTime::parse_from_rfc3339(at)
-        .map(|at| at.with_timezone(&Utc))
-        .map_err(|error| invalid(format!("invalid at: {error}")))
-}
-
-fn unpack(args: BridgeValue) -> Result<serde_json::Value, BridgeError> {
-    let value = args.json()?;
-    Ok(match value {
-        serde_json::Value::Array(mut values) => {
-            values.drain(..).next().unwrap_or(serde_json::Value::Null)
-        }
-        value => value,
-    })
-}
-
-fn wire_error(code: &str, message: impl Into<String>) -> Reply {
-    Ok(json!({ "code": code, "message": message.into() }).into())
-}
+pub(crate) struct WakeupsFace(pub(crate) Arc<Wakeups>);
 
 impl HostDispatch for WakeupsFace {
     fn methods(&self) -> Option<serde_json::Value> {
@@ -743,84 +521,76 @@ impl HostDispatch for WakeupsFace {
     }
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        let launch = |wakeups: Arc<Wakeups>, args: BridgeValue| match method {
+        let wakeups = self.0.clone();
+        let shared = wakeups.shared.clone();
+        let operation = match method {
             "create" => {
-                let request: CreateWire = serde_json::from_value(unpack(args)?)
-                    .map_err(|error| invalid(error.to_string()))?;
-                if request.session_id.is_empty() || request.branch_id.is_empty() {
-                    return wire_error("invalid_data", "sessionId and branchId must not be empty");
-                }
-                if request.prompt.is_empty() {
-                    return wire_error("invalid_data", "prompt must not be empty");
-                }
-                if request.prompt.len() > MAX_PROMPT_BYTES {
-                    return wire_error("invalid_data", "prompt is too large");
-                }
-                Ok(BridgeValue::future(async move {
-                    let at = match parse_at(&request.at) {
-                        Ok(at) => at,
-                        Err(error) => return wire_error("invalid_data", error.to_string()),
+                let (request, cancelled) =
+                    match face_arguments::<CreateParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
                     };
-                    match wakeups
-                        .create(WakeupRequest {
-                            session_id: request.session_id,
-                            branch_id: request.branch_id,
-                            at,
-                            prompt: request.prompt,
-                        })
-                        .await
-                    {
-                        Ok(wakeup) => Ok(json!({ "wakeupId": wakeup.wakeup_id }).into()),
-                        Err(error) => {
-                            Ok(json!({ "code": error.code, "message": error.message }).into())
-                        }
+                let request = match wakeup_request(
+                    request.session_id,
+                    request.branch_id,
+                    &request.at,
+                    request.prompt,
+                ) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return face_failure(SchedulerError::new("invalid_params", error.message));
                     }
-                }))
+                };
+                face_call(&shared, cancelled, false, async move {
+                    let record = wakeups.create(request).await?;
+                    Ok(json!({ "wakeupId": record.wakeup_id }))
+                })
             }
             "list" => {
-                let request: ListWire = serde_json::from_value(unpack(args)?)
-                    .map_err(|error| invalid(error.to_string()))?;
-                let branch = request.branch_id.clone().unwrap_or_else(|| "main".into());
-                if request.session_id.is_empty() || branch.is_empty() {
-                    return wire_error("invalid_data", "sessionId and branchId must not be empty");
+                let (request, cancelled) =
+                    match face_arguments::<ListParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                let branch = request.branch_id.unwrap_or_else(|| "main".into());
+                if let Err(error) = nonempty(&request.session_id, "sessionId")
+                    .and_then(|()| nonempty(&branch, "branchId"))
+                {
+                    return face_failure(SchedulerError::new("invalid_params", error.message));
                 }
-                Ok(BridgeValue::future(async move {
-                    let branch = request.branch_id.as_deref().unwrap_or("main");
-                    match wakeups.list(&request.session_id, branch).await {
-                        Ok(wakeups) => {
-                            let records: Vec<_> = wakeups.iter().map(wire).collect();
-                            Ok(json!({ "wakeups": records }).into())
-                        }
-                        Err(error) => {
-                            Ok(json!({ "code": error.code, "message": error.message }).into())
-                        }
-                    }
-                }))
+                face_call(&shared, cancelled, true, async move {
+                    let records = wakeups.list(&request.session_id, &branch).await?;
+                    Ok(json!({ "wakeups": records.iter().map(wire_scheduled).collect::<Vec<_>>() }))
+                })
             }
             "cancel" => {
-                let request: CancelWire = serde_json::from_value(unpack(args)?)
-                    .map_err(|error| invalid(error.to_string()))?;
-                if request.session_id.is_empty() || request.wakeup_id.is_empty() {
-                    return wire_error("invalid_data", "sessionId and wakeupId must not be empty");
+                let (request, cancelled) =
+                    match face_arguments::<CancelParams>(args, "invalid_params") {
+                        Ok(args) => args,
+                        Err(error) => return face_failure(error),
+                    };
+                if let Err(error) = nonempty(&request.session_id, "sessionId")
+                    .and_then(|()| nonempty(&request.wakeup_id, "wakeupId"))
+                {
+                    return face_failure(SchedulerError::new("invalid_params", error.message));
                 }
-                Ok(BridgeValue::future(async move {
-                    match wakeups
+                face_call(&shared, cancelled, false, async move {
+                    let (record, changed) = wakeups
                         .cancel(&request.session_id, &request.wakeup_id)
-                        .await
-                    {
-                        Ok((record, changed)) => Ok(if changed {
-                            json!({}).into()
-                        } else {
-                            json!({ "state": record.state.name() }).into()
-                        }),
-                        Err(error) => {
-                            Ok(json!({ "code": error.code, "message": error.message }).into())
-                        }
-                    }
-                }))
+                        .await?;
+                    Ok(if changed {
+                        json!({})
+                    } else {
+                        json!({ "state": record.state.name() })
+                    })
+                })
             }
-            _ => Err(invalid(format!("unknown wakeups method {method}"))),
+            _ => {
+                return Err(BridgeError::Value(format!(
+                    "unknown wakeups method {method}"
+                )));
+            }
         };
-        launch(self.0.clone(), args)
+        Ok(operation)
     }
 }

@@ -31,7 +31,8 @@ pub use sqlite::{
 };
 pub use text::initialize_session_text_index;
 pub use timeline::{
-    SessionStore, SessionStorePlugin, SqliteTimelineStore, TurnWindow, WorktreeUsage,
+    PreparedWorktree, SessionStore, SessionStorePlugin, SqliteTimelineStore, TurnWindow,
+    WorktreeDirectoryRecord, WorktreeUsage,
 };
 
 /// The directory below the database directory where WorkspaceTools keeps each

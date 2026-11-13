@@ -1,5 +1,6 @@
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel, MockTools},
+    agent_loop::AgentLoop,
     defaults,
     host::*,
     tool_registry::definition,
@@ -122,6 +123,913 @@ impl ModelDriver for OutputLimitedModel {
     }
 }
 
+/// How [`TruncatingModel`] cuts the reply it is asked for: the first request
+/// is cut, and every later request echoes, so a turn that continued at all
+/// shows as a second start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cut {
+    /// A `write` call is in flight when the provider stops at max_tokens.
+    CallAtMaxTokens,
+    /// The stream reports unparseable arguments for the call it announced.
+    UnparseableCall,
+    /// The stream stops normally while the announced arguments are partial.
+    IncompleteCallAtStop,
+    /// max_tokens with no call and no answer text.
+    NothingAtMaxTokens,
+    /// max_tokens after partial answer text.
+    TextAtMaxTokens,
+}
+
+struct TruncatingModel {
+    cut: Cut,
+    /// How many requests are cut before the model answers normally.
+    cuts: usize,
+    seen: std::sync::atomic::AtomicUsize,
+}
+
+fn malformed_call() -> HostError {
+    HostError::Failed {
+        message: "The provider sent a response Dim could not use: invalid arguments for tool \
+                  'echo'."
+            .into(),
+        budget: None,
+        kind: HostErrorKind::Other,
+        model: Some(Box::new(ModelFailureFacts {
+            kind: ModelFailureKind::MalformedResponse,
+            reason: Some("invalid arguments for tool 'echo'".into()),
+            status: None,
+            provider_code: None,
+            request_id: None,
+            cause: Vec::new(),
+            retry_after: None,
+            attempts: 1,
+            waited: std::time::Duration::ZERO,
+            retry_after_stop: None,
+            retry_forbidden: false,
+        })),
+        presentation: None,
+    }
+}
+
+fn cut_chunks(cut: Cut) -> Vec<std::result::Result<ModelChunk, HostError>> {
+    let start = ModelChunk::MessageStart {
+        message_id: "cut".into(),
+    };
+    let announce = |chunks: &mut Vec<std::result::Result<ModelChunk, HostError>>| {
+        chunks.push(Ok(ModelChunk::ToolStart {
+            id: "call-1".into(),
+            name: "echo".into(),
+        }));
+        chunks.push(Ok(ModelChunk::ToolArguments {
+            id: "call-1".into(),
+            name: "echo".into(),
+            delta: "{\"text\":\"hel".into(),
+        }));
+    };
+    let stop = |reason| {
+        Some(Ok(ModelChunk::MessageStop {
+            message_id: "cut".into(),
+            reason,
+        }))
+    };
+    let mut chunks = vec![Ok(start)];
+    match cut {
+        Cut::CallAtMaxTokens => {
+            announce(&mut chunks);
+            chunks.extend(stop(ModelStopReason::MaxTokens));
+        }
+        Cut::UnparseableCall => {
+            announce(&mut chunks);
+            chunks.push(Err(malformed_call()));
+        }
+        Cut::IncompleteCallAtStop => {
+            announce(&mut chunks);
+            chunks.extend(stop(ModelStopReason::ToolUse));
+        }
+        Cut::NothingAtMaxTokens => chunks.extend(stop(ModelStopReason::MaxTokens)),
+        Cut::TextAtMaxTokens => {
+            chunks.push(Ok(ModelChunk::Text("half an answer".into())));
+            chunks.extend(stop(ModelStopReason::MaxTokens));
+        }
+    }
+    chunks
+}
+
+impl ModelDriver for TruncatingModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let seen = self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if seen >= self.cuts {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let chunks = cut_chunks(self.cut);
+        Box::pin(async move { Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream) })
+    }
+}
+
+fn starts(events: &[std::sync::Arc<AgentEvent>]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::ModelStart(_)))
+        .count()
+}
+
+fn turn_outcome(events: &[std::sync::Arc<AgentEvent>]) -> Option<TurnOutcome> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        EventKind::TurnEnd(data) => Some(data.outcome.clone()),
+        _ => None,
+    })
+}
+
+async fn run_cut(cut: Cut) -> (Vec<std::sync::Arc<AgentEvent>>, MinimalHost) {
+    run_cuts(cut, 1).await
+}
+
+/// One turn against a model that cuts its first `cuts` requests.
+async fn run_cuts(cut: Cut, cuts: usize) -> (Vec<std::sync::Arc<AgentEvent>>, MinimalHost) {
+    let model = TruncatingModel {
+        cut,
+        cuts,
+        seen: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let agent = MinimalHost::start(&builder(Arc::new(model), Arc::new(MockTools)))
+        .await
+        .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("cut".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    (events, agent)
+}
+
+/// A model whose first reply waits until the test says so, then fails with a
+/// truncated call; later requests echo. It signals when the first request has
+/// arrived, so an input can be applied while that request is in flight.
+struct BlockingModel {
+    arrived: Arc<tokio::sync::Notify>,
+    gate: Arc<tokio::sync::Notify>,
+    seen: std::sync::atomic::AtomicUsize,
+}
+
+impl ModelDriver for BlockingModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let seen = self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if seen > 0 {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let arrived = self.arrived.clone();
+        let gate = self.gate.clone();
+        Box::pin(async move {
+            arrived.notify_waiters();
+            gate.notified().await;
+            let chunks = cut_chunks(Cut::UnparseableCall);
+            Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_steer_applied_before_a_failed_step_takes_over_instead_of_continuing() {
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let model = BlockingModel {
+        arrived: arrived.clone(),
+        gate: gate.clone(),
+        seen: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let agent = MinimalHost::start(&builder(Arc::new(model), Arc::new(MockTools)))
+        .await
+        .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let waiting = arrived.notified();
+    session
+        .submit("cut".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    waiting.await;
+    // The reply is in flight. A steer applied now must take over the turn
+    // rather than be read as consent to continue the failed reply.
+    session
+        .submit("instead".into(), InputMode::Steer, "main")
+        .await
+        .unwrap();
+    gate.notify_waiters();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(
+        starts(&events),
+        2,
+        "the cut request and the steer's own request, no continuation"
+    );
+    assert!(matches!(
+        turn_outcome(&events),
+        Some(TurnOutcome::Completed { .. })
+    ));
+    agent.close().await.unwrap();
+}
+
+/// Records every request's messages, then cuts the first one like
+/// `TruncatingModel`.
+struct RecordingCutModel {
+    cut: Cut,
+    requests: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    seen: std::sync::atomic::AtomicUsize,
+}
+
+impl ModelDriver for RecordingCutModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let rendered: Vec<String> = request
+            .messages
+            .iter()
+            .flat_map(|message| match &message.content {
+                MessageContent::Parts(parts) => parts
+                    .iter()
+                    .map(|part| format!("{part:?}"))
+                    .collect::<Vec<_>>(),
+                MessageContent::Text(text) => vec![text.clone()],
+            })
+            .collect();
+        self.requests.lock().unwrap().push(rendered);
+        let seen = self.seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if seen > 0 {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let chunks = cut_chunks(self.cut);
+        Box::pin(async move { Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream) })
+    }
+}
+
+#[tokio::test]
+async fn the_continuation_reads_the_closure_result_of_the_announced_call() {
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = RecordingCutModel {
+        cut: Cut::CallAtMaxTokens,
+        requests: requests.clone(),
+        seen: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let agent = MinimalHost::start(&builder(Arc::new(model), Arc::new(MockTools)))
+        .await
+        .unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("cut".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let rendered = requests.lock().unwrap().clone();
+    assert_eq!(rendered.len(), 2, "the turn continued once");
+    let second = &rendered[1];
+    assert!(
+        second
+            .iter()
+            .any(|part| part.contains("Tool was not executed")),
+        "the continuation reads the per-call error: {second:?}"
+    );
+    assert!(
+        second
+            .iter()
+            .any(|part| part.contains("call-1") && part.starts_with("ToolResult")),
+        "the result is addressed to the announced call: {second:?}"
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_incomplete_call_reports_a_malformed_response() {
+    // A stream that stops normally with partial arguments is the same
+    // user-visible defect as one that reports unparseable arguments, so it
+    // carries the same failure kind instead of `unknown`.
+    let (events, agent) = run_cuts(Cut::IncompleteCallAtStop, 2).await;
+    let failure = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a failed terminal carrying facts");
+    assert_eq!(failure.kind, ModelFailureKind::MalformedResponse);
+    assert!(
+        failure
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("before its tool arguments were complete")),
+        "{:?}",
+        failure.reason
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_call_announced_and_never_executed_continues_the_turn_once() {
+    for cut in [
+        Cut::CallAtMaxTokens,
+        Cut::UnparseableCall,
+        Cut::IncompleteCallAtStop,
+    ] {
+        let (events, agent) = run_cut(cut).await;
+        assert_eq!(starts(&events), 2, "{cut:?}: the turn continues once");
+        assert!(matches!(
+            turn_outcome(&events),
+            Some(TurnOutcome::Completed { .. })
+        ));
+        // The batch that closed the announced call is committed before the
+        // second request starts, and its error text is what the model reads.
+        let closed = events
+            .iter()
+            .position(|event| {
+                matches!(&event.kind, EventKind::ToolResult(data) if data.call_event_id.is_none())
+            })
+            .expect("the announced call is closed");
+        let second = events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| matches!(event.kind, EventKind::ModelStart(_)))
+            .nth(1)
+            .map(|(index, _)| index)
+            .expect("a second request");
+        assert!(
+            closed < second,
+            "{cut:?}: the result precedes the continuation"
+        );
+        let ToolResultData { results, .. } = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                EventKind::ToolResult(data) if data.call_event_id.is_none() => Some(data.clone()),
+                _ => None,
+            })
+            .expect("closed calls");
+        assert_eq!(results.len(), 1, "{cut:?}");
+        assert_eq!(results[0].result.is_error, Some(true), "{cut:?}");
+        assert!(
+            matches!(&results[0].result.content, ToolContent::Text(text)
+                if text.starts_with("Tool was not executed:")),
+            "{cut:?}: {:?}",
+            results[0].result.content
+        );
+        agent.close().await.unwrap();
+    }
+}
+
+/// A model that announces one call and fails before its arguments complete, so
+/// nothing reaches a tool. Its provider policy decides whether retrying that
+/// failure is forbidden, and every later request echoes.
+#[derive(Clone)]
+struct AnnouncingFailure {
+    failure: ModelFailureKind,
+    vetoed: bool,
+    seen: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl ModelFailurePolicy for AnnouncingFailure {
+    fn forbids_retry(&self, _: &HostError) -> bool {
+        self.vetoed
+    }
+}
+impl ResolveModelConnection for AnnouncingFailure {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: Some(Arc::new(self.clone())),
+                recovery: None,
+            })
+        })
+    }
+}
+impl ModelDriver for AnnouncingFailure {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        if self.seen.fetch_add(1, Ordering::SeqCst) > 0 {
+            return EchoModel.invoke(request, connection, cancel);
+        }
+        let error = HostError::Failed {
+            message: "fixture rejection".into(),
+            budget: None,
+            kind: HostErrorKind::Other,
+            model: Some(Box::new(ModelFailureFacts {
+                kind: self.failure,
+                reason: Some("fixture rejection".into()),
+                status: None,
+                provider_code: None,
+                request_id: None,
+                cause: Vec::new(),
+                retry_after: None,
+                attempts: 1,
+                waited: Duration::ZERO,
+                retry_after_stop: None,
+                retry_forbidden: false,
+            })),
+            presentation: None,
+        };
+        Box::pin(async move {
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "announced".into(),
+                }),
+                Ok(ModelChunk::ToolStart {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                }),
+                Ok(ModelChunk::ToolArguments {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                    delta: "{\"text\":\"hel".into(),
+                }),
+                Err(error),
+            ])) as ModelStream)
+        })
+    }
+}
+
+struct AnnouncingHosts(AnnouncingFailure);
+impl Plugin for AnnouncingHosts {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.announcing-failure"
+    }
+    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
+        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        Ok(())
+    }
+}
+
+/// One turn against [`AnnouncingFailure`], with its policy on the invocation
+/// path as in production.
+async fn run_announcing_failure(
+    failure: ModelFailureKind,
+    vetoed: bool,
+) -> (Vec<std::sync::Arc<AgentEvent>>, MinimalHost) {
+    let model = AnnouncingFailure {
+        failure,
+        vetoed,
+        seen: Default::default(),
+    };
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = model.clone();
+    builder.plugin(move |_| Ok(Box::new(AnnouncingHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    (events, agent)
+}
+
+#[tokio::test]
+async fn a_vetoed_failure_does_not_continue_the_turn() {
+    let (events, agent) = run_announcing_failure(ModelFailureKind::ServerError, true).await;
+    assert_eq!(starts(&events), 1, "the provider vetoed the continuation");
+    assert!(matches!(
+        turn_outcome(&events),
+        Some(TurnOutcome::Failed { .. })
+    ));
+    // The veto does not change how the announced call is closed.
+    let closed = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) if data.call_event_id.is_none() => Some(data.clone()),
+            _ => None,
+        })
+        .expect("the announced call is closed");
+    assert_eq!(closed.results.len(), 1);
+    assert_eq!(closed.results[0].result.is_error, Some(true));
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failure_no_new_request_can_settle_ends_the_turn() {
+    for kind in [
+        ModelFailureKind::AuthRejected,
+        ModelFailureKind::QuotaExhausted,
+        ModelFailureKind::NotFound,
+        ModelFailureKind::InvalidRequest,
+        ModelFailureKind::ContentFiltered,
+        ModelFailureKind::ContextTooLong,
+    ] {
+        let (events, agent) = run_announcing_failure(kind, false).await;
+        assert_eq!(starts(&events), 1, "{kind:?}: no continuation");
+        assert!(
+            matches!(turn_outcome(&events), Some(TurnOutcome::Failed { .. })),
+            "{kind:?}: {:?}",
+            turn_outcome(&events)
+        );
+        agent.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_failure_a_new_request_can_settle_continues_the_turn() {
+    for kind in [
+        ModelFailureKind::Network,
+        ModelFailureKind::RateLimited,
+        ModelFailureKind::ServerError,
+        ModelFailureKind::MalformedResponse,
+        ModelFailureKind::Unknown,
+    ] {
+        let (events, agent) = run_announcing_failure(kind, false).await;
+        assert_eq!(starts(&events), 2, "{kind:?}: the turn continues once");
+        agent.close().await.unwrap();
+    }
+}
+
+/// A model whose first request spends three attempts with no output and then
+/// announces a call and fails, so that request ends with part of the chain
+/// spent. Every later request fails with no output at all, so a continuation
+/// carrying the remainder stops sooner than one with a fresh budget. While
+/// `hold` is set, the announcing attempt waits in flight until released, so a
+/// test can write a manual compaction command against it.
+#[derive(Clone)]
+struct QuietThenAnnounced {
+    announced: Arc<AtomicBool>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    hold: Arc<AtomicBool>,
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+impl QuietThenAnnounced {
+    /// The announcing attempt: one started call, then the failure.
+    fn announced_stream() -> ModelStream {
+        let error = Self::failure();
+        Box::pin(futures_util::stream::iter(vec![
+            Ok(ModelChunk::MessageStart {
+                message_id: "announced".into(),
+            }),
+            Ok(ModelChunk::ToolStart {
+                id: "call-1".into(),
+                name: "echo".into(),
+            }),
+            Ok(ModelChunk::ToolArguments {
+                id: "call-1".into(),
+                name: "echo".into(),
+                delta: "{\"text\":\"hel".into(),
+            }),
+            Err(error),
+        ]))
+    }
+    fn failure() -> HostError {
+        HostError::Failed {
+            message: "fixture rejection".into(),
+            budget: None,
+            kind: HostErrorKind::Http {
+                status: Some(503),
+                code: None,
+            },
+            model: Some(Box::new(ModelFailureFacts {
+                kind: ModelFailureKind::ServerError,
+                reason: Some("fixture rejection".into()),
+                status: Some(503),
+                provider_code: None,
+                request_id: None,
+                cause: Vec::new(),
+                retry_after: None,
+                attempts: 1,
+                waited: Duration::ZERO,
+                retry_after_stop: None,
+                retry_forbidden: false,
+            })),
+            presentation: None,
+        }
+    }
+}
+impl ModelDriver for QuietThenAnnounced {
+    fn invoke(
+        &self,
+        _: Arc<ModelRequest>,
+        _: ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let announce = call == 3 && !self.announced.swap(true, Ordering::SeqCst);
+        if !announce {
+            return Box::pin(async { Err(Self::failure()) });
+        }
+        if !self.hold.swap(false, Ordering::SeqCst) {
+            return Box::pin(async { Ok(Self::announced_stream() as ModelStream) });
+        }
+        let entered = self.entered.clone();
+        let release = self.release.clone();
+        Box::pin(async move {
+            entered.notify_one();
+            tokio::select! {
+                _ = cancel.cancelled() => Err(HostError::Cancelled("model cancelled".into())),
+                _ = release.notified() => Ok(Self::announced_stream()),
+            }
+        })
+    }
+}
+impl ResolveModelConnection for QuietThenAnnounced {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+struct QuietThenAnnouncedHosts(QuietThenAnnounced);
+impl Plugin for QuietThenAnnouncedHosts {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.quiet-then-announced"
+    }
+    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
+        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = QuietThenAnnounced {
+        announced: Arc::new(AtomicBool::new(false)),
+        calls: calls.clone(),
+        hold: Arc::new(AtomicBool::new(false)),
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(starts(&events), 2, "the turn continues once");
+    // 4 calls ended the failed request: three quiet ones and the announced
+    // one. The continuation carries those four attempts, so it has four of
+    // the eight left; a fresh chain would have given it eight.
+    assert_eq!(calls.load(Ordering::SeqCst), 8, "one shared chain");
+    let ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    assert_eq!(ends[0].attempts, 4, "{:?}", ends[0]);
+    assert_eq!(ends[1].attempts, 8, "{:?}", ends[1]);
+    assert!(
+        ends[1].waited_ms > ends[0].waited_ms,
+        "the continuation reports the chain's total wait: {:?}",
+        ends[1]
+    );
+    agent.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_compaction_step_before_the_continuation_keeps_its_chain() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = QuietThenAnnounced {
+        announced: Arc::new(AtomicBool::new(false)),
+        calls: calls.clone(),
+        hold: Arc::new(AtomicBool::new(true)),
+        entered: entered.clone(),
+        release: release.clone(),
+    };
+    builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    entered.notified().await;
+    let command = session
+        .service::<AgentLoop>("main")
+        .unwrap()
+        .compact()
+        .unwrap();
+    release.notify_one();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(starts(&events), 2, "the turn continues once");
+    assert_eq!(calls.load(Ordering::SeqCst), 8, "one shared chain");
+    let ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    assert_eq!(ends[0].attempts, 4, "{:?}", ends[0]);
+    assert_eq!(ends[1].attempts, 8, "{:?}", ends[1]);
+    let terminal = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.kind,
+                EventKind::ModelOutputEnd(data)
+                    if matches!(data.outcome, ModelOutputOutcome::Failed { .. })
+            )
+        })
+        .expect("the failed request ends");
+    let start = events
+        .iter()
+        .enumerate()
+        .skip(terminal)
+        .find(|(_, event)| matches!(event.kind, EventKind::ModelStart(_)))
+        .map(|(index, _)| index)
+        .expect("the continuation starts");
+    let steps: Vec<_> = events[terminal + 1..start]
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextCompaction(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        steps.len(),
+        1,
+        "the step's result resumes the turn: {steps:?}"
+    );
+    assert_eq!(steps[0].command, Some(command));
+    assert!(matches!(
+        steps[0].outcome,
+        ContextCompactionResult::Failed { .. }
+    ));
+    let prepares: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ContextPrepare(data) => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prepares.len(), 2, "one preparation per request");
+    let chain = prepares[1]
+        .failure_chain
+        .as_ref()
+        .expect("the resumed request carries the chain");
+    assert_eq!(chain.from_request_id, prepares[0].request_id);
+    assert_eq!(chain.attempts, ends[0].attempts);
+    assert_eq!(chain.waited_ms, ends[0].waited_ms);
+    agent.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_second_truncated_call_settles_the_turn() {
+    for (cut, expected) in [
+        (Cut::UnparseableCall, false),
+        (Cut::IncompleteCallAtStop, false),
+        (Cut::CallAtMaxTokens, true),
+    ] {
+        let (events, agent) = run_cuts(cut, 2).await;
+        assert_eq!(starts(&events), 2, "{cut:?}: the slot is spent once");
+        match (turn_outcome(&events), expected) {
+            (Some(TurnOutcome::Completed { reason }), true) => assert_eq!(reason, "output_limit"),
+            (Some(TurnOutcome::Failed { .. }), false) => {}
+            (other, _) => panic!("{cut:?}: {other:?}"),
+        }
+        agent.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_output_limit_with_no_call_completes_the_turn() {
+    for cut in [Cut::NothingAtMaxTokens, Cut::TextAtMaxTokens] {
+        let (events, agent) = run_cut(cut).await;
+        assert_eq!(starts(&events), 1, "{cut:?}: nothing to continue");
+        assert!(
+            matches!(&turn_outcome(&events), Some(TurnOutcome::Completed { reason })
+                if reason == "output_limit"),
+            "{cut:?}: {:?}",
+            turn_outcome(&events)
+        );
+        // The failure fact stays for diagnostics.
+        assert!(
+            events.iter().any(|event| matches!(&event.kind,
+            EventKind::ModelOutputEnd(data) if matches!(
+                &data.outcome,
+                ModelOutputOutcome::Failed { failure: Some(failure), .. }
+                    if failure.kind == ModelFailureKind::OutputLimit
+            ))),
+            "{cut:?}"
+        );
+        agent.close().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit() {
     let agent = MinimalHost::start(&builder(Arc::new(OutputLimitedModel), Arc::new(MockTools)))
@@ -155,9 +1063,9 @@ async fn a_max_tokens_turn_keeps_the_session_usable_with_a_larger_output_limit()
             .unwrap()
             .kind,
         EventKind::TurnEnd(TurnEndData {
-            outcome: TurnOutcome::Failed { .. },
+            outcome: TurnOutcome::Completed { reason },
             ..
-        })
+        }) if reason == "output_limit"
     ));
     model.config.as_mut().unwrap().max_tokens = Some(128.0);
     session
@@ -1343,18 +2251,22 @@ async fn process_model_recovery_respects_output_cleanup_and_cancellation() {
 #[tokio::test(start_paused = true)]
 async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
     tokio::time::timeout(Duration::from_secs(600), async {
-        for (mode, expected_calls, expected_refresh, expected_rejected, completed) in [
-            (7, 8, 0, 0, false),
-            (8, 8, 1, 0, false),
-            (9, 2, 0, 0, true),
-            (10, 1, 0, 0, false),
-            (11, 1, 0, 0, false),
-            (13, 1, 0, 0, false),
-            (15, 2, 1, 1, false),
-            (16, 4, 1, 1, false),
-            (18, 2, 1, 1, false),
-            (19, 3, 1, 1, false),
-            (20, 2, 1, 0, false),
+        // `continues`: mode 11 announces a call before it fails, so its tool
+        // start closes replay, the retry budget stops, and the turn takes its
+        // one continuation. `expected_calls` counts the failed request's own
+        // calls in every row.
+        for (mode, expected_calls, expected_refresh, expected_rejected, completed, continues) in [
+            (7, 8, 0, 0, false, false),
+            (8, 8, 1, 0, false, false),
+            (9, 2, 0, 0, true, false),
+            (10, 1, 0, 0, false, false),
+            (11, 1, 0, 0, false, true),
+            (13, 1, 0, 0, false, false),
+            (15, 2, 1, 1, false, false),
+            (16, 4, 1, 1, false, false),
+            (18, 2, 1, 1, false, false),
+            (19, 3, 1, 1, false, false),
+            (20, 2, 1, 0, false, false),
         ] {
             let probe = RecoveryProbe {
                 mode,
@@ -1394,8 +2306,8 @@ async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
 
             assert_eq!(
                 probe.calls.load(Ordering::SeqCst),
-                expected_calls,
-                "mode {mode}"
+                expected_calls + usize::from(continues),
+                "mode {mode}: the failed request's calls plus its continuation"
             );
             assert_eq!(
                 probe.recovered.load(Ordering::SeqCst),
@@ -1415,7 +2327,7 @@ async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(ends.len(), 1, "mode {mode}");
+            assert_eq!(ends.len(), 1 + usize::from(continues), "mode {mode}");
             if !completed {
                 let ModelOutputOutcome::Failed {
                     error,
@@ -1443,14 +2355,16 @@ async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
                     assert_eq!(failure.waited_ms, 0, "mode {mode}");
                 }
                 assert_eq!(error.as_str(), "fixture rejection", "mode {mode}");
-                let turn_error = events.iter().find_map(|event| match &event.kind {
-                    EventKind::TurnEnd(TurnEndData {
-                        outcome: TurnOutcome::Failed { error },
-                        ..
-                    }) => Some(error.as_str()),
-                    _ => None,
-                });
-                assert_eq!(turn_error, Some(error.as_str()), "mode {mode}");
+                if !continues {
+                    let turn_error = events.iter().find_map(|event| match &event.kind {
+                        EventKind::TurnEnd(TurnEndData {
+                            outcome: TurnOutcome::Failed { error },
+                            ..
+                        }) => Some(error.as_str()),
+                        _ => None,
+                    });
+                    assert_eq!(turn_error, Some(error.as_str()), "mode {mode}");
+                }
                 assert!(
                     matches!(ends[0], ModelOutputOutcome::Failed {
                     presentation: Some(value), ..
@@ -2673,19 +3587,20 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
         let withdraw = |input_id: &str| InputWithdrawData {
             input_id: input_id.into(),
             reason: Some("user removed it".into()),
+            steer: None,
         };
 
-        let (answer, replacement) = queue.withdraw(withdraw(&first.id), None).await.unwrap();
+        let (answer, replacement) = queue.withdraw(withdraw(&first.id)).await.unwrap();
         let Withdrawal::Deleted { sequence } = answer else {
             panic!("held input not deleted: {answer:?}")
         };
         assert!(replacement.is_none());
         assert_eq!(
-            queue.withdraw(withdraw(&first.id), None).await.unwrap().0,
+            queue.withdraw(withdraw(&first.id)).await.unwrap().0,
             Withdrawal::NotHeld
         );
         assert_eq!(
-            queue.withdraw(withdraw("unknown"), None).await.unwrap().0,
+            queue.withdraw(withdraw("unknown")).await.unwrap().0,
             Withdrawal::NotHeld
         );
         let mut dispatch = session.dispatch_watch("main").unwrap();
@@ -2701,7 +3616,7 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             dispatch.changed().await.unwrap();
         }
         assert_eq!(
-            queue.withdraw(withdraw(&steered.id), None).await.unwrap().0,
+            queue.withdraw(withdraw(&steered.id)).await.unwrap().0,
             Withdrawal::NotHeld
         );
         let user = UserInput {
@@ -2710,24 +3625,24 @@ async fn a_held_input_is_withdrawn_once_and_an_applied_one_is_not() {
             }],
         };
         let (answer, replacement) = queue
-            .withdraw(
-                withdraw(&second.id),
-                Some(InputMessageData {
+            .withdraw(InputWithdrawData {
+                steer: Some(InputMessageData {
                     user: Some(user),
                     mode: Some(InputMode::Steer),
                     ..Default::default()
                 }),
-            )
+                ..withdraw(&second.id)
+            })
             .await
             .unwrap();
         assert!(matches!(answer, Withdrawal::Deleted { .. }));
         let replacement = replacement.unwrap();
         assert!(
             queue
-                .withdraw(
-                    withdraw(&second.id),
-                    Some(InputMessageData::text("x", Some(InputMode::Queue)))
-                )
+                .withdraw(InputWithdrawData {
+                    steer: Some(InputMessageData::text("x", Some(InputMode::Queue))),
+                    ..withdraw(&second.id)
+                })
                 .await
                 .is_err()
         );
@@ -3265,13 +4180,11 @@ async fn a_withdrawn_handover_input_is_deleted_once() {
         queue_consumed_through(&session, handover.sequence).await;
         let queue = session.service::<InputQueue>("main").unwrap();
         let (answer, replacement) = queue
-            .withdraw(
-                InputWithdrawData {
-                    input_id: handover.id.clone(),
-                    reason: Some("user removed it".into()),
-                },
-                None,
-            )
+            .withdraw(InputWithdrawData {
+                input_id: handover.id.clone(),
+                reason: Some("user removed it".into()),
+                steer: None,
+            })
             .await
             .unwrap();
         let Withdrawal::Deleted { sequence } = answer else {

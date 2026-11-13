@@ -90,6 +90,11 @@ export interface AuxiliaryReply {
   usage?: {
     promptTokens: number; completionTokens: number; totalTokens: number;
     cacheReadTokens?: number; cacheWriteTokens?: number;
+    /** The part of `completionTokens` spent thinking, already inside it and
+     * in `totalTokens`. It is the count the protocol adapter gives: absent
+     * when the adapter gives none, and zero when Gemini or a Responses adapter
+     * reads a missing field as zero, as it does for the cached count. */
+    reasoningTokens?: number;
     cost?: number; currency?: string;
   };
 }
@@ -122,6 +127,10 @@ export interface LaunchRequest {
   model?: ModelId | null;
   policy?: Partial<PermissionPolicy> | null;
   starter?: SessionRef | null;
+  /** The class of work the launch runs; absent: the caller's own, `internal`. */
+  origin?: 'automation' | null;
+  /** The label a picker shows before the first input; SessionTitle writes it. */
+  title?: string | null;
 }
 export interface LaunchReply { sessionId: string; policy: PermissionPolicy }
 export interface RawBlock {
@@ -152,7 +161,7 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
 /** The services Dim's Rust types serve to other languages, by name:
  * `ctx.use<Services['name']>('name')`. */
 export type {
-  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, Services, SessionIdentity, SessionLifecycle,
+  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,

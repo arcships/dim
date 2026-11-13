@@ -3608,15 +3608,15 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
         routing::get,
     };
     use tokio::sync::{mpsc, oneshot};
-    type Exchange = (Uri, oneshot::Sender<(StatusCode, Json<Value>)>);
+    type Exchange = (Uri, HeaderMap, oneshot::Sender<(StatusCode, Json<Value>)>);
     let (send, mut requests) = mpsc::channel::<Exchange>(8);
     let app = Router::new().route(
         "/{*path}",
-        get(move |uri: Uri| {
+        get(move |uri: Uri, headers: HeaderMap| {
             let send = send.clone();
             async move {
                 let (reply, response) = oneshot::channel();
-                send.send((uri, reply)).await.unwrap();
+                send.send((uri, headers, reply)).await.unwrap();
                 response
                     .await
                     .unwrap_or((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({}))))
@@ -3699,7 +3699,7 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
         let cancel = cancel.clone();
         tokio::spawn(async move { provider.refresh_for(REMOTE.into(), &cancel).await })
     };
-    let (uri, reply) = requests.recv().await.unwrap();
+    let (uri, _, reply) = requests.recv().await.unwrap();
     assert_eq!(uri.path(), "/new/v1/models");
     reply
         .send((
@@ -3740,9 +3740,8 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
         "enabling reuses the refreshed catalog"
     );
 
-    // A builtin's models are the bundled catalog's, not the endpoint's.
     let seeded = provider
-        .management(Some("deepseek".into()), &cancel)
+        .management(Some("kimi-for-coding".into()), &cancel)
         .await
         .unwrap()
         .providers
@@ -3756,10 +3755,11 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
         .collect();
     let kept = provider
         .update(
-            "deepseek".into(),
+            "kimi-for-coding".into(),
             seeded.version.unwrap(),
             serde_json::from_value(json!({
                 "enabled":false,
+                "baseUrl":format!("{base}/coding"),
                 "credential":{"action":"set","value":"builtin-key"}
             }))
             .unwrap(),
@@ -3782,6 +3782,46 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
         "a disabled re-point keeps a builtin's bundled models"
     );
     assert!(requests.try_recv().is_err());
+
+    let kimi = provider
+        .list(&cancel)
+        .await
+        .unwrap()
+        .providers
+        .into_iter()
+        .find(|entry| entry.provider_id == "kimi-for-coding")
+        .unwrap();
+    assert!(kimi.remote_model_list);
+    let refresh = {
+        let provider = provider.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            provider
+                .refresh_for("kimi-for-coding".into(), &cancel)
+                .await
+        })
+    };
+    let (uri, headers, reply) = requests.recv().await.unwrap();
+    assert_eq!(uri.path(), "/coding/v1/models");
+    assert_eq!(headers["x-api-key"], "builtin-key");
+    assert_eq!(headers["anthropic-version"], "2023-06-01");
+    reply
+        .send((
+            StatusCode::OK,
+            Json(json!({"data":[{"id":"k3.1-pro"}], "has_more":false})),
+        ))
+        .unwrap();
+    let refreshed = refresh.await.unwrap().unwrap();
+    let catalog = provider
+        .catalog_for("kimi-for-coding".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(catalog.version, refreshed.version);
+    assert_eq!(catalog.models.len(), 1);
+    assert_eq!(catalog.models[0].id, "k3.1-pro");
+    assert_eq!(catalog.models[0].capabilities.context_window, Some(262144));
+    assert!(catalog.models[0].missing_limits.is_empty());
 
     // A driver that cannot list keeps what the user declared.
     let mut azure = input(

@@ -24,6 +24,10 @@ pub enum RowKind {
     /// status row under the message, its body behind the detail setting. Not a
     /// message, so no pick, count or rail reads it.
     HookContext,
+    /// A `Stop` hook's follow-up: the input that continued the conversation.
+    /// One muted status row where the input was written, with the same detail
+    /// setting as a hook's context, and never a message either.
+    HookFollowUp,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -52,6 +56,8 @@ pub enum RowTone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRow {
     pub row_id: String,
+    /// The progress-only thinking ID replaced by the first durable event.
+    pub provisional_id: Option<String>,
     pub kind: RowKind,
     /// Presentation of an image message; `text` remains editable text only.
     pub display: Option<String>,
@@ -367,6 +373,19 @@ pub enum MemberConversationState {
     Closed,
 }
 
+/// Whether the shown line has history older than the loaded window, and
+/// whether a read for it is in flight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Earlier {
+    /// The shown line's first event is loaded: nothing earlier to read.
+    #[default]
+    AtStart,
+    /// Older history exists and is not loaded.
+    Unread,
+    /// An earlier read is in flight.
+    Reading,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskKind {
     /// Read and stopped on the originating branch.
@@ -430,6 +449,10 @@ pub struct ViewSnapshot {
     pub projection_id: u64,
     /// The shown line's history has loaded: its transcript can be laid out.
     pub history_complete: bool,
+    /// Whether history older than the loaded window exists, and whether an
+    /// earlier read is in flight; `/earlier`, PageUp at the drawn top and the
+    /// load-more row act on it.
+    pub earlier: Earlier,
     /// Shared with the worker's projection: publishing copies pointers.
     pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,

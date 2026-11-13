@@ -71,7 +71,7 @@ async fn ready(client: &mut Client) {
 fn job(name: &str) -> Value {
     json!({
         "name": name,
-        "schedule": {"every_minutes": 60},
+        "schedule": {"at": "2099-01-01T00:00:00Z"},
         "prompt": "Summarize the day.",
         "target": {"kind": "launch", "cwd": "/workspace"},
     })
@@ -122,7 +122,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     let stale = client
         .rpc(
             "schedule.save",
-            json!({"job": {"id": id, "name": "nightly", "schedule": {"every_minutes": 60},
+            json!({"job": {"id": id, "name": "nightly", "schedule": {"at": "2099-01-01T00:00:00Z"},
                 "prompt": "Summarize the day."}, "revision": 0}),
         )
         .await
@@ -132,7 +132,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     let renamed: Value = client
         .typed(
             "schedule.save",
-            json!({"job": {"id": id, "name": "nightly-build", "schedule": {"every_minutes": 60},
+            json!({"job": {"id": id, "name": "nightly-build", "schedule": {"at": "2099-01-01T00:00:00Z"},
                 "prompt": "Summarize the day."}, "revision": 1}),
         )
         .await
@@ -150,7 +150,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     assert_eq!(partial["job"]["name"], "nightly-partial", "{partial}");
     assert_eq!(
         partial["job"]["schedule"],
-        json!({"every_minutes": 60}),
+        json!({"at": "2099-01-01T00:00:00Z"}),
         "{partial}"
     );
     assert_eq!(partial["job"]["prompt"], "Summarize the day.", "{partial}");

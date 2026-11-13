@@ -8,6 +8,16 @@ Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-
 
 Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `sessions.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
 
+Scheduler also declares the process-scoped data service
+[`processActivity`](../../../crates/dim-app-server/README.md#process-activity).
+It retains admission from before a delivery's durable acceptance through its
+terminal record, including the intervals between inconclusive lookups and a row
+reload. These live holds survive a disabled row; a new process reconstructs them
+from its `delivering` records before recovery; inert legacy records retain their
+compatibility behavior (A.7). Due timer, wakeup, stop and retention passes hold admission
+while executing; a future deadline alone is not active work. A paused timer pass
+does not consume its deadline. This adds no Scheduler event or record field.
+
 ## 1. Structure
 
 ```mermaid
@@ -225,7 +235,7 @@ sequenceDiagram
   participant ST as Process storage
   participant AG as Agents
   T->>ST: persist delivering with deadline_at
-  T->>AG: sessions.launch(cwd, agent?, policy?)
+  T->>AG: sessions.launch(cwd, agent?, policy?, origin: "automation", title: job.name)
   AG-->>T: {sessionId, policy}
   T->>ST: persist sessionId, branch, policy
   T->>AG: sessions.input(sessionId, main, queue, marker, prompt)
@@ -235,6 +245,8 @@ sequenceDiagram
 ```
 
 Those are the whole target: one launch, one input and the stop timer. Scheduler reads no history of the launched Session and subscribes to no broadcast, so a delivery is settled by its own write and nothing follows the launched work (A.6).
+
+The launch declares what the Session is for and how a picker labels it: `origin: "automation"` gives it the class of work a saved configuration runs with no person present, so a client lists it under `session.catalog`'s `withAutomationSessions` without also listing every Collaboration member and Workflow stage, and `title: job.name` is the label a picker shows before the first input. SessionTitle writes that title, under its own text rules ([SessionTitle](SessionTitle.md)); the job name is Scheduler's, and the App Server holds no dependency on Scheduler. A `session` target sends neither: it is the user's own Session, and its origin stays what it was ([session classification](../appserver/session-classification.md#32-which-creation-entry-writes-which-value)).
 
 Window evaluation follows `settings/schedule`, wall-clock minute changes, the earliest remaining window within the current minute, and accepted-delivery settlement. The owned timer checks those deadlines each second without reading Settings or the store on idle ticks.
 
@@ -570,6 +582,8 @@ A `create` saves a `session` target at the calling Session and branch: the tool 
 
 Put job and delivery ids and all records needed for subsequent model actions in `ToolResult.content`. `structuredContent` is only persistence/UI data. Validation failures return `isError`, without disguising service/protocol failures as successful results. Tool lists omit prompt bodies. Other job results use a UTF-8 prompt preview of at most 4 KiB and an explicit `prompt_truncated` flag; job names use at most 256 bytes and run reasons at most 512 bytes. Job and delivery identities stay in `content`, while management and structured records retain the full data. These are per-field limits; list output still scales with job count.
 
+The `scheduleJobs` and `wakeups` data faces take a positional request and an optional cancellation signal or promise. Malformed requests return their documented data errors. Cancelling or dropping a read stops its wait. An accepted mutation settles in the process owner's task tracker, including its required notices, even when its caller leaves. An already committed write remains committed. Cancellation before handover returns `cancelled` and writes nothing. Native bindings share the owner operations and retain their typed results without a JSON round-trip.
+
 ### A.3 Management methods
 
 Namespace `schedule`, registered with `managementMethods`: its declarations list the methods below (`mutating` for all but `list`, `history` and `watch`); its `call(MethodCall, cancelled, progress): async -> MethodReply` dispatches them. Parameters and results are JSON objects; errors are `{code, message}` with business codes from Appendix C. Rpc owns their JSON-RPC error mapping. `schedule.watch` declares `progress` and no notification (§11.2).
@@ -788,7 +802,7 @@ no `schedule.*` methods or `schedule` tool. The process part is added with
 | --- | --- |
 | Tool `schedule` registered with `toolRegistry` | Session part keys `ToolRegistry` from `names.key()` and calls `tools.register(ctx, ToolContribution {definition, handler})` in `apply`, as `dim-agent-questions` does |
 | Namespace `schedule` registered with `managementMethods` | Process part keys `ManagementMethods` and calls `methods.register(ctx, "schedule", declarations, handler)`; Rpc looks it up per call and holds no dependency on Scheduler |
-| `scheduleJobs` | Process-group name registered with `names::register::<ScheduleJobs>(catalog, None)`; the Session part reads it with `names.key()`, so no wiring part or forwarding plugin exists |
+| `scheduleJobs`, `wakeups` | Process-group data faces registered shared and provided at their `host_key`. Native `ScheduleJobs` and `Wakeups` are bindings to the same owner operations, provided under their type keys. The native Session part declares both with `names.key()` and calls them directly. Wire projection happens only at the bridge boundary |
 | `settings`, `pluginFiles` | Typed App Server services (`SettingsService`, `PluginFileTransactions`) keyed with `names.key()`; the crate depends on `dim-app-server`, which `xtask check` allows |
 | `sessions` | The shared host-dispatch name, called with its JSON envelope; its native request types are private to App Server |
 | Process storage | The typed `PluginFileTransactions` service of App Server ([trusted plugin storage](../../../crates/dim-app-server/README.md#trusted-plugin-storage)). The host writes the `{version: 1, text}` envelope; Scheduler supplies the inner v1 text, the same bytes the TypeScript version wrote. |

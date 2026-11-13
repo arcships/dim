@@ -17,8 +17,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "带附件的消息会留在队列中；使用 /queue 对其执行 steer 或删除"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue 管理 · Shift+← 编辑最后一条 · 草稿为空时按 {key} steer"
         }
         "steer or delete queued messages" => "对队列消息执行 steer 或删除",
         "export this conversation" => "导出此对话",
@@ -100,6 +100,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "会话现在没有标题。",
         "This daemon does not support renaming Sessions" => "此守护进程不支持重命名会话",
         "Renaming failed" => "重命名失败",
+        "Delete \"{name}\"?" => "删除“{name}”？",
+        "Deleted {name}." => "已删除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "没有删除任何内容：没有已保存的会话 {name}。"
+        }
+        "Delete failed" => "删除失败",
+        "This daemon does not support deleting Sessions" => "此守护进程不支持删除会话",
         "Starting" => "启动中",
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -181,6 +188,21 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Result: {result}" => "结果：{result}",
         "Controlled by the leader" => "由主智能体控制",
         "› Open member conversation" => "› 打开成员会话",
+        "Waiting for result…" => "等待结果…",
+        "Running…" => "执行中…",
+        "Before/after comparison is unavailable for this record." => {
+            "此记录没有可用的修改前后对照。"
+        }
+        "No content changes." => "内容没有变化。",
+        "Old" => "旧",
+        "New" => "新",
+        "Changes" => "修改内容",
+        "Input" => "参数",
+        "Result" => "结果",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab 也可选择工具标题 · Enter/空格展开或收起当前工具"
+        }
+        "… {count} unchanged lines" => "… {count} 行未修改",
         "Not started" => "未启动",
         "Reason: {reason}" => "原因：{reason}",
         "Copied to clipboard" => "已复制到剪贴板",
@@ -196,6 +218,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "连接已断开，草稿已保留。请退出后恢复此会话。"
         }
+        "Cannot open this Session; draft kept." => "无法打开此会话，草稿已保留。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "连接已断开，草稿已保留。请退出后运行：{command}"
         }
@@ -258,7 +281,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "错误：{message}",
         "working…  {elapsed}" => "处理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "输入任何内容...",
+        "Ask anything... · Ctrl+J newline" => "输入你的问题… · Ctrl+J 换行",
         "Earlier history · {id} · {count} messages" => "更早历史 · {id} · {count} 条消息",
         "No active session" => "没有活动会话",
         "answer required" => "需要回答",
@@ -355,9 +378,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切换 · Enter 选择 · Esc 关闭",
         "exit" => "退出应用",
 
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 选择 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter 选择并设为默认 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
         }
+        "Default for new sessions in {folder}: {model}" => "新会话在 {folder} 的默认模型：{model}",
+        "Default for new sessions: {model}" => "新会话的默认模型：{model}",
         "Enter select · Esc clear/close" => "Enter 选择 · Esc 清除/关闭",
         "esc close" => "Esc 关闭",
         "Suggestions" => "建议",
@@ -365,6 +390,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "已加载技能：{name}",
         "Hook context · {count} line" => "钩子上下文 · {count} 行",
         "Hook context · {count} lines" => "钩子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 钩子后续输入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 钩子后续输入 · {count} 行",
         "Commands" => "命令",
         "Command Palette" => "命令面板",
         "No matches" => "无匹配项",
@@ -380,6 +407,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "主题",
         "Language" => "语言",
         "Startup UI form" => "启动界面形态",
+        "Default send mode" => "默认发送模式",
         "fullscreen" => "全屏",
         "scrollback" => "回滚",
         "Tool details" => "工具详情",
@@ -410,8 +438,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "当前工作区没有已保存的会话。Ctrl+S 查看更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 打开 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
         }
         "Loading sessions..." => "正在加载会话...",
         "No saved sessions yet." => "暂无已保存的会话。",
@@ -524,11 +552,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "show the key bindings" => "显示快捷键",
         "Application keys" => "应用快捷键",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 提交或排队 · 草稿为空时 steer 第一条排队消息 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "空闲时 Enter 提交 · Shift+Enter / Alt+Enter / Ctrl+J 换行 · ↑↓ 历史"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Ctrl+S steer 草稿或第一条排队消息 · Shift+← 编辑最后一条排队消息"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "运行中有草稿：Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "草稿为空时按 {keys} steer 第一条排队消息",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Shift+← 编辑最后一条排队消息"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
@@ -576,6 +608,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它，而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}），而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}）；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"

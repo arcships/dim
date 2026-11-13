@@ -376,7 +376,7 @@ daemon 根（LocalId dim-daemon）                   dimcode leaf 根
     - `auxiliaryModel`、`managementMethods`、`partRegistry`、`pluginFiles`、`sessionMetadata`、`sessionPermissions`、
       `settings`、`workflowFiles`；
     - `sessions`，它的 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle`、`delete` 方法会改动 Session；
-    - 默认插件提供的 `scheduleJobs` 和 `workflowRuns`。
+    - 已启用 Scheduler 的 `scheduleJobs`、`wakeups`，及可选 Workflow 的 `workflowRuns`。
   - **因此 leaf 能做的事。** 它可以操作任何 Session、登记管理方法，还可以登记 Session 部件，而这些部件的副本会
     运行在 leaf 里。
   - **为什么接受。** leaf 只能经由本地 `ui.open` 调用方给出的私有地址连通。这个调用方本来就持有 `daemon.sock` 上的

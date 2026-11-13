@@ -36,6 +36,9 @@ impl Store {
             ..Default::default()
         }
     }
+    pub fn database(&self) -> std::path::PathBuf {
+        self.0.join("dimcode.sqlite")
+    }
     pub fn connection(&self) -> Connection {
         let connection = Connection::open(self.0.join("dimcode.sqlite")).unwrap();
         connection.busy_timeout(Duration::from_secs(10)).unwrap();
@@ -266,15 +269,16 @@ async fn delete_closes_a_running_session_and_removes_what_it_stored() {
         v2.rpc("session.delete", json!({"sessionId":kept})).await["error"]["data"]["appError"],
         "unknown_method"
     );
+    // A delete reads none of the Session's records, so any connection removes
+    // a Session of any recorded version.
     let v2_session = v2.rpc("session.create", create(json!([]))).await;
     let v2_session = v2_session["result"]["sessionId"].as_str().unwrap();
-    assert_eq!(
-        other
-            .rpc("session.delete", json!({"sessionId":v2_session}))
-            .await["error"]["data"]["appError"],
-        "session_protocol_version"
-    );
-    assert!(!store.rows(&kept).is_empty() && !store.rows(v2_session).is_empty());
+    let removed = other
+        .rpc("session.delete", json!({"sessionId":v2_session}))
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"], json!({"deleted": true}), "{removed}");
+    assert!(!store.rows(&kept).is_empty() && store.rows(v2_session).is_empty());
     drop((client, other, v2, session, agent));
     server.shutdown();
     server.join().await.unwrap();

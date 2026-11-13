@@ -90,8 +90,11 @@ fn install_inner(
         .catalog_mut()
         .register_shared(dim_agent_runtime::names::name_of::<ScheduleJobs>())
         .register_shared(dim_agent_runtime::names::name_of::<Wakeups>());
+    let deliveries = methods::DeliveryHolds::default();
     builder.optional_plugin(move |names| {
-        Ok(Box::new(make(names, texts.clone())?) as Box<dyn DynPlugin>)
+        let mut plugin = make(names, texts.clone())?;
+        plugin.deliveries = deliveries.clone();
+        Ok(Box::new(plugin) as Box<dyn DynPlugin>)
     });
     Ok(())
 }

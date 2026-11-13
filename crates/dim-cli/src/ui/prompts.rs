@@ -104,13 +104,6 @@ pub enum Effect {
     Close,
     Fork,
     Exit,
-    /// Leave and start the updated CLI on this session; `confirmed` once a
-    /// busy session's confirmation said so.
-    Restart {
-        confirmed: bool,
-    },
-    /// Install the offered version.
-    UpgradeInstall(crate::update::Install),
     /// Never offer this version again.
     UpgradeSkip(String),
     /// Answer an approval request.
@@ -150,6 +143,11 @@ pub enum Effect {
         action: &'static str,
     },
     Export(crate::export::Format),
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// End this line, once the user confirmed it.
     EndLine {
         session_id: String,
@@ -258,6 +256,8 @@ pub enum Effect {
         model_id: String,
         /// Set when ←/→ cycled this model's reasoning effort.
         reasoning_effort: Option<String>,
+        /// The row's own text, which the default's confirmation names back.
+        label: String,
     },
     SetEffort {
         model: String,
@@ -324,39 +324,18 @@ impl ExitReason {
 #[derive(Debug, Clone)]
 pub struct ExitConfirm {
     pub reason: ExitReason,
-    /// Leaving restarts onto the updated CLI instead of exiting.
-    pub restart: bool,
     /// 0 = exit, 1 = stay (the default).
     pub focused: usize,
 }
 
 impl ExitConfirm {
     pub fn new(reason: ExitReason) -> Self {
-        Self {
-            reason,
-            restart: false,
-            focused: 1,
-        }
-    }
-
-    pub fn restart(reason: ExitReason) -> Self {
-        Self {
-            restart: true,
-            ..Self::new(reason)
-        }
-    }
-
-    fn leave(&self) -> Effect {
-        if self.restart {
-            Effect::Restart { confirmed: true }
-        } else {
-            Effect::Exit
-        }
+        Self { reason, focused: 1 }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') if plain(key) => self.leave(),
+            KeyCode::Char('y') | KeyCode::Char('Y') if plain(key) => Effect::Exit,
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc if plain(key) => Effect::Close,
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
                 self.focused = 1 - self.focused;
@@ -364,7 +343,7 @@ impl ExitConfirm {
             }
             KeyCode::Enter => {
                 if self.focused == 0 {
-                    self.leave()
+                    Effect::Exit
                 } else {
                     Effect::Close
                 }
@@ -374,19 +353,11 @@ impl ExitConfirm {
     }
 
     pub fn render(&self, width: usize, p: &Palette) -> Vec<String> {
-        let (title, leave, hint) = if self.restart {
-            (
-                t("Restart dimcode?"),
-                t("Restart"),
-                t("y restart · n stay · ←→ move · enter confirm"),
-            )
-        } else {
-            (
-                t("Exit dimcode?"),
-                t("Exit"),
-                t("y exit · n stay · ←→ move · enter confirm"),
-            )
-        };
+        let (title, leave, hint) = (
+            t("Exit dimcode?"),
+            t("Exit"),
+            t("y exit · n stay · ←→ move · enter confirm"),
+        );
         confirm_panel(
             title,
             &[self.reason.text().to_owned()],

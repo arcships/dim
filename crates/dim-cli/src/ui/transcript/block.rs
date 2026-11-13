@@ -13,6 +13,16 @@ use crate::model::shell::ShellRun;
 use crate::model::view::{CompactionPartSize, CompactionState, RowKind, RowTone, ViewRow};
 use crate::ui::transcript::tool_group::{Detail, ToolGroup, project_group};
 
+/// Which runtime block a hook row names: the two say different things and no
+/// more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookRow {
+    /// Context the hook appended after the operator's words.
+    Context,
+    /// The input a `Stop` hook wrote to continue the conversation.
+    FollowUp,
+}
+
 /// How a status line is coloured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -36,9 +46,10 @@ pub enum Block {
     /// A shell-mode run: recorded (`!`) from the transcript, private (`!!`)
     /// from the terminal alone.
     Shell(ShellRun),
-    /// Context a hook injected after the operator's words: one muted row, and
-    /// its body when the detail setting is expanded.
-    HookContext {
+    /// A runtime block a hook wrote: one muted row, and its body when the
+    /// detail setting is expanded.
+    Hook {
+        row: HookRow,
         body: String,
         expanded: bool,
     },
@@ -48,11 +59,12 @@ pub enum Block {
         text: String,
         elapsed_ms: Option<u64>,
         expanded: bool,
+        streamed: bool,
     },
     /// The calls of one model request.
     ToolGroup(ToolGroup),
     /// A context compaction: running, then its outcome; a completed one's
-    /// summary sits behind the disclosure.
+    /// summary is shown when expanded.
     Compaction {
         state: CompactionState,
         text: std::sync::Arc<str>,
@@ -118,7 +130,12 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             },
             Block::Shell,
         ),
-        RowKind::HookContext => Block::HookContext {
+        RowKind::HookContext | RowKind::HookFollowUp => Block::Hook {
+            row: if row.kind == RowKind::HookContext {
+                HookRow::Context
+            } else {
+                HookRow::FollowUp
+            },
             body: row.text.clone(),
             expanded: detail == Detail::Expanded,
         },
@@ -127,6 +144,7 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             text: row.text.clone(),
             elapsed_ms: row.elapsed_ms,
             expanded: detail == Detail::Expanded,
+            streamed: false,
         },
         RowKind::ToolCall => Block::ToolGroup(project_group(&group_rows(rows, index), detail)),
         RowKind::Compaction => match &row.compaction {
@@ -203,6 +221,7 @@ mod tests {
             failure: None,
             reportable: false,
             row_id: "r".into(),
+            provisional_id: None,
             kind,
             text: text.into(),
             display: None,
@@ -316,7 +335,7 @@ mod tests {
         assert_eq!(group_rows(&published, 0).len(), 3);
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 80),
-            ["✓ Ran 1 command, ran 1 search, read 1 file · 1 failed · npm ▸"]
+            ["✓ Ran 1 command, ran 1 search, read 1 file · 1 failed · npm"]
         );
     }
 
@@ -329,7 +348,7 @@ mod tests {
         )];
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 100),
-            ["✓ Ran 1 command · python ▸"]
+            ["✓ Ran 1 command · python"]
         );
         rows.extend([
             call(
@@ -345,7 +364,7 @@ mod tests {
         ]);
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 100),
-            ["✓ Ran 2 commands, ran 1 search · python ×2, rg ▸"]
+            ["✓ Ran 2 commands, ran 1 search · python ×2, rg"]
         );
         rows.extend([
             call(
@@ -360,27 +379,26 @@ mod tests {
                 Some("ok"),
             ),
         ]);
+        rows.last_mut().unwrap().diff =
+            Some("--- /dev/null\n+++ src/new.rs\n@@ -0,0 +1 @@\n+new body\n".into());
         let header = "✓ Ran 2 commands, ran 2 searches, read 1 file, changed src/new.rs (+1)";
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 160),
-            [format!("{header} · python ×2, rg ▸")]
+            [format!("{header} · python ×2, rg")]
         );
-        assert_eq!(drawn(&rows, Detail::Summary, 160)[0], format!("{header} ▾"));
-        assert_eq!(
-            drawn(&rows, Detail::Expanded, 160)[0],
-            format!("{header} ▾")
-        );
+        assert_eq!(drawn(&rows, Detail::Summary, 160)[0], header);
+        assert_eq!(drawn(&rows, Detail::Expanded, 160)[0], header);
         for width in 12..120 {
             let lines = drawn(&rows, Detail::Collapsed, width);
             assert_eq!(lines.len(), 1);
-            assert!(lines[0].ends_with(" ▸"), "{width}: {lines:?}");
+            assert!(!lines[0].contains(['▸', '▾']), "{width}: {lines:?}");
             assert!(
                 crate::ui::text::display_width(&lines[0]) <= width,
                 "{width}: {lines:?}"
             );
         }
         rows[0].pending = true;
-        assert!(drawn(&rows, Detail::Collapsed, 160)[0].ends_with(" · python ×2, rg ▸"));
+        assert!(drawn(&rows, Detail::Collapsed, 160)[0].ends_with(" · python ×2, rg"));
     }
 
     #[test]
@@ -403,7 +421,7 @@ mod tests {
         )];
         assert_eq!(
             drawn(&rows, Detail::Expanded, 80),
-            ["✓ Ran 1 command ▾", "  $ ls", "  npm test ▾", "    PASS"]
+            ["✓ Ran 1 command", "  $ ls", "  npm test", "    PASS"]
         );
     }
 
@@ -493,7 +511,10 @@ mod tests {
         for width in 12..100 {
             let narrow = drawn(&rows, Detail::Summary, width);
             assert_eq!(narrow.len(), rows.len() + 1);
-            assert!(narrow[0].ends_with(" ▾"), "{width}: {narrow:?}");
+            assert!(
+                narrow.iter().all(|line| !line.contains(['▸', '▾'])),
+                "{width}: {narrow:?}"
+            );
             assert!(
                 narrow
                     .iter()
@@ -572,11 +593,11 @@ mod tests {
         let mut edit = call("edit", json!({ "path": "a.sql" }), Some("Edited a.sql"));
         edit.diff = Some("@@ -3,2 +3,2 @@\n--- old comment\n+++new value\n same".into());
         let lines = drawn(&[edit], Detail::Expanded, 80);
-        assert_eq!(lines[0], "✓ Edited a.sql (+1 -1) ▾");
+        assert_eq!(lines[0], "✓ Edited a.sql (+1 -1)");
         assert_eq!(
             lines[1..],
             [
-                "  ✓ Edited a.sql +1 -1 ▾",
+                "  ✓ Edited a.sql +1 -1",
                 "    ...",
                 "      3 -  -- old comment",
                 "      3 +  ++new value",
@@ -586,25 +607,96 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_file_results_use_only_recorded_comparisons() {
+        let mut overwrite = call(
+            "write",
+            json!({"path": "config.txt", "content": "proposed body\n"}),
+            Some("ok"),
+        );
+        overwrite.diff = Some(
+            "--- config.txt\n+++ config.txt\n@@ -7,2 +7,3 @@\n keep\n-old\n+actual\n+extra\n"
+                .into(),
+        );
+        let lines = drawn(&[overwrite.clone()], Detail::Expanded, 100);
+        assert_eq!(lines[0], "✓ Changed config.txt (+2 -1)");
+        assert_eq!(lines[1], "  ✓ Write config.txt +2 -1");
+        assert!(lines.iter().any(|line| line.contains("8 -  old")));
+        assert!(lines.iter().any(|line| line.contains("8 +  actual")));
+        assert!(!lines.iter().any(|line| line.contains("proposed body")));
+
+        overwrite.diff =
+            Some("--- config.txt\n+++ config.txt\n@@ -7 +7,2 @@\n keep\n+extra\n".into());
+        assert_eq!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)[1],
+            "  ✓ Write config.txt +1",
+        );
+        overwrite.diff = Some("--- /dev/null\n+++ config.txt\n@@ -0,0 +1 @@\n+created\n".into());
+        assert_eq!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)[1],
+            "  ✓ Create config.txt +1",
+        );
+        overwrite.diff = Some("--- config.txt\n+++ config.txt\n".into());
+        assert!(
+            drawn(&[overwrite.clone()], Detail::Expanded, 100)
+                .iter()
+                .any(|line| line.contains("No content changes."))
+        );
+
+        overwrite.diff =
+            Some("--- config.txt\n+++ config.txt\n@@ -1 +1 @@\n-old\n+actual\n".into());
+        for name in ["write", "edit"] {
+            let mut missing = call(
+                name,
+                json!({"path": "large.txt", "content": "omitted input\n".repeat(10000),
+                    "oldText": "old input", "newText": "new input"}),
+                Some("ok"),
+            );
+            for detail in [Detail::Collapsed, Detail::Summary, Detail::Expanded] {
+                let lines = drawn(&[overwrite.clone(), missing.clone()], detail, 100);
+                assert!(!lines[0].contains('('), "{lines:?}");
+                assert!(
+                    !lines.iter().any(|line| line.contains("input")),
+                    "{lines:?}"
+                );
+                if detail == Detail::Expanded {
+                    assert!(
+                        lines
+                            .iter()
+                            .any(|line| line.contains("comparison is unavailable"))
+                    );
+                }
+            }
+            missing.diff = Some("@@ -1 +1 @@\n-old\n+not applied\n".into());
+            missing.pending = true;
+            let lines = drawn(&[missing.clone()], Detail::Expanded, 100);
+            assert!(!lines[0].contains('('), "{lines:?}");
+            assert!(!lines.iter().any(|line| line.contains("not applied")));
+            missing.pending = false;
+            missing.result_is_error = true;
+            let lines = drawn(&[missing], Detail::Expanded, 100);
+            assert!(!lines[0].contains('('), "{lines:?}");
+            assert!(!lines.iter().any(|line| line.contains("not applied")));
+        }
+    }
+
+    #[test]
     fn collapsed_edits_name_unique_paths_and_keep_totals_in_mixed_groups() {
         let mut edit = call("edit", json!({ "path": "src/main.rs" }), Some("ok"));
         edit.diff = Some("@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
         assert_eq!(
             drawn(&[edit.clone()], Detail::Collapsed, 100),
-            ["✓ Edited src/main.rs (+2 -1) ▸"]
+            ["✓ Edited src/main.rs (+2 -1)"]
         );
-        let rows = [
-            edit.clone(),
-            edit,
-            call(
-                "write",
-                json!({ "path": "tests/main.rs", "content": "test\n" }),
-                Some("ok"),
-            ),
-        ];
+        let mut write = call(
+            "write",
+            json!({ "path": "tests/main.rs", "content": "test\n" }),
+            Some("ok"),
+        );
+        write.diff = Some("--- /dev/null\n+++ tests/main.rs\n@@ -0,0 +1 @@\n+test\n".into());
+        let rows = [edit.clone(), edit, write];
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 100),
-            ["✓ Changed 2 files (+5 -2) · src/main.rs, tests/main.rs ▸"]
+            ["✓ Changed 2 files (+5 -2) · src/main.rs, tests/main.rs"]
         );
         let mut mixed = vec![call(
             "exec",
@@ -615,17 +707,14 @@ mod tests {
         let expected = "✓ Ran 1 command, changed 2 files (+5 -2) · src/main.rs, tests/main.rs";
         assert_eq!(
             drawn(&mixed, Detail::Collapsed, 100),
-            [format!("{expected} · cargo ▸")]
+            [format!("{expected} · cargo")]
         );
-        assert_eq!(
-            drawn(&mixed, Detail::Expanded, 100)[0],
-            format!("{expected} ▾")
-        );
+        assert_eq!(drawn(&mixed, Detail::Expanded, 100)[0], expected);
         mixed[1].result_is_error = true;
         assert_eq!(
             drawn(&mixed, Detail::Collapsed, 100),
             [
-                "✓ Ran 1 command, changed 2 files (+3 -1) · src/main.rs, tests/main.rs · 1 failed · cargo ▸"
+                "✓ Ran 1 command, changed 2 files (+3 -1) · src/main.rs, tests/main.rs · 1 failed · cargo"
             ]
         );
     }
@@ -636,18 +725,21 @@ mod tests {
 
         let mut edit = call("edit", json!({ "path": "src/main.rs" }), Some("ok"));
         edit.diff = Some("@@ -1,1 +1,2 @@\n-old\n+new\n+extra".into());
-        let rows = [
+        let mut rows = [
             edit,
             call("edit", json!({ "path": "src/config.rs" }), Some("ok")),
             call("edit", json!({ "path": "tests/config.rs" }), Some("ok")),
         ];
+        for row in &mut rows[1..] {
+            row.diff = Some(String::new());
+        }
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 50),
-            ["✓ Edited 3 files (+2 -1) · src/main.rs, … 2 more ▸"]
+            ["✓ Edited 3 files (+2 -1) · src/main.rs, … 2 more"]
         );
         assert_eq!(
             drawn(&rows[..1], Detail::Collapsed, 28),
-            ["✓ Edited src/main… (+2 -1) ▸"]
+            ["✓ Edited src/main.rs (+2 -1)"]
         );
         let mut unicode = rows[0].clone();
         unicode.tool_input = Some(json!({"path": "src/配置/👩‍💻设置.rs"}));
@@ -657,7 +749,7 @@ mod tests {
                 for scenario in [&rows[..], std::slice::from_ref(&unicode)] {
                     let lines = drawn(scenario, Detail::Collapsed, width);
                     assert_eq!(lines.len(), 1);
-                    assert!(lines[0].ends_with(" ▸"), "{locale:?}: {lines:?}");
+                    assert!(!lines[0].contains(['▸', '▾']), "{locale:?}: {lines:?}");
                     assert!(
                         crate::ui::text::display_width(&lines[0]) <= width,
                         "{locale:?}: {lines:?}"
@@ -671,7 +763,7 @@ mod tests {
         i18n::set(Locale::ZhCn);
         assert_eq!(
             drawn(&rows, Detail::Collapsed, 58),
-            ["✓ 编辑了 3 个文件 (+2 -1) · src/main.rs，…另 2 个 ▸"]
+            ["✓ 编辑了 3 个文件 (+2 -1) · src/main.rs，…另 2 个"]
         );
         i18n::set(Locale::En);
     }
@@ -697,7 +789,7 @@ mod tests {
         )];
         assert_eq!(
             drawn(&rows, Detail::Expanded, 80),
-            ["✗ Edited a.ts ▾", "  ✗ Edit a.ts"]
+            ["✗ Edited a.ts", "  ✗ Edit a.ts"]
         );
     }
 
@@ -742,12 +834,12 @@ mod tests {
             assert_eq!(
                 compaction_rows(&rows, Detail::Expanded),
                 [
-                    "✓ Context compacted ▾",
+                    "✓ Context compacted",
                     "▎ The cache lock moved into a RwLock.",
                 ]
             );
             for detail in [Detail::Collapsed, Detail::Summary] {
-                assert_eq!(compaction_rows(&rows, detail), ["✓ Context compacted ▸"]);
+                assert_eq!(compaction_rows(&rows, detail), ["✓ Context compacted"]);
             }
         }
         for text in [
@@ -797,7 +889,7 @@ mod tests {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
         let markdown = MarkdownRenderer::new(&theme);
         let block = project_row(rows, 0, detail);
-        render_block(&block, 60, &theme.palette, &markdown)
+        render_block(&block, 60, &theme.palette, &markdown, false)
             .iter()
             .map(|row| {
                 let mut out = String::new();
@@ -828,7 +920,7 @@ mod tests {
         child.parent_call_id = Some("c1".into());
         let rows = [program, child];
         let collapsed = drawn(&rows, Detail::Collapsed, 80);
-        assert_eq!(collapsed, ["✓ Ran code · 1 tool call ▸"]);
+        assert_eq!(collapsed, ["✓ Ran code · 1 tool call"]);
         let expanded = drawn(&rows, Detail::Expanded, 80).join("\n");
         assert!(expanded.contains("a.rs"), "{expanded}");
         assert!(!expanded.contains("tools.call"), "{expanded}");

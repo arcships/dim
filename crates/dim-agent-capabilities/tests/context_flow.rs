@@ -986,6 +986,7 @@ impl ModelDriver for UsageModel {
                 total_tokens: 125.,
                 cache_read_tokens: Some(0.),
                 cache_write_tokens: Some(0.),
+                reasoning_tokens: None,
                 cost: None,
                 currency: None,
             };
@@ -1658,6 +1659,7 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
                 EventKind::InputWithdraw(InputWithdrawData {
                     input_id: input.id.clone(),
                     reason: None,
+                    steer: None,
                 })
                 .into(),
             )

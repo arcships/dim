@@ -222,7 +222,7 @@ impl LinesPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => Effect::FocusLine(id),
+            Event::Pick { id, .. } => Effect::FocusLine(id),
         }
     }
 

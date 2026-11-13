@@ -32,7 +32,10 @@ table, not on any owner ([methods contract §3.2](../contracts/session-boundary.
 The table has no dependencies, so it reloads neither with Rpc nor with an owner.
 The owners register `account`, `account.codex`, `account.grok` and `provider`
 with a product home; `settings` (SettingsMethods) wherever Settings is assembled;
-`storage` (StorageMethods) with native storage; `mcp`, `skills` and `permission`
+`storage` (StorageMethods) with native storage; `worktree`
+(ManagedWorktrees), whose `worktree.list` reads the managed root and whose
+`worktree.remove` and `worktree.prune` delete host directories, so all three are
+management methods, with a product home and native storage; `mcp`, `skills` and `permission`
 with local execution; and `workspace.files` (WorkspaceFiles), also with local
 execution, which injects the process file index WorkspaceTools provides and
 serves a sessionless working-directory file search. Adding an owner adds
