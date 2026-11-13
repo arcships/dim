@@ -39,7 +39,7 @@ Normal tail reads select bounded published positions, not whole turns or atomic 
 
 Branch terminal lookup uses the existing text candidate for a generated UUID, followed by the exact kind and branch identity condition. The range is the UUID's indexed matches, which can include other facts mentioning that UUID; it is not proven constant by `LIMIT 1`. Arbitrary identities written by a trusted `before` handler that cannot form a safe trigram candidate retain the existing kind-range fallback. No new branch-state snapshot or native format is introduced in this change.
 
-An unavailable Usage number does not block restoration. Its first actual request can perform the existing Loop projection plus Policy's first contribution projection; subsequent initialized requests reuse the number. Count these two first-request projections separately from zero cold-history projections. Prompt's public state publication still copies its public snapshot; only repeated temporary copies were removed. Existing three-format tool rendering remains necessary for terminal blocks whose source row has left the bounded window.
+An unavailable Usage number does not block restoration. The actual request owns one context projection, shared with Policy; its initial count supplies both the budget and saved contribution. Restoration performs no cold-history projection. Prompt's public state publication still copies its public snapshot; only repeated temporary copies were removed. Existing three-format tool rendering remains necessary for terminal blocks whose source row has left the bounded window.
 
 ## 6. Earlier v43 measurement on the long-session fixture
 
@@ -184,3 +184,22 @@ CPU and memory are sampled sequentially immediately after editing becomes availa
 Ordinary and compacted samples make no model request. In the unfinished case, restoration settles the lost process and old approval; the existing notification starts one new turn. Its preparation overlaps the final portion of UI loading and continues after editing is available. The local deterministic provider receives the request at approximately 394–412 ms after launch and the new turn ends at 411–426 ms. Neither is the resume endpoint. The unfinished-case CPU/memory samples include some overlapping execution; they must not be relabeled as pure restore costs or subtracted to invent one. Five further typed tokens per sample render with a maximum observed latency of 8.7 ms.
 
 These fifteen samples satisfy the three-fixture 200 ms acceptance on this machine and revision. They do not establish P95, arbitrary-session bounds, first-upgrade cost or the behavior of the later main/v47 merge. The raw manifests, residency checks, counters and PTY captures were recorded under `/mnt/data/dim-resume-final-20261113`; no benchmark instrumentation is part of the product.
+
+
+## 10. Cold CLI acceptance after main/v47 integration
+
+Measured release source `bb2c83a66`, SHA-256 `fddebb6cbd2c8da51013500e1328ae4e584f86dc7fb7c5f8a78ce1360bb3e030`, includes main `4c1231029` and the review fixes. The subsequent `3620aacec` changes only ACP missing-session error translation and its test/contract; it is not part of this measured binary. Five launches per fixture use §4's actual CLI PTY, verified zero executable/database/configuration residency, 256 MiB group limit and disabled swap. No compiler ran during measurement. All fifteen launches displayed expected history and rendered typed input within 200 ms, without memory-limit or OOM events.
+
+| Fixture | Physical event rows | Editable ms, min–max | Median ms | CLI + daemon CPU ms | Group anonymous MiB | Group peak observed at editable input, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ordinary, saved usage, 1,000 turns | 25,049 | 163.3–177.0 | 171.8 | 190–220 | 36.0–36.4 | 156.4–160.3 |
+| Completed compaction, 2.43 MB replacement, missing usage | 25,050 | 165.4–181.2 | 173.1 | 180–200 | 37.6–37.9 | 168.5–173.2 |
+| 1,280 old turns, one open approval and one lost background task | 17,970 | 140.2–145.9 | 141.1 | 170–200 | 36.4–37.3 | 158.4–159.2 |
+
+Memory includes CLI, daemon, terminal probe and file cache. File memory at the editable endpoint is 115.6–119.1, 122.0–126.7 and 117.5–117.6 MiB respectively. Combined CLI/daemon physical reads are 57.1–57.5, 57.5–58.5 and 55.9–56.0 MiB. The five later typed tokens per sample have a maximum observed render delay of 5.1 ms. These samples do not establish a new memory reduction, P95 or an arbitrary-session bound.
+
+Ordinary and compacted fixtures make no model request. The unfinished fixture's existing recovery notification starts a request at 373–398 ms after launch; that execution is separate from the editable-history endpoint, although its early work overlaps loading. CPU and memory samples include that overlap.
+
+First format preparation was measured separately by starting a disposable daemon and waiting for its hello response, without attaching a Session. v41→v47 ordinary and compacted fixtures took 77.1–81.5 ms and 64.8–73.8 ms; v44→v47 unfinished fixtures took 36.2–47.6 ms. These figures include daemon startup and migration; they are not isolated migration timings or cold-file measurements. The daemon was then stopped and files evicted before each normal-load sample.
+
+The external probe now recognizes the typed `context_usage_unavailable` result rather than matching the former model-error message. The first compacted probe reached editable input but failed its later old-message assertion; its artifact is retained separately and excluded from the fifteen completed probes. No product change was made in response to that probe mismatch. Raw manifests, residency checks, counters and terminal captures are under `/mnt/data/dim-resume-review-20261113`.
