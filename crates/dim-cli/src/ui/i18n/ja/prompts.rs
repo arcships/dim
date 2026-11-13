@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "自動承認",
         "Full access" => "フルアクセス",
         "Run {tool}" => "{tool} を実行",
+        "edit {count} replacement in {path}" => "{path} で edit {count} 件置換",
+        "edit {count} replacements in {path}" => "{path} で edit {count} 件置換",
         "Changing the approvals mode from here is not yet available" => {
             "ここでは承認モードを変更不可"
         }
@@ -59,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 選択 · Tab 次へ · / コマンド · Esc 断る"
         }
         "Question" => "質問",
+        "↑↓ scroll" => "↑↓ スクロール",
+        "replacements {from}-{to} of {count}" => "{count} 件中 {from}-{to} 件の置換",
         "Question on branch {branch}" => "ブランチ {branch} からの質問",
         "Permission on branch {branch}" => "ブランチ {branch} への許可",
         "Sending answer…" => "回答を送信中…",

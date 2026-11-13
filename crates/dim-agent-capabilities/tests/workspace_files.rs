@@ -88,6 +88,10 @@ impl Workspace {
         )
         .await
     }
+    async fn edits(&self, reads: &FileReads, name: &str, edits: Value) -> ToolResult {
+        self.call(reads, "edit", json!({ "path": name, "edits": edits }))
+            .await
+    }
 }
 impl Drop for Workspace {
     fn drop(&mut self) {
@@ -878,6 +882,180 @@ async fn edit_inserts_new_text_literally() {
     ok(&workspace.read(&reads, "run.sh").await);
     ok(&workspace.edit(&reads, "run.sh", "PID", "$$ $& $' $`").await);
     assert_eq!(workspace.bytes("run.sh"), b"echo $$ $& $' $`\n");
+}
+
+#[tokio::test]
+async fn edit_applies_every_replacement_in_order_in_one_call() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("code.rs", b"fn one() {}\nfn two() {}\n");
+    ok(&workspace.read(&reads, "code.rs").await);
+
+    let both = workspace
+        .edits(
+            &reads,
+            "code.rs",
+            json!([
+                { "oldText": "one", "newText": "first" },
+                { "oldText": "two", "newText": "second" },
+            ]),
+        )
+        .await;
+    ok(&both);
+    assert_eq!(structured(&both)["replacementCount"], 2);
+    assert_eq!(
+        workspace.bytes("code.rs"),
+        b"fn first() {}\nfn second() {}\n"
+    );
+}
+
+#[tokio::test]
+async fn a_later_replacement_matches_the_text_the_previous_one_produced() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("steps.txt", b"a\nb\nc\n");
+    ok(&workspace.read(&reads, "steps.txt").await);
+
+    let chained = workspace
+        .edits(
+            &reads,
+            "steps.txt",
+            json!([
+                { "oldText": "a\nb", "newText": "x\ny" },
+                { "oldText": "y\nc", "newText": "Y\nC" },
+            ]),
+        )
+        .await;
+    ok(&chained);
+    assert_eq!(workspace.bytes("steps.txt"), b"x\nY\nC\n");
+}
+
+#[tokio::test]
+async fn a_failed_replacement_writes_nothing_and_names_its_index() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let original = b"alpha\nbeta\n";
+    workspace.put("pair.txt", original);
+    ok(&workspace.read(&reads, "pair.txt").await);
+
+    let failed = workspace
+        .edits(
+            &reads,
+            "pair.txt",
+            json!([
+                { "oldText": "alpha", "newText": "A" },
+                { "oldText": "missing", "newText": "B" },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&failed), "oldtext_not_found");
+    assert_eq!(structured(&failed)["index"], 1);
+    assert!(text(&failed).starts_with("edits[1]: "), "{}", text(&failed));
+    assert_eq!(workspace.bytes("pair.txt"), original);
+}
+
+#[tokio::test]
+async fn a_replacement_that_does_not_parse_names_its_index() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("parse.txt", b"alpha\nbeta\n");
+    ok(&workspace.read(&reads, "parse.txt").await);
+
+    let failed = workspace
+        .edits(
+            &reads,
+            "parse.txt",
+            json!([
+                { "oldText": "alpha", "newText": "A" },
+                { "oldText": "beta" },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&failed), "invalid_input");
+    assert_eq!(structured(&failed)["index"], 1);
+    assert!(text(&failed).starts_with("edits[1]: "), "{}", text(&failed));
+    assert_eq!(workspace.bytes("parse.txt"), b"alpha\nbeta\n");
+}
+
+#[tokio::test]
+async fn edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("legacy.txt", b"before\n");
+    ok(&workspace.read(&reads, "legacy.txt").await);
+    ok(&workspace
+        .edit(&reads, "legacy.txt", "before", "after")
+        .await);
+    assert_eq!(workspace.bytes("legacy.txt"), b"after\n");
+
+    for input in [
+        json!({
+            "path": "legacy.txt",
+            "oldText": "after",
+            "newText": "again",
+            "edits": [{ "oldText": "after", "newText": "again" }],
+        }),
+        json!({ "path": "legacy.txt", "edits": [] }),
+    ] {
+        let refused = workspace.call(&reads, "edit", input.clone()).await;
+        assert_eq!(code(&refused), "invalid_input", "{input}");
+        assert!(
+            text(&refused).contains("edits"),
+            "{input}: {}",
+            text(&refused)
+        );
+    }
+    assert_eq!(workspace.bytes("legacy.txt"), b"after\n");
+}
+
+#[tokio::test]
+async fn the_replacement_list_is_bounded_by_one_total() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("long.txt", b"value\n");
+    ok(&workspace.read(&reads, "long.txt").await);
+
+    let half = "x".repeat(6_000);
+    let too_large = workspace
+        .edits(
+            &reads,
+            "long.txt",
+            json!([
+                { "oldText": "never", "newText": half },
+                { "oldText": "value", "newText": half },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&too_large), "input_too_large");
+    assert_eq!(workspace.bytes("long.txt"), b"value\n");
+}
+
+#[tokio::test]
+async fn an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let original = format!("marker\n{}", "x".repeat(1_048_569));
+    assert_eq!(original.len(), 1_048_576);
+    workspace.put("grow.txt", original.as_bytes());
+    ok(&workspace.read(&reads, "grow.txt").await);
+
+    // The first entry applies in memory and keeps the length; the second
+    // writes each of 1,048,569 bytes as 513 bytes: 537,915,897 bytes, past the
+    // 536,870,888 limit, from 524 input chars in total.
+    let grown = workspace
+        .edits(
+            &reads,
+            "grow.txt",
+            json!([
+                { "oldText": "marker", "newText": "bucket" },
+                { "oldText": "x", "newText": "z".repeat(513), "replaceAll": true },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&grown), "edit_target_file_too_large");
+    assert_eq!(structured(&grown)["index"], 1);
+    assert!(text(&grown).starts_with("edits[1]: "), "{}", text(&grown));
+    assert_eq!(workspace.bytes("grow.txt"), original.as_bytes());
 }
 
 #[tokio::test]
