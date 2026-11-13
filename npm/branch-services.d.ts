@@ -147,6 +147,8 @@ export type TimelineQueryScope =
 export type QueryOperand =
   | { kind: "field"; path: string }
   | { kind: "outer"; path: string }
+  | { kind: "root"; path: string }
+  | { kind: "concat"; parts: QueryOperand[] }
   | { kind: "element"; path: string }
   | { kind: "value"; value: unknown }
 
@@ -299,6 +301,7 @@ export interface TreeCommands {
 }
 
 export type TaskError =
+  | /** Required task facts could not be read. */ { read: [] }
   | /** No matching task or live output on this branch. */ "unknown"
   | /** This instance was unloaded. */ "closed"
 
@@ -328,6 +331,7 @@ export interface OutputPage {
 
 /** Why one paged read of a task's registered output file answered nothing. */
 export type OutputPageError =
+  | /** Required task facts could not be read. */ { read: [] }
   | /** No matching task on this branch. */ "unknown"
   | /** The registered output file is gone or unreadable: it was cleaned, or the task's Session was deleted. */ "unavailable"
   | /** This instance was unloaded. */ "closed"
@@ -343,6 +347,7 @@ export interface ExecEndedData {
 
 /** Why waiting for a task's end answered nothing. */
 export type WaitError =
+  | /** Required task facts could not be read. */ { read: [] }
   | /** No matching task on this branch. */ "unknown"
   | /** This instance was unloaded, or the task's record was released. */ "closed"
   | /** The wait's own timeout elapsed first. */ "timeout"
@@ -847,7 +852,7 @@ export type McpAppErrorThrown = RustError<"McpAppError", "Absent" | "Unsupported
 export type McpErrorThrown = RustError<"McpError", "Settings" | "InvalidId" | "UnknownServer" | "InvalidEntry" | "MoveConflict" | "MovePartial" | "CredentialsAreUserScoped" | "StaleSecretRecord" | "ImportConflict" | "ImportPartial" | "Disabled" | "Unavailable" | "Server" | "Auth" | "Closed" | "Cancelled" | "Worker", undefined>
 
 /** What a method returning `Err(OutputPageError)` throws. */
-export type OutputPageErrorThrown = RustError<"OutputPageError", "unknown" | "unavailable" | "closed" | "invalidLimit", OutputPageError>
+export type OutputPageErrorThrown = RustError<"OutputPageError", "read" | "unknown" | "unavailable" | "closed" | "invalidLimit", OutputPageError>
 
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
@@ -856,10 +861,10 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(TaskError)` throws. */
-export type TaskErrorThrown = RustError<"TaskError", "unknown" | "closed", TaskError>
+export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
 
 /** What a method returning `Err(WaitError)` throws. */
-export type WaitErrorThrown = RustError<"WaitError", "unknown" | "closed" | "timeout", WaitError>
+export type WaitErrorThrown = RustError<"WaitError", "read" | "unknown" | "closed" | "timeout", WaitError>
 
 /** What a method returning `Err(WorkflowFilesError)` throws. */
 export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>

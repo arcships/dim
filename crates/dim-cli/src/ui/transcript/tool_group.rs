@@ -151,12 +151,23 @@ pub struct ToolGroup {
     interactive: bool,
     /// The delegations its member cards show, by request event id.
     pub cards: Vec<String>,
+    pub(crate) source: String,
+    pub(crate) awaiting_origins: bool,
+    pub(crate) known_origins: usize,
     collapsed: Vec<Line>,
     summary: Vec<Line>,
     expanded: Vec<Line>,
 }
 
 impl ToolGroup {
+    pub(crate) fn is_open(&self, node: &str) -> bool {
+        self.lines().iter().any(|line| {
+            line.disclosure
+                .as_ref()
+                .is_some_and(|(id, open)| id == node && *open)
+        })
+    }
+
     fn lines(&self) -> &[Line] {
         if self.interactive {
             return &self.expanded;
@@ -400,6 +411,16 @@ fn project(
         .iter()
         .filter_map(|item| Some(item.call().member?.task.id.clone()))
         .collect();
+    let source = rows[0].row_id.clone();
+    let known_origins = rows
+        .iter()
+        .filter(|row| row.tool_lookup_done || row.tool_name.is_some() && row.tool_input.is_some())
+        .count();
+    let awaiting_origins = rows.iter().any(|row| {
+        !row.pending
+            && !row.tool_lookup_done
+            && (row.tool_name.is_none() || row.tool_input.is_none())
+    });
     if interactive {
         let open = choices
             .and_then(|choices| choices.get(&id).copied())
@@ -436,6 +457,9 @@ fn project(
             id,
             interactive,
             cards,
+            source,
+            known_origins,
+            awaiting_origins,
             collapsed: Vec::new(),
             summary: Vec::new(),
             expanded,
@@ -503,6 +527,9 @@ fn project(
         id,
         interactive,
         cards,
+        source,
+        known_origins,
+        awaiting_origins,
         collapsed,
         summary,
         expanded,
@@ -728,7 +755,11 @@ fn append_interactive(
                 Overflow::Wrap,
             ));
         }
-        let foldable = content.len() > 1 || children > 0;
+        let foldable = content.len() > 1
+            || children > 0
+            || !row.pending
+                && !row.tool_lookup_done
+                && (row.tool_name.is_none() || row.tool_input.is_none());
         let id = format!("call:{}", row.row_id);
         let open = choices
             .and_then(|choices| choices.get(&id).copied())

@@ -651,7 +651,7 @@ impl Connection {
                 call,
                 Call::InputLookup(_)
                     | Call::History(_)
-                    | Call::HistoryDisplay(_)
+                    | Call::HistoryDisplay(..)
                     | Call::HistoryDetail(_)
                     | Call::Branches(_)
                     | Call::BranchGet(_)
@@ -696,7 +696,9 @@ impl Connection {
                 (Some(&p.session_id), Some(&p.branch_id))
             }
             Call::InputLookup(p) => (Some(&p.session_id), Some(&p.branch_id)),
-            Call::History(p) | Call::HistoryDisplay(p) => (Some(&p.session_id), Some(&p.branch_id)),
+            Call::History(p) | Call::HistoryDisplay(p, ..) => {
+                (Some(&p.session_id), Some(&p.branch_id))
+            }
             Call::HistoryDetail(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Keys(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Stop(p) => (Some(&p.session_id), Some(&p.branch_id)),
@@ -901,7 +903,7 @@ impl Connection {
         let session_id = match &call {
             Call::Submit(p) => Some(&p.session_id),
             Call::InputLookup(p) => Some(&p.session_id),
-            Call::History(p) | Call::HistoryDisplay(p) => Some(&p.session_id),
+            Call::History(p) | Call::HistoryDisplay(p, ..) => Some(&p.session_id),
             Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
@@ -925,8 +927,22 @@ impl Connection {
             Call::Close(p) if rpc.index.session_available(&p.session_id) => Some(&p.session_id),
             _ => None,
         };
+        let expected_cwd = match &call {
+            Call::Attach(p) => match p.expected_cwd.as_deref() {
+                Some(cwd) => match crate::protocol::canonical_cwd(cwd).await {
+                    Ok(cwd) => Some(cwd),
+                    Err(error) => return Some(Err(error)),
+                },
+                None => None,
+            },
+            _ => None,
+        };
         let usage = if let Some(session_id) = session_id {
-            match rpc.index.acquire(session_id).await {
+            match rpc
+                .index
+                .acquire_checked(session_id, expected_cwd.as_deref())
+                .await
+            {
                 Ok(usage) => Some(usage),
                 Err(error) => return Some(Err(RpcError::from(error))),
             }
@@ -1208,8 +1224,10 @@ impl Connection {
             }
             Call::Submit(params) => self.submit(rpc, params).await,
             Call::InputLookup(params) => self.input_lookup(rpc, params).await,
-            Call::History(params) => self.history(rpc, params, false).await,
-            Call::HistoryDisplay(params) => self.history(rpc, params, true).await,
+            Call::History(params) => self.history(rpc, params, false, false, false).await,
+            Call::HistoryDisplay(params, tail, transcript) => {
+                self.history(rpc, params, true, tail, transcript).await
+            }
             Call::HistoryDetail(params) => tokio::select! {
                 biased;
                 _ = self.closed.cancelled() => return None,
@@ -1489,6 +1507,7 @@ impl Connection {
                             "Command is not a task of this branch",
                         ),
                         TaskError::Closed => RpcError::reloading(),
+                        TaskError::Read(error) => error.into(),
                     })?;
                 Reply::ExecEnded(result)
             }

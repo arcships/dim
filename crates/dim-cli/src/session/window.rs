@@ -14,7 +14,12 @@ pub(super) async fn read(
     }
     let mut window = Window::default();
     loop {
-        let params = window.params(session_id, "main");
+        let params = window.params_with_display(
+            session_id,
+            "main",
+            !display.json && client.offers("session.history.display.tail"),
+            !display.json && client.offers("session.history.display.transcript"),
+        );
         let page: HistoryWindow = if !display.json
             && client.offers("session.history.display")
             && client.offers("session.history.detail")
@@ -58,7 +63,12 @@ pub(super) async fn earlier(
     };
     let mut window = Window::earlier(before, display.history_through);
     loop {
-        let params = window.params(session_id, "main");
+        let params = window.params_with_display(
+            session_id,
+            "main",
+            !display.json && client.offers("session.history.display.tail"),
+            !display.json && client.offers("session.history.display.transcript"),
+        );
         let page: HistoryWindow = if !display.json
             && client.offers("session.history.display")
             && client.offers("session.history.detail")

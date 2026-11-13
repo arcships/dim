@@ -252,6 +252,16 @@ impl Display {
                     }
                 }
             }
+            EventContent::CompactionStart(_) => self.record("[context] Compacting")?,
+            EventContent::CompactionSummary(_) => self.record("[context] Compacted")?,
+            EventContent::Compaction(data) => {
+                self.record(match data.outcome {
+                    ContextCompactionResult::Completed { .. } => "[context] Compacted",
+                    ContextCompactionResult::Skipped { .. } => "[context] Compaction skipped",
+                    ContextCompactionResult::Failed { .. } => "[context] Compaction failed",
+                    ContextCompactionResult::Cancelled { .. } => "[context] Compaction cancelled",
+                })?;
+            }
             EventContent::TurnEnd(data) => {
                 self.finish_text()?;
                 let presented = self.shown_failure.take();

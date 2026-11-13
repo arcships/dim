@@ -4,11 +4,22 @@ use std::collections::{HashSet, VecDeque};
 
 /// One bounded transcript load. The consumer takes and releases its raw pages
 /// after projecting them; this object is not a history cache.
-#[derive(Default)]
 pub struct Window {
     pub before: Option<u64>,
     pub through: Option<u64>,
     pages: VecDeque<(Option<u64>, Vec<Event>)>,
+    initial: bool,
+}
+
+impl Default for Window {
+    fn default() -> Self {
+        Self {
+            before: None,
+            through: None,
+            pages: VecDeque::new(),
+            initial: true,
+        }
+    }
 }
 
 impl Window {
@@ -16,17 +27,46 @@ impl Window {
         Self {
             before: Some(before),
             through: Some(through),
+            initial: false,
             ..Self::default()
         }
     }
 
     pub fn params(&self, session: &str, branch: &str) -> Value {
-        let mut params = json!({"sessionId":session,"branchId":branch,"limit":256});
+        self.params_with_tail(session, branch, false)
+    }
+
+    pub fn params_with_tail(&self, session: &str, branch: &str, tail: bool) -> Value {
+        let mut params =
+            json!({"sessionId":session,"branchId":branch,"limit":if self.initial {64} else {256}});
+        if let Some(through) = self.through {
+            params["through"] = json!(through);
+        }
         if let Some(before) = self.before {
             params["before"] = json!(before);
-            params["through"] = json!(self.through);
-        } else {
+        } else if !tail {
             params["latestTurn"] = json!(true);
+        }
+        if tail {
+            params["tail"] = json!(true);
+        }
+        params
+    }
+
+    /// Selects indexed display kinds when the server advertises transcript pages.
+    pub fn params_with_display(
+        &self,
+        session: &str,
+        branch: &str,
+        tail: bool,
+        transcript: bool,
+    ) -> Value {
+        let mut params = self.params_with_tail(session, branch, tail || transcript);
+        if transcript {
+            params["transcript"] = json!(true);
+            if self.initial && self.pages.is_empty() {
+                params["limit"] = json!(32);
+            }
         }
         params
     }
@@ -49,14 +89,18 @@ impl Window {
                 rows.insert(row);
             });
         }
-        Ok(self.before.is_none() || self.pages.len() >= 4 || rows.len() >= 100)
+        Ok(self.before.is_none()
+            || self.pages.len() >= 4
+            || rows.len() >= 100
+            || (self.initial && !rows.is_empty()))
     }
 
     /// Releases whole wire pages in forward order under a 300-identity budget.
     /// The newest page and, when found, the newest page with transcript rows
     /// remain whole even above that budget. This does not read more pages.
-    /// The cursor remains at a server-provided batch boundary for earlier reads.
+    /// The cursor remains at a server-provided position for earlier reads.
     pub fn take(&mut self) -> Vec<Event> {
+        self.initial = false;
         let mut rows = HashSet::new();
         let mut keep = 0;
         for (_, events) in self.pages.iter().rev() {
@@ -98,6 +142,9 @@ fn rows_of<'a>(event: &'a Event, mut row: impl FnMut((u8, &'a str, &'a str))) {
                 row((2, &data.request_id, &result.call_id));
             }
         }
+        EventContent::CompactionStart(_)
+        | EventContent::Compaction(_)
+        | EventContent::CompactionSummary(_) => row((3, &event.id, "")),
         _ => {}
     }
 }

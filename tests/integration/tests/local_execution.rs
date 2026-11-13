@@ -5,6 +5,8 @@
 mod compaction_support;
 #[path = "local_support/process.rs"]
 mod process_support;
+#[path = "local_support/task_store.rs"]
+mod task_store;
 use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
@@ -287,7 +289,7 @@ impl DynPlugin for Probe {
 
 struct Harness {
     root: Ctx,
-    store: Arc<MemoryTimelineStore>,
+    store: Arc<task_store::TaskStore>,
     agent: MinimalHost,
     model: Arc<Script>,
     cwd: PathBuf,
@@ -347,7 +349,7 @@ impl Harness {
         cwd: PathBuf,
         compacting: bool,
     ) -> Self {
-        let store = Arc::new(MemoryTimelineStore::default());
+        let store = Arc::new(task_store::TaskStore::default());
         let output_root = scratch("output");
         let model = Arc::new(Script::default());
         let seen = Seen::default();
@@ -1657,14 +1659,14 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     .await;
     let ends = ended(&events);
     for task in ["exec-orphan", "exec-lost"] {
-        assert_eq!(
+        assert!(matches!(
             restored
                 .service::<BackgroundExec>("main")
                 .unwrap()
                 .output(task.to_owned())
                 .await,
             Err(workspace_tools::background::TaskError::Unknown)
-        );
+        ));
     }
     let (orphan_event, orphan) = &ends[2];
     assert_eq!(orphan.task_id, "exec-orphan");
@@ -1988,6 +1990,48 @@ async fn an_end_after_the_branch_close_interrupt_does_not_wake() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_generation_can_start_its_first_background_task_after_an_old_close() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    session.idle("main").await.unwrap();
+    assert!(session.unload_if_idle().await.unwrap());
+    let id = session.id().to_owned();
+    stored(
+        &harness,
+        &id,
+        vec![EventKind::StopInterrupt(StopInterruptData {
+            reason: "previous generation closed".into(),
+            scope: InterruptScope::Branch,
+        })],
+    )
+    .await;
+    let restored = harness.agent.restore_session(id).await.unwrap();
+    let pid_file = harness.cwd.join("new-generation.pid");
+    harness
+        .run(&restored, &[("exec", sleeper(&pid_file))])
+        .await;
+    let events = until(&restored, "new background task", |events| {
+        count(events, "turn/end") == 1
+    })
+    .await;
+    assert_eq!(count(&events, "exec/started"), 1);
+    pid_in(&pid_file).await;
+    let task = task_of(&results(&events)[0]);
+    assert_eq!(
+        restored
+            .service::<BackgroundExec>("main")
+            .unwrap()
+            .stop(task.clone())
+            .await
+            .unwrap()
+            .status,
+        ExecStatus::Cancelled
+    );
+    restored.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_before_hook_owns_the_task_identity() {
     let harness = Harness::new(platform(&[]).await, Hook::RewriteTask).await;
     let session = harness.session().await;
@@ -2296,7 +2340,10 @@ async fn background_exec_face_answers_as_the_typed_service() {
     let background = session.service::<BackgroundExec>("main").unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if background.output(task.clone()).await.as_deref() == Ok("face-output") {
+            if matches!(
+                background.output(task.clone()).await.as_deref(),
+                Ok("face-output")
+            ) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2348,10 +2395,10 @@ async fn background_exec_face_answers_as_the_typed_service() {
     .await;
     assert_eq!(error.code(), Some("invalidLimit"));
 
-    assert_eq!(
+    assert!(matches!(
         background.wait(task.clone(), 0).await,
         Err(workspace_tools::background::WaitError::Timeout)
-    );
+    ));
     let error = face_error(
         &ctx,
         instance,
@@ -2451,6 +2498,92 @@ async fn background_exec_face_answers_as_the_typed_service() {
     .await;
     assert_eq!(error.code(), Some("unknown"));
 
+    let id = session.id().to_owned();
     session.close().await.unwrap();
+    let restored = harness.agent.restore_session(id).await.unwrap();
+    restored.idle("main").await.unwrap();
+    let background = restored.service::<BackgroundExec>("main").unwrap();
+    let ctx = harness.seen.ctx("main");
+    let instance = group_instance(&restored.branch_diagnostics("main").unwrap(), "BranchScope");
+    let terminal = serde_json::to_value(&typed).unwrap();
+    assert_eq!(
+        serde_json::to_value(background.wait(task.clone(), 0).await.unwrap()).unwrap(),
+        terminal
+    );
+    assert_eq!(
+        serde_json::to_value(background.stop(task.clone()).await.unwrap()).unwrap(),
+        terminal
+    );
+    assert_eq!(
+        background
+            .output_page(task.clone(), 0, 64)
+            .await
+            .unwrap()
+            .text,
+        "face-output"
+    );
+
+    for (method, args, expected) in [
+        (
+            "wait",
+            vec![json!(task).into(), json!(0).into()],
+            terminal.clone(),
+        ),
+        ("stop", vec![json!(task).into()], terminal),
+        (
+            "outputPage",
+            vec![json!(task).into(), json!(0).into(), json!(64).into()],
+            serde_json::to_value(background.output_page(task.clone(), 0, 64).await.unwrap())
+                .unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            face_call(&ctx, instance, "backgroundExec", method, args.clone()).await,
+            expected
+        );
+        harness
+            .store
+            .hold_next_query()
+            .send(Err(AgentError::Storage("task history unavailable".into())))
+            .unwrap();
+        let error = face_error(&ctx, instance, "backgroundExec", method, args.clone()).await;
+        harness.store.entered.notified().await;
+        assert_eq!(error.code(), Some("read"), "{method}: {error}");
+        assert!(
+            error.to_string().contains("task history unavailable"),
+            "{error}"
+        );
+
+        let mut release = harness.store.hold_next_query();
+        let dispatch = ctx
+            .get_at::<dyn HostDispatch>(&host_key("backgroundExec").instance(instance))
+            .unwrap();
+        let mut reading = Box::pin(settle(
+            dispatch
+                .invoke(method, BridgeValue::List(args.clone()))
+                .unwrap(),
+        ));
+        tokio::select! {
+            result = &mut reading => panic!("{method} completed before the held query: {result:?}"),
+            _ = harness.store.entered.notified() => {},
+        }
+        drop(reading);
+        tokio::time::timeout(Duration::from_secs(5), release.closed())
+            .await
+            .expect("abandoning the face releases the historical query");
+        assert_eq!(
+            face_call(&ctx, instance, "backgroundExec", method, args).await,
+            expected
+        );
+    }
+    assert!(matches!(
+        background.wait("no-such-task".into(), 0).await,
+        Err(workspace_tools::background::WaitError::Unknown)
+    ));
+    assert!(matches!(
+        background.stop("no-such-task".into()).await,
+        Err(workspace_tools::background::TaskError::Unknown)
+    ));
+    restored.close().await.unwrap();
     harness.shutdown().await;
 }

@@ -44,7 +44,7 @@ fn measured_prompt(usage: &Usage) -> Option<f64> {
     .then_some(usage.prompt_tokens)
 }
 
-fn message(
+pub(super) fn message(
     summary: &mut Summary,
     counter: &dyn crate::host::ContextCounter,
     empty: (Contribution, f64),
@@ -68,9 +68,37 @@ fn message(
     Ok(())
 }
 
+fn source_filter() -> QueryFilter {
+    QueryFilter::And {
+        conditions: vec![
+            QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "kind".into(),
+                },
+                values: SOURCES.iter().map(|kind| (*kind).into()).collect(),
+            },
+            QueryFilter::Or {
+                conditions: vec![
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "context.render".into(),
+                        },
+                        values: vec![true.into()],
+                    },
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: vec!["context/configured".into(), "model/usage".into()],
+                    },
+                ],
+            },
+        ],
+    }
+}
+
 impl ContextUsage {
-    pub(super) async fn run(&self) -> Result<()> {
-        let initial = self.timeline.sequence();
+    pub(super) async fn run(&self, initial: u64) -> Result<()> {
         let mut machine = self.restore(initial).await?;
         self.association
             .lock()
@@ -80,6 +108,40 @@ impl ContextUsage {
         self.publish(&machine, initial);
         let mut covered = initial;
         loop {
+            let initial = self.initial_history.lock().unwrap().take();
+            if let Some(initial) = initial.filter(|_| machine.needs_history) {
+                machine = self
+                    .initialize(initial.through, machine.state.branches.clone())
+                    .await?;
+                let counter = machine
+                    .model
+                    .as_ref()
+                    .and_then(|model| model.contribution_counter())
+                    .ok_or_else(|| fault("missing initial usage counter"))?;
+                if counter.algorithm() != initial.algorithm {
+                    return Err(fault("initial usage contribution algorithm changed"));
+                }
+                let mut summary = machine.state.summary();
+                summary.join(&initial.summary)?;
+                summary.local = Some(counter.estimate(total(&summary)?));
+                machine.state.current = Some(
+                    machine
+                        .numeric
+                        .append(
+                            None,
+                            Entry {
+                                at: machine.state.at(initial.through),
+                                summary,
+                            },
+                        )
+                        .await?,
+                );
+                machine.needs_history = false;
+                machine.unavailable = None;
+                self.save(&mut machine).await?;
+                covered = initial.through;
+                self.publish(&machine, covered);
+            }
             let wanted = self.wanted.load(Ordering::SeqCst);
             if wanted > covered {
                 self.advance(&mut machine, wanted).await?;
@@ -87,7 +149,8 @@ impl ContextUsage {
                 self.publish(&machine, covered);
             }
             let handoff = self.handoff.load(Ordering::SeqCst);
-            if handoff <= covered
+            if !machine.needs_history
+                && handoff <= covered
                 && handoff >= machine.relevant_through
                 && machine.relevant_through > machine.saved_through
                 && machine.result_id.is_some()
@@ -198,7 +261,6 @@ impl ContextUsage {
             {
                 return Err(fault("invalid usage recovery boundary"));
             }
-            let inherited = position.branch_id != self.timeline.branch_id();
             saved.state.branches = branches;
             let numeric = Numeric::new(
                 self.timeline.clone(),
@@ -211,6 +273,43 @@ impl ContextUsage {
                 .validate_current(saved.state.current.as_ref())
                 .await?;
             total(&saved.state.summary())?;
+            let inherited = position.branch_id != self.timeline.branch_id();
+            if !inherited
+                && let Some(row) = self
+                    .newest(request(
+                        TimelineQueryScope::Branch,
+                        through,
+                        &[COVERED],
+                        &["position", "data"],
+                    ))
+                    .await?
+            {
+                let [position, data] = <[_; 2]>::try_from(row).expect("usage covered fields");
+                let position: TimelinePosition = decode(position)?;
+                let covered: Covered = decode(data)?;
+                if covered.schema != "context-usage-covered/v1"
+                    || covered.source_through >= position.sequence
+                {
+                    return Err(fault("invalid usage covered record"));
+                }
+                if id == covered.result_id && covered.source_through > saved.source_through {
+                    saved.source_through = covered.source_through;
+                }
+            }
+            let mut pending = request(TimelineQueryScope::Chain, through, SOURCES, &[]);
+            pending.from = Some(TimelinePosition {
+                branch_id: position.branch_id.clone(),
+                sequence: saved.source_through.saturating_add(1),
+            });
+            pending.query.filter = Some(source_filter());
+            pending.query.select = QuerySelect::Exists;
+            pending.page = None;
+            if matches!(
+                self.timeline.query(pending).await?.result,
+                QueryOutput::Exists { exists: true }
+            ) {
+                return Ok(self.uninitialized(through, saved.state.branches, true));
+            }
             let configuration = saved.state.summary().configuration;
             let event_id = match &configuration {
                 Some(Configuration::Ready { counter }) => Some(counter.event_id.as_str()),
@@ -260,10 +359,7 @@ impl ContextUsage {
                             unavailable = Some(error.clone());
                         }
                         (Some(Configuration::Unavailable { .. }), Ok(_)) => {
-                            let mut machine =
-                                self.initialize(through, saved.state.branches).await?;
-                            self.save(&mut machine).await?;
-                            return Ok(machine);
+                            return Ok(self.uninitialized(through, saved.state.branches, true));
                         }
                         _ => return Err(fault("restored context counter changed its algorithm")),
                     }
@@ -272,55 +368,14 @@ impl ContextUsage {
             } else {
                 None
             };
-            let mut machine = Machine {
-                state: saved.state,
-                source_through: if inherited { 0 } else { saved.source_through },
-                result: if inherited { 0 } else { position.sequence },
-                result_id: Some(id),
-                saved_through: if inherited { 0 } else { saved.source_through },
-                relevant_through: if inherited { 0 } else { saved.source_through },
-                model: model.clone(),
-                unavailable,
-                empty: model
-                    .as_ref()
-                    .and_then(|model| model.contribution_counter())
-                    .map(|counter| {
-                        let empty = counter.fixed(None, None);
-                        (empty, counter.estimate(empty))
-                    })
-                    .unwrap_or_default(),
-                numeric,
-            };
-            if !inherited
-                && let Some(row) = self
-                    .newest(request(
-                        TimelineQueryScope::Branch,
-                        through,
-                        &[COVERED],
-                        &["position", "data"],
-                    ))
-                    .await?
-            {
-                let [position, data] = <[_; 2]>::try_from(row).expect("usage covered fields");
-                let position: TimelinePosition = decode(position)?;
-                let covered: Covered = decode(data)?;
-                if covered.schema != "context-usage-covered/v1"
-                    || covered.source_through >= position.sequence
-                {
-                    return Err(fault("invalid usage covered record"));
-                }
-                if machine.result_id.as_ref() == Some(&covered.result_id)
-                    && covered.source_through > machine.source_through
-                {
-                    machine.source_through = covered.source_through;
-                    machine.saved_through = covered.source_through;
-                }
-            }
-            self.advance(&mut machine, through).await?;
-            self.cover(&mut machine).await?;
-            if let (Some(Configuration::Ready { mut counter }), Some(model)) =
-                (machine.state.summary().configuration, &machine.model)
-            {
+            if let (Some(Configuration::Ready { counter }), Some(model)) = (
+                saved
+                    .state
+                    .current
+                    .as_mut()
+                    .and_then(|point| point.totals.configuration.as_mut()),
+                &model,
+            ) {
                 let limits = Limits {
                     window: model.context_window(),
                     output: model.output_tokens(),
@@ -332,30 +387,40 @@ impl ContextUsage {
                 {
                     return Err(fault("invalid restored usage limits"));
                 }
-                if limits != counter.limits {
-                    counter.limits = limits;
-                    let at = machine.state.at(through);
-                    self.record(
-                        &mut machine,
-                        at,
-                        Summary {
-                            configuration: Some(Configuration::Ready { counter }),
-                            ..Default::default()
-                        },
-                        true,
-                    )
-                    .await?;
-                    machine.source_through = through;
-                    self.save(&mut machine).await?;
-                }
+                counter.limits = limits;
             }
+            let machine = Machine {
+                state: saved.state,
+                source_through: through,
+                result: if inherited { 0 } else { position.sequence },
+                result_id: Some(id),
+                saved_through: through,
+                relevant_through: through,
+                model: model.clone(),
+                unavailable,
+                needs_history: false,
+                empty: model
+                    .as_ref()
+                    .and_then(|model| model.contribution_counter())
+                    .map(|counter| {
+                        let empty = counter.fixed(None, None);
+                        (empty, counter.estimate(empty))
+                    })
+                    .unwrap_or_default(),
+                numeric,
+            };
             return Ok(machine);
         }
-        let mut machine = self.initialize(through, branches).await?;
-        if through > 0 {
-            self.save(&mut machine).await?
-        }
-        Ok(machine)
+        let configured = self
+            .newest(request(
+                TimelineQueryScope::Chain,
+                through,
+                &["context/configured"],
+                &["id"],
+            ))
+            .await?
+            .is_some();
+        Ok(self.uninitialized(through, branches, configured))
     }
 
     async fn configuration_request(&self, id: &str, through: u64) -> Result<ModelRequest> {
@@ -513,30 +578,38 @@ impl ContextUsage {
         Ok(configuration)
     }
 
-    async fn initialize(&self, through: u64, branches: Vec<String>) -> Result<Machine> {
+    fn uninitialized(&self, through: u64, branches: Vec<String>, configured: bool) -> Machine {
         let epoch = Uuid::new_v4().to_string();
         let initialized = Key {
             branch: branches.len() as u32 - 1,
             sequence: through,
         };
-        let mut machine = Machine {
+        Machine {
             state: State {
                 epoch: epoch.clone(),
                 branches,
                 initialized,
                 legacy_result: None,
-                current: None,
+                current: Some(NumericResult {
+                    at: initialized,
+                    totals: Summary::default(),
+                }),
             },
             source_through: through,
             result: 0,
             result_id: None,
-            saved_through: 0,
-            relevant_through: 0,
+            saved_through: through,
+            relevant_through: through,
             model: None,
             unavailable: None,
+            needs_history: configured,
             empty: Default::default(),
             numeric: Numeric::new(self.timeline.clone(), through, epoch, None, initialized),
-        };
+        }
+    }
+
+    async fn initialize(&self, through: u64, branches: Vec<String>) -> Result<Machine> {
+        let mut machine = self.uninitialized(through, branches, false);
         let Some(mut row) = self
             .newest(request(
                 TimelineQueryScope::Chain,
@@ -551,141 +624,18 @@ impl ContextUsage {
         let id: String = decode(row.remove(0))?;
         let value = self.configuration_request(&id, through).await?;
         let configuration = self.configure(&mut machine, id, value).await?;
-        let ready = matches!(configuration, Configuration::Ready { .. });
-        let mut base = Summary {
-            configuration: Some(configuration),
-            ..Default::default()
-        };
-        let mut compaction = request(
-            TimelineQueryScope::Chain,
-            through,
-            &["context/compaction"],
-            &[
-                "id",
-                "data.retain_from",
-                "data.replacement",
-                "data.context_baseline",
-            ],
-        );
-        compaction.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                compaction.query.filter.take().expect("compaction kind"),
-                QueryFilter::In {
-                    value: QueryOperand::Field {
-                        path: "data.status".into(),
-                    },
-                    values: vec!["completed".into()],
-                },
-            ],
+        if matches!(configuration, Configuration::Ready { .. }) {
+            machine.needs_history = true;
+            machine.unavailable = None;
+        }
+        machine.state.current = Some(NumericResult {
+            at: machine.state.at(through),
+            totals: Summary {
+                configuration: Some(configuration),
+                ..Default::default()
+            },
         });
-        let mut from = None;
-        if ready && let Some(row) = self.newest(compaction).await? {
-            let [id, cut, replacement, baseline] =
-                <[_; 4]>::try_from(row).expect("initialized compression fields");
-            let id: String = decode(id)?;
-            let cut_id: String = decode(cut)?;
-            let mut position = self.fields(&cut_id, through, &["position"]).await?;
-            let position: TimelinePosition = decode(position.remove(0))?;
-            let replacement: Vec<Message> = decode(replacement)?;
-            let baseline: Vec<ContextBaselineEntry> = optional(baseline)?.unwrap_or_default();
-            let counter = machine
-                .model
-                .as_ref()
-                .and_then(|model| model.contribution_counter())
-                .expect("ready initialized counter");
-            let mut contribution = Contribution::default();
-            for message in replacement
-                .iter()
-                .chain(baseline.iter().map(|entry| entry.message.as_ref()))
-            {
-                contribution = add(contribution, counter.message(message))?;
-            }
-            base.compression = Some(Compression {
-                event_id: id,
-                cut: machine.state.key(&position)?,
-                removed: Contribution::default(),
-                replacement: contribution,
-                removed_messages: Some(0),
-                replacement_messages: Some((replacement.len() + baseline.len()) as u64),
-            });
-            from = Some(position);
-        }
-        if ready {
-            self.count_history(
-                &machine,
-                through,
-                from.as_ref()
-                    .map(|position| machine.state.key(position))
-                    .transpose()?,
-                None,
-                &mut base,
-            )
-            .await?;
-            let counter = machine
-                .model
-                .as_ref()
-                .and_then(|model| model.contribution_counter())
-                .expect("ready initial counter");
-            base.local = Some(counter.estimate(total(&base)?));
-        }
-        machine.state.current = Some(
-            machine
-                .numeric
-                .append(
-                    None,
-                    Entry {
-                        at: initialized,
-                        summary: base,
-                    },
-                )
-                .await?,
-        );
         Ok(machine)
-    }
-
-    async fn count_history(
-        &self,
-        machine: &Machine,
-        through: u64,
-        from: Option<Key>,
-        before: Option<Key>,
-        summary: &mut Summary,
-    ) -> Result<()> {
-        let counter = machine
-            .model
-            .as_ref()
-            .and_then(|model| model.contribution_counter())
-            .ok_or_else(|| fault("missing initialization counter"))?;
-        let mut read = crate::history::FoldRead::timeline(&self.timeline, None, through);
-        let mut state = None;
-        while let Some(page) = read.next(256).await? {
-            let mut begin = 0;
-            while begin < page.events.len() {
-                let branch = &page.positions[begin].branch_id;
-                let end = (begin + 1..page.events.len())
-                    .find(|index| page.positions[*index].branch_id != *branch)
-                    .unwrap_or(page.events.len());
-                let projected =
-                    crate::history::project_batch(&page.events[begin..end], state.as_ref(), branch)
-                        .map_err(|error| fault(error.to_string()))?;
-                state = Some(projected.state);
-                for entry in projected.history {
-                    let at = machine.state.key(&entry.position)?;
-                    if before.is_some_and(|end| at >= end) {
-                        return Ok(());
-                    }
-                    if from.is_none_or(|start| at >= start) {
-                        message(summary, counter, machine.empty, &entry.message)?;
-                        summary.last_entry = Some(LastEntry {
-                            at,
-                            id: Some(entry.id),
-                        });
-                    }
-                }
-                begin = end;
-            }
-        }
-        Ok(())
     }
 
     async fn record(
@@ -729,7 +679,10 @@ impl ContextUsage {
     }
 
     async fn advance(&self, machine: &mut Machine, through: u64) -> Result<()> {
-        if machine.unavailable.is_some() || machine.source_through >= through {
+        if machine.needs_history
+            || machine.unavailable.is_some()
+            || machine.source_through >= through
+        {
             return Ok(());
         }
         let mut sources = request(
@@ -738,27 +691,7 @@ impl ContextUsage {
             SOURCES,
             &["id", "kind", "position"],
         );
-        sources.query.filter = Some(QueryFilter::And {
-            conditions: vec![
-                sources.query.filter.take().expect("usage source kinds"),
-                QueryFilter::Or {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "context.render".into(),
-                            },
-                            values: vec![true.into()],
-                        },
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec!["context/configured".into(), "model/usage".into()],
-                        },
-                    ],
-                },
-            ],
-        });
+        sources.query.filter = Some(source_filter());
         sources.from = Some(TimelinePosition {
             branch_id: self.timeline.branch_id(),
             sequence: machine.source_through + 1,
@@ -783,6 +716,9 @@ impl ContextUsage {
                 let position: TimelinePosition = decode(position)?;
                 self.consume(machine, &id, &kind, position.clone(), through)
                     .await?;
+                if machine.needs_history {
+                    return Ok(());
+                }
                 machine.source_through = position.sequence;
                 machine.relevant_through = position.sequence;
             }
@@ -818,9 +754,15 @@ impl ContextUsage {
                 if matches!(previous, Some(Configuration::Ready { .. })) {
                     return Err(fault("context contribution algorithm changed"));
                 }
-                *machine =
-                    Box::pin(self.initialize(position.sequence, machine.state.branches.clone()))
-                        .await?;
+                machine.state.current = Some(NumericResult {
+                    at,
+                    totals: Summary {
+                        configuration: Some(next),
+                        ..Default::default()
+                    },
+                });
+                machine.needs_history = true;
+                machine.unavailable = None;
                 return Ok(());
             }
             if match (&previous, &next) {
@@ -984,21 +926,8 @@ impl ContextUsage {
                 if decode::<String>(fields.remove(0))? != "completed" {
                     return Ok(());
                 }
-                let [cut, replacement, baseline, prepared] = <[_; 4]>::try_from(
-                    self.fields(
-                        id,
-                        through,
-                        &[
-                            "data.retain_from",
-                            "data.replacement",
-                            "data.context_baseline",
-                            "data.through",
-                        ],
-                    )
-                    .await?,
-                )
-                .expect("compaction properties");
-                let cut: String = decode(cut)?;
+                let mut fields = self.fields(id, through, &["data.retain_from"]).await?;
+                let cut: String = decode(fields.remove(0))?;
                 let mut fields = self.fields(&cut, through, &["position"]).await?;
                 let cut: TimelinePosition = decode(fields.remove(0))?;
                 let cut = machine.state.key(&cut)?;
@@ -1010,6 +939,21 @@ impl ContextUsage {
                 {
                     return Err(fault("compaction cut precedes the active cut"));
                 }
+                let Some(prefix) = machine
+                    .numeric
+                    .prefix(machine.state.current.as_ref(), cut, false)
+                    .await?
+                else {
+                    machine.numeric.take_pending();
+                    machine.needs_history = true;
+                    machine.unavailable = None;
+                    return Ok(());
+                };
+                let [replacement, baseline] = <[_; 2]>::try_from(
+                    self.fields(id, through, &["data.replacement", "data.context_baseline"])
+                        .await?,
+                )
+                .expect("compaction messages");
                 let replacement: Vec<Message> = decode(replacement)?;
                 let baseline: Vec<ContextBaselineEntry> = optional(baseline)?.unwrap_or_default();
                 let mut contribution = Contribution::default();
@@ -1019,29 +963,6 @@ impl ContextUsage {
                 {
                     contribution = add(contribution, counter.message(message))?;
                 }
-                let prefix = match machine
-                    .numeric
-                    .prefix(machine.state.current.as_ref(), cut, false)
-                    .await?
-                {
-                    Some(prefix) => prefix,
-                    None => {
-                        let mut prefix = Summary::default();
-                        if let Some(previous) = &current.compression {
-                            prefix.ordinary = previous.removed;
-                            prefix.message_count = previous.removed_messages;
-                        }
-                        self.count_history(
-                            machine,
-                            decode(prepared)?,
-                            current.compression.as_ref().map(|previous| previous.cut),
-                            Some(cut),
-                            &mut prefix,
-                        )
-                        .await?;
-                        prefix
-                    }
-                };
                 let removed = prefix.ordinary;
                 if current
                     .last_entry

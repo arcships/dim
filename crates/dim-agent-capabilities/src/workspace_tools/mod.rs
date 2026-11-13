@@ -505,6 +505,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                                     background::OutputPageError::InvalidLimit => {
                                         RpcError::invalid("limit must be at least 1")
                                     }
+                                    background::OutputPageError::Read(error) => error.into(),
                                 })?;
                             return reply(page);
                         }
@@ -537,6 +538,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                                     "No live output is available for this task",
                                 ),
                                 background::TaskError::Closed => RpcError::reloading(),
+                                background::TaskError::Read(error) => error.into(),
                             })?;
                         Ok(serde_json::json!({"text":text}))
                     })

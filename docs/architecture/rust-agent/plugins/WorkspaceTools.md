@@ -502,9 +502,9 @@ the typed `BackgroundExec` serves it and stays the Rust binding.
 | Method | Positional arguments | Reply | Errors |
 | --- | --- | --- | --- |
 | `output` | `(taskId)` | `string`: the live tail preview | `unknown`, `closed` |
-| `outputPage` | `(taskId, cursor, limit)` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit` |
-| `wait` | `(taskId, timeoutMs)` | the `exec/ended` record `{task_id, status, result}` | `unknown`, `closed`, `timeout` |
-| `stop` | `(taskId)` | the `exec/ended` record | `unknown`, `closed` |
+| `outputPage` | `(taskId, cursor, limit)` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit`, `read` |
+| `wait` | `(taskId, timeoutMs)` | the `exec/ended` record `{task_id, status, result}` | `unknown`, `closed`, `timeout`, `read` |
+| `stop` | `(taskId)` | the `exec/ended` record | `unknown`, `closed`, `read` |
 
 `taskId` is a task this branch started. `output` reads the live capture; it is
 `unknown` for an ended or replayed task, whose registered file stays readable by
@@ -518,6 +518,8 @@ and does not wake, and answers an already ended task's record without changing
 its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live
 process, so it is the `exec` tool's own operation and is not on the face.
+
+Historical `outputPage`, `wait` and `stop` calls use the owner's bounded task-fact reads, without rebuilding a historical task cache. `wait` returns a historical terminal record without waiting for execution; `timeoutMs` governs the completion wait for a live task. Failed reads or inconsistent required facts answer `read`, not `unknown`. Dropping a historical call cancels its read.
 
 Errors cross as `{code, message}`; the codes are the variants above. The owner
 releases no lock across a read: the page opens the registered file itself.
@@ -543,11 +545,8 @@ Session from `start`, before `exec/started`, until its supervisor has appended
 `exec/ended`; that end keeps the branch busy until its wake is posted. A start
 that gets no hold (the Session is closing) is refused as in a closing branch,
 and a refused start stops its command. Tracked tasks are joined on unload.
-Recovery pages through task lifecycle properties at one committed cutoff. It reads
-only tags from inputs, keeping the task directory, terminal results and outstanding
-notices; it does not collect historical input bodies or events. Ended tasks remain
-in the directory for the task APIs. Recovery reposts unreported non-cancelled ends
-but never restarts a historical process. The notice is not the full command output; output files carry large
+Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O. Historical output/stop resolves the selected task's first start and end by task_id; these reads do not retain a historical task directory. Read failures propagate explicitly.
+ The notice is not the full command output; output files carry large
 results. The `exec/ended` result carries the final `preview` and
 `previewTruncated` in its `structuredContent`, from the same settled capture
 as the live read. Its escaped result preview uses the existing context-block

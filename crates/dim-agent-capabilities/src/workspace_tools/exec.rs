@@ -127,6 +127,7 @@ pub(super) async fn stop(
                 serde_json::to_string(&ended).expect("exec terminal contains JSON data"),
             )
         }),
+        Err(super::background::TaskError::Read(error)) => Err(super::host_error(error)),
         Err(super::background::TaskError::Unknown) => Ok(failed(
             "Command is not a task of this branch. Use the Task ID returned by exec on this branch; use agent for Collaboration members. No command was stopped.",
             "exec_task_unknown",

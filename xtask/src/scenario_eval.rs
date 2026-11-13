@@ -217,7 +217,9 @@
 //!   wall clock from the first submission; both stop the run. `budget.window`
 //!   is the context window the scenario is written for and is checked, not
 //!   set: the window is the model's declared limit, so a run whose Session
-//!   declares another one is a failed run.
+//!   declares another one is a failed run. The Session reports it only after
+//!   its first request has counted the context, so the check waits for the
+//!   run to settle; a run that starts no request has no window to check.
 //! - A `must_show` probe passes when the judge finds that the run shows it; a
 //!   `must_not_show` probe passes when the run does not, and a run that shows
 //!   it is a violation.
@@ -4500,6 +4502,16 @@ struct Driven {
     error: Option<String>,
 }
 
+/// Why a Session whose window is not the scenario's cannot be measured, or `None`.
+fn window_mismatch(window: Option<f64>, declared: u64) -> Option<String> {
+    (window != Some(declared as f64)).then(|| {
+        format!(
+            "the Session declares a context window of {}, and the scenario declares {declared}",
+            window.map_or_else(|| "none".to_owned(), |window| window.to_string())
+        )
+    })
+}
+
 /// Drives one Session through the App Server's client methods, as a client
 /// does: create, attach, submit the script, and wait for idle or a budget.
 /// `tools` is the Session's mount list; `None` is the tools-check
@@ -4564,6 +4576,7 @@ async fn drive(
         driven.error = Some(format!("session.attach failed: {error}"));
         return driven;
     }
+    let mut window_deferred = false;
     match client
         .rpc(
             "session.context.usage",
@@ -4574,15 +4587,14 @@ async fn drive(
         Ok(usage) => {
             let window = usage["contextWindow"].as_f64();
             driven.window = window;
-            if window != Some(scenario.budget.window as f64) {
+            if let Some(error) = window_mismatch(window, scenario.budget.window) {
                 driven.stop = "error";
-                driven.error = Some(format!(
-                    "the Session declares a context window of {}, and the scenario declares {}",
-                    window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
-                    scenario.budget.window
-                ));
+                driven.error = Some(error);
                 return driven;
             }
+        }
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+            window_deferred = true;
         }
         Err(error) => {
             driven.stop = "error";
@@ -4843,6 +4855,25 @@ async fn drive(
                            "reason": format!("budget: {}", driven.stop)}),
                 )
                 .await;
+        }
+    }
+    if window_deferred && driven.error.is_none() {
+        match client
+            .rpc(
+                "session.context.usage",
+                json!({"sessionId":session,"branchId":"main"}),
+            )
+            .await
+        {
+            Ok(usage) => {
+                driven.window = usage["contextWindow"].as_f64();
+                driven.error = window_mismatch(driven.window, scenario.budget.window);
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {}
+            Err(error) => driven.error = Some(format!("Context window check failed: {error}")),
+        }
+        if driven.error.is_some() {
+            driven.stop = "error";
         }
     }
     driven
