@@ -368,9 +368,9 @@ how to use it is policy. A name that a policy sentence states stays protocol.
 - `write` — protocol throughout: it states what the call writes, that it creates
   the file and that it overwrites the whole content.
 - `edit` — protocol: "Edit an existing file by replacing exact text matches."
-  and "Pass every change to one file in one call as edits; they apply in order,
-  each against the text the previous one produced, and nothing is written if any
-  of them fails."; policy: "Read the file first, then derive oldText and newText
+  and "`edits` holds the replacements for one file; they apply in order, each
+  against the text the previous one produced, and nothing is written if any of
+  them fails."; policy: "Read the file first, then derive oldText and newText
   from the latest read result." and "Use this tool for ordinary incremental text
   edits instead of shell commands or Python."
 - `glob` — protocol: "Find files with a safe case-insensitive git-style glob."

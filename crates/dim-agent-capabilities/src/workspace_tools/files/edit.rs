@@ -28,7 +28,7 @@ const EDIT_DIFF_CONTEXT: usize = 3;
 pub(super) fn definition() -> Value {
     json!({
         "name": "edit",
-        "description": "Edit an existing file by replacing exact text matches. Read the file first, then derive oldText and newText from the latest read result. Use this tool for ordinary incremental text edits instead of shell commands or Python. Pass every change to one file in one call as edits; they apply in order, each against the text the previous one produced, and nothing is written if any of them fails.",
+        "description": "Edit an existing file by replacing exact text matches. Read the file first, then derive oldText and newText from the latest read result. Use this tool for ordinary incremental text edits instead of shell commands or Python. `edits` holds the replacements for one file; they apply in order, each against the text the previous one produced, and nothing is written if any of them fails.",
         "inputSchema": {
             "type": "object",
             "properties": {
