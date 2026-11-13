@@ -2203,19 +2203,28 @@ exits nonzero with the installer's error. An unknown installation layout, includ
 source checkout, fails with manual installation or rebuild instructions.
 
 Under npm the manager installs the new version into a staging directory inside the
-installation, `<prefix>/.dimcode-staging/staging-<pid>/`, so an interrupted or failed
-install damages only staging and the installed command keeps running. An update clears a
-staging directory an earlier one left behind before it starts, while it holds the
-exclusive lock. The staged install passes `--globalconfig <prefix>/etc/npmrc`, because
-`--prefix` alone points npm at the staging directory's own `etc/npmrc` and would drop the
-registry, mirror and credentials an operator saved with `npm config set -g`. An
+installation, `<prefix>/.dimcode-staging/<package>/staging-<pid>/`, so an interrupted or
+failed install damages only staging and the installed command keeps running. Staging is
+per package: an update reads and removes only the directory of the package it updates, so
+the two identities in one prefix never touch each other's trees. An update clears what an
+earlier one of its own package left behind before it starts, while it holds the exclusive
+lock on the installation. The staged install passes `--globalconfig <prefix>/etc/npmrc`,
+because `--prefix` alone points npm at the staging directory's own `etc/npmrc` and would
+drop the registry, mirror and credentials an operator saved with `npm config set -g`. An
 installation that should use a mirror configures it in `.npmrc` or with `npm config`.
 
 When the manager exits successfully the update requires the staged `package.json` to name
-a newer version of this build's channel than the installed one, requires every command
-the package installs to exist inside the staged package, and requires a platform package
-beside it. Failing any check leaves the installed version in place and exits nonzero, so
-a manager that exits without writing, or that writes the version already installed, is a
+a newer version of this build's channel than the installed one, requires a platform
+package beside it, and takes the commands from the links the manager created in the
+staging `bin/` directory rather than from the manifest: npm normalizes a package's `bin`
+keys before linking them, so a package that declares `../bin2/escape` is installed as
+`bin/escape`. Every command name so taken must be a single path component, and every link
+must resolve to a file inside the staged package, so no live path is ever built outside
+`<prefix>/bin`. A live link for a command the new version installs must resolve into this
+package's live directory; one that resolves elsewhere belongs to another package, and the
+update fails naming the command and its target, as npm refuses that install with
+`EEXIST`. Failing any check leaves the installed version in place and exits nonzero, so a
+manager that exits without writing, or that writes the version already installed, is a
 failed update rather than a silent success.
 
 The staged package then replaces the live one in a single atomic exchange:
@@ -2224,14 +2233,23 @@ The previous version exists only in staging until the new one has proved itself.
 update points every command the new package installs at the new package, leaves a command
 whose target is already correct alone, removes a link of the old version that the new one
 no longer installs, and then runs each installed command with `--version`, requiring the
-version the package declares. When that check fails, or a command does not answer within
-30 seconds, the same exchange puts the previous version back and the update exits nonzero
-with a message naming the command. A crash during the exchange leaves one version
-complete and the other in staging, never neither. Only where the filesystem refuses the
-exchange (`ENOTSUP`, `EINVAL`, `ENOSYS`) does the update fall back to two renames, with a
-window of a few system calls between them; a crash in that window leaves the previous
-version at `<prefix>/.dimcode-staging/staging-<pid>/retired`, and restoring it is
-`mv <prefix>/.dimcode-staging/staging-<pid>/retired <prefix>/lib/node_modules/<package>`.
+version the package declares. When that check fails, when a command does not answer within
+30 seconds, or when Ctrl+C or SIGTERM arrives while the check runs, the command being
+checked is killed and the same exchange puts the previous version back; the update exits
+nonzero with a message that names the command or states the interruption, and says that
+the previous version is back. A crash during the exchange leaves one version complete and
+the other in staging, never neither. Only where the filesystem refuses the exchange
+(`ENOTSUP`, `EINVAL`, `ENOSYS`) does the update fall back to two renames, with a window of
+a few system calls between them; a crash in that window leaves the previous version at
+`<prefix>/.dimcode-staging/<package>/staging-<pid>/retired`, and restoring it is
+`mv <prefix>/.dimcode-staging/<package>/staging-<pid>/retired <prefix>/lib/node_modules/<package>`.
+
+Which of the two the update uses is a property of the prefix's filesystem, not of this
+document. `renamex_np` with `RENAME_SWAP` is documented to swap the two names only on
+filesystems that report `VOL_CAP_INT_RENAME_SWAP` through `getattrlist(2)`, and
+`renameat2` with `RENAME_EXCHANGE` to return `EINVAL` when the filesystem does not support
+the flag, so a prefix on a filesystem that reports neither takes the two-rename fallback
+and keeps its window.
 
 bun, pnpm, yarn and volta keep the in-place install and so keep the window in which the
 command is absent. Windows keeps it too: npm installs under `<prefix>\node_modules` with
