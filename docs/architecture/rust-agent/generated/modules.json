@@ -9179,7 +9179,8 @@
       "from": "dim_agent_capabilities",
       "to": "dim_agent_runtime::names",
       "references": [
-        "path dim_agent_runtime::names::catalog"
+        "path dim_agent_runtime::names::catalog",
+        "path dim_agent_runtime::names::name_of"
       ]
     },
     {
@@ -15920,7 +15921,7 @@
       "from": "dim_agent_capabilities::skills",
       "to": "dim_agent_runtime::names",
       "references": [
-        "path dim_agent_runtime::names::register"
+        "path dim_agent_runtime::names::name_of"
       ]
     },
     {
@@ -24340,7 +24341,7 @@
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
-        "path dim_agent_runtime::names::register",
+        "path dim_agent_runtime::names::name_of",
         "use dim_agent_runtime::Names"
       ]
     },
@@ -32348,10 +32349,13 @@
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_capabilities::file_access",
       "references": [
-        "path AssociateWorktree",
+        "path WorktreeAssociation",
+        "path WorktreeAssociationError::Failed",
         "path WorktreeAssociations",
+        "path WorktreeAssociations::new",
         "path WorktreeDirectory",
-        "use dim_agent_capabilities::file_access::AssociateWorktree",
+        "use dim_agent_capabilities::file_access::WorktreeAssociation",
+        "use dim_agent_capabilities::file_access::WorktreeAssociationError",
         "use dim_agent_capabilities::file_access::WorktreeAssociations",
         "use super::WorktreeDirectory"
       ]
@@ -32360,11 +32364,7 @@
       "from": "dim_app_server::storage::timeline",
       "to": "dim_agent_capabilities::host",
       "references": [
-        "path HostError::failed",
-        "path HostFuture",
         "path SessionFilesHost",
-        "use dim_agent_capabilities::host::HostError",
-        "use dim_agent_capabilities::host::HostFuture",
         "use dim_agent_capabilities::host::SessionFilesHost"
       ]
     },
@@ -43617,9 +43617,19 @@
     },
     {
       "from": "dim_cli::ui::render::fullscreen::tests",
+      "to": "dim_cli::ui::theme",
+      "references": [
+        "path crate::ui::theme::Theme::named"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::render::fullscreen::tests",
       "to": "dim_cli::ui::theme::palette",
       "references": [
         "path Appearance::Dark",
+        "path Appearance::Light",
+        "path ColorMode::Ansi16",
+        "path ColorMode::Ansi256",
         "path ColorMode::TrueColor",
         "path terminal_palette",
         "use crate::ui::theme::Appearance",

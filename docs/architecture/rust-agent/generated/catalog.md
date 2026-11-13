@@ -73,9 +73,9 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `uiHost` | process | UiHost | internal(control) | — |
 | `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |
 | `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
-| `worktreeAssociations` | process | SessionStore | internal(legacy-no-consumer) | — |
-| `agentConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
-| `collaborationConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `worktreeAssociations` | process | SessionStore | data | `associate` async |
+| `agentConfig` | session | SessionScope | data | `get` async |
+| `collaborationConfig` | session | SessionScope | data | `get` async |
 | `collaborationSession` | session | CollaborationSession | internal(legacy-no-consumer) | — |
 | `commandRulesHost` | session | CommandRules | internal(hot-path) | — |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
@@ -91,12 +91,12 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `promptRegistry` | session | PromptRegistry | internal(hot-path) | — |
 | `sessionConfig` | session | SessionScope | data | `get` async |
 | `sessionIdentity` | session | SessionScope | data | `get` async |
-| `sessionLanguage` | session | PromptSources | internal(legacy-no-consumer) | — |
+| `sessionLanguage` | session | PromptSources | data | `get` async |
 | `sessionLifecycle` | session | SessionScope | data | `activated` async, `closing` async, `hold` async, `release` async |
 | `sessionLoader` | session | SessionScope | internal(control) | — |
 | `sessionMethods` | session | SessionMethods | data | `register` async |
 | `sessionSkills` | session | Skills | internal(host-resource) | — |
-| `skillsConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `skillsConfig` | session | SessionScope | data | `get` async |
 | `submitChecks` | session | InputMethods | internal(hot-path) | — |
 | `timelineFactory` | session | SessionScope | internal(control) | — |
 | `timelineStore` | session | SessionScope | internal(object) | — |

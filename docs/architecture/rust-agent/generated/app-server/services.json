@@ -245,7 +245,7 @@
         ]
       },
       {
-        "id": 79,
+        "id": 76,
         "parent": 72,
         "name": "eventhub-ready",
         "state": "Active",
@@ -3649,6 +3649,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#workflowFiles",
         "provider": 19,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#worktreeAssociations",
+        "provider": 8,
         "generation": 1,
         "removing": false
       },
