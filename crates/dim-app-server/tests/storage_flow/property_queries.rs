@@ -2748,3 +2748,355 @@ async fn optional_physical_properties_keep_typed_boolean_semantics() {
     store.close().await.unwrap();
     db.close().await.unwrap();
 }
+
+/// A membership list on a physical column binds its members once per statement
+/// role, and a role compiled only to learn whether a physical form exists must
+/// not leave its parameters behind. A statement numbers every parameter it
+/// binds, so a surplus over the roles that reach the SQL is a leak.
+#[tokio::test]
+async fn a_discarded_physical_check_leaves_no_parameter_behind() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("properties", &SessionConfig::default())
+        .await
+        .unwrap();
+    let members = 996;
+    let values: Vec<Value> = (0..members)
+        .map(|index| json!(format!("probe/absent-{index}")))
+        .collect();
+    let mut records = Vec::new();
+    for sequence in 1..=3 {
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": "alpha"})).unwrap(),
+            ),
+        ));
+    }
+    append(&store, key("properties", "main"), records)
+        .await
+        .unwrap();
+    let mut query = fields(&["position.sequence"]);
+    query.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values,
+    });
+    // A row query binds the members twice, once in the physical list and once
+    // in the filter, plus four scope values, a session, a property path and the
+    // page limit. The count path needs only the physical list plus the same
+    // fixed values. A discarded check used to add two more copies to the row
+    // statement, which is the surplus this pins.
+    let mut count = query.clone();
+    count.select = QuerySelect::Count;
+    for (label, query, page, expected) in [
+        ("selection", query.clone(), Some(page(2)), 2 * members + 7),
+        ("count", count, None, members + 5),
+    ] {
+        store.record_query_statistics();
+        store.query(&scope(3), &query, page.as_ref()).await.unwrap();
+        let statements = store.take_query_statistics();
+        let statement = statements
+            .iter()
+            .find(|statement| {
+                statement.stage == label || (label == "count" && statement.stage == "scalar")
+            })
+            .unwrap_or_else(|| panic!("{label} prepares a statement"));
+        assert_eq!(
+            statement.parameters, expected,
+            "{label} binds {expected} parameters for {members} members"
+        );
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// Every value type and every size a membership list can carry must answer the
+/// same from storage and from the memory store, which has no list limit. The
+/// cases are grouped: which values match, the edges where an equality key and a
+/// comparison can disagree, the filter shapes around a membership, and the sizes
+/// where SQLite's expression depth and parameter count used to refuse the query.
+#[tokio::test]
+async fn membership_lists_match_the_memory_store_for_every_value_type_and_size() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("membership", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let mixed: Vec<Value> = vec![
+        json!("alpha"),
+        json!(1),
+        json!(1.0),
+        json!(true),
+        json!(null),
+        json!("beta"),
+        json!(2),
+        json!(-1),
+        json!(1.5),
+        json!(false),
+        json!(""),
+        json!("ünïcode"),
+        json!([1, 2]),
+        json!({"a": 1}),
+        json!(9007199254740993i64),
+        json!(9007199254740992.0),
+        json!(0),
+        json!(-0.0),
+    ];
+    let mut records = Vec::new();
+    for value in &mixed {
+        let sequence = records.len() as u64 + 1;
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": value})).unwrap(),
+            ),
+        ));
+    }
+    // A null tag, an array tag, and an event with no tag at all.
+    for data in [
+        json!({"tag": null}),
+        json!({"tag": ["alpha", "beta"]}),
+        json!({}),
+    ] {
+        records.push(record(
+            records.len() as u64 + 1,
+            EventKind::Extension(ExtensionEvent::new("probe", "saved", data).unwrap()),
+        ));
+    }
+    for (offset, kind) in ["probe/saved", "probe/other", "input/message"]
+        .into_iter()
+        .enumerate()
+    {
+        records.push(record(
+            records.len() as u64 + 1,
+            if kind == "input/message" {
+                EventKind::InputMessage(InputMessageData::text(format!("m{offset}"), None))
+            } else {
+                let name = kind.split('/').nth(1).unwrap();
+                EventKind::Extension(ExtensionEvent::new("probe", name, json!({})).unwrap())
+            },
+        ));
+    }
+    records.push(record(
+        records.len() as u64 + 1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "probe",
+                "saved",
+                json!({"items": [{"id": "yes", "ok": true}, {"id": 1}], "tag": "alpha"}),
+            )
+            .unwrap(),
+        ),
+    ));
+    let through = records.len() as u64;
+    append(&store, key("membership", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("membership", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let range = TimelineReadScope {
+        key: key("membership", "main"),
+        through,
+        segments: vec![TimelineReadSegment {
+            branch_id: "main".into(),
+            from: 1,
+            through,
+            stored_through: through,
+            tail: vec![],
+        }],
+    };
+    let in_list = |path: &str, values: Vec<Value>| QueryFilter::In {
+        value: QueryOperand::Field { path: path.into() },
+        values,
+    };
+    let eq = |path: &str, value: Value| QueryFilter::Compare {
+        left: QueryOperand::Field { path: path.into() },
+        comparison: QueryComparison::Eq,
+        right: QueryOperand::Value { value },
+    };
+
+    let mut cases: Vec<QueryFilter> = vec![
+        // The key and a comparison must agree on these pairs; the encoding of a
+        // member decides whether they do.
+        in_list("data.tag", vec![json!(1), json!(1.0)]),
+        in_list("data.tag", vec![json!(9007199254740993i64)]),
+        in_list("data.tag", vec![json!(9007199254740992.0)]),
+        in_list("data.tag", vec![json!(0)]),
+        in_list("data.tag", vec![json!(-0.0)]),
+        in_list("data.tag", vec![json!(true)]),
+        in_list("data.tag", vec![json!("1")]),
+        in_list("data.tag", vec![json!(null)]),
+        in_list("data.tag", mixed.clone()),
+        in_list("data.tag", vec![json!("alpha"), json!("alpha")]),
+        in_list("data.tag", Vec::new()),
+        in_list("data.tag", vec![json!(null), json!("alpha")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/absent")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/other")]),
+        QueryFilter::Or {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1)]),
+                in_list("data.tag", vec![json!(true), json!("beta")]),
+            ],
+        },
+        QueryFilter::Or {
+            conditions: mixed.iter().map(|v| eq("data.tag", v.clone())).collect(),
+        },
+        // A structured member can never match, and neither can an empty set.
+        in_list("data.tag", vec![json!([1, 2])]),
+        in_list("data.tag", vec![json!({"a": 1})]),
+        in_list("data.tag", vec![json!([1, 2]), json!({"a": 1})]),
+        // `Not` must keep a missing field, a null field and an array field.
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!("alpha"), json!(1)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!(null)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!([1, 2])])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("kind", vec![json!("probe/saved")])),
+        },
+        QueryFilter::And {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1), json!("beta")]),
+                QueryFilter::Not {
+                    condition: Box::new(in_list("data.tag", vec![json!(1)])),
+                },
+            ],
+        },
+        // Every operand form `In` accepts.
+        in_list("data.tag", vec![json!("alpha"), json!(1)]),
+        QueryFilter::Any {
+            field: "data.items".into(),
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Element { path: "id".into() },
+                values: vec![json!("yes"), json!(1), json!(null), json!(true)],
+            }),
+        },
+        QueryFilter::Exists {
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Outer {
+                    path: "data.tag".into(),
+                },
+                values: vec![json!("alpha"), json!(1)],
+            }),
+        },
+        QueryFilter::In {
+            value: QueryOperand::Value { value: json!(1) },
+            values: vec![json!(1), json!(1.0), json!("1")],
+        },
+    ];
+    // A long `Or` of comparisons stays a tree; a membership is what becomes a set.
+    for path in ["data.tag", "kind"] {
+        cases.push(QueryFilter::Or {
+            conditions: (0..997)
+                .map(|index| eq(path, json!(format!("absent-{index}"))))
+                .collect(),
+        });
+    }
+    // 12,000 members is past the old depth limit on every path. 20,000 on a
+    // physical column and on `id` is past the widest physical list the store
+    // binds: uncapped that list binds the members a second time and the
+    // statement exceeds SQLite's parameter count, so the cap is what keeps
+    // these cases answerable.
+    let wide = 12_000;
+    let capped = 20_000;
+    for (path, list) in [
+        (
+            "data.tag",
+            (0..wide).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+        (
+            "position.sequence",
+            (0..wide).map(|i| json!(9_000_000u64 + i as u64)).collect(),
+        ),
+        (
+            "id",
+            (0..wide).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+        (
+            "kind",
+            (0..capped)
+                .map(|i| json!(format!("probe/absent-{i}")))
+                .collect(),
+        ),
+        (
+            "id",
+            (0..capped).map(|i| json!(format!("absent-{i}"))).collect(),
+        ),
+    ] {
+        cases.push(in_list(path, list));
+    }
+    for size in [997, 5_000] {
+        for path in ["data.tag", "kind", "position.sequence"] {
+            let member = |index: usize| match path {
+                "kind" => json!(format!("probe/absent-{index}")),
+                "position.sequence" => json!(9_000_000u64 + index as u64),
+                _ => json!(format!("absent-{index}")),
+            };
+            cases.push(in_list(path, (0..size).map(member).collect()));
+        }
+        // A known `kind` is what makes `position.sequence` a physical column.
+        cases.push(QueryFilter::And {
+            conditions: vec![
+                in_list("kind", vec![json!("probe/saved")]),
+                in_list(
+                    "position.sequence",
+                    (0..size)
+                        .map(|index| json!(9_000_000u64 + index as u64))
+                        .collect(),
+                ),
+            ],
+        });
+    }
+    for filter in cases {
+        for select in [
+            QuerySelect::Fields {
+                fields: vec!["position.sequence".into(), "data.tag".into()],
+            },
+            QuerySelect::Events,
+            QuerySelect::Count,
+            QuerySelect::Exists,
+        ] {
+            let query = QuerySpec {
+                filter: Some(filter.clone()),
+                select,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            };
+            let scalar = query.group_by.is_empty()
+                && matches!(query.select, QuerySelect::Count | QuerySelect::Exists);
+            let mut paging = (!scalar).then(|| page(50));
+            loop {
+                let actual = store.query(&range, &query, paging.as_ref()).await.unwrap();
+                let expected = memory.query(&range, &query, paging.as_ref()).await.unwrap();
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::to_value(&expected).unwrap(),
+                    "filter {query:?}"
+                );
+                let Some(after) = actual.next else { break };
+                paging.as_mut().unwrap().after = Some(after);
+            }
+        }
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
