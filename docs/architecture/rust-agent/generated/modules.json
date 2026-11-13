@@ -8362,6 +8362,14 @@
     },
     {
       "from": "dim_agent_aimux::request::native",
+      "to": "dim_agent_capabilities::context_model",
+      "references": [
+        "path thinking_tokens",
+        "use dim_agent_capabilities::context_model::thinking_tokens"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::request::native",
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",

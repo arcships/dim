@@ -341,7 +341,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | 方法 | 值 |
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`，即目录值，含其现有覆盖 |
-| `output_tokens` | 采用后的输出额度：`request.config.maxTokens`，由 Provider 按声明的一对上限推导为 `max(1, min(声明的 maxOutputTokens, 131,072, contextWindow / 2))`。存储值缺失或高于该函数时，在请求边界读取时修复；声明值 `maxOutputTokens` 本身不被改写 |
+| `output_tokens` | 采用后的输出额度：`request.config.maxTokens`，由 Provider 按声明的一对上限推导为 `max(1, min(声明的 maxOutputTokens, 131,072, contextWindow / 2))`。存储值缺失或高于该函数时，在请求边界读取时修复；声明值 `maxOutputTokens` 本身不被改写。该额度约束的是整个回复而不只是答案：会思考的请求从其中为答案保留 `answer_tokens`，因此压缩按请求总共可花费的上限来计划 |
 | `threshold_tokens` | `B − reserve`，其中 `B = context_window − output_tokens`（输入预算），`reserve = min(max(0.10 × B, 16,000), 0.20 × B)`。余量用来吸收下一个请求的估算误差；它是暂定的经验值，不能覆盖每一个没有提供方基线的请求（[研究 §3.3、§6.4](../research/compaction-trigger.md#33-建议)） |
 | `count_tokens` | 序列化后的系统提示、消息和工具声明的 UTF-8 字节数除以 4；每个图片部件按固定 1,600 token 计。暂定（#128）。用于：在提供方的 `prompt_tokens` 之上算增量、第一个请求、`validate`、以及检查压缩是否减少了输入 |
 
