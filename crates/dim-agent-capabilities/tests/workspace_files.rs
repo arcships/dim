@@ -1008,6 +1008,34 @@ async fn the_replacement_list_is_bounded_by_one_total() {
 }
 
 #[tokio::test]
+async fn an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let original = format!("marker\n{}", "x".repeat(1_048_569));
+    assert_eq!(original.len(), 1_048_576);
+    workspace.put("grow.txt", original.as_bytes());
+    ok(&workspace.read(&reads, "grow.txt").await);
+
+    // The first entry applies in memory and keeps the length; the second
+    // writes each of 1,048,569 bytes as 513 bytes: 537,915,897 bytes, past the
+    // 536,870,888 limit, from 524 input chars in total.
+    let grown = workspace
+        .edits(
+            &reads,
+            "grow.txt",
+            json!([
+                { "oldText": "marker", "newText": "bucket" },
+                { "oldText": "x", "newText": "z".repeat(513), "replaceAll": true },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&grown), "edit_target_file_too_large");
+    assert_eq!(structured(&grown)["index"], 1);
+    assert!(text(&grown).starts_with("edits[1]: "), "{}", text(&grown));
+    assert_eq!(workspace.bytes("grow.txt"), original.as_bytes());
+}
+
+#[tokio::test]
 async fn legacy_encodings_round_trip_and_reject_unrepresentable_text() {
     let workspace = Workspace::new();
     let reads = branch();

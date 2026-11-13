@@ -320,7 +320,7 @@ fn edit_locked(
         Eol::None => Eol::Lf,
         eol => eol,
     };
-    let (after, count) = match apply(&before, &input.edits, eol) {
+    let (after, count) = match apply(&before, &input.edits, eol, cancel)? {
         Ok(replaced) => replaced,
         Err((index, result)) => return done(for_index(result, index)),
     };
@@ -401,23 +401,61 @@ fn for_index(mut result: ToolResult, index: usize) -> ToolResult {
     result
 }
 
+/// The first failing entry: its 0-based index and the refusal it produced.
+type EntryFailure = (usize, ToolResult);
+
 /// Applies every replacement in order, each against the text the previous one
 /// produced, and returns the text and the total number of replacements. The
 /// first failure names its index and leaves the caller nothing to write.
+///
+/// Cancellation is observed between entries, before the next one runs, so a
+/// cancelled call stops at an entry boundary and writes nothing.
 fn apply(
     file: &str,
     edits: &[Replacement],
     eol: Eol,
-) -> Result<(String, usize), (usize, ToolResult)> {
+    cancel: &CancellationToken,
+) -> Result<Result<(String, usize), EntryFailure>, Cancelled> {
     let mut text = file.to_owned();
     let mut count = 0;
     for (index, replacement) in edits.iter().enumerate() {
-        let (next, replaced) =
-            replace(&text, replacement, eol).map_err(|result| (index, result))?;
-        text = next;
-        count += replaced;
+        Cancelled::check(cancel)?;
+        match replace(&text, replacement, eol) {
+            Ok((next, replaced)) => {
+                text = next;
+                count += replaced;
+            }
+            Err(result) => return Ok(Err((index, result))),
+        }
     }
-    Ok((text, count))
+    Ok(Ok((text, count)))
+}
+
+/// Refuses an entry whose result would pass [`EDIT_TARGET_MAX_BYTES`] before
+/// the result is built. [`EDIT_INPUT_MAX_CHARS`] bounds the submitted texts,
+/// not what they produce: a `replaceAll` of one byte by many multiplies the
+/// whole text at every entry, so a small input can ask for a terabyte.
+///
+/// Counted on the decoded text in LF space, the same space the match count
+/// comes from.
+fn bound_growth(
+    file: &str,
+    old_text: &str,
+    new_text: &str,
+    replaced: usize,
+) -> Result<(), ToolResult> {
+    let size = (file.len() as u64)
+        .saturating_sub((old_text.len() as u64).saturating_mul(replaced as u64))
+        .saturating_add((new_text.len() as u64).saturating_mul(replaced as u64));
+    if size > EDIT_TARGET_MAX_BYTES {
+        return Err(failed(
+            format!(
+                "the replacements would grow the text to {size} bytes, limit is {EDIT_TARGET_MAX_BYTES} bytes."
+            ),
+            json!({ "code": "edit_target_file_too_large", "bytes": size, "limit": EDIT_TARGET_MAX_BYTES }),
+        ));
+    }
+    Ok(())
 }
 
 /// Exact match in LF space first, then the Unicode/trailing-whitespace
@@ -437,6 +475,8 @@ fn replace(file: &str, replacement: &Replacement, eol: Eol) -> Result<(String, u
         if !replacement.replace_all && exact > 1 {
             return Err(multiple_matches(exact));
         }
+        let replaced = if replacement.replace_all { exact } else { 1 };
+        bound_growth(&lf_file, &lf_old, &lf_new, replaced)?;
         let limit = if replacement.replace_all {
             usize::MAX
         } else {
@@ -449,7 +489,7 @@ fn replace(file: &str, replacement: &Replacement, eol: Eol) -> Result<(String, u
             Eol::Crlf => to_crlf(&lf_file.replacen(lf_old.as_str(), &lf_new, limit)),
             _ => lf_file.replacen(lf_old.as_str(), &lf_new, limit),
         };
-        return Ok((content, if replacement.replace_all { exact } else { 1 }));
+        return Ok((content, replaced));
     }
 
     let normalized_file = normalize(&lf_file);
@@ -463,6 +503,8 @@ fn replace(file: &str, replacement: &Replacement, eol: Eol) -> Result<(String, u
         if !replacement.replace_all && matches > 1 {
             return Err(multiple_matches(matches));
         }
+        let replaced = if replacement.replace_all { matches } else { 1 };
+        bound_growth(&lf_file, &normalized_old, &lf_new, replaced)?;
         let content = replace_by_normalized_positions(
             file,
             &normalized_file,
@@ -471,7 +513,7 @@ fn replace(file: &str, replacement: &Replacement, eol: Eol) -> Result<(String, u
             replacement.replace_all,
             eol,
         );
-        return Ok((content, if replacement.replace_all { matches } else { 1 }));
+        return Ok((content, replaced));
     }
     Err(failed(
         "oldText was not found in the target file.",

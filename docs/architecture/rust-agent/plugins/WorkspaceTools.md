@@ -302,12 +302,15 @@ no overlap between them needs a rule. One read, one revision check, one path
 lock and one write carry the whole list: a failure in any entry writes nothing
 and returns that entry's `index`, in the structured result and as the
 `edits[<index>]:` prefix of the message. The failure codes are the single
-replacement's (`oldtext_not_found`, `multiple_matches`, `no_change`) and
-`EDIT_INPUT_MAX_CHARS` bounds the sum over the entries. `parse` folds a
-recorded call that carries the top-level `oldText` and `newText` instead into a
-one-entry list, so a resumed history still replays; a call that carries both
-shapes, or an empty list, is `invalid_input`. `diff` stays one whole-file
-comparison.
+replacement's (`oldtext_not_found`, `multiple_matches`, `no_change`).
+`EDIT_INPUT_MAX_CHARS` bounds the sum over the entries, and that total does not
+bound what the entries produce: an entry whose result would pass
+`EDIT_TARGET_MAX_BYTES` is refused from its match count before the result is
+built, so a `replaceAll` of one byte by many cannot multiply the text past the
+limit. Cancellation is observed between entries. `parse` folds a recorded call
+that carries the top-level `oldText` and `newText` instead into a one-entry
+list, so a resumed history still replays; a call that carries both shapes, or
+an empty list, is `invalid_input`. `diff` stays one whole-file comparison.
 
 Write comparisons have a 64 KiB budget: an old file larger than that is not
 decoded for display, the combined decoded old and replacement text must fit
@@ -430,6 +433,7 @@ drives `edit` over its replacement list:
 `edit_applies_every_replacement_in_order_in_one_call`,
 `a_later_replacement_matches_the_text_the_previous_one_produced`,
 `a_failed_replacement_writes_nothing_and_names_its_index`,
+`an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built`,
 `edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once` and
 `the_replacement_list_is_bounded_by_one_total`. [local_product.rs](../../../../tests/integration/tests/local_product.rs)
 asserts the declaration the model reads.
