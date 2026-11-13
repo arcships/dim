@@ -14,7 +14,7 @@ use rutis_bridge::session::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     future::Future,
     sync::{Arc, Mutex, Weak},
 };
@@ -33,6 +33,9 @@ pub struct RpcError {
 #[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     pub app_error: String,
+    /// Owner-defined wire fields; must not shadow `appError` or built-in fields.
+    #[serde(flatten)]
+    pub details: BTreeMap<String, Value>,
     /// What a refused `daemon.shutdown {ifIdle}` found in use; boxed so a
     /// wire error stays small.
     #[serde(flatten)]
@@ -56,6 +59,7 @@ impl RpcError {
             message: message.into(),
             data: Some(ErrorData {
                 app_error: app_error.into(),
+                details: BTreeMap::new(),
                 daemon_busy: None,
             }),
         }
@@ -68,6 +72,7 @@ impl RpcError {
             message: "The App Server is in use".into(),
             data: Some(ErrorData {
                 app_error: "daemon_busy".into(),
+                details: BTreeMap::new(),
                 daemon_busy: Some(Box::new(DaemonBusy {
                     connections,
                     attached_sessions,

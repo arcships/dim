@@ -220,6 +220,26 @@ impl Worker {
         self.task_history_queue.push_back(self.focus.clone());
     }
 
+    /// Whether the view `earlier()` would act on has older history to read.
+    /// It reads the same fields `earlier()` tests: `earlier_member` for a
+    /// selected member, otherwise `task_history[focus]` in `earlier`.
+    pub(super) fn earlier_view(&self) -> Earlier {
+        if self.members.selected.is_some() {
+            return self.earlier_observation();
+        }
+        self.task_history
+            .get(&self.focus)
+            .map_or(Earlier::AtStart, |history| {
+                if history.earlier {
+                    Earlier::Reading
+                } else if history.window.before.is_some() {
+                    Earlier::Unread
+                } else {
+                    Earlier::AtStart
+                }
+            })
+    }
+
     pub(super) async fn poll_task_history(&mut self) -> crate::Result<()> {
         if self.task_history_request.is_some() || self.session_id.is_empty() {
             return Ok(());

@@ -536,5 +536,6 @@ pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";
 ### Worktree 关联端口
 
 SessionStore 向 Session 文件事实 owner 提供进程服务 `worktreeAssociations`。
-其类型化 `associate(session, directory, subtree)` 操作遵循 §17 的原子性与错误契约。
-`directory` 在文件访问契约中只有一个共享定义，包含仓库公共目录与 worktree 根目录。端口只写入使用关系，不发现 Git 或授予权限。
+其操作是数据面 `associate {sessionId, repository, root, subtree}`，路径都是 UTF-8 字符串，
+遵循 §17 的原子性与错误契约；Rust 调用方调用同一个方法。目录定义只由文件访问契约给出，
+包含仓库公共目录与 worktree 根目录。端口只写入使用关系，不发现 Git 或授予权限。

@@ -8747,6 +8747,7 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
         (42, false),
         (43, false),
         (44, false),
+        (45, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();

@@ -3,15 +3,18 @@ use std::os::unix::fs::PermissionsExt;
 
 #[derive(Default)]
 struct Associations(AtomicUsize);
-impl file_access::AssociateWorktree for Associations {
-    fn associate(
-        &self,
-        _: String,
-        _: file_access::WorktreeDirectory,
-        _: PathBuf,
-    ) -> HostFuture<'_, ()> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(()) })
+impl Associations {
+    fn port(self: &Arc<Self>) -> file_access::WorktreeAssociations {
+        let associations = self.clone();
+        file_access::WorktreeAssociations::new(Arc::new(move |request| {
+            let associations = associations.clone();
+            Box::pin(async move {
+                assert!(!request.session_id.is_empty());
+                assert!(Path::new(&request.subtree).starts_with(&request.root));
+                associations.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }))
     }
 }
 struct Probes {
@@ -144,7 +147,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
         grants,
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -277,7 +280,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -323,7 +326,7 @@ async fn git_unavailability_timeout_reload_and_session_close_do_not_publish_perm
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -442,7 +445,7 @@ async fn a_source_that_becomes_a_git_worktree_is_rechecked_after_a_negative_prob
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent

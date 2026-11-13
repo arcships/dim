@@ -13,6 +13,8 @@ pub struct Holds {
     launch: Mutex<Option<Arc<Notify>>>,
     fail_release: AtomicBool,
     lose_input_reply: AtomicBool,
+    /// Notified after a wakeup create acquires process admission.
+    pub wakeup_create: Notify,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable

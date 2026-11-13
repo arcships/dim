@@ -371,6 +371,19 @@ pub enum MemberConversationState {
     Closed,
 }
 
+/// Whether the shown line has history older than the loaded window, and
+/// whether a read for it is in flight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Earlier {
+    /// The shown line's first event is loaded: nothing earlier to read.
+    #[default]
+    AtStart,
+    /// Older history exists and is not loaded.
+    Unread,
+    /// An earlier read is in flight.
+    Reading,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskKind {
     /// Read and stopped on the originating branch.
@@ -434,6 +447,10 @@ pub struct ViewSnapshot {
     pub projection_id: u64,
     /// The shown line's history has loaded: its transcript can be laid out.
     pub history_complete: bool,
+    /// Whether history older than the loaded window exists, and whether an
+    /// earlier read is in flight; `/earlier`, PageUp at the drawn top and the
+    /// load-more row act on it.
+    pub earlier: Earlier,
     /// Shared with the worker's projection: publishing copies pointers.
     pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,
