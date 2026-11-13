@@ -105,12 +105,16 @@ impl Probes {
         &self,
         decision: &mut tokio::task::JoinHandle<std::result::Result<Decision, HostError>>,
     ) {
-        while !self.root.join("entered").exists() {
-            tokio::select! {
-                result = &mut *decision => panic!("permission answered before the Git probe was held: {result:?}"),
-                _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !self.root.join("entered").exists() {
+                tokio::select! {
+                    result = &mut *decision => panic!("permission answered before the Git probe was held: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+                }
             }
-        }
+        })
+        .await
+        .expect("Git probe did not enter its held phase within 10 seconds");
     }
     fn call(&self, name: &str) -> ApprovalCallData {
         ApprovalCallData {

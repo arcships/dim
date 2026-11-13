@@ -545,8 +545,9 @@ Session from `start`, before `exec/started`, until its supervisor has appended
 `exec/ended`; that end keeps the branch busy until its wake is posted. A start
 that gets no hold (the Session is closing) is refused as in a closing branch,
 and a refused start stops its command. Tracked tasks are joined on unload.
-Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O. Historical output/stop resolves the selected task's first start and end by task_id; these reads do not retain a historical task directory. Read failures propagate explicitly.
- The notice is not the full command output; output files carry large
+Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O.
+
+The notice is not the full command output; output files carry large
 results. The `exec/ended` result carries the final `preview` and
 `previewTruncated` in its `structuredContent`, from the same settled capture
 as the live read. Its escaped result preview uses the existing context-block
@@ -584,6 +585,10 @@ branch-scoped, and a request on that branch after the notice carries the entry
 `a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`,
 `background_exec_face_answers_as_the_typed_service` (the `backgroundExec` face
 against the typed service: tail, page, wait, stop and the error codes).
+The `transport_flow/shell_input.rs` flow
+`node_object_faces_use_session_and_branch_owners_across_the_bridge` resolves
+`backgroundExec` through the real Node loader and verifies owner operations
+and Session isolation.
 
 <!-- generated:plugin BackgroundExec — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
