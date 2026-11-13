@@ -6,6 +6,8 @@ Status: Design approved. Overall design: [overview §4](../overview.md#4-plugin-
 
 **Run reporting.** Scheduler owns its delivery history; `schedule.history` is the durable read path. A run's outcome is its record. Scheduler writes no report input to any Session, and no notification path is required (A.6).
 
+A loop is a second record kind beside the jobs and the wakeups (§12): a session-scoped rhythm whose rounds are ordinary queued inputs, bounded to 200 rounds and seven days.
+
 Scheduler keeps scheduled jobs, which are user-written configuration, in its Settings business source `schedule`, and its delivery records in [`pluginFiles`](../../../crates/dim-app-server/README.md#trusted-plugin-storage). For each due window the process part writes the job prompt as one input through `sessions.input` ([session-access](../contracts/session-access.md)), with its own source marker, to the job's target: the branch that saved the job, or a Session this job launched. `queue` is the default wiring; a job may store `steer` or `append`. The Session part declares the `schedule` and `wakeup` tools (risk `persistent_configuration`) in every Session; only interactive leader Sessions can use them. Operators use the specified `schedule.*` management methods. All contracts are language-neutral ([ADR 002 D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral)); the Rust binding limits are in [Appendix G](#appendix-g-rust-binding). Scheduler writes no Timeline event of its own: its deliveries are ordinary inputs to other owners' branches, and its records live in its own stores.
 
 Scheduler also declares the process-scoped data service
@@ -320,6 +322,7 @@ Full table: Appendix B.
 | Calling Session | `schedule` result | `ToolResult.content` | Batch result position; summary only after compaction |
 | Target branch | `<dim-scheduler kind="scheduled-run" job="..." run="...">job name</dim-scheduler>`, then the prompt as user content | Raw marker block + user text of one input | At its consumed position; unkeyed, so only via summary after compaction; child branches inherit it if consumed before the cut |
 | Woken Session | `<dim-scheduler kind="wakeup">wakeup id</dim-scheduler>`, then the prompt as user content | Raw marker block + user text of one input | At its consumed position; unkeyed (§10) |
+| Loop's branch | `<dim-scheduler kind="loop" loop="..." round="N"></dim-scheduler>`, then the prompt as user content | Raw marker block + user text of one input | At its consumed position; unkeyed, so only via summary after compaction (§12) |
 
 A launched Session is non-interactive: `ask_user`, `schedule` and `wakeup` stay declared, and their handlers refuse with an error result. Job and delivery records reach a calling model through `ToolResult.content`; there is no automatic context injection of the store, timers or diagnostics.
 
@@ -355,7 +358,7 @@ Every removed sentence states what the runtime writes and how to read it. None t
 One entry covers both kinds, and its text is code ([Prompt §5](Prompt.md#5-facts-that-reproduce-it)):
 
 ```
-<dim-scheduler kind="scheduled-run" job="nightly-build" run="run-7f2">: a scheduled job's saved prompt, delivered when the job runs, and <dim-scheduler kind="wakeup">: a wakeup's prompt, delivered once at its set time as one turn on the same Session. job names the job on a scheduled run and run names the run. In the scheduled-run tag the body is the job's name, and the message after the tag is the prompt saved for the job: the request this run carries out, in the operator's channel. The wakeup body is the wakeup id.
+<dim-scheduler kind="scheduled-run" job="nightly-build" run="run-7f2">: a scheduled job's saved prompt, delivered when the job runs, and <dim-scheduler kind="wakeup">: a wakeup's prompt, delivered once at its set time as one turn on the same Session. job names the job on a scheduled run and run names the run. In the scheduled-run tag the body is the job's name, and the message after the tag is the prompt saved for the job: the request this run carries out, in the operator's channel. The wakeup body is the wakeup id. A loop round is one of a loop's prompts, delivered when the loop is due; its attributes name the loop and which round this is, and the loop continues only through the model's `loop` action=next.
 ```
 
 Every sentence is protocol, and each states one thing the model needs in order to place the tags:
@@ -533,6 +536,88 @@ A management client has no Session, so the jobs-and-runs half is a connection-bo
 - Progress is best effort: a delivery the connection cannot take is dropped, and an item can be lost. Every item carries its per-watch `seq`; a gap tells the client to re-read.
 - The client's rules: call `schedule.watch`, then read `schedule.list` and `schedule.history` after `seq: 0` arrives, which closes the race between registering and reading; re-read on each item; re-read everything on a `seq` gap; on `operation_interrupted`, call `schedule.watch` again. `schedule.list` and `schedule.history` are the truth.
 - No notification name is declared: `hello.features` lists `schedule.watch` with the namespace's other methods, and the items are the call's progress, not a notification.
+
+## 12. Loop
+
+A loop is a Scheduler record whose rounds are ordinary inputs of one branch. `/loop` is its entry: the prompt it saves runs now and, for a self-paced loop, whenever the model arms the next round. It is not a job. A job is durable user configuration in the `schedule` Settings source, managed from `/scheduled` and never expiring; a loop is session-scoped and bounded. One record kind carries both cadences, so one `list`, one `stop` and one expiry serve both.
+
+### 12.1 Record
+
+Loops live in `scheduler/loops.json`: one inner v1 JSON document inside the host's `{version, text}` envelope, kept by the same `pluginFiles` lock and replace transactions as [`scheduler/wakeups.json`](#101-owner-and-record). A file that is not valid v1 fails the row and its bytes stay unchanged.
+
+| Field | Meaning |
+| --- | --- |
+| `loop_id` | The record's identity; the tool and the methods return it |
+| `session_id`, `branch_id` | The target; a record never changes them |
+| `prompt` | The text each round delivers (non-empty, at most 32 KiB as a job prompt) |
+| `cadence` | `self_paced`, or `every_seconds` rounded up to whole minutes with its `anchor` |
+| `state` | `running`, `waiting`, `stopped`, `completed` or `expired` |
+| `next_at?` | The next due round; absent while `waiting` and after a terminal state |
+| `round` | The round the next delivery carries, 1-based |
+| `delivering_round?` | The round whose input may be unsettled, persisted before the write |
+| `max_rounds`, `expires_at` | The bounds: 200 rounds and creation + 7 days unless named |
+| `created_at`, `last_round_at?`, `stopped_reason?`, `settled_at?` | Canonical UTC timestamps; `stopped_reason` names the code when a target is gone |
+
+`running` is a loop with a round due or outstanding; `waiting` is a self-paced loop whose last round named no following one. Only `stopped`, `completed` and `expired` are terminal, and only they carry `settled_at`. A terminal record is removed once seven days have passed since it settled.
+
+### 12.2 A round is a delivery
+
+Each round is one `input/message` through the public `sessions.input`, `mode: queue`, to the branch that started the loop, with `submissionId` `loop:<loop_id>:<round>` and the first raw block `<dim-scheduler kind="loop" loop="<id>" round="<n>">`. A branch accepts each identity once, so a retry is idempotent. The target's own InputQueue and turn scheduler decide what the input becomes: an idle branch gets a turn and a running one queues it behind, exactly as for a job delivery (§3.2). Nothing else is called, and Scheduler reads no Timeline of the target.
+
+The loop pass runs in the same one-second pass that serves the job windows and the wakeups (§3.1): it reads the file once, takes one clock reading, and writes at most once over the records it changed. `delivering_round` is persisted before any external effect, so a restart settles it by `sessions.lookup` with the same submission id instead of writing the round again (§A.6's rule for a job delivery).
+
+`session.loop.start` records `next_at = now`, so round 1 is a normal delivery with the loop's marker and never a plain user message.
+
+### 12.3 Waiting, and no fallback round
+
+A self-paced round that names no following one leaves the loop `waiting` with no `next_at`: `list` shows it with its last round time, `next` resumes it, and `stop` or expiry settles it. Scheduler writes and forgets (§3.2), so it cannot observe when a round's turn ended, and a system-chosen fallback round would need exactly that. The `kind="loop"` guide entry tells the model that the loop continues only through `loop next`.
+
+A fixed cadence needs no such rule: its window is in the record, and a busy branch defers the round rather than ending the loop.
+
+### 12.4 Self-paced delay
+
+`loop` with `action=next` takes `delay_seconds` and clamps it to 60..3600. The range is a bound, not a schedule: which delay to choose belongs to the model, and the description asks it to wait longer when nothing is pending and to stop instead of waiting when the work is done. Scheduler states no prompt-cache window, because the cache lifetime is the provider's and no contract here declares it.
+
+### 12.5 Limits and outcomes
+
+| Situation | Record | What it says |
+| --- | --- | --- |
+| A round's input was published | `round` advanced, nothing outstanding | The branch accepted the round once |
+| A self-paced round named no following one | `waiting` | `next` resumes it |
+| `stop`, from the tool or a client | `stopped` | A second stop reports the settled record and writes nothing |
+| `max_rounds` reached | `completed` | No further round is delivered |
+| `expires_at` passed | `expired` | Nothing is replayed |
+| The target is gone (`session_closed`, `branch_missing`, `branch_ended`) | `stopped` with `stopped_reason` | The write failed; the loop needs a new target |
+| A round's turn failed | unchanged | The loop is time, not a judge of the round's work: the next round arrives and the model decides whether to stop |
+| Two starts in one Session | `loop_limit` at 8 live loops | The bound counts live records |
+
+### 12.6 Interfaces
+
+| Interface | Kind | Purpose |
+| --- | --- | --- |
+| `loop` | Tool registered with `toolRegistry` (Session), risk `persistent_configuration` | The model starts, arms, stops and lists loops |
+| `session.loop.start` | `sessionMethods` (namespace `session.loop`), mutating, `interruption: drain` | A client starts a loop |
+| `session.loop.list` | `sessionMethods`, non-mutating, `interruption: report` | A client reads the branch's loops |
+| `session.loop.stop` | `sessionMethods`, mutating, `interruption: drain` | A client stops one loop |
+| Session notice | `{source: "Scheduler", kind: "loop", data: {branchId, loopId, state, round, nextAt?}}` | The record changed; `session.loop.list` is its truth |
+
+The tool and the methods refuse a non-interactive Session and a Collaboration member, as `schedule` and `wakeup` do. A round's tools are admitted under the target branch's own Permission state; a loop carries no policy and pre-approves nothing. The record is Scheduler's own business store, so no service face is added: the tool reaches `Loops` through `names.key()` and the methods reach it through the same typed service.
+
+`/loop` reads: `/loop` prints usage and the branch's loops, `/loop <prompt>` starts a self-paced loop, `/loop <interval> <prompt>` starts a fixed one, and `/loop stop [id]` stops one. The interval counts only as the first token and only when it parses; otherwise the whole line is the prompt.
+
+### 12.7 Rule check
+
+| Rule | How this section complies |
+| --- | --- |
+| §4.1 Command events for others' state | A round is one `input/message` through `sessions.input`; InputQueue and Loop decide what it becomes |
+| §4.2 No take-back after hand-off | Scheduler never withdraws a delivered round |
+| §4.6 Model context holds only handed-over events | A round reaches the model only as a consumed input of the target branch |
+| §4.9 Only facts later decisions use enter the Timeline | No loop event; the record lives in Scheduler's own store |
+| ADR 002 D1 | A loop spans Sessions and must outlive a client, so the record and the pass belong to the process part; the tool belongs to a Session |
+
+### 12.8 Requirements raised to mechanism owners
+
+None.
 
 ## Appendix A. Interface details
 
