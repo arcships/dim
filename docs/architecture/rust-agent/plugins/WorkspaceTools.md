@@ -496,7 +496,7 @@ Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities
 Owns commands transferred from foreground execution, their terminal records and
 bounded completion notices on the calling branch.
 
-`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable, without a persistence format bump; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
+`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v47](../../../design/appserver/native-storage-format.md#v47-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
 
 ### Dependencies
 

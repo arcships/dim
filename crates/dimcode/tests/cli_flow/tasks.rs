@@ -654,9 +654,19 @@ fn tui_fullscreen_resize_cancels_a_task_release_before_reflow() {
     launch.args(["--resume", "session", "--fullscreen"]);
     let mut terminal = Terminal::launch_tui(launch);
     terminal.until("test / model");
+    terminal.until("sleep 60");
     terminal.write(b"kept draft");
     terminal.until("kept draft");
     terminal.until("\x1b[?2026l");
+    let task_row = terminal
+        .transcript
+        .rsplit_once("\x1b[18;1H")
+        .expect("task row 18 was painted")
+        .1;
+    assert!(
+        strip_ansi(task_row).trim_start().starts_with("◐ sleep 60"),
+        "{task_row}"
+    );
     terminal.write(b"\x1b[<0;5;18M processed");
     terminal.until("kept draft processed");
     terminal.until("\x1b[?2026l");
@@ -1395,9 +1405,21 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
     terminal.until("Ask anything...");
     terminal.write(b"start leader\r");
     terminal.until("test / model");
+    terminal.until("Inspect member code");
     terminal.write(b"kept leader draft");
     terminal.until("kept leader draft");
     terminal.until("\x1b[?2026l");
+    let task_row = terminal
+        .transcript
+        .rsplit_once("\x1b[18;1H")
+        .expect("task row 18 was painted")
+        .1;
+    assert!(
+        strip_ansi(task_row)
+            .trim_start()
+            .starts_with("◐ Inspect member code"),
+        "{task_row}"
+    );
     terminal.write(b"\x1b[<0;5;18M\x1b[<0;5;18m");
     terminal.until("Member Session: member");
     terminal.until("member original + live");

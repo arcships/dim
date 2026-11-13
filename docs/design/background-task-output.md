@@ -292,7 +292,9 @@ Parameters are `sessionId`, `branchId`, optional published `through` and optiona
 ascending by start sequence. An ended branch is readable through the branch facade.
 
 A task has `eventId`, `sequence`, `startedAt`, `taskId`, `turnId`, `requestId`, `callId`,
-`description`. These fields come from `exec/started` with no matching `exec/ended` at that
-cutoff. The query does not read captured output, output paths, tool arguments or results.
+`description` and optional `title`, omitted when the owner fact has none
+([WorkspaceTools' title contract](../architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec)).
+These fields come from `exec/started` with no matching `exec/ended` at that cutoff.
+The query does not read captured output, output paths, tool arguments or results.
 Later `exec/ended` settles the inventory by `taskId`. Read failure leaves controls unavailable;
 it does not prove that no tasks exist. This adds no task table and does not change stop admission.

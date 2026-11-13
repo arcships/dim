@@ -189,35 +189,26 @@ uses WorkspaceTools' optional C1 method `session.exec.output`. This UI consumes
 that read when provided; a profile without it displays an unavailable state. It never opens a
 daemon path or falls back to a tool call.
 
-Both interfaces also draw one row of the unfinished tasks above the composer, so
-work running apart from the turn is named without opening `/tasks`:
+Both interfaces draw one row per visible task above the composer, so work
+running apart from the turn is named without opening `/tasks`. Titles, Agent
+identity, truncation, completion fading and fullscreen clicks follow the
+[task presentation contract](../background-task-list.md#task-titles-and-composer-rows).
+There is no leading task count, horizontal concatenation or hidden-task summary:
 
 ```text
- ◐ 2 · cargo build 1m12s · cargo test 34s
+ ◐ Build the workspace                            1m12s
+ ◐ Inspect member code · Reviewer                   34s
  ╭─ · working…  3s ──────────────── provider / model ─╮
  │ › Ask anything... · Ctrl+J newline                  │
  ╰─────────────────────────────────────────────────────╯
 ```
 
-The count of running tasks leads the row, then each task's label and elapsed
-time. A label longer than the row is cut to fit one line; when the row cannot
-hold every task, the remaining ones read `· …`. A task that ends keeps its place
-for five seconds with `✓`, `⊘` when it was stopped or `✗` when it failed, before
-leaving the row, so its completion is not lost under the eye. With no task
-running the count has nothing to say, so the row starts at the first entry's
-mark and carries no leading separator:
-
-```text
- ✓ cargo build 1m12s
-```
-
-The row draws only while a task runs or one is still fading, so an idle Session
-keeps the space, and it reads the same `ViewSnapshot.tasks` the panel does. It
-adds interface-local fields of its own — the second the fade last drew, and
-whether the row was drawn then — but no Session state, read or event. `Enter` on
-an empty composer opens `/tasks` while the row shows, after the shell-run guard
-and the steer of a held message; the row itself selects and stops nothing, which
-the panel already does (`cli-commands.md` owns the key map).
+The rows read the same `ViewSnapshot.tasks` as the panel, with no additional
+Session state, read or event. With no visible task there is no task strip.
+`Enter` on an empty composer opens `/tasks` while the strip shows, after the
+shell-run guard and the steer of a held message (`cli-commands.md` owns the key
+map). Fullscreen task-row clicks open the existing detail; stops remain in the
+panel.
 
 ```text
 +-- Background tasks -------------------------------------------+

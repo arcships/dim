@@ -347,7 +347,7 @@ impl Worker {
         Ok(())
     }
 
-    /// Names native Agents on the cards with one shared `agent.list`.
+    /// Names native Agents on tasks and cards with one shared `agent.list`.
     async fn poll_agents(&mut self) -> crate::Result<()> {
         if self.members.agents.is_some()
             || !self
