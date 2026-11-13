@@ -763,6 +763,8 @@ test('stages public native payload, packs it and rejects modified content', {ski
   assert.equal(staged.status,0,staged.stderr);
   const manifest=JSON.parse(readFileSync(path.join(stage,'release-manifest.json')));
   assert.equal(manifest.account,false);
+  assert(manifest.storeFormats.includes(13), 'includes the oldest admitted store');
+  assert(!manifest.storeFormats.includes(14), 'omits the removed store format');
   assert.equal(existsSync(path.join(stage,'runtime')),false);
   const packed=run('pack-release.mjs',[stage,path.join(temporary,'packed')]);
   assert.equal(packed.status,0,packed.stderr);
@@ -772,6 +774,8 @@ test('stages public native payload, packs it and rejects modified content', {ski
   const native=path.join(temporary,'packed',packedManifest.nativeArchives[0].file);
   const npm=path.join(temporary,'packed',packedManifest.npmPackages[0].file);
   for (const [archive,prefix] of [[native,`dimcode-${manifest.platform}`],[npm,'package']]) {
+    const declared=spawnSync('tar',['-xOzf',archive,`${prefix}/release-manifest.json`],{encoding:'utf8'});
+    assert.deepEqual(JSON.parse(declared.stdout).storeFormats,manifest.storeFormats);
     assert.equal(spawnSync('tar',['-xOzf',archive,`${prefix}/licenses/RUST-THIRD-PARTY-NOTICES.txt`],{encoding:'utf8'}).stdout,
       'Rust dependency license fixture');
   }

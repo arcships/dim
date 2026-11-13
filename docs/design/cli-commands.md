@@ -1724,17 +1724,24 @@ Error: Cannot open native store /Users/me/.dimcode-alpha/rust/dimcode.sqlite.
   Details: /Users/me/.dimcode-alpha/rust/daemon.log
 ```
 
+The line-client export parser reads the format token and treats the remainder
+of the line as a literal path, including spaces, without shell evaluation or
+quote expansion. Missing paths and unsupported formats print usage and return
+to the prompt without submitting input. `/exit` takes no arguments. Only these
+exact command names are intercepted; other text follows the normal input path.
+Subcommands do not create a plugin command registry.
+
 #### Update recovery for a newer store
 
 An interactive TUI launch can recover when its own embedded daemon identifies
 a newer store in the [startup note](appserver/native-storage-format.md#启动不兼容诊断).
-The CLI displays the store diagnostic and checks the installation's channel
-once. It honors automatic-update settings and skipped versions. This runs
-before the TUI takes over and uses stderr. Source builds, external servers,
-noninteractive commands, and other startup failures use the normal error path.
+On macOS and Linux, a released npm global installation displays the store
+diagnostic and checks its channel once, honoring automatic-update settings and
+skipped versions. This runs before the TUI takes over and uses stderr. Other
+installations, external servers, noninteractive commands, and other startup
+failures use the normal error path.
 
-On macOS and Linux, a released npm global installation can stage the newer
-version resolved from its current channel. The existing
+The CLI stages the newer version resolved from its current channel. The existing
 [update command](#update-dialog) owns the installation lock, legacy-consumer
 confirmation, progress, and cancellation. Before switching, the updater checks
 the staged host platform's release manifest for the exact version and the
@@ -1757,13 +1764,6 @@ Cannot open native store <home>/rust/dimcode.sqlite.
 Checking dimcode-alpha on the alpha channel...
 Error: Startup update failed: 0.1.0-alpha.23 does not declare support for native store v46.
 ```
-
-The line-client export parser reads the format token and treats the remainder
-of the line as a literal path, including spaces, without shell evaluation or
-quote expansion. Missing paths and unsupported formats print usage and return
-to the prompt without submitting input. `/exit` takes no arguments. Only these
-exact command names are intercepted; other text follows the normal input path.
-Subcommands do not create a plugin command registry.
 
 ### The `/resume` picker
 

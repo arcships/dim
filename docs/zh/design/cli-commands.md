@@ -1032,6 +1032,10 @@ Error: Cannot open native store /Users/me/.dimcode-alpha/rust/dimcode.sqlite.
   Details: /Users/me/.dimcode-alpha/rust/daemon.log
 ```
 
+交互式导出解析器读取格式词，把行的其余部分当作字面路径（包括空格），不做 shell 求值或引号展开。
+缺少路径或格式不支持时打印用法并回到提示符，不提交输入。`/exit` 不带参数。只拦截这些确切的命令名；
+其他文本走普通输入路径。子命令不建立插件命令注册表。
+
 #### 本地库较新时的启动恢复
 
 交互式 TUI 启动时，如果内置守护进程在[启动说明](../../design/appserver/native-storage-format.md#启动不兼容诊断)
@@ -1058,10 +1062,6 @@ Cannot open native store <home>/rust/dimcode.sqlite.
 Checking dimcode-alpha on the alpha channel...
 Error: Startup update failed: 0.1.0-alpha.23 does not declare support for native store v46.
 ```
-
-交互式导出解析器读取格式词，把行的其余部分当作字面路径（包括空格），不做 shell 求值或引号展开。
-缺少路径或格式不支持时打印用法并回到提示符，不提交输入。`/exit` 不带参数。只拦截这些确切的命令名；
-其他文本走普通输入路径。子命令不建立插件命令注册表。
 
 ### `/resume` 选择面板
 

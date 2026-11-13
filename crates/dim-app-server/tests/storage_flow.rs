@@ -4275,6 +4275,12 @@ fn a_newer_store_leaves_an_actionable_startup_note() {
     let note = read_startup_note(&database.0);
     assert!(note.contains(&format!("Store format: v{future}")), "{note}");
     assert!(
+        note.ends_with(&format!(
+            "store-newer found={future} supported={STORE_FORMAT}"
+        )),
+        "{note}"
+    );
+    assert!(
         note.contains(&format!("Daemon format: v{STORE_FORMAT}")),
         "{note}"
     );
