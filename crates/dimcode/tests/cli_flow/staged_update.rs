@@ -114,7 +114,8 @@ impl Installed {
     /// set the update may retire.
     fn declare(&self, bins: &[(&str, &str)]) {
         fs::write(
-            self.prefix.join("lib/node_modules/dimcode-alpha/package.json"),
+            self.prefix
+                .join("lib/node_modules/dimcode-alpha/package.json"),
             package_json(CURRENT, bins),
         )
         .unwrap();
@@ -677,7 +678,8 @@ fn an_alias_the_package_never_declared_survives_an_update() {
     installed.mock_npm();
     installed.release();
     let alias = installed.prefix.join("bin/mydima");
-    std::os::unix::fs::symlink("../lib/node_modules/dimcode-alpha/bin/dimcode.mjs", &alias).unwrap();
+    std::os::unix::fs::symlink("../lib/node_modules/dimcode-alpha/bin/dimcode.mjs", &alias)
+        .unwrap();
     let version = next_version();
     let output = installed
         .update(
@@ -703,9 +705,7 @@ fn an_alias_the_package_never_declared_survives_an_update() {
 #[test]
 fn a_declared_command_the_new_version_drops_is_retired() {
     let installed = Installed::new(CURRENT, &["dima", "dropped"]);
-    installed.declare(
-        &[("dima", "bin/dimcode.mjs"), ("dropped", "bin/dimcode.mjs")],
-    );
+    installed.declare(&[("dima", "bin/dimcode.mjs"), ("dropped", "bin/dimcode.mjs")]);
     installed.mock_npm();
     installed.release();
     let output = installed
@@ -760,5 +760,92 @@ fn a_live_manifest_that_cannot_be_read_retires_nothing_and_the_update_goes_on() 
     assert!(
         fs::symlink_metadata(installed.prefix.join("bin/dropped")).is_ok(),
         "nothing may be retired when the previous commands are unknown: {stderr}"
+    );
+}
+
+/// A command that starts a child which records its pid and then, a second later,
+/// writes a marker if it is still alive. The command waits on it long past any
+/// bound the update has, so a flow can check that nothing the check started
+/// outlives the update.
+const CHECK_WITH_CHILD: &str = r#"#!/bin/sh
+target=$0
+while [ -L "$target" ]; do
+  link=$(readlink "$target")
+  case $link in
+    /*) target=$link ;;
+    *) target=$(dirname "$target")/$link ;;
+  esac
+done
+directory=$(cd "$(dirname "$target")" && pwd)
+while [ ! -f "$directory/package.json" ]; do directory=$(dirname "$directory"); done
+if [ -n "$UPDATE_SLOW" ]; then
+  printf 'checking %s\n' "$directory" >> "$UPDATE_CHECKING"
+  sh -c 'echo $$ > "$UPDATE_CHECK_CHILD"; sleep 1; echo survived > "$UPDATE_CHECK_MARKER"; while :; do sleep 0.2; done' &
+  wait
+fi
+sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$directory/package.json"
+"#;
+
+#[test]
+fn an_interrupted_check_ends_every_process_it_started() {
+    let installed = Installed::new(CURRENT, &["dima"]);
+    installed.mock_npm();
+    installed.release();
+    let checking = installed.home.0.join("checking");
+    let started = installed.home.0.join("check-child");
+    let marker = installed.home.0.join("check-marker");
+    let mut command = installed.update(
+        &next_version(),
+        &[("dima", "bin/dimcode.mjs")],
+        &[("UPDATE_COMMAND", CHECK_WITH_CHILD), ("UPDATE_SLOW", "1")],
+    );
+    command
+        .env("UPDATE_CHECKING", &checking)
+        .env("UPDATE_CHECK_CHILD", &started)
+        .env("UPDATE_CHECK_MARKER", &marker);
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + HANG_GUARD;
+    while !started.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the checked command never started its own child"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let started: i32 = fs::read_to_string(&started)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) },
+        0,
+        "the flow must be able to interrupt the update while it checks"
+    );
+    let output = wait(child);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(!stderr.contains("Updated "), "{stderr}");
+    assert_eq!(
+        unsafe { libc::kill(started, 0) },
+        -1,
+        "the process the check started, {started}, must be gone before the update exits: {stderr}"
+    );
+    assert_eq!(
+        installed.installed(),
+        CURRENT,
+        "the previous version must be live again: {stderr}"
+    );
+    // The child writes its marker a second after it started, so a survivor
+    // would have written it by now.
+    thread::sleep(Duration::from_millis(2000));
+    assert!(
+        !marker.exists(),
+        "nothing the check started may write after the update exited: {stderr}"
     );
 }

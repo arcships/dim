@@ -6514,7 +6514,19 @@
       "unexpandedMacros": [
         "format",
         "matches",
-        "tokio::select"
+        "tokio::select",
+        "tokio::try_join",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::update::staged::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::update::staged",
+      "file": "crates/dim-cli/src/update/staged.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq"
       ]
     },
     {
@@ -47855,6 +47867,14 @@
     },
     {
       "from": "dim_cli::update::staged",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path ProcessTree::spawn",
+        "use dim_agent_capabilities::host_platform::ProcessTree"
+      ]
+    },
+    {
+      "from": "dim_cli::update::staged",
       "to": "dim_cli::update",
       "references": [
         "path Install",
@@ -47867,9 +47887,23 @@
     },
     {
       "from": "dim_cli::update::staged",
+      "to": "dim_cli::update::staged::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::update::staged",
       "to": "dim_cli::version",
       "references": [
         "path crate::version::VERSION"
+      ]
+    },
+    {
+      "from": "dim_cli::update::staged::tests",
+      "to": "dim_cli::update::staged",
+      "references": [
+        "path normalized_commands"
       ]
     },
     {

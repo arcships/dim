@@ -8,8 +8,10 @@
 //! it.
 
 use super::{Install, run_manager};
+use dim_agent_capabilities::host_platform::ProcessTree;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
 /// Where an installation keeps staging, inside the installation prefix so that
@@ -732,37 +734,52 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// every process the command started and waits for them before the update rolls
 /// back, releases the lease and exits.
 async fn reported_version(command: &Path, cancel: &CancellationToken) -> Result<String, String> {
-    let child = tokio::process::Command::new(command)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+    let mut request = tokio::process::Command::new(command);
+    request.arg("--version").stdin(std::process::Stdio::null());
+    let mut tree = ProcessTree::spawn(request)
         .map_err(|error| format!("cannot run {}: {error}", command.display()))?;
-    let output = tokio::select! {
+    let mut stdout = tree.stdout();
+    let mut stderr = tree.stderr();
+    let mut printed = Vec::new();
+    let mut errors = Vec::new();
+    let read = async {
+        let (status, _, _) = tokio::try_join!(
+            tree.wait(),
+            stdout.read_to_end(&mut printed),
+            stderr.read_to_end(&mut errors),
+        )?;
+        Ok::<_, std::io::Error>(status)
+    };
+    let (status, unverified) = tokio::select! {
         biased;
-        () = cancel.cancelled() => return Err(INTERRUPTED.to_owned()),
-        output = tokio::time::timeout(CHECK_TIMEOUT, child.wait_with_output()) => match output {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => return Err(format!("cannot run {}: {error}", command.display())),
-            Err(_) => {
-                return Err(format!(
+        () = cancel.cancelled() => (None, Some(INTERRUPTED.to_owned())),
+        check = tokio::time::timeout(CHECK_TIMEOUT, read) => match check {
+            Ok(Ok(status)) => (Some(status), None),
+            Ok(Err(error)) => (
+                None,
+                Some(format!("cannot run {}: {error}", command.display())),
+            ),
+            Err(_) => (
+                None,
+                Some(format!(
                     "{} --version did not answer within {}s, so it is unverified",
                     command.display(),
                     CHECK_TIMEOUT.as_secs()
-                ));
-            }
+                )),
+            ),
         },
     };
-    if !output.status.success() {
-        return Err(format!(
-            "{} --version failed ({})",
-            command.display(),
-            output.status
-        ));
+    if let Some(error) = unverified {
+        return match tree.terminate().await {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}; {cleanup}")),
+        };
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let status = status.expect("a finished check carries its exit status");
+    if !status.success() {
+        return Err(format!("{} --version failed ({status})", command.display()));
+    }
+    let text = String::from_utf8_lossy(&printed);
     text.lines()
         .rev()
         .find_map(|line| line.split_whitespace().next_back())
