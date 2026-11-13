@@ -8,56 +8,84 @@ import { isDeepStrictEqual } from "node:util"
 const resources = join(import.meta.dirname, "../crates/dim-app-server/resources")
 const catalogOutput = join(resources, "default-catalog.json")
 const reasoningOffOverridesFile = join(resources, "reasoning-off-overrides.json")
+const syncPolicyFile = join(resources, "provider-sync.json")
 const remoteBase = process.env.DIM_PROVIDER_REMOTE_BASE ?? "https://raw.githubusercontent.com/ThinkInAIXYZ/PublicProviderConf/refs/heads/dev/dist"
 
-type SyncPolicy = {
-  keepBaseUrl?: true
-  keepDefaultModel?: true
+type ProviderPolicy = {
+  source: "remote" | "local"
+  reason?: string
+  upstreamId?: string
+  keepBaseUrl?: boolean
+  keepDefaultModel?: boolean
   localModels?: string[]
   mediaModels?: string[]
+  keepBundledModels?: boolean
+  failClosedUpstreamModels?: boolean
 }
 
-const remoteProviders: Record<string, SyncPolicy> = {
-  aihubmix: { mediaModels: ["gpt-image-1", "minimax-h3", "veo-3.1", "tts-1", "whisper-1"] },
-  anthropic: { keepDefaultModel: true },
-  "custom-provider": { localModels: ["arcship-5.5", "arcship-5.4", "arcship-5.4-mini", "arcship-image"] },
-  deepseek: { keepDefaultModel: true },
-  fireworks: {},
-  google: { mediaModels: ["gemini-3.1-flash-image", "veo-3.1-generate-preview", "gemini-2.5-flash-preview-tts", "gemini-3.5-flash", "lyria-3-pro-preview"] },
-  huggingface: {},
-  jiekou: {},
-  "kimi-for-coding": { keepBaseUrl: true, keepDefaultModel: true },
-  longcat: { keepBaseUrl: true },
-  "minimax-cn-coding-plan": {},
-  "minimax-cn": { keepDefaultModel: true },
-  "minimax-coding-plan": {},
-  minimax: { keepDefaultModel: true, mediaModels: ["image-01", "video-01", "speech-02-hd", "music-01"] },
-  modelscope: { keepDefaultModel: true },
-  "moonshot-ai": { keepDefaultModel: true },
-  moonshot: {},
-  novita: {},
-  nvidia: {},
-  openai: { keepDefaultModel: true, mediaModels: ["gpt-image-2", "tts-1", "whisper-1"] },
-  "opencode-go": { keepBaseUrl: true, keepDefaultModel: true },
-  openrouter: { mediaModels: ["openai/gpt-5-image", "google/veo-3.1", "openai/tts-1", "openai/whisper-1"] },
-  ppinfra: { keepBaseUrl: true },
-  qiniu: {},
-  "siliconflow-com": {},
-  siliconflow: { mediaModels: ["Kwai-Kolors/Kolors", "Wan-AI/Wan2.2-T2V-A14B", "Wan-AI/Wan2.2-I2V-A14B", "FunAudioLLM/CosyVoice2-0.5B", "FunAudioLLM/SenseVoiceSmall"] },
-  stepfun: { mediaModels: ["step-image-edit-2", "step-2x-large", "stepaudio-2.5-tts", "step-tts-2", "step-tts-mini", "step-tts-vivid", "stepaudio-2.5-asr", "stepaudio-2-asr-pro", "step-asr"] },
-  "tencent-token-plan": { localModels: ["tc-code-latest"] },
-  upstage: {},
-  "vercel-ai-gateway": {},
-  xai: { keepDefaultModel: true, mediaModels: ["grok-2-image-1212", "grok-video-1"] },
-  "xiaomi-token-plan-ams": {},
-  "xiaomi-token-plan-cn": {},
-  "xiaomi-token-plan-sgp": {},
-  "zai-coding-plan": { keepDefaultModel: true },
-  zai: { keepDefaultModel: true },
-  zenmux: {},
-  "zhipuai-coding-plan": { keepDefaultModel: true },
-  zhipuai: {},
+/// Every bundled provider has a policy: `remote` ones are refreshed from
+/// PublicProviderConf, `local` ones are maintained in this repository and a
+/// sync never touches them. The reasons are facts read by a reviewer, and the
+/// coverage check below refuses a catalog and a table that disagree.
+async function loadPolicies(catalog): Promise<Record<string, ProviderPolicy>> {
+  const file = await readJson(syncPolicyFile)
+  const providers = isRecord(file?.providers) ? file.providers : undefined
+  if (providers === undefined) {
+    throw new Error(`${syncPolicyFile}: expected a providers object`)
+  }
+  const listed = new Set(catalog.providers.map((provider) => provider.providerId))
+  for (const id of Object.keys(providers)) {
+    if (!listed.has(id)) throw new Error(`Provider ${id} has a sync policy but the catalog does not list it`)
+  }
+  for (const id of listed) {
+    if (!Object.hasOwn(providers, id)) throw new Error(`Provider ${id} has no sync policy`)
+    validatePolicy(id, providers[id])
+  }
+  return providers
 }
+
+function validatePolicy(id, policy) {
+  if (!isRecord(policy)) throw new Error(`Provider ${id}: sync policy must be an object`)
+  const unknown = Object.keys(policy).filter((key) => !POLICY_FIELDS.includes(key))
+  if (unknown.length > 0) {
+    throw new Error(`Provider ${id}: unknown sync policy field ${unknown.join(", ")}`)
+  }
+  if (policy.source !== "remote" && policy.source !== "local") {
+    throw new Error(`Provider ${id}: sync policy source must be remote or local`)
+  }
+  if (policy.source === "local") {
+    if (normalizeString(policy.reason) === undefined) {
+      throw new Error(`Provider ${id}: a local provider needs a reason`)
+    }
+  } else if (policy.reason !== undefined) {
+    throw new Error(`Provider ${id}: only a local provider carries a reason`)
+  }
+  for (const key of ["keepBaseUrl", "keepDefaultModel", "keepBundledModels", "failClosedUpstreamModels"]) {
+    if (policy[key] !== undefined && policy[key] !== true) {
+      throw new Error(`Provider ${id}: ${key} is either absent or true`)
+    }
+  }
+  if (policy.upstreamId !== undefined && normalizeString(policy.upstreamId) === undefined) {
+    throw new Error(`Provider ${id}: upstreamId must be a non-empty string`)
+  }
+  for (const key of ["localModels", "mediaModels"]) {
+    if (policy[key] !== undefined && stringArray(policy[key]) === undefined) {
+      throw new Error(`Provider ${id}: ${key} must be a non-empty string array`)
+    }
+  }
+}
+
+const POLICY_FIELDS = [
+  "source",
+  "reason",
+  "upstreamId",
+  "keepBaseUrl",
+  "keepDefaultModel",
+  "localModels",
+  "mediaModels",
+  "keepBundledModels",
+  "failClosedUpstreamModels",
+]
 
 async function main() {
   const [command, providerId, ...extra] = process.argv.slice(2)
@@ -68,24 +96,26 @@ async function main() {
   const previous = await readFile(catalogOutput, "utf8")
   const catalog = JSON.parse(previous)
   validateCatalog(catalog)
+  const policies = await loadPolicies(catalog)
+  const remote = Object.keys(policies).filter((id) => policies[id].source === "remote")
   if (command === undefined) {
     console.log(`Validated catalog: ${catalogOutput}`)
     return
   }
 
   const ids = new Set(catalog.providers.map((provider) => provider.providerId))
-  const requested = providerId === undefined ? Object.keys(remoteProviders) : [providerId]
+  const requested = providerId === undefined ? remote : [providerId]
   for (const id of requested) {
     if (!ids.has(id)) throw new Error(`Unknown provider: ${id}`)
-    if (!Object.hasOwn(remoteProviders, id)) throw new Error(`Provider ${id} has no remote catalog source`)
+    if (policies[id]?.source !== "remote") throw new Error(`Provider ${id} has no remote catalog source`)
   }
 
   const selected = new Set(requested)
-  const overrides = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile))
+  const overrides = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile), policies)
   const providers = []
   for (const provider of catalog.providers) {
     providers.push(selected.has(provider.providerId)
-      ? await syncProvider(provider, remoteProviders[provider.providerId], overrides.get(provider.providerId))
+      ? await syncProvider(provider, policies[provider.providerId], overrides.get(provider.providerId))
       : provider)
   }
   if (isDeepStrictEqual(providers, catalog.providers)) {
@@ -98,10 +128,10 @@ async function main() {
   console.log(`Updated catalog: ${requested.join(", ")}`)
 }
 
-async function syncProvider(provider, policy: SyncPolicy, overrides) {
+async function syncProvider(provider, policy: ProviderPolicy, overrides) {
   const id = provider.providerId
   const raw = { ...provider.metadata.raw }
-  const sourceId = normalizeString(raw.providerDbSourceId) ?? id
+  const sourceId = policy.upstreamId ?? id
   const remote = await readRemoteJson(`${remoteBase}/${encodeURIComponent(sourceId)}.json`)
   if (!Array.isArray(remote?.models)) throw new Error(`${id}: expected a remote models array`)
   assertUniqueModelIds(remote.models, id, "id")
@@ -156,7 +186,7 @@ function mediaOverlay(providerId, model) {
   return Object.fromEntries(fields.filter((key) => Object.hasOwn(model, key)).map((key) => [key, model[key]]))
 }
 
-function createReasoningOffOverrideState(overrides) {
+function createReasoningOffOverrideState(overrides, policies) {
   const providers = isRecord(overrides?.providers) ? overrides.providers : {}
   const pending = new Map()
   for (const [providerId, providerConfig] of Object.entries(providers)) {
@@ -171,7 +201,7 @@ function createReasoningOffOverrideState(overrides) {
     for (const [modelId, modelConfig] of Object.entries(models)) {
       providerModels.set(modelId, validateReasoningOffOverride(providerId, modelId, modelConfig))
     }
-    if (Object.hasOwn(remoteProviders, providerId)) pending.set(providerId, providerModels)
+    if (policies[providerId]?.source === "remote") pending.set(providerId, providerModels)
   }
   return pending
 }
