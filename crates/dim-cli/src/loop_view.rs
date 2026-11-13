@@ -26,15 +26,11 @@ impl Interval {
     /// Reads `30s`, `5m`, `2h` or `1d`; anything else is `None`, so the token
     /// stays part of the prompt.
     pub fn parse(token: &str) -> Option<Self> {
-        let (digits, unit) = token.split_at(token.len().checked_sub(1)?);
+        let (digits, scale) = [("s", 1), ("m", 60), ("h", 3_600), ("d", 86_400)]
+            .into_iter()
+            .find_map(|(unit, scale)| token.strip_suffix(unit).map(|digits| (digits, scale)))?;
         let value: u64 = digits.parse().ok()?;
-        let seconds = match unit {
-            "s" => value,
-            "m" => value.checked_mul(60)?,
-            "h" => value.checked_mul(3_600)?,
-            "d" => value.checked_mul(86_400)?,
-            _ => return None,
-        };
+        let seconds = value.checked_mul(scale)?;
         (seconds > 0).then_some(Self(seconds))
     }
 }
@@ -224,6 +220,30 @@ mod tests {
                 "{words} stays a prompt with no interval"
             );
         }
+    }
+
+    /// A first token ending in a multibyte character has no ASCII unit, so it
+    /// is prompt text like any other; reading the unit from the last byte
+    /// would split inside that character.
+    #[test]
+    fn a_multibyte_first_token_is_prompt_text() {
+        for words in ["检查 部署", "🙂 check", "5分 check"] {
+            assert_eq!(
+                request(words),
+                Some(Request::Start {
+                    prompt: words.into(),
+                    every_seconds: None,
+                }),
+                "{words} stays a prompt with no interval"
+            );
+        }
+        assert_eq!(
+            request("5m 检查"),
+            Some(Request::Start {
+                prompt: "检查".into(),
+                every_seconds: Some(300),
+            })
+        );
     }
 
     #[test]
