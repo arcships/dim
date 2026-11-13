@@ -13,6 +13,7 @@ import TimelineView from "./TimelineView.vue"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
 import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
+import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
 import { useModelsStore } from "../../stores/models"
@@ -74,6 +75,7 @@ const sessionCommands = computed(() => {
     usage: session.methods.includes("session.context.usage") ? usage : undefined,
     fork: connection.supports("session.fork") && session.lastTurnEnd !== undefined ? fork : undefined,
     goal: session.methods.includes("session.goal.set") ? goal : undefined,
+    loop: session.methods.includes("session.loop.start") ? loop : undefined,
     effort: effortChoices.value !== undefined && effortChoices.value.length > 0 ? effort : undefined,
   }
 })
@@ -180,6 +182,36 @@ async function goal(words: string): Promise<void> {
   try {
     await chat.writeGoal(props.sessionId, call, goalObjective(request))
     toast.push({ tone: "success", title: t("goal.sent", { action: t(`goal.action.${call}`) }) })
+  } catch (cause) {
+    failure(cause)
+  }
+}
+
+/** `/loop` shows the line's loops, starts one, or stops one, the same forms the terminal client takes. */
+async function loop(words: string): Promise<void> {
+  const request = parseLoopRequest(words)
+  if (request === undefined) {
+    toast.push({ tone: "info", title: t("loop.usage") })
+    return
+  }
+  try {
+    if (request.form === "show") {
+      const loops = await chat.readLoops(props.sessionId)
+      toast.push({ tone: "info", title: loops.length === 0 ? t("loop.none") : t("loop.listed", { count: loops.length }), description: loopReport(loops).join("\n") })
+      return
+    }
+    if (request.form === "start") {
+      const id = await chat.startLoop(props.sessionId, request.prompt, request.interval === undefined ? undefined : intervalSeconds(request.interval))
+      toast.push({ tone: "success", title: t("loop.started", { id }) })
+      return
+    }
+    const loopId = request.loopId ?? (await chat.readLoops(props.sessionId)).filter((entry) => !["stopped", "completed", "expired"].includes(entry.state)).map((entry) => entry.loopId).at(0)
+    if (loopId === undefined) {
+      toast.push({ tone: "info", title: t("loop.noSingle") })
+      return
+    }
+    await chat.stopLoop(props.sessionId, loopId)
+    toast.push({ tone: "success", title: t("loop.stopped", { id: loopId }) })
   } catch (cause) {
     failure(cause)
   }
