@@ -505,6 +505,7 @@ impl Worker {
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
+                history.earlier = false;
                 let fatal = request.branch_id == "main" && !history.done;
                 let report = crate::report::Captured::observed(
                     crate::report::Operation::SessionRead,
@@ -736,5 +737,132 @@ impl Worker {
             self.task_stops.as_mut().expect("stop batch").errors += 1;
             self.send(Update::Notice(format!("Stop-all {target}: {error}")));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::client::Message;
+
+    /// A branch whose earlier read failed reports `Unread` and reads again on
+    /// the next press. Without the failure arm clearing its flag, `earlier_view`
+    /// reports `Reading` with nothing in flight and `earlier` returns at its own
+    /// flag: PageUp, the load-more row and `/earlier` never read that line again.
+    #[tokio::test]
+    async fn a_failed_earlier_read_returns_the_branch_to_unread_and_reads_again() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.focus = "main".into();
+        worker.discover_branch("main");
+        let history = worker.task_history.get_mut("main").unwrap();
+        history.done = true;
+        history.window.before = Some(7);
+        history.window.through = Some(9);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "the loaded window has older history"
+        );
+
+        worker.earlier();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read is in flight"
+        );
+        worker.poll_task_history().await.unwrap();
+        let id = worker
+            .task_history_request
+            .as_ref()
+            .expect("the earlier read was sent")
+            .id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Err(client::RpcError {
+                    code: -32603,
+                    message: "the daemon dropped the read".into(),
+                    data: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "a failed earlier read leaves the older history to read"
+        );
+        worker.earlier();
+        assert!(
+            worker.task_history["main"].earlier,
+            "the next press records another earlier read"
+        );
+        assert!(
+            worker.task_history_queue.contains(&"main".to_owned()),
+            "the next press queues a read"
+        );
+    }
+
+    /// A read that lands after a failed earlier read folds a first window.
+    /// A failure that kept its flag set would make the next page take the
+    /// older-page branch: prepended, and the line never read on.
+    #[tokio::test]
+    async fn a_read_after_a_failed_earlier_read_folds_a_first_window() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        worker
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
+            .await
+            .unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(7);
+            history.window.through = Some(9);
+        }
+
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        let id = worker.task_history_request.as_ref().expect("sent").id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Err(client::RpcError {
+                    code: -32603,
+                    message: "the daemon dropped the read".into(),
+                    data: None,
+                }),
+            })
+            .await
+            .unwrap();
+
+        worker
+            .command(crate::model::session::Command::TaskHistory {
+                projection_id: worker.projection_id,
+            })
+            .await
+            .unwrap();
+        worker.poll_task_history().await.unwrap();
+        let id = worker.task_history_request.as_ref().expect("retried").id;
+        worker.task_history_queue.clear();
+        worker
+            .message(Message::Response {
+                id,
+                result: Ok(json!({
+                    "events": [], "through": 9, "nextBefore": null, "nextAfter": 9
+                })),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            worker.task_history_queue.contains(&"b-7c".to_owned()),
+            "the read that landed is a first window, so the line is read on"
+        );
     }
 }
