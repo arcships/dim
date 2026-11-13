@@ -42,7 +42,19 @@ async function loadPolicies(catalog): Promise<Record<string, ProviderPolicy>> {
     if (!Object.hasOwn(providers, id)) throw new Error(`Provider ${id} has no sync policy`)
     validatePolicy(id, providers[id])
   }
+  for (const provider of catalog.providers) {
+    const expected = sourceFor(providers[provider.providerId].source)
+    if (provider.metadata.source !== expected) {
+      throw new Error(`Provider ${provider.providerId}: metadata.source is ${provider.metadata.source ?? "absent"}, and its policy makes it ${expected}`)
+    }
+  }
   return providers
+}
+
+/// The `metadata.source` a policy authors. A provider is refreshed from the
+/// public upstream or maintained in this repository, and the column says which.
+function sourceFor(source) {
+  return source === "remote" ? "public-provider-conf" : "local"
 }
 
 function validatePolicy(id, policy) {
