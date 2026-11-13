@@ -324,14 +324,18 @@ const SUMMARY_FIELDS = [
 ]
 
 /// What a reviewer reads instead of the catalog diff. The changes a reviewer
-/// must judge come first, then every override with upstream's own value beside
-/// it, and the local providers last, since nothing there changed.
+/// must judge come first: the model counts, the curated capability lines, and
+/// then every other changed leaf. Then every override with upstream's own value
+/// beside it, and the local providers last, since nothing there changed. A
+/// provider counts as unchanged only when its whole entry is equal, so a change
+/// outside the curated fields cannot hide in the count.
 function summarize(before, after, policies, synced, notes, report) {
   const changed = []
   let changedProviders = 0
   for (const provider of after) {
     if (!synced.has(provider.providerId)) continue
     const old = before.find((entry) => entry.providerId === provider.providerId)
+    if (isDeepStrictEqual(old, provider)) continue
     const oldModels = new Map(old.models.map((model) => [model.modelId, model]))
     const newModels = new Map(provider.models.map((model) => [model.modelId, model]))
     const added = [...newModels.keys()].filter((id) => !oldModels.has(id))
@@ -355,18 +359,86 @@ function summarize(before, after, policies, synced, notes, report) {
     if (oldDefault !== newDefault) {
       details.push(`  ~ defaultModelId ${oldDefault ?? "none"} -> ${newDefault ?? "none"}`)
     }
-    if (added.length === 0 && removed.length === 0 && details.length === 0) continue
     changedProviders += 1
     changed.push(`${pad(provider.providerId, 24)} +${added.length} -${removed.length} ~${changedModels}`)
     if (added.length > 0) changed.push(`  + ${listPreview(added)}`)
     if (removed.length > 0) changed.push(`  - ${listPreview(removed)}`)
     changed.push(...details)
+    for (const line of leafLines(old, provider, oldModels, newModels)) changed.push(line)
   }
   const locals = Object.entries(policies).filter(([, policy]) => policy.source === "local")
   const head = [`Synced ${synced.size} providers (${synced.size - changedProviders} unchanged, ${changedProviders} changed)`]
   const tail = [`local: ${locals.length} providers kept as written`]
   for (const [id, policy] of locals) tail.push(`  ${pad(id)} ${policy.reason}`)
   return [...head, "", ...changed, "", ...report, "", ...tail].join("\n")
+}
+
+/// Every leaf the curated lines above did not print, so the summary carries a
+/// change wherever it happens. A model only in the new or the old entry is
+/// already named by its `+` or `-` line, and its entry is not walked.
+function leafLines(before, after, oldModels, newModels) {
+  const lines = []
+  for (const leaf of changedLeaves(entryWithoutModels(before), entryWithoutModels(after), PROVIDER_REPORTED_LEAVES)) {
+    lines.push(`  ~ ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`)
+  }
+  for (const id of [...newModels.keys()].filter((modelId) => oldModels.has(modelId)).sort()) {
+    for (const leaf of changedLeaves(oldModels.get(id), newModels.get(id), MODEL_REPORTED_LEAVES)) {
+      lines.push(`  ~ ${pad(id)} ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`)
+    }
+  }
+  return lines
+}
+
+/// The leaves the lines above already report, so the leaf list adds what is
+/// left rather than repeating them. This is not the unchanged test: that one
+/// compares the whole entry.
+const MODEL_REPORTED_LEAVES = new Set([
+  ...SUMMARY_FIELDS.map(([key]) => `capabilities.${key}`),
+  "status",
+  ...["reasoning", "toolCalling", "vision"].map((key) => `capabilities.${key}`),
+  "metadata.reasoning.effortOptions",
+])
+
+const PROVIDER_REPORTED_LEAVES = new Set(["metadata.defaultModelId", "metadata.raw.defaultModelId"])
+
+function entryWithoutModels(provider) {
+  const entry = { ...provider }
+  delete entry.models
+  return entry
+}
+
+/// The leaves of two values, by path. An array is one leaf: its indices are not
+/// a stable path, and a reviewer reads the whole list either way.
+function changedLeaves(before, after, reported) {
+  const olds = leafValues(before, [], new Map())
+  const news = leafValues(after, [], new Map())
+  const leaves = []
+  for (const key of new Set([...olds.keys(), ...news.keys()])) {
+    const path = olds.get(key)?.path ?? news.get(key).path
+    if (reported.has(path.join("."))) continue
+    if (isDeepStrictEqual(olds.get(key)?.value, news.get(key)?.value)) continue
+    leaves.push({ path: path.join("."), before: olds.get(key)?.value, after: news.get(key)?.value })
+  }
+  return leaves.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/// A key of its own is not a safe path segment, since a catalog key may contain
+/// the separator; the JSON encoding of the whole path is.
+function leafValues(value, path, leaves) {
+  if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) leafValues(item, [...path, key], leaves)
+    return leaves
+  }
+  leaves.set(JSON.stringify(path), { path, value })
+  return leaves
+}
+
+const LEAF_VALUE_WIDTH = 80
+
+function leafValue(value) {
+  if (value === undefined) return "(absent)"
+  const encoded = JSON.stringify(value)
+  return encoded.length > LEAF_VALUE_WIDTH ? `${encoded.slice(0, LEAF_VALUE_WIDTH - 1)}…` : encoded
 }
 
 /// Every override the run applied, with the value upstream states beside the

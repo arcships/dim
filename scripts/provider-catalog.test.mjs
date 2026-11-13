@@ -468,6 +468,91 @@ function intersect(actual, patch) {
   return Object.fromEntries(Object.entries(patch).map(([key, value]) => [key, intersect(actual[key], value)]));
 }
 
+test("a changed endpoint makes the provider changed and prints the leaf", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const previous = JSON.parse(await readFile(path, "utf8"));
+  const deepseek = previous.providers.find((provider) => provider.providerId === "deepseek");
+  const changed = "https://changed-endpoint.invalid/v1";
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: changed,
+    models: deepseek.models.map((model) => model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /Synced 1 providers \(0 unchanged, 1 changed\)/);
+  assert.match(summary, /~ defaultBaseUrl "https:\/\/api\.deepseek\.com" -> "https:\/\/changed-endpoint\.invalid\/v1"/);
+  const updated = JSON.parse(await readFile(path, "utf8")).providers.find((provider) => provider.providerId === "deepseek");
+  assert.equal(updated.defaultBaseUrl, changed);
+});
+
+test("a changed structured output makes the provider changed and prints the leaf", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const deepseek = previous.providers.find((provider) => provider.providerId === "deepseek");
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: deepseek.metadata.raw.api,
+    models: deepseek.models.map((model) => model.modelId === "deepseek-v4-pro"
+      ? { ...model.metadata.raw, structured_output: false }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /Synced 1 providers \(0 unchanged, 1 changed\)/);
+  assert.match(summary, /~ deepseek-v4-pro +metadata\.raw\.structured_output true -> false/);
+  assert.match(summary, /~ deepseek-v4-pro +capabilities\.structuredOutput true -> false/);
+});
+
+test("a changed reasoning mode makes the provider changed and prints the leaf", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const deepseek = previous.providers.find((provider) => provider.providerId === "deepseek");
+  const pro = deepseek.models.find((model) => model.modelId === "deepseek-v4-pro").metadata.raw;
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: deepseek.metadata.raw.api,
+    models: deepseek.models.map((model) => model.modelId === "deepseek-v4-pro"
+      ? { ...pro, extra_capabilities: { ...pro.extra_capabilities, reasoning: { ...pro.extra_capabilities.reasoning, mode: "budget" } } }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /Synced 1 providers \(0 unchanged, 1 changed\)/);
+  assert.match(summary, /~ deepseek-v4-pro +metadata\.reasoning\.mode "effort" -> "budget"/);
+});
+
+test("a raw leaf nothing projects still makes the provider changed", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const previous = JSON.parse(await readFile(join(cwd, bundled), "utf8"));
+  const deepseek = previous.providers.find((provider) => provider.providerId === "deepseek");
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: deepseek.metadata.raw.api,
+    models: deepseek.models.map((model) => model.modelId === "deepseek-v4-pro"
+      ? { ...model.metadata.raw, family: "a-family-nothing-reads" }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /Synced 1 providers \(0 unchanged, 1 changed\)/);
+  assert.match(summary, /~ deepseek-v4-pro +metadata\.raw\.family "deepseek-thinking" -> "a-family-nothing-reads"/);
+});
+
+test("a canonical id the upstream replaces is written and both values are printed", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const previous = JSON.parse(await readFile(path, "utf8"));
+  const deepseek = previous.providers.find((provider) => provider.providerId === "deepseek");
+  const replacement = "deepseek/deepseek-v4-pro-0901";
+  await writeFile(join(upstream, "deepseek.json"), JSON.stringify({
+    api: deepseek.metadata.raw.api,
+    models: deepseek.models.map((model) => model.modelId === "deepseek-v4-pro"
+      ? { ...model.metadata.raw, canonical_model_id: replacement }
+      : model.metadata.raw),
+  }));
+  const summary = execFileSync(process.execPath, [script, "--sync", "deepseek"], { cwd, env, encoding: "utf8" });
+  assert.match(summary, /~ deepseek-v4-pro +metadata\.raw\.canonical_model_id "deepseek\/deepseek-v4-pro-0813" -> "deepseek\/deepseek-v4-pro-0901"/);
+  assert.doesNotMatch(summary, /canonical_model_id .* kept; upstream omits it/);
+  const updated = JSON.parse(await readFile(path, "utf8"))
+    .providers.find((provider) => provider.providerId === "deepseek")
+    .models.find((model) => model.modelId === "deepseek-v4-pro");
+  assert.equal(updated.metadata.raw.canonical_model_id, replacement);
+});
+
 test("the summary prints an override beside upstream's value", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);

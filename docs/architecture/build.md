@@ -78,17 +78,21 @@ reviewer must judge come first: per provider, the models added and removed, and 
 changed context window, output cap, status, capability or effort option with its old and
 new value. A model whose override differs from upstream ends that line with
 `(override: limit.context)`, naming the leaves the table decides rather than upstream.
-Next comes the override report, each patched leaf with the value upstream states beside
-it, so a divergence is visible without reading the diff, plus a line for an override that
-repeats upstream's own
-value and can be retired. The local providers and the reason each one is not synced come
-last. An up-to-date run prints the override report too, since a redundant override never
-changes the catalog. Read that summary instead of the diff. A sync must supply at least one
-usable upstream model for a provider whose bundled catalog includes models outside its
-local policy. A sync that produces the same content preserves the file and its timestamp.
-A fetch or validation failure leaves the catalog as it was. Review and commit the complete
-catalog after a sync. Model entries occupy individual lines for review. Upstream responses
-and intermediate model lists stay in memory.
+Every other changed leaf follows, sorted by path, in the provider entry and in each
+surviving model, so nothing a sync writes is missing from the summary; a provider counts
+as unchanged only when its whole entry is equal. `canonical_model_id` is not upstream's to
+omit: a surviving model keeps the bundled value when upstream states none, and an `=` line
+names it, since removing it from the bundled entry by hand is how one is retired. Next
+comes the override report, each patched leaf with the value upstream states beside it, so
+a divergence is visible without reading the diff, plus a line for an override that repeats
+upstream's own value and can be retired. The local providers and the reason each one is
+not synced come last. An up-to-date run prints the override report too, since a redundant
+override never changes the catalog. Read that summary instead of the diff. A sync must
+supply at least one usable upstream model for a provider whose bundled catalog includes
+models outside its local policy. A sync that produces the same content preserves the file
+and its timestamp. A fetch or validation failure leaves the catalog as it was. Review and
+commit the complete catalog after a sync. Model entries occupy individual lines for
+review. Upstream responses and intermediate model lists stay in memory.
 
 Before a release, run `node scripts/update-provider-catalog.ts --sync` once with the Node
 version in `.node-version`, in a clean checkout of the latest `origin/main`, and read its
