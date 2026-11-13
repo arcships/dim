@@ -174,7 +174,7 @@ async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patc
   }
 
   for (const modelId of policy.mediaModels ?? []) {
-    models.set(modelId, { ...models.get(modelId), ...mediaOverlay(id, local(modelId)) })
+    models.set(modelId, mediaOverlay(id, local(modelId), models.get(modelId)))
   }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
@@ -414,13 +414,19 @@ function pad(text, width = 32) {
   return text.length >= width ? text : `${text}${" ".repeat(width - text.length)}`
 }
 
-function mediaOverlay(providerId, model) {
-  if (providerId === "stepfun") return model
+/// The bundled entry's media declaration laid over the upstream row. When the
+/// upstream no longer lists the model, the bundled row is the only source, so
+/// the merge starts from it and takes the fields the overlay overrides; that
+/// keeps `canonical_model_id` and the entry's limits instead of falling back to
+/// the assumed pair.
+function mediaOverlay(providerId, bundled, upstream) {
   const fields = ["id", "display_name", "type", "modalities", "modalityCapabilities"]
-  if (providerId !== "google" || model.id !== "gemini-3.5-flash") {
+  if (providerId !== "google" || bundled.id !== "gemini-3.5-flash") {
     fields.push("tool_call", "structured_output")
   }
-  return Object.fromEntries(fields.filter((key) => Object.hasOwn(model, key)).map((key) => [key, model[key]]))
+  const declared = Object.fromEntries(fields.filter((key) => Object.hasOwn(bundled, key)).map((key) => [key, bundled[key]]))
+  const base = isRecord(upstream) ? upstream : bundled
+  return mergePatch(base, declared)
 }
 
 function createReasoningOffOverrideState(overrides, policies) {

@@ -185,6 +185,30 @@ test("a scoped sync validates its candidate and publishes only the complete cata
   assert.equal(await readFile(path, "utf8"), generated);
 });
 
+test("a media entry the upstream dropped keeps its bundled canonical id and limits", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const previous = JSON.parse(await readFile(path, "utf8"));
+  const google = previous.providers.find((provider) => provider.providerId === "google");
+  const entry = google.models.find((model) => model.modelId === "veo-3.1-generate-preview");
+  assert.equal(entry.metadata.raw.canonical_model_id, "google/veo-3.1-generate-preview");
+  assert.deepEqual(entry.metadata.raw.limit, { context: 480, output: 8192 });
+  await writeFile(join(upstream, "google.json"), JSON.stringify({
+    api: google.metadata.raw.api,
+    models: google.models
+      .filter((model) => model.modelId !== "veo-3.1-generate-preview")
+      .map((model) => model.metadata.raw),
+  }));
+  execFileSync(process.execPath, [script, "--sync", "google"], { cwd, env });
+
+  const updated = JSON.parse(await readFile(path, "utf8"))
+    .providers.find((provider) => provider.providerId === "google");
+  const kept = updated.models.find((model) => model.modelId === "veo-3.1-generate-preview");
+  assert.deepEqual(kept, entry);
+  assert.equal(kept.capabilities.contextWindow, 480);
+  assert.equal(kept.capabilities.maxOutputTokens, 8192);
+});
+
 test("sync refreshes upstream metadata and keeps the catalog's local media declarations", async (t) => {
   const { cwd, env, upstream } = await checkout(t);
   const path = join(cwd, bundled);
@@ -289,6 +313,33 @@ test("a keepBundledModels provider keeps its bundle and lands new upstream model
   assert.equal(fresh.metadata.raw.tool_call, false);
   assert.deepEqual(fresh.metadata.raw.modalities, { input: ["text"], output: ["text"] });
   assert.equal(fresh.capabilities.toolCalling, false);
+});
+
+test("a keepBundledModels provider keeps a bundled entry the upstream no longer lists", async (t) => {
+  const { cwd, env, upstream } = await checkout(t);
+  const path = join(cwd, bundled);
+  const previous = JSON.parse(await readFile(path, "utf8"));
+  const stepfun = previous.providers.find((provider) => provider.providerId === "stepfun");
+  const dropped = ["step-2x-large", "step-image-edit-2", "step-tts-mini"];
+  const entries = dropped.map((id) => {
+    const entry = stepfun.models.find((model) => model.modelId === id);
+    assert.notEqual(entry, undefined, `${id} must be bundled for this test`);
+    return entry;
+  });
+  await writeFile(join(upstream, "stepfun.json"), JSON.stringify({
+    api: stepfun.metadata.raw.api,
+    models: stepfun.models
+      .filter((model) => !dropped.includes(model.modelId))
+      .map((model) => model.metadata.raw),
+  }));
+  execFileSync(process.execPath, [script, "--sync", "stepfun"], { cwd, env });
+
+  const updated = JSON.parse(await readFile(path, "utf8"))
+    .providers.find((provider) => provider.providerId === "stepfun");
+  const models = new Map(updated.models.map((model) => [model.modelId, model]));
+  for (const entry of entries) {
+    assert.deepEqual(models.get(entry.modelId), entry);
+  }
 });
 
 test("every model override the table states is applied by a sync", async (t) => {
