@@ -452,3 +452,49 @@ fn a_command_the_manager_renames_takes_the_name_of_its_link() {
         "every command must stay directly inside the bin directory: {stderr}"
     );
 }
+
+#[test]
+fn a_command_another_package_owns_is_never_taken() {
+    let installed = Installed::new(CURRENT, &["dima"]);
+    installed.mock_npm();
+    installed.release();
+    let other = installed.prefix.join("lib/node_modules/other-cli");
+    fs::create_dir_all(other.join("bin")).unwrap();
+    let launcher = other.join("bin/other.mjs");
+    fs::write(&launcher, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+    let shared = installed.prefix.join("bin/shared-cli");
+    std::os::unix::fs::symlink("../lib/node_modules/other-cli/bin/other.mjs", &shared).unwrap();
+    let output = installed
+        .update(
+            &next_version(),
+            &[
+                ("dima", "bin/dimcode.mjs"),
+                ("shared-cli", "bin/dimcode.mjs"),
+            ],
+            &[("UPDATE_COMMAND", REPORTS_VERSION)],
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("shared-cli") && stderr.contains("other-cli"),
+        "the failure must name the command and its owner: {stderr}"
+    );
+    assert!(!stderr.contains("Updated "), "{stderr}");
+    assert_eq!(
+        fs::read_link(&shared).unwrap(),
+        Path::new("../lib/node_modules/other-cli/bin/other.mjs"),
+        "a command another package owns must still point into it"
+    );
+    assert!(
+        launcher.is_file(),
+        "the other package's launcher must still be there"
+    );
+    assert_eq!(installed.installed(), CURRENT, "{stderr}");
+    assert!(
+        !installed.staging().exists(),
+        "the refused update must leave no staging directory"
+    );
+}

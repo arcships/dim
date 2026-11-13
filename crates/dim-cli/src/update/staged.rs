@@ -113,6 +113,9 @@ async fn replace(install: &Install, staging: &Path, cancel: CancellationToken) -
         Ok(new) => new,
         Err(error) => return Outcome::Failed(error),
     };
+    if let Err(error) = check_ownership(install, &new) {
+        return Outcome::Failed(error);
+    }
     let previous = live_commands(&install.directory, &install.package);
     let switch = match switch_in(&live, &staged, staging.join("retired")) {
         Ok(switch) => switch,
@@ -306,6 +309,39 @@ fn platform_package(package: &str, staged: &Path) -> bool {
             && !name.ends_with("-web")
             && entry.path().is_dir()
     })
+}
+
+/// Refuses an update that would take a command another package owns. A live
+/// link that exists but does not resolve inside this package belongs to
+/// someone else, and installing over it would remove their command; npm
+/// refuses that install with `EEXIST`. The update fails the same way, before
+/// the switch, and the live tree keeps every link it had.
+fn check_ownership(install: &Install, new: &[Command]) -> Result<(), String> {
+    let live = package_at(&install.directory, &install.package);
+    let bin = install.directory.join("bin");
+    for command in new {
+        let path = bin.join(&command.name);
+        let current = match std::fs::read_link(&path) {
+            Ok(current) => current,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "{} is not a link ({error}); remove it and retry",
+                    path.display()
+                ));
+            }
+        };
+        let resolved = resolve(&path, &current);
+        if !resolved.starts_with(&live) {
+            return Err(format!(
+                "Cannot install {}: {} belongs to another package and points at {}, so taking the command would remove it. Remove the link and retry; the installation is unchanged",
+                command.name,
+                path.display(),
+                resolved.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// How the live package folder was replaced, so the update can put the
