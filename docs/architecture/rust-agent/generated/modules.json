@@ -12732,7 +12732,6 @@
         "path HookResult::Success",
         "path HookRun",
         "path HooksRuntime",
-        "path Pending::default",
         "path PromptDecision::Context",
         "path approval_point",
         "path contribution_of",

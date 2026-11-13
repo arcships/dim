@@ -7048,7 +7048,16 @@ async fn a_stop_settles_the_branch_tool_while_the_tree_still_builds_the_child() 
             _ => None,
         })
         .unwrap();
-    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "the stopped call is an error: {:?}",
+        result.content
+    );
+    assert_eq!(
+        result.content,
+        ToolContent::Text("stopped waiting; the branch creation continues".into())
+    );
     assert!(events.iter().any(|event| matches!(&event.kind,
         EventKind::TurnEnd(data) if matches!(data.outcome, TurnOutcome::Cancelled { .. }))));
     assert!(

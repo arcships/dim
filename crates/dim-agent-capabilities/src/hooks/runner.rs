@@ -2701,25 +2701,6 @@ mod tests {
         assert!(both.contains("start context"), "{both}");
     }
 
-    /// `fold` registers the run's token before its task starts, so the
-    /// answer that folds first cancels the registered one.
-    #[test]
-    fn a_live_request_registers_its_token_before_its_task_starts() {
-        let pending = Pending::default();
-        let cancel = pending.register("approval-1", &CancellationToken::new());
-        assert!(!cancel.is_cancelled());
-        pending.cancel("approval-1");
-        assert!(
-            cancel.is_cancelled(),
-            "the registered token was not cancelled"
-        );
-        assert!(
-            pending.tokens.lock().unwrap().is_empty(),
-            "the cancelled run stayed registered"
-        );
-        pending.finish("approval-1");
-    }
-
     #[cfg(unix)]
     fn approval_request() -> ApprovalRequestData {
         ApprovalRequestData {

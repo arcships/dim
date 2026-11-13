@@ -2356,13 +2356,19 @@ async fn advisors_are_not_asked_when_the_policy_denies() {
         vec![("hooks", hooks)],
     )
     .await;
-    for policy in [
-        PermissionPolicy {
-            preset: PermissionPreset::FullAccess,
-            disallowed_tools: vec!["exec".into()],
-            ..Default::default()
-        },
-        preset(PermissionPreset::ReadOnly),
+    for (policy, reason) in [
+        (
+            PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                disallowed_tools: vec!["exec".into()],
+                ..Default::default()
+            },
+            "Tool `exec` is disallowed by the permission policy",
+        ),
+        (
+            preset(PermissionPreset::ReadOnly),
+            "Tool `exec` is not allowed by the read-only preset (starting processes)",
+        ),
     ] {
         let session = agent.create_session(config(policy.clone())).await.unwrap();
         let approval = session.service::<Approval>("main").unwrap();
@@ -2374,7 +2380,18 @@ async fn advisors_are_not_asked_when_the_policy_denies() {
             )
             .await
             .expect_err("the policy denies the call");
-        assert!(!error.to_string().is_empty());
+        assert!(
+            matches!(
+                &error,
+                HostError::Failed {
+                    message,
+                    kind: HostErrorKind::Other,
+                    model: None,
+                    ..
+                } if message == reason
+            ),
+            "the admission did not fail as the policy's own decision: {error}"
+        );
         assert_eq!(approval_requests(&session).await, 0);
         session.close().await.unwrap();
     }
