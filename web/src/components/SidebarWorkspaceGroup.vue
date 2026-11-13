@@ -2,7 +2,6 @@
 import { computed, ref } from "vue"
 import { RouterLink } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { ChevronRight, Folder, FolderOpen, Loader2, Plus } from "lucide-vue-next"
 import type { Workspace } from "../stores/sessions"
 import { formatRelativeTimeShort } from "../features/chat/timeline-time"
 
@@ -35,24 +34,33 @@ function toggleReveal(): void {
         @click.stop="emit('toggle')"
       >
         <span class="workspace-disclosure" aria-hidden="true">
-          <span class="workspace-disclosure-chevron" :data-open="expanded ? 'true' : undefined"><ChevronRight :size="14" /></span>
+          <span class="workspace-disclosure-chevron" :data-open="expanded ? 'true' : undefined">
+            <UIcon name="i-lucide-chevron-right" class="size-3.5" />
+          </span>
           <span class="workspace-disclosure-icon">
-            <FolderOpen v-if="expanded" :size="14" />
-            <Folder v-else :size="14" />
+            <UIcon :name="expanded ? 'i-lucide-folder-open' : 'i-lucide-folder'" class="size-3.5" />
           </span>
         </span>
         <strong :title="workspace.cwd">{{ workspace.name }}</strong>
       </button>
       <!-- A collapsed group with a run in flight shows a spinner where the actions fade in. -->
-      <span v-if="running" class="workspace-running" aria-hidden="true"><Loader2 :size="14" class="is-spinning" /></span>
+      <span v-if="running" class="workspace-running" aria-hidden="true">
+        <UIcon name="i-lucide-loader-2" class="size-3.5 is-spinning" />
+      </span>
       <div class="workspace-row-actions" @click.stop>
-        <RouterLink
-          class="ui-icon-button workspace-add" data-variant="ghost" data-size="sm"
-          :to="{ name: 'chat-new', query: { cwd: workspace.cwd } }"
-          :aria-label="t('sidebar.newInWorkspace', { name: workspace.name })"
-          v-tooltip="t('sidebar.newInWorkspace', { name: workspace.name })"
-          @click="emit('navigate')"
-        ><Plus aria-hidden="true" /></RouterLink>
+        <UTooltip :text="t('sidebar.newInWorkspace', { name: workspace.name })">
+          <UButton
+            class="workspace-add"
+            variant="ghost"
+            color="neutral"
+            size="sm"
+            square
+            icon="i-lucide-plus"
+            :to="{ name: 'chat-new', query: { cwd: workspace.cwd } }"
+            :aria-label="t('sidebar.newInWorkspace', { name: workspace.name })"
+            @click="emit('navigate')"
+          />
+        </UTooltip>
       </div>
     </div>
     <ul v-if="expanded" class="session-list">
@@ -71,10 +79,18 @@ function toggleReveal(): void {
         </RouterLink>
       </li>
       <li v-if="workspace.sessions.length > FIRST">
-        <button class="ui-button reveal-more" data-variant="ghost" data-size="sm" type="button" @click="toggleReveal">
-          <ChevronRight :data-open="hasMore ? undefined : 'true'" aria-hidden="true" />
+        <UButton
+          class="reveal-more w-full justify-start font-normal text-muted"
+          variant="ghost"
+          color="neutral"
+          size="sm"
+          @click="toggleReveal"
+        >
+          <template #leading>
+            <UIcon name="i-lucide-chevron-right" class="size-3.5 transition-transform" :class="hasMore ? '' : 'rotate-90'" :data-open="hasMore ? undefined : 'true'" aria-hidden="true" />
+          </template>
           {{ t(hasMore ? "sidebar.showMore" : "sidebar.showLess") }}
-        </button>
+        </UButton>
       </li>
     </ul>
   </section>

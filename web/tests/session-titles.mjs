@@ -100,7 +100,6 @@ test("owner notices update visible titles without letting delayed lists or dupli
   const root = node("root")
   const { h } = await import("vue")
   const app = renderer.createApp({ render: () => h(SidebarWorkspaceGroup, { workspace: sessions.workspaces[0], expanded: true, nowMs: 100 }) })
-  app.directive("tooltip", {})
   app.mount(root)
   t.after(() => app.unmount())
   const label = () => all(root).find(element => element.props.class === "session-open")

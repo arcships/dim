@@ -1,22 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue"
+import { computed, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch } from "lucide-vue-next"
 import { useChatStore } from "../../stores/chat"
 import { useUiStore } from "../../stores/ui"
 
 const { t } = useI18n()
 const chat = useChatStore()
 const ui = useUiStore()
-const dialog = ref<HTMLDialogElement>()
 const error = ref("")
 const ending = ref(false)
 const request = computed(() => ui.endingLine)
-
-onMounted(() => dialog.value?.showModal())
+const open = computed({
+  get: () => request.value !== undefined,
+  set: (value: boolean) => {
+    if (!value) ui.closeEndLine()
+  },
+})
 
 function close(): void {
-  dialog.value?.close()
+  ui.closeEndLine()
 }
 
 async function end(): Promise<void> {
@@ -36,23 +38,31 @@ async function end(): Promise<void> {
 </script>
 
 <template>
-  <dialog ref="dialog" class="ui-dialog" @cancel.prevent="close" @close="ui.closeEndLine()">
-    <div v-if="request">
-      <header class="ui-dialog-header">
-        <span class="ui-dialog-icon" data-tone="danger"><GitBranch :size="16" aria-hidden="true" /></span>
-        <div>
-          <h2 class="ui-dialog-title">{{ t("lines.endTitle", { name: request.purpose }) }}</h2>
-          <p class="ui-dialog-description">{{ t("lines.endDescription") }}</p>
+  <UModal v-model:open="open" :title="request ? t('lines.endTitle', { name: request.purpose }) : ''" :ui="{ footer: 'justify-end' }">
+    <template #header>
+      <div v-if="request" class="end-line-header">
+        <span class="end-line-icon" aria-hidden="true"><UIcon name="i-lucide-git-branch" class="size-4" /></span>
+        <div class="min-w-0 flex-1">
+          <h2 class="end-line-title">{{ t("lines.endTitle", { name: request.purpose }) }}</h2>
+          <p class="end-line-description">{{ t("lines.endDescription") }}</p>
         </div>
-        <button type="button" class="ui-icon-button ui-dialog-close" data-variant="close" data-size="sm" :aria-label="t('common.close')" @click="close">
-          <span aria-hidden="true">×</span>
-        </button>
-      </header>
-      <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }}</p>
-      <footer class="ui-dialog-footer">
-        <button type="button" class="ui-button" data-variant="ghost" data-size="md" :disabled="ending" @click="close">{{ t("common.cancel") }}</button>
-        <button type="button" class="ui-button" data-variant="danger" data-size="md" :disabled="ending" @click="end">{{ t("lines.end") }}</button>
-      </footer>
-    </div>
-  </dialog>
+      </div>
+    </template>
+
+    <template v-if="error" #body>
+      <UAlert color="error" variant="subtle" :description="error" />
+    </template>
+
+    <template #footer>
+      <UButton color="neutral" variant="ghost" size="md" :disabled="ending" @click="close">{{ t("common.cancel") }}</UButton>
+      <UButton color="error" variant="solid" size="md" :loading="ending" :disabled="ending" @click="end">{{ t("lines.end") }}</UButton>
+    </template>
+  </UModal>
 </template>
+
+<style scoped>
+.end-line-header { display: flex; align-items: flex-start; gap: var(--space-3); }
+.end-line-icon { display: grid; width: 32px; height: 32px; flex: none; place-items: center; border-radius: var(--radius-lg); background: color-mix(in oklab, var(--ui-error) 14%, transparent); color: var(--ui-error); }
+.end-line-title { margin: 0; font-size: var(--text-base); font-weight: var(--weight-semibold); }
+.end-line-description { margin: var(--space-1) 0 0; color: var(--muted-foreground); font-size: var(--text-sm); }
+</style>

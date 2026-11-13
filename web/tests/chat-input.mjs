@@ -5,6 +5,7 @@ import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
 import { createPinia, setActivePinia } from "pinia"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
@@ -106,7 +107,7 @@ function mount(t, branchId, questions = [], component, stores = {}, props = {}) 
     ...(component ? { running: false, modelSelectable: false, model: undefined, attachments: false, send: async () => {}, selectModel() {} } : {}),
     ...props,
   })
-  app.directive("tooltip", {})
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   t.after(() => app.unmount())
   return { root, view, replies, submissions }
@@ -121,7 +122,7 @@ async function permissionSession(t, policy) {
     supports: (method) => ["session.history.latestTurn", "session.methods", "session.permission.get", "session.permission.update"].includes(method),
     client: { async call(method, params, read) {
       if (method === "session.attach") return read({ model: { providerId: "test", modelId: "test" } })
-      if (method === "session.methods") return read({ methods: ["session.permission.get", "session.permission.update", "session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })
+      if (method === "session.methods") return read({ methods: ["session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })
       if (method === "session.branches") return read({ branches: [] })
       if (method === "session.input.pending") return read({ ...params, inputs: [], next: null })
       if (method === "session.question.pending") return read({ ...params, batches: [], next: null })
@@ -146,7 +147,7 @@ async function permissionSession(t, policy) {
 test("permission presets preserve tool exceptions and confirm full access", async (t) => {
   const initial = { preset: "workspace-write", allowedTools: ["read"], disallowedTools: ["exec"] }
   const { root, chat, server, option } = await permissionSession(t, initial)
-  const confirmation = () => all(root).find((element) => element.type === "dialog" && element.props.open)
+  const confirmation = () => all(root).find((element) => element.props.role === "dialog")
   assert.equal(option("composer.permission.preset.workspace-write").props["aria-pressed"], true)
   assert.match(text(root), /composer.permission.allowedTools: read/)
   assert.match(text(root), /composer.permission.disallowedTools: exec/)
