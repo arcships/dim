@@ -90,8 +90,12 @@ A fetch or validation failure leaves the catalog as it was. Review and commit th
 catalog after a sync. Model entries occupy individual lines for review. Upstream responses
 and intermediate model lists stay in memory.
 
-Before a release, run `node scripts/update-provider-catalog.ts --sync` with the Node version
-in `.node-version` and read its summary. Commit the regenerated catalog with the summary in
-the commit message, so a reviewer reads the summary rather than the diff. A patch that no
-longer matches a model fails the run instead of being dropped; fix the override or the
-policy and run again.
+Before a release, run `node scripts/update-provider-catalog.ts --sync` once with the Node
+version in `.node-version`, in a clean checkout of the latest `origin/main`, and read its
+summary. No diff means the release continues. A diff is committed on its own branch with
+the summary in the commit message, and it reaches `main` through a pull request the user
+approves; a patch that no longer matches a model fails the run instead of being dropped, so
+fix the override or the policy and run again. Never sync twice for one release, and
+recovery or nightly repair skips the step because it rebuilds an existing SHA or tag. The
+[release skill](../../.agents/skills/dim-release/SKILL.md#sync-the-bundled-catalog-before-each-release)
+carries the steps.
