@@ -510,6 +510,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                                         "The task's output file is no longer available; it was removed or its Session was deleted",
                                     ),
                                     background::OutputPageError::Closed => RpcError::reloading(),
+                                    background::OutputPageError::Read(error) => error.into(),
                                 })?;
                             return reply(page);
                         }
@@ -542,6 +543,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                                     "No live output is available for this task",
                                 ),
                                 background::TaskError::Closed => RpcError::reloading(),
+                                background::TaskError::Read(error) => error.into(),
                             })?;
                         Ok(serde_json::json!({"text":text}))
                     })

@@ -1394,6 +1394,11 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
             .configure_loaded(Some(selected.clone()), Vec::new())
             .await
             .unwrap();
+        session
+            .submit("initialize actual request".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
         let usage = session
             .service::<ContextPreparation>("main")
             .unwrap()

@@ -1028,7 +1028,17 @@ async fn a_restart_completes_an_end_without_its_result() {
     let info = commands
         .info("grand".into())
         .expect("an ended line keeps its record");
-    assert_eq!(info.source, Some(options("grandchild").source));
+    assert_eq!(info.source, None);
+    assert_eq!(
+        commands
+            .display("grand".into())
+            .await
+            .unwrap()
+            .entry
+            .info
+            .source,
+        Some(options("grandchild").source)
+    );
     soon(agent.close()).await.unwrap();
 }
 
@@ -1519,7 +1529,7 @@ async fn a_restore_reads_a_line_end_in_one_page_and_no_range() {
             ancestor: None,
         }]
     );
-    let pages = counting.pages("B", &["branch/end"]);
+    let pages = counting.pages("B", &["branch/start", "branch/end"]);
     assert_eq!(
         pages, 1,
         "a line with no end costs one page, whatever its length; the restore asked {pages} times"
@@ -2674,6 +2684,23 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
         .unwrap();
     soon(session.idle("main")).await.unwrap();
     let high = session.sequence("main").unwrap();
+    let fixed = soon(session.branch("main".into(), high, options("fixed head")))
+        .await
+        .unwrap();
+    soon(session.idle(&fixed)).await.unwrap();
+    let fixed_create = create_event(&branch_events(&session, "main", ..).await.unwrap());
+    assert!(matches!(&fixed_create.kind, EventKind::BranchCreate(data)
+        if data.at == BranchCreateAt::Sequence { sequence: high }));
+    assert_eq!(
+        session
+            .branches()
+            .iter()
+            .find(|info| info.id == fixed)
+            .unwrap()
+            .branch_point,
+        Some(high),
+        "a caller's head remains a fixed cut while the parent can advance"
+    );
     *probe.rewrite.lock().unwrap() = Rewrite::Business(
         BranchCreateAt::Sequence { sequence: 1 },
         "final prompt".into(),
@@ -2776,7 +2803,7 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     );
     assert_eq!(
         probe.child_builds.load(Ordering::SeqCst),
-        3,
+        4,
         "inherited create events must not be dispatched"
     );
     soon(agent.close()).await.unwrap();
@@ -2827,10 +2854,11 @@ async fn delayed_create_uses_its_anchor_and_survives_an_abandoned_waiter() {
     soon(session.idle(&child.id)).await.unwrap();
     assert_eq!(
         (child.branch_point, child.create_anchor),
-        (Some(create.sequence), Some(create.sequence))
+        (Some(high), Some(create.sequence))
     );
     let prefix = chain_events(&session, &child.id, ..=0).await.unwrap();
-    assert_eq!(prefix.last().unwrap().id, create.id);
+    assert_eq!(prefix.last().unwrap().sequence, high);
+    assert!(!prefix.iter().any(|event| event.id == create.id));
     assert!(!prefix.iter().any(|event| event.id == later.id));
     soon(agent.close()).await.unwrap();
 }

@@ -4,6 +4,7 @@ use std::{net::Shutdown, os::fd::OwnedFd};
 
 const METHODS: &[&str] = &[
     "session.attach",
+    "session.attach.expectedCwd",
     "session.detach",
     "session.submit",
     "session.input_lookup",
@@ -61,7 +62,7 @@ fn recovery_hello(wire: &mut Wire, instance: &str) {
     let hello = wire.read("hello");
     assert_eq!(hello["params"]["clientName"], "AcpGateway");
     wire.2 = true;
-    wire.reply(&hello,json!({"instanceId":instance,"serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.input_lookup","session.methods"]}));
+    wire.reply(&hello,json!({"instanceId":instance,"serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.input_lookup","session.methods","session.attach.expectedCwd","session.turn.get.inputId"]}));
 }
 
 /// #557: `session/new` records the editor as its creation origin, on a daemon
@@ -298,7 +299,7 @@ fn acp_stdio_context_usage_deserializes_as_protocol_integers() {
 
 #[test]
 fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_observation() {
-    for restarted in [false, true] {
+    for (restarted, limited) in [(false, false), (true, false), (false, true)] {
         let home = Home::new();
         let cwd = fs::canonicalize(&home.0).unwrap();
         let endpoint = home.0.join("rust/daemon.sock");
@@ -343,12 +344,11 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
                 submit["params"]["submissionId"]
             );
             wire.reply(&lookup, json!({"status":"accepted","event":input}));
-            let list = wire.read("session.list");
-            wire.reply(&list, json!([{"sessionId":"session","cwd":cwd}]));
             let attach = wire.read("session.attach");
+            assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
             wire.reply(&attach, json!({}));
             let history = wire.read("session.history");
-            let facts = vec![
+            let facts = [
                 delegation,
                 input,
                 event(10, "start", "turn", "start", json!({"turn_id":"owned"})),
@@ -375,14 +375,12 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
                 ),
             ];
             let pending = json!({"eventId":"delegation","sequence":8,"startedAt":1,"request":facts[0]["data"],"delivery":null});
-            let after = history["params"]["after"].as_u64().unwrap();
-            let facts: Vec<_> = facts
-                .into_iter()
-                .filter(|fact| fact["sequence"].as_u64().unwrap() > after)
-                .collect();
+            assert_eq!(history["params"]["latestTurn"], true);
+            assert_eq!(history["params"]["limit"], 64);
+            assert!(history["params"].get("after").is_none());
             wire.reply(
                 &history,
-                json!({"events":facts,"through":13,"nextAfter":13,"done":true}),
+                json!({"events":[facts[4]],"through":13,"nextBefore":12,"nextAfter":12,"done":true}),
             );
             let methods = wire.read("session.methods");
             wire.reply(
@@ -393,6 +391,22 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
             wire.reply(
                 &read,
                 json!({"branchId":"main","through":13,"requests":[pending],"next":null}),
+            );
+            let current = wire.read("session.turn.get");
+            assert!(current["params"].get("inputId").is_none());
+            wire.reply(
+                &current,
+                json!({"branchId":"main","through":13,"turn":null,"output":null}),
+            );
+            let turn = wire.read("session.turn.get");
+            assert_eq!(turn["params"]["inputId"], "accepted-input");
+            let mut boundary = json!({"turnId":"owned","sequence":13,"ended":true,"outcome":{"status":if restarted {"cancelled"} else {"completed"},"reason":if restarted {"server_restarted"} else {"end_turn"}}});
+            if limited {
+                boundary["outcome"] = json!({"status":"completed","reason":"output_limit"});
+            }
+            wire.reply(
+                &turn,
+                json!({"branchId":"main","through":13,"turn":boundary,"output":null}),
             );
             detached_eof(&mut wire);
         });
@@ -409,7 +423,13 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
         let completed = peer.response(3);
         assert_eq!(
             completed["result"]["stopReason"],
-            if restarted { "cancelled" } else { "end_turn" },
+            if restarted {
+                "cancelled"
+            } else if limited {
+                "max_tokens"
+            } else {
+                "end_turn"
+            },
             "{completed}"
         );
         let text: String = peer
@@ -623,17 +643,16 @@ fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
 #[test]
 fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        let attach = wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({}));
         let old = wire.read("session.history");
         wire.notice("session.closed",json!({"sessionId":"saved"}));
-        let list = wire.read("session.list");
+        let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
         wire.reply(&old,json!({"events":[event(8,"old","step","text",json!({"turn_id":"old","request_id":"old","delta":"must not leak"}))],"through":8,"nextAfter":8,"done":true}));
-        wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        wire.reply(&attach,json!({}));
         let fresh = wire.read("session.history");
         wire.reply(&fresh,json!({"events":[event(9,"fresh","step","text",json!({"turn_id":"fresh","request_id":"fresh","delta":"fresh runtime"}))],"through":9,"nextAfter":9,"done":true}));
         detached_eof(wire);
@@ -664,13 +683,12 @@ fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
 #[test]
 fn acp_stdio_cancelling_one_load_waiter_does_not_cancel_the_shared_preparation() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let (waiting, ready) = std::sync::mpsc::sync_channel(0);
     let (release, delayed) = std::sync::mpsc::sync_channel(0);
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        let attach = wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({}));
         let history = wire.read("session.history"); waiting.send(()).unwrap(); delayed.recv_timeout(PATIENCE).unwrap();
         wire.reply(&history,json!({"events":[event(8,"answer","step","text",json!({"turn_id":"turn","request_id":"model","delta":"one replay"}))],"through":8,"nextAfter":8,"done":true}));
         detached_eof(wire);
@@ -1909,11 +1927,14 @@ fn lody_projection(version: u32) {
             event(19,"background-ended","exec","ended",json!({"task_id":"background","status":"cancelled","result":{"content":"Native command was cancelled","isError":true}})),
         ];
         for fact in &facts { wire.notice("session.event",json!({"sessionId":"session","branchId":"main","event":fact})); }
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"session","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({"sequence":19}));
         let history = wire.read("session.history");
-        assert_eq!(history["params"]["after"],0);
-        wire.reply(&history,json!({"events":facts,"through":19,"nextAfter":19,"done":true}));
+        assert_eq!(history["params"]["latestTurn"],true);
+        assert_eq!(history["params"]["limit"],64);
+        assert!(history["params"].get("after").is_none());
+        wire.reply(&history,json!({"events":[facts[9],facts[10]],"through":19,"nextBefore":18,"nextAfter":19,"done":true}));
+        let earlier=wire.read("session.history");
+        assert_eq!(earlier["params"],json!({"sessionId":"session","branchId":"main","through":19,"before":18,"limit":2}));
+        wire.reply(&earlier,json!({"events":[facts[7],facts[8]],"through":19,"nextBefore":16,"nextAfter":17,"done":true}));
         let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"session","cwd":cwd}]));
         let turn = wire.read("session.turn.get");
         assert_eq!(turn["params"]["turnId"],"turn");
@@ -1944,9 +1965,30 @@ fn lody_projection(version: u32) {
     peer.send(
         3,
         "_lody/session/history/read",
-        json!({"sessionId":"session"}),
+        json!({"sessionId":"session","version":1}),
     );
-    assert_eq!(peer.response(3)["result"], json!({}));
+    assert_eq!(
+        peer.response(3)["error"]["data"]["code"],
+        "unsupported_history_version"
+    );
+    peer.send(
+        30,
+        "_lody/session/history/read",
+        json!({"sessionId":"session","version":2}),
+    );
+    assert_eq!(
+        peer.response(30)["result"],
+        json!({"through":19,"before":18,"complete":false})
+    );
+    peer.send(
+        31,
+        "_lody/session/history/read",
+        json!({"sessionId":"session","version":2,"through":19,"before":18,"limit":2}),
+    );
+    assert_eq!(
+        peer.response(31)["result"],
+        json!({"through":19,"before":16,"complete":false})
+    );
     let snapshots: Vec<_> = peer
         .updates
         .iter()
@@ -2738,34 +2780,30 @@ fn acp_stdio_correlates_the_consumed_input_and_deduplicates_unicode_progress() {
 fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
     for display in [false, true] {
         let home = Home::new();
-        let cwd = fs::canonicalize(&home.0).unwrap();
+        let cwd = home.0.clone();
         let daemon = home.daemon(move |wire| {
         let mut methods = METHODS.to_vec();
-        if display { methods.extend(["session.history.display", "session.history.detail"]); }
+        if display { methods.extend(["session.history.display", "session.history.detail", "session.history.display.tail", "session.history.display.transcript"]); }
         wire.hello(&methods);
         let method = if display { "session.history.display" } else { "session.history" };
         let field = if display { "items" } else { "events" };
-        let list = wire.read("session.list");
-        wire.reply(
-            &list,
-            json!([{"sessionId":"saved","cwd":cwd,"title":"Saved title","titleRevision":2}]),
-        );
         let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
         assert_eq!(attach["params"].get("display"), display.then_some(&json!(true)));
-        wire.reply(&attach, json!({}));
+        wire.reply(&attach, json!({"title":"Saved title","titleRevision":2}));
         let first = wire.read(method);
+        assert_eq!(first["params"].get("tail"),display.then_some(&json!(true)));
+        assert_eq!(first["params"].get("transcript"), display.then_some(&json!(true)));
+        assert_eq!(first["params"]["limit"], if display { 32 } else { 64 });
         assert!(first["params"].get("through").is_none());
         wire.reply(
             &first,
-            json!({(field):if display { vec![
-                event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"})),
-                event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"})),
-                event(8,"compact-8","display","compaction",json!({"strategy":"summary"}))
-            ] } else { vec![] },"through":8,"nextBefore":4,"nextAfter":8,"done":false}),
+            json!({(field):[],"through":9,"nextBefore":9,"nextAfter":9,"done":false}),
         );
         let second = wire.read(method);
-        assert_eq!(second["params"]["through"], 8);
-        assert_eq!(second["params"]["before"], 4);
+        assert_eq!(second["params"]["limit"], 64);
+        assert_eq!(second["params"]["through"], 9);
+        assert_eq!(second["params"]["before"], 9);
         let text = event(
             3,
             "answer",
@@ -2780,14 +2818,18 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
         if display {
             wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"}))}));
             wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"}))}));
-            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(9,"compact-9","context","compaction-start",json!({"through":8,"trigger":"manual","strategy":"summary"}))}));
+            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(10,"compact-10","context","compaction-start",json!({"through":9,"trigger":"manual","strategy":"summary"}))}));
             for _ in 0..2 {
-                wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(10,"compact-10","display","compaction",json!({"start":9,"strategy":"summary"}))}));
+                wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(11,"compact-11","display","compaction",json!({"start":10,"strategy":"summary"}))}));
             }
         }
         wire.reply(
             &second,
-            json!({(field):[text],"through":8,"nextBefore":1,"nextAfter":3,"done":true}),
+            json!({(field):if display { vec![text,
+                event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"})),
+                event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"})),
+                event(8,"compact-8","display","compaction",json!({"strategy":"summary"}))
+            ] } else { vec![text] },"through":9,"nextBefore":1,"nextAfter":8,"done":true}),
         );
         detached_eof(wire);
     });
@@ -2844,7 +2886,7 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
                 5,
                 "replay/live duplicates do not repeat activities: {activities:?}"
             );
-            for start in [6, 9] {
+            for start in [6, 10] {
                 let id = json!(["compaction", start]).to_string();
                 let pair: Vec<_> = activities
                     .iter()
@@ -3075,16 +3117,15 @@ fn acp_stdio_reports_a_blocked_prompt_as_refusal_with_the_reason() {
 #[test]
 fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list");
-        wire.reply(&list, json!([{"sessionId":"saved","cwd":cwd}]));
         let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
         wire.reply(&attach, json!({"sequence":1000}));
-        for page in 0..4_u64 {
+        for page in 0..1_u64 {
             let read = wire.read("session.history");
-            assert_eq!(read["params"]["limit"], 256);
+            assert_eq!(read["params"]["limit"], 64);
             if page == 0 {
                 assert_eq!(read["params"]["latestTurn"], true);
                 wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(1001,"live","step","text",json!({"turn_id":"turn","request_id":"reply","delta":"live"}))}));
@@ -3108,7 +3149,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let loaded = peer.response(2);
     assert_eq!(
         loaded["result"]["_meta"]["dim/history"],
-        json!({"through":1000,"before":600,"complete":false}),
+        json!({"through":1000,"before":900,"complete":false}),
         "{loaded}"
     );
     let text: String = peer
@@ -3116,7 +3157,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
         .iter()
         .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
         .collect();
-    assert_eq!(text, "p3p2p1p0");
+    assert_eq!(text, "p0");
     let live = peer.frame();
     assert_eq!(live["params"]["update"]["content"]["text"], "live");
     peer.close();
@@ -3124,13 +3165,12 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
 }
 
 #[test]
-fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_history() {
+fn acp_load_keeps_an_orphan_result_without_reading_original_arguments() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon=home.daemon(move |wire| {
         let mut methods=METHODS.to_vec(); methods.push("session.methods"); wire.hello(&methods);
-        let list=wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach=wire.read("session.attach"); wire.reply(&attach,json!({"sequence":1000}));
+        let attach=wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({"sequence":1000}));
         let history=wire.read("session.history"); assert_eq!(history["params"]["latestTurn"],true);
         let mut events:Vec<_>=(900..999).map(|sequence|event(sequence,&format!("text-{sequence}"),"step","text",json!({"turn_id":"turn","request_id":format!("r-{sequence}"),"delta":"text"}))).collect();
         events.push(event(999,"result","step","tool-result",json!({"turn_id":"turn","request_id":"old-request","results":[{"call_id":"old-call","result":{"content":"saved result"}}]})));
@@ -3138,9 +3178,6 @@ fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_hist
         let methods=wire.read("session.methods");
         wire.reply(&methods,json!({"methods":[{"name":"session.tool.get","mutating":false}]}));
         wire.2=true;
-        let read=wire.read("session.tool.get");
-        assert_eq!(read["params"],json!({"sessionId":"saved","branchId":"main","requestId":"old-request","callId":"old-call","through":1000}));
-        wire.reply(&read,json!({"branchId":"main","through":1000,"call":{"turn_id":"turn","request_id":"old-request","call":{"id":"old-call","name":"echo","input":{"text":"original arguments"}}}}));
         detached_eof(wire);
     });
     let mut peer = Peer::start(&home);
@@ -3162,7 +3199,8 @@ fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_hist
         .collect();
     assert_eq!(updates.len(), 2, "{updates:?}");
     assert_eq!(updates[0]["sessionUpdate"], "tool_call");
-    assert_eq!(updates[0]["rawInput"], json!({"text":"original arguments"}));
+    assert_eq!(updates[0]["rawInput"], Value::Null);
+    assert_eq!(updates[0]["title"], "old-call");
     assert_eq!(updates[1]["status"], "completed");
     peer.close();
     daemon.join().unwrap();
@@ -3204,6 +3242,38 @@ fn acp_stdio_does_not_offer_fork_without_the_native_turn_read() {
             .contains("session.turn.get"),
         "{refused}"
     );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_load_and_resume_report_unavailable_sessions_without_listing_history() {
+    let home = Home::new();
+    let cwd = home.0.clone();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(METHODS);
+        for _ in 0..2 {
+            let attach = wire.read("session.attach");
+            assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
+            wire.send(json!({"jsonrpc":"2.0","id":attach["id"],"error":{"code":-32001,"message":"missing is closed","data":{"appError":"session_closed"}}}));
+            let detach = wire.read("session.detach");
+            wire.reply(&detach, json!({}));
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    for (id, method) in [(2, "session/load"), (3, "session/resume")] {
+        peer.send(
+            id,
+            method,
+            json!({"sessionId":"missing","cwd":home.0,"mcpServers":[]}),
+        );
+        let response = peer.response(id);
+        let expected =
+            serde_json::to_value(acp::Error::resource_not_found(Some("missing".into()))).unwrap();
+        assert_eq!(response["error"], expected);
+    }
     peer.close();
     daemon.join().unwrap();
 }
