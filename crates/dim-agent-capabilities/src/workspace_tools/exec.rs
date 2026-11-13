@@ -2521,14 +2521,8 @@ const ALWAYS_REFUSED: &[&str] = &[
     "echo \"${v:-$\\\n(sleep 5 &)}\"",
     "# note \\\nsleep 5 &",
     "/bin/sle\\\nep 5 &",
-    // `\\` is an escaped backslash, so the newline after it starts a line
-    // rather than continuing one, and the heredoc ends at the next `EOF`.
     "cat <<EOF \\\\\nEOF\nsleep 5 &\nx=1\nEOF",
-    // The same run inside `" "`: taking the newline as a continuation swallows
-    // the closing quote.
     "echo \"a\\\\\n\" ; sleep 5 & echo \"b\" \"\"",
-    // The same inside `${...}`. zsh rejects the line, so refusing it costs
-    // nothing there.
     "echo ${v:-a\\\\\n} ; sleep 5 & echo }",
 ];
 
@@ -2537,8 +2531,6 @@ const ALWAYS_REFUSED: &[&str] = &[
 /// `false` here is a row the shell accepts without starting the job.
 #[cfg(test)]
 const BY_EDITION: &[(&str, [bool; 6])] = &[
-    // An unquoted delimiter joined across a continuation: bash and zsh end the
-    // body there, dash and ksh do not, and `sh` may be either.
     (
         "cat <<true\ntr\\\nue\nsleep 5 &\ntrue",
         [true, true, true, true, false, false],
@@ -2547,26 +2539,17 @@ const BY_EDITION: &[(&str, [bool; 6])] = &[
         "cat <<-true\n\ttr\\\nue\nsleep 5 &\ntrue",
         [true, true, true, true, false, false],
     ),
-    // `$'a\' '` opens a quote that runs to the next `'`, so the `&` between
-    // them is text; dash has no `$'` and rejects the line.
     (
         "echo $'a\\' ' & sleep 5 &",
         [true, true, true, true, false, true],
     ),
-    // `(( cmd & ))` is arithmetic only where the shell has that command.
     ("(( sleep 5 & ))", [false, false, false, true, true, false]),
     ("(( a & b ))", [false, false, false, true, true, false]),
-    // The inner `)` closes the subshell before `))`, so `&` is a marker where
-    // the line parses at all; dash and ksh reject it instead of running it.
     ("(( (1 & 2) ))", [false, false, false, true, true, false]),
-    // A continuation between the two halves of `&&`: bash and dash read an
-    // `&&`, zsh rejects it, and ksh reads `&` followed by a marker.
     (
         "sleep 5 &\\\n& echo hi",
         [false, false, true, false, false, true],
     ),
-    // `$\` + newline + `(cmd)`: a continuation joins inside `" "` and `${...}`
-    // for every edition, because joining can only add a substitution to read.
     (
         "echo \"$\\\n(sleep 5 &)\"",
         [true, true, true, true, true, true],
@@ -2575,27 +2558,19 @@ const BY_EDITION: &[(&str, [bool; 6])] = &[
         "echo \"${v:-$\\\n(sleep 5 &)}\"",
         [true, true, true, true, true, true],
     ),
-    // A continuation between the two halves of `<<`: bash and dash join it and
-    // start the job, while zsh and ksh reject the operator and start nothing.
     (
         "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
         [true, true, false, true, true, false],
     ),
-    // `$'it\'s & fine'` is inert where the quote exists, and dash has no `$'`,
-    // so it refuses the line as a syntax error. `sh` may be dash.
     (
         "echo $'it\\'s & fine'",
         [false, false, false, true, true, false],
     ),
-    // `$'...'` also applies inside `${...}`, so the quote there runs past the
-    // escaped `'` and the `&` after it stays text. dash rejects the line.
     (
         "echo ${v:-$'a\\'b'} & sleep 5 &",
         [true, true, true, true, false, true],
     ),
-    // `|&` is a ksh coprocess, which runs in the background.
     ("sleep 5 |& cat", [false, false, false, true, true, true]),
-    // `&>` and `&>>` are a marker plus a redirect outside bash and zsh.
     (
         "sleep 5 &> /dev/null",
         [false, false, false, true, true, true],
@@ -2616,8 +2591,6 @@ const INERT: &[&str] = &[
     "cat <<EOF\na & b\nEOF",
     "cat <<-EOF\n\ta & b\n\tEOF",
     "cat <<\\EOF\na & b\nEOF",
-    // `abc\` + `EOF` is a continuation, so that line is not the delimiter and
-    // the body runs to the second `EOF`.
     "cat <<EOF\nabc\\\nEOF\n'\nEOF",
     "cat <<'true'\ntr\\\nue\n(sleep 5 &)\ntrue",
     "cat <<\"EOF\"\na & b\nEOF",
@@ -2761,10 +2734,8 @@ fn every_inert_script_leaves_the_scan_at_the_top_level() {
     }
 }
 
-/// A pair an edition accepts only because that shell rejects the whole line: the
-/// shell stops at a parse error, so a marker appended after it starts nothing
-/// and a refusal would not be accuracy. These four are the only such pairs, and
-/// the probe shows no background job for each of them with the marker appended.
+/// Accepted pairs whose shell rejects the whole line, so a marker appended after
+/// it starts nothing.
 #[cfg(test)]
 const REJECTS_THE_LINE: &[(&str, ShellEdition)] = &[
     ("echo $'a\\' ' & sleep 5 &", ShellEdition::Dash),
