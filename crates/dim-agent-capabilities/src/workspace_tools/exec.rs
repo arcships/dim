@@ -2521,6 +2521,9 @@ const INERT: &[&str] = &[
     "cat <<EOF\na & b\nEOF",
     "cat <<-EOF\n\ta & b\n\tEOF",
     "cat <<\\EOF\na & b\nEOF",
+    // `abc\` + `EOF` is a continuation, so that line is not the delimiter and
+    // the body runs to the second `EOF`.
+    "cat <<EOF\nabc\\\nEOF\n'\nEOF",
     "cat <<'true'\ntr\\\nue\n(sleep 5 &)\ntrue",
     "cat <<\"EOF\"\na & b\nEOF",
     "cat <<A <<B\nx & y\nA\na & b\nB",
@@ -2634,5 +2637,21 @@ fn an_unreadable_command_keeps_the_quote_only_verdict() {
             refused,
             "{script:?}"
         );
+    }
+}
+
+/// Appending a marker to a script the scan already holds at the top level must
+/// refuse it, on every edition. A scan left inside a quote or a body it never
+/// left reads the appended marker as text.
+#[cfg(test)]
+#[test]
+fn every_inert_script_leaves_the_scan_at_the_top_level() {
+    for script in INERT {
+        for edition in EDITIONS {
+            assert!(
+                refuses(&format!("{script}\nsleep 5 &"), *edition),
+                "{edition:?} still accepts after a marker: {script:?}"
+            );
+        }
     }
 }
