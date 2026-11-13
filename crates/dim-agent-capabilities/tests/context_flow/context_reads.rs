@@ -2757,9 +2757,11 @@ async fn a_below_threshold_preparation_reads_no_growing_turn_order() {
             );
         }
     }
-    assert_eq!(
-        per_turn[0].len(),
-        per_turn[per_turn.len() - 1].len(),
+    assert!(
+        per_turn
+            .iter()
+            .skip(1)
+            .all(|calls| calls.len() <= per_turn[0].len()),
         "the reads of a turn do not grow with the stored history: {per_turn:?}"
     );
     agent.close().await.unwrap();
