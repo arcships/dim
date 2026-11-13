@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Setujui untuk saya",
         "Full access" => "Akses penuh",
         "Run {tool}" => "Jalankan {tool}",
+        "edit {count} replacement in {path}" => "edit {count} penggantian di {path}",
+        "edit {count} replacements in {path}" => "edit {count} penggantian di {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Ubah mode persetujuan di sini belum tersedia"
         }

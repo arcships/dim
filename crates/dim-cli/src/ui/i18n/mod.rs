@@ -150,6 +150,30 @@ mod tests {
         set(previous);
     }
 
+    /// The two `edit` preview keys, translated in every locale with the tool
+    /// name literal and both arguments kept.
+    #[test]
+    fn every_locale_translates_the_edit_preview_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            set(locale);
+            for (key, count) in [
+                ("edit {count} replacement in {path}", "1"),
+                ("edit {count} replacements in {path}", "2"),
+            ] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+                let text = tf(key, &[("count", count), ("path", "fixture-path")]);
+                assert!(text.contains("fixture-path"), "{code} drops the path");
+                assert!(text.contains(count), "{code} drops the count");
+                assert!(text.contains("edit"), "{code} translates the tool name");
+            }
+        }
+        set(previous);
+    }
+
     /// The locale's own table, without the English fallback `t` applies.
     fn table(locale: Locale, english: &str) -> Option<&'static str> {
         let lookup: fn(&str) -> Option<&'static str> = match locale {

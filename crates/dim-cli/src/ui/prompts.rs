@@ -282,6 +282,30 @@ fn plain(key: KeyEvent) -> bool {
     key.mods.0 & !Modifiers::SHIFT.0 == 0
 }
 
+/// An `edit` preview states how many replacements the call carries and the
+/// file, instead of dumping every replacement into one line. A recorded call
+/// holding the older top-level `oldText`/`newText` form counts as one.
+fn replacements(tool: &str, input: &Value) -> Option<String> {
+    if tool != "edit" {
+        return None;
+    }
+    let path = input.get("path")?.as_str()?;
+    let count = match input.get("edits") {
+        Some(Value::Array(edits)) => edits.len(),
+        Some(_) => return None,
+        None if input.get("oldText").is_some() => 1,
+        None => return None,
+    };
+    Some(tf(
+        if count == 1 {
+            "edit {count} replacement in {path}"
+        } else {
+            "edit {count} replacements in {path}"
+        },
+        &[("count", &count.to_string()), ("path", path)],
+    ))
+}
+
 fn collapse(text: &str) -> String {
     let mut out = String::new();
     let mut last_space = false;
@@ -552,6 +576,9 @@ impl PermissionPrompt {
                     .join(" ");
             }
             _ => {}
+        }
+        if let Some(preview) = replacements(&self.tool_name, &self.input) {
+            return preview;
         }
         if self.input.is_null() {
             return self.tool_name.clone();
@@ -1825,6 +1852,36 @@ mod tests {
         assert!(
             !rows.iter().any(|row| row.contains("boundary")),
             "{rows:#?}"
+        );
+    }
+
+    #[test]
+    fn edit_prompt_previews_the_replacements_by_count() {
+        let preview = |input| {
+            PermissionPrompt::new(
+                "r1".into(),
+                "main".into(),
+                "source: tool_rule".into(),
+                "edit".into(),
+                input,
+                false,
+            )
+            .lines()
+        };
+        let two = preview(serde_json::json!({"path": "src/lib.rs", "edits": [
+            {"oldText": "one", "newText": "first"},
+            {"oldText": "two", "newText": "second"},
+        ]}));
+        assert!(
+            two[1].contains("$ edit 2 replacements in src/lib.rs"),
+            "{two:#?}"
+        );
+        assert!(!two[1].contains("oldText"), "{two:#?}");
+        let recorded =
+            preview(serde_json::json!({"path": "src/lib.rs", "oldText": "a", "newText": "b"}));
+        assert!(
+            recorded[1].contains("$ edit 1 replacement in src/lib.rs"),
+            "{recorded:#?}"
         );
     }
 

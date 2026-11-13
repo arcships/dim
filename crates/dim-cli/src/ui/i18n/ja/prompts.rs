@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "自動承認",
         "Full access" => "フルアクセス",
         "Run {tool}" => "{tool} を実行",
+        "edit {count} replacement in {path}" => "{path} で edit {count} 件置換",
+        "edit {count} replacements in {path}" => "{path} で edit {count} 件置換",
         "Changing the approvals mode from here is not yet available" => {
             "ここでは承認モードを変更不可"
         }

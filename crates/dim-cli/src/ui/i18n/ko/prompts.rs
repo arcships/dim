@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "스마트 권한",
         "Full access" => "전체 액세스",
         "Run {tool}" => "{tool} 실행",
+        "edit {count} replacement in {path}" => "{path}에서 edit {count}개 치환",
+        "edit {count} replacements in {path}" => "{path}에서 edit {count}개 치환",
         "Changing the approvals mode from here is not yet available" => {
             "여기서 승인 모드 변경 아직 미지원"
         }

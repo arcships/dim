@@ -42,6 +42,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "智能权限",
         "Full access" => "完全访问权限",
         "Run {tool}" => "运行 {tool}",
+        "edit {count} replacement in {path}" => "在 {path} 中 edit {count} 处替换",
+        "edit {count} replacements in {path}" => "在 {path} 中 edit {count} 处替换",
         "Changing the approvals mode from here is not yet available" => {
             "暂不支持在此处更改 approvals 模式"
         }

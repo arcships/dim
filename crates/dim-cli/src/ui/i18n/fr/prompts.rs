@@ -43,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Approuver pour moi",
         "Full access" => "Accès complet",
         "Run {tool}" => "Exécuter {tool}",
+        "edit {count} replacement in {path}" => "edit {count} remplacement dans {path}",
+        "edit {count} replacements in {path}" => "edit {count} remplacements dans {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Mode d'approbation non modifiable ici pour l'instant"
         }
