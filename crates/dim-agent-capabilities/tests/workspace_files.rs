@@ -955,6 +955,29 @@ async fn a_failed_replacement_writes_nothing_and_names_its_index() {
 }
 
 #[tokio::test]
+async fn a_replacement_that_does_not_parse_names_its_index() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("parse.txt", b"alpha\nbeta\n");
+    ok(&workspace.read(&reads, "parse.txt").await);
+
+    let failed = workspace
+        .edits(
+            &reads,
+            "parse.txt",
+            json!([
+                { "oldText": "alpha", "newText": "A" },
+                { "oldText": "beta" },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&failed), "invalid_input");
+    assert_eq!(structured(&failed)["index"], 1);
+    assert!(text(&failed).starts_with("edits[1]: "), "{}", text(&failed));
+    assert_eq!(workspace.bytes("parse.txt"), b"alpha\nbeta\n");
+}
+
+#[tokio::test]
 async fn edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once() {
     let workspace = Workspace::new();
     let reads = branch();

@@ -93,17 +93,16 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
             items
                 .iter()
                 .enumerate()
-                .map(|(index, item)| {
-                    let Some(item) = item.as_object() else {
-                        return Err(invalid_input(format!(
-                            "edits[{index}]: each replacement must be an object with oldText and newText."
-                        )));
-                    };
-                    replacement(item, Some(index))
+                .map(|(index, item)| match item.as_object() {
+                    Some(item) => replacement(item).map_err(|result| for_index(result, index)),
+                    None => Err(for_index(
+                        invalid_input("a replacement must be an object with oldText and newText."),
+                        index,
+                    )),
                 })
                 .collect::<Result<Vec<_>, _>>()?
         }
-        None => vec![replacement(input, None)?],
+        None => vec![replacement(input).map_err(|result| for_index(result, 0))?],
     };
     Ok(Input {
         path: path.clone(),
@@ -111,21 +110,18 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
     })
 }
 
-/// One replacement read from `fields`, named by its position in the list when
-/// it has one.
-fn replacement(fields: &JsonObject, index: Option<usize>) -> Result<Replacement, ToolResult> {
-    let at = |message: String| match index {
-        Some(index) => format!("edits[{index}]: {message}"),
-        None => message,
-    };
+/// One replacement read from `fields`; a failure names its entry through
+/// [`for_index`] at the caller, so a parse failure and an apply failure carry
+/// the same field.
+fn replacement(fields: &JsonObject) -> Result<Replacement, ToolResult> {
     let Some(Value::String(old_text)) = field(fields, "oldText") else {
-        return Err(invalid_input(at("edit requires a string oldText.".into())));
+        return Err(invalid_input("edit requires a string oldText."));
     };
     if old_text.is_empty() {
-        return Err(invalid_input(at("oldText must not be empty.".into())));
+        return Err(invalid_input("oldText must not be empty."));
     }
     let Some(Value::String(new_text)) = field(fields, "newText") else {
-        return Err(invalid_input(at("edit requires a string newText.".into())));
+        return Err(invalid_input("edit requires a string newText."));
     };
     Ok(Replacement {
         old_text: old_text.clone(),

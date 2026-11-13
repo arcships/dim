@@ -301,7 +301,8 @@ previous one produced, so the later entries can depend on the earlier ones and
 no overlap between them needs a rule. One read, one revision check, one path
 lock and one write carry the whole list: a failure in any entry writes nothing
 and returns that entry's `index`, in the structured result and as the
-`edits[<index>]:` prefix of the message. The failure codes are the single
+`edits[<index>]:` prefix of the message; a parse-time failure for an entry
+carries the same `index` and prefix. The failure codes are the single
 replacement's (`oldtext_not_found`, `multiple_matches`, `no_change`).
 `EDIT_INPUT_MAX_CHARS` bounds the sum over the entries, and that total does not
 bound what the entries produce: an entry whose result would pass
@@ -433,6 +434,7 @@ drives `edit` over its replacement list:
 `edit_applies_every_replacement_in_order_in_one_call`,
 `a_later_replacement_matches_the_text_the_previous_one_produced`,
 `a_failed_replacement_writes_nothing_and_names_its_index`,
+`a_replacement_that_does_not_parse_names_its_index`,
 `an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built`,
 `edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once` and
 `the_replacement_list_is_bounded_by_one_total`. [local_product.rs](../../../../tests/integration/tests/local_product.rs)
