@@ -258,8 +258,8 @@ impl Emu {
                     2 => (0, self.cols),
                     _ => (self.cx, self.cols),
                 };
-                for x in from..to {
-                    self.screen[self.cy][x] = ' ';
+                for cell in &mut self.screen[self.cy][from..to] {
+                    *cell = ' ';
                 }
                 self.note_blanked([self.cy]);
             }
