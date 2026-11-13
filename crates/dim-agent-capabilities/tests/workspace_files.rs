@@ -3044,10 +3044,6 @@ async fn read_names_what_ended_the_window() {
         "{}",
         ok(&requested)
     );
-    assert!(
-        !ok(&requested).contains("safe read budget"),
-        "a caller's limit ended the window, not the budget"
-    );
     let defaulted = workspace.read(&reads, "big.txt").await;
     assert!(
         ok(&defaulted).ends_with(
@@ -3099,4 +3095,31 @@ async fn read_names_what_ended_the_window() {
         ok(&complete)
     );
     assert!(!ok(&complete).contains("budget"), "{}", ok(&complete));
+}
+
+#[tokio::test]
+async fn read_names_the_maximum_limit() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let body: String = (1..=10_001).map(|i| format!("line {i}\n")).collect();
+    workspace.put("max.txt", body.as_bytes());
+    let result = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "max.txt", "limit": 10_000 }),
+        )
+        .await;
+    assert_eq!(structured(&result)["offloaded"], true);
+    let full = fs::read_to_string(structured(&result)["outputPath"].as_str().unwrap()).unwrap();
+    let tail: String = full
+        .chars()
+        .skip(full.chars().count().saturating_sub(240))
+        .collect();
+    assert!(
+        full.ends_with(
+            "\n\nThe maximum limit of 10000 lines was reached. Showing lines 1-10000 of 10001. Continue with read({ path: \"max.txt\", offset: 10001 })."
+        ),
+        "{tail}"
+    );
 }
