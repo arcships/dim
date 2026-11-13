@@ -37,6 +37,10 @@ pub(super) struct CountContextReads {
     pub(super) hold_range: std::sync::Mutex<Option<ReadOccurrence>>,
     /// Every page a context fold read, in call order.
     pub(super) context_pages: std::sync::Mutex<Vec<ContextPageRead>>,
+    /// Input ids whose `input/consumed` rows this store hides from a query
+    /// that asks for `data.input_id`: a partial prefix, which no public writer
+    /// produces because a request consumes every pending input when it starts.
+    pub(super) hidden_consumptions: std::sync::Mutex<Vec<String>>,
     fail_at: AtomicUsize,
     fail_configuration: std::sync::atomic::AtomicBool,
     reject_at: AtomicUsize,
@@ -221,6 +225,32 @@ impl CountContextReads {
         self.gate(branch, range).await
     }
 }
+/// `result` without the `input/consumed` rows whose `data.input_id` is one of
+/// `hidden`, and without those rows' page cursor positions. A page that hid
+/// every row it had is not empty in the reply: the store's cursor still moves
+/// past it, so the remainder of the chain is still read.
+fn hide_consumptions(
+    result: dim_agent_runtime::QueryResult,
+    hidden: &[String],
+) -> dim_agent_runtime::QueryResult {
+    let QueryOutput::Rows { rows } = result.result else {
+        return result;
+    };
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            !row.values.iter().any(|value| {
+                matches!(value, QueryValue::Value { value: serde_json::Value::String(input) }
+                    if hidden.iter().any(|hidden| hidden == input))
+            })
+        })
+        .collect();
+    dim_agent_runtime::QueryResult {
+        result: QueryOutput::Rows { rows },
+        ..result
+    }
+}
+
 impl TimelineStore for CountContextReads {
     fn query<'a>(
         &'a self,
@@ -266,6 +296,12 @@ impl TimelineStore for CountContextReads {
                     .await?;
             }
             let result = self.memory.query(scope, query, page).await?;
+            let hidden = self.hidden_consumptions.lock().unwrap().clone();
+            let result = if hidden.is_empty() {
+                result
+            } else {
+                hide_consumptions(result, &hidden)
+            };
             if matches!(&query.filter, Some(QueryFilter::In { value: QueryOperand::Field { path }, .. }) if path == "id")
             {
                 self.positions.fetch_add(1, Ordering::SeqCst);
@@ -4218,6 +4254,7 @@ async fn legacy_prompt_references_migrate_explicitly_and_preserve_domain_task_st
         timeline
             .append(
                 EventKind::PromptChanged(PromptChangedData {
+                    inputs: Vec::new(),
                     timeline: "main".into(),
                     revision: version.into(),
                     previous: (version == "latest").then(|| PromptReference {
@@ -4329,5 +4366,985 @@ async fn legacy_prompt_references_migrate_explicitly_and_preserve_domain_task_st
         "latest domain state",
         "a v1 source cutoff belongs to its ancestor branch, not the child's local sequence"
     );
+    agent.close().await.unwrap();
+}
+
+/// A restore asks for consumptions only for the inputs it adopts: none when the
+/// entry it adopts comes from a change that names no input, and exactly one
+/// filtered to those ids when it does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_asks_for_consumptions_only_for_the_inputs_it_adopts() {
+    use dim_agent_capabilities::prompt::Prompt;
+
+    // A System entry is delivered by the prefix's configuration, so its change
+    // names no input; a Context entry is delivered by a block, so its change
+    // names one.
+    for delivery in [PromptDelivery::System, PromptDelivery::Context] {
+        let store = Arc::new(CountContextReads::default());
+        let mut profile = builder_with_context(
+            Arc::new(EchoModel),
+            HistoryRenderer::default(),
+            Context::default(),
+        );
+        profile.timeline_store(store.clone());
+        let agent = MinimalHost::start(&profile).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default())
+            .await
+            .unwrap();
+        let id = session.id().to_owned();
+        let scope = PromptScope::Branch {
+            timeline: "main".into(),
+        };
+        session
+            .service::<Prompt>("main")
+            .unwrap()
+            .configure_loaded(
+                Some(ModelSelection {
+                    provider_id: "fixture".into(),
+                    model_id: "counter".into(),
+                    capability_snapshot: None,
+                    config: None,
+                    metadata: None,
+                }),
+                vec![(
+                    PromptSourceTarget {
+                        source: "rules".into(),
+                        scope: scope.clone(),
+                    },
+                    Some(PromptEntry {
+                        source: "rules".into(),
+                        version: "1".into(),
+                        body: "inherited".into(),
+                        scope,
+                        delivery,
+                        order: 0,
+                    }),
+                )],
+            )
+            .await
+            .unwrap();
+        let change = chain_events(&session, "main", ..)
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match &event.kind {
+                EventKind::PromptChanged(data) => Some(data.clone()),
+                _ => None,
+            })
+            .expect("main wrote its change");
+        assert_eq!(
+            change.inputs.is_empty(),
+            delivery == PromptDelivery::System,
+            "only a block-delivered change names an input"
+        );
+        // A child's state is restored from the chain, which is where it adopts
+        // the change.
+        let child = session
+            .branch(
+                "main".into(),
+                session.sequence("main").unwrap(),
+                BranchOptions {
+                    prompt: "child".into(),
+                    source: BranchSource::Host {
+                        operation_id: "count".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        agent.close().await.unwrap();
+        drop(session);
+
+        let mut profile = builder_with_context(
+            Arc::new(EchoModel),
+            HistoryRenderer::default(),
+            Context::default(),
+        );
+        profile.timeline_store(store.clone());
+        let agent = MinimalHost::start(&profile).await.unwrap();
+        store.property_queries.lock().unwrap().clear();
+        let session = agent.restore_session(id.clone()).await.unwrap();
+        // The checkpoint rows the walk read: one per query whose kind is the
+        // recovery key. Read them before anything else queries the store.
+        let rows = store
+            .property_queries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|query| {
+                query.filter.as_ref().is_some_and(|filter| {
+                    let mut filters = vec![filter];
+                    let mut kinds = Vec::new();
+                    while let Some(filter) = filters.pop() {
+                        match filter {
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path },
+                                values,
+                            } if path == "kind" => kinds.extend(
+                                values
+                                    .iter()
+                                    .filter_map(|value| value.as_str().map(str::to_owned)),
+                            ),
+                            QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
+                                filters.extend(conditions)
+                            }
+                            _ => {}
+                        }
+                    }
+                    kinds == ["prompt-state/recovered"]
+                })
+            })
+            .count();
+        let asked: Vec<Vec<String>> = store
+            .property_queries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|query| {
+                let mut filters = vec![query.filter.as_ref()?];
+                let (mut kinds, mut ids) = (Vec::new(), Vec::new());
+                while let Some(filter) = filters.pop() {
+                    match filter {
+                        QueryFilter::In {
+                            value: QueryOperand::Field { path },
+                            values,
+                        } if path == "kind" => kinds.extend(
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_owned)),
+                        ),
+                        QueryFilter::In {
+                            value: QueryOperand::Field { path },
+                            values,
+                        } if path == "data.input_id" => ids.extend(
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_owned)),
+                        ),
+                        QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
+                            filters.extend(conditions)
+                        }
+                        _ => {}
+                    }
+                }
+                (kinds == ["input/consumed"]).then_some(ids)
+            })
+            .collect();
+        // The line's own scope has no checkpoint, so the chain's newest row is
+        // read. When the change was never received the row is read again
+        // positioned before it, and the read after that settles; when the
+        // prefix delivered it the newest row is taken outright.
+        assert_eq!(
+            rows,
+            if change.inputs.is_empty() { 3 } else { 2 },
+            "checkpoint rows read for a change with inputs {:?}",
+            change.inputs
+        );
+        assert!(
+            session
+                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+                .unwrap()
+                .is_some(),
+            "the child has a prompt state"
+        );
+        // One consumption query, over exactly the union of the inputs the
+        // inherited changes after the last request start name: not one per
+        // candidate, and nothing wider than those ids. A System change names no
+        // input, so it contributes nothing and, when it is the only change, no
+        // query is issued at all.
+        if change.inputs.is_empty() {
+            assert!(
+                asked.is_empty(),
+                "a System entry asks about no input: {asked:?}"
+            );
+        } else {
+            let mut expected: Vec<String> = change.inputs.clone();
+            expected.sort();
+            for ids in &asked {
+                let mut sorted = ids.clone();
+                sorted.sort();
+                assert_eq!(
+                    sorted, expected,
+                    "the query asks for exactly the inherited inputs: {asked:?}"
+                );
+            }
+        }
+        agent.close().await.unwrap();
+    }
+}
+
+/// A change that names two delivery inputs applies only once both were consumed
+/// in the inherited prefix: hiding either one's consumption leaves it
+/// undelivered, so neither "only the first gates" nor "only the last" survives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_naming_two_inputs_waits_for_both() {
+    use dim_agent_capabilities::prompt::Prompt;
+
+    // `hidden` names the input whose consumption the store withholds from the
+    // child's read: none, the first, the second.
+    for hidden in [None, Some(0usize), Some(1usize)] {
+        let store = Arc::new(CountContextReads::default());
+        let mut profile = builder_with_context(
+            Arc::new(EchoModel),
+            HistoryRenderer::default(),
+            Context::default(),
+        );
+        profile.timeline_store(store.clone());
+        let agent = MinimalHost::start(&profile).await.unwrap();
+        let session = agent
+            .create_session(SessionConfig::default())
+            .await
+            .unwrap();
+        let id = session.id().to_owned();
+        let scope = PromptScope::Branch {
+            timeline: "main".into(),
+        };
+        let entry = |source: &str, body: &str| PromptEntry {
+            source: source.into(),
+            version: "1".into(),
+            body: body.into(),
+            scope: scope.clone(),
+            delivery: PromptDelivery::Context,
+            order: 0,
+        };
+        // Two Context-delivered sources in one adoption: one change naming the
+        // two blocks that deliver them.
+        session
+            .service::<Prompt>("main")
+            .unwrap()
+            .configure_loaded(
+                Some(ModelSelection {
+                    provider_id: "fixture".into(),
+                    model_id: "counter".into(),
+                    capability_snapshot: None,
+                    config: None,
+                    metadata: None,
+                }),
+                vec![
+                    (
+                        PromptSourceTarget {
+                            source: "rules-a".into(),
+                            scope: scope.clone(),
+                        },
+                        Some(entry("rules-a", "A")),
+                    ),
+                    (
+                        PromptSourceTarget {
+                            source: "rules-b".into(),
+                            scope: scope.clone(),
+                        },
+                        Some(entry("rules-b", "B")),
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+        let change = chain_events(&session, "main", ..)
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match &event.kind {
+                EventKind::PromptChanged(data) => Some(data.clone()),
+                _ => None,
+            })
+            .expect("main wrote its change");
+        assert_eq!(
+            change.inputs.len(),
+            2,
+            "one change names both delivery inputs: {:?}",
+            change.inputs
+        );
+        // One turn consumes both blocks, so both consumptions are in the
+        // history the child inherits.
+        session
+            .submit("first".into(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let main = chain_events(&session, "main", ..).await.unwrap();
+        for input in &change.inputs {
+            assert!(
+                main.iter().any(|event| matches!(
+                    &event.kind,
+                    EventKind::InputConsumed(data) if &data.input_id == input
+                )),
+                "main consumed {input}"
+            );
+        }
+        let cut = session.sequence("main").unwrap();
+        // The child is cut after the consumption and adopts the change from the
+        // chain, which is where the gate runs.
+        let child = session
+            .branch(
+                "main".into(),
+                cut,
+                BranchOptions {
+                    prompt: "child".into(),
+                    source: BranchSource::Host {
+                        operation_id: "two".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        agent.close().await.unwrap();
+        drop(session);
+
+        let mut profile = builder_with_context(
+            Arc::new(EchoModel),
+            HistoryRenderer::default(),
+            Context::default(),
+        );
+        profile.timeline_store(store.clone());
+        let agent = MinimalHost::start(&profile).await.unwrap();
+        if let Some(at) = hidden {
+            *store.hidden_consumptions.lock().unwrap() = vec![change.inputs[at].clone()];
+        }
+        let session = agent.restore_session(id.clone()).await.unwrap();
+        let state = session
+            .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+            .unwrap()
+            .unwrap();
+        let sources: Vec<&str> = state
+            .entries
+            .keys()
+            .map(|(source, _)| source.as_str())
+            .collect();
+        assert_eq!(
+            sources.contains(&"rules-a") && sources.contains(&"rules-b"),
+            hidden.is_none(),
+            "with {hidden:?} consumed the change is {}; state holds {sources:?}",
+            if hidden.is_none() {
+                "delivered"
+            } else {
+                "undelivered"
+            }
+        );
+        agent.close().await.unwrap();
+    }
+}
+
+/// A restore whose newest Prompt checkpoint is a `prompt-state/v1` row reads its
+/// boundary from `source_through`, as that schema wrote it, rather than failing
+/// on the `changed_through` field v1 never had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_reads_a_v1_checkpoints_boundary_from_source_through() {
+    use dim_agent_capabilities::prompt::Prompt;
+
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    // One adoption writes a change, so the chain has a boundary to name.
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    session
+        .service::<Prompt>("main")
+        .unwrap()
+        .configure_loaded(
+            None,
+            vec![(
+                PromptSourceTarget {
+                    source: "rules".into(),
+                    scope: scope.clone(),
+                },
+                Some(PromptEntry {
+                    source: "rules".into(),
+                    version: "1".into(),
+                    body: "kept".into(),
+                    scope: scope.clone(),
+                    delivery: PromptDelivery::Context,
+                    order: 0,
+                }),
+            )],
+        )
+        .await
+        .unwrap();
+    agent.close().await.unwrap();
+    drop(session);
+
+    // The checkpoint this branch wrote is `prompt-state/v2`; rewrite it as the
+    // shape `prompt-state/v1` wrote - `source_through`, no `changed_through` -
+    // so restore has to derive the boundary the way the v1 arm does.
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let head = store.head(&key).await.unwrap();
+    let records = store.read(&key, 1..=head).await.unwrap();
+    let mut drafts = Vec::new();
+    for record in &records {
+        let EventKind::Extension(data) = &record.event.kind else {
+            continue;
+        };
+        if data.key() != "prompt-state/recovered" {
+            continue;
+        }
+        let mut saved = data.data().clone();
+        assert_eq!(
+            saved["schema"], "prompt-state/v2",
+            "the checkpoint v2 wrote"
+        );
+        saved["schema"] = "prompt-state/v1".into();
+        // v1 named its boundary by the sequence it had read through, in the
+        // line's own numbering; the v2 field is a position object instead.
+        saved["source_through"] = head.into();
+        saved.as_object_mut().unwrap().remove("changed_through");
+        drafts.push(EventDraft::new(EventKind::Extension(
+            ExtensionEvent::new("prompt-state", "recovered", saved).unwrap(),
+        )));
+    }
+    assert_eq!(drafts.len(), 1, "one v1 checkpoint to seed");
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    timeline
+        .append_batch_registered(drafts, |_| Ok(()))
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .restore_session(id)
+        .await
+        .expect("a v1 checkpoint restores");
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    assert!(
+        state.entries.values().any(|entry| entry.body == "kept"),
+        "the entry the checkpoint carries survives the restore"
+    );
+    agent.close().await.unwrap();
+}
+
+/// A checkpoint's boundary being delivered does not mean everything it covers
+/// was: a System-delivered change has no inputs, so it is delivered wherever it
+/// is found, and a checkpoint written at it can still cover an earlier removal
+/// the line never received. The line must start from a row positioned before
+/// that removal.
+///
+/// The bundled System sources (`dim/base`, the Session entry) do not change
+/// while a session runs, so the sequence is seeded into the store rather than
+/// driven through a flow. A plugin may declare a source delivered as System, and
+/// such a source can change while main is idle; that is the case this pins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_starts_before_an_undelivered_removal_under_a_later_system_change() {
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    agent.close().await.unwrap();
+    drop(session);
+
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    // (1) main adopts the rule A, delivered by the block `i1`.
+    let adopted = timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "first",
+                    Some(InputMode::Append),
+                )))
+                .with_id("i1"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "r1".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Set {
+                        entry: PromptEntry {
+                            source: "rules".into(),
+                            version: "1".into(),
+                            body: "kept".into(),
+                            scope: scope.clone(),
+                            delivery: PromptDelivery::Context,
+                            order: 0,
+                        },
+                    }],
+                    inputs: vec!["i1".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    let adopted = adopted.last().expect("the adoption").sequence;
+    // A request consumes `i1`, so the adoption was delivered on this prefix.
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "t1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    timeline
+        .append(
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: "i1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    // A checkpoint at the adoption: the rule is live and delivered.
+    let first = timeline
+        .append(
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "prompt-state",
+                    "recovered",
+                    serde_json::to_value(RecoveredSeed {
+                        schema: "prompt-state/v2".into(),
+                        changed_through: Some(dim_agent_types::TimelinePosition {
+                            branch_id: "main".into(),
+                            sequence: adopted,
+                        }),
+                        state: RecoverySeed {
+                            entries: vec![EntryReferenceSeed {
+                                source: "rules".into(),
+                                scope: scope.clone(),
+                                event_id: store
+                                    .read(&key, adopted..=adopted)
+                                    .await
+                                    .unwrap()
+                                    .first()
+                                    .map(|record| record.event.id.clone())
+                                    .expect("the adoption event"),
+                                element_index: 0,
+                            }],
+                            revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r1".into(),
+                            }),
+                            system_revision: None,
+                        },
+                    })
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .into(),
+        )
+        .unwrap()
+        .sequence;
+    // (2) main revokes A, and the retirement input `i2` stays pending.
+    timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "retire",
+                    Some(InputMode::Append),
+                )))
+                .with_id("i2"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "r2".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Revoke {
+                        source: "rules".into(),
+                        scope: scope.clone(),
+                    }],
+                    inputs: vec!["i2".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    // (3) main writes a System-only change B: no inputs, a later revision.
+    let system = timeline
+        .append(
+            EventKind::PromptChanged(PromptChangedData {
+                timeline: "main".into(),
+                revision: "r3".into(),
+                previous: None,
+                reason: PromptChangeReason::Refresh,
+                changes: vec![PromptChange::Set {
+                    entry: PromptEntry {
+                        source: "dim/base".into(),
+                        version: "2".into(),
+                        body: "system text".into(),
+                        scope: scope.clone(),
+                        delivery: PromptDelivery::System,
+                        order: 0,
+                    },
+                }],
+                inputs: Vec::new(),
+            })
+            .into(),
+        )
+        .unwrap()
+        .sequence;
+    // (4) main writes its checkpoint at B, with A already gone.
+    timeline
+        .append(
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "prompt-state",
+                    "recovered",
+                    serde_json::to_value(RecoveredSeed {
+                        schema: "prompt-state/v2".into(),
+                        changed_through: Some(dim_agent_types::TimelinePosition {
+                            branch_id: "main".into(),
+                            sequence: system,
+                        }),
+                        state: RecoverySeed {
+                            entries: Vec::new(),
+                            revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r3".into(),
+                            }),
+                            system_revision: Some(PromptReference {
+                                timeline: "main".into(),
+                                revision: "r3".into(),
+                            }),
+                        },
+                    })
+                    .unwrap(),
+                )
+                .unwrap(),
+            )
+            .into(),
+        )
+        .unwrap();
+    let head = timeline.committed();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+
+    // (5) the child is cut at main's head and restores.
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent.restore_session(id).await.unwrap();
+    let child = session
+        .branch(
+            "main".into(),
+            head,
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "p2".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+        .unwrap()
+        .unwrap();
+    // The child's prefix never delivered the removal, so the rule is still live
+    // there: its state carries A, and it does not carry B's checkpoint view.
+    assert!(
+        state.entries.values().any(|entry| entry.body == "kept"),
+        "the rule the removal never delivered is still live: {:?}",
+        state
+            .entries
+            .values()
+            .map(|entry| (&entry.source, &entry.body))
+            .collect::<Vec<_>>()
+    );
+    // The gated suffix replay drops the removal it never received and applies
+    // what it did, including the System change's entry, which a configuration
+    // delivers wherever it is found.
+    assert!(
+        state
+            .entries
+            .values()
+            .any(|entry| entry.body == "system text"),
+        "the System entry after the removal applies where it is found"
+    );
+    let _ = first;
+    agent.close().await.unwrap();
+}
+
+/// The shape `prompt-state/v2` writes, restated here so the test seeds the same
+/// row a real checkpoint does.
+#[derive(serde::Serialize)]
+struct RecoveredSeed {
+    schema: String,
+    changed_through: Option<dim_agent_types::TimelinePosition>,
+    state: RecoverySeed,
+}
+
+#[derive(serde::Serialize)]
+struct RecoverySeed {
+    entries: Vec<EntryReferenceSeed>,
+    revision: Option<PromptReference>,
+    system_revision: Option<PromptReference>,
+}
+
+#[derive(serde::Serialize)]
+struct EntryReferenceSeed {
+    source: String,
+    scope: PromptScope,
+    event_id: String,
+    element_index: u64,
+}
+
+/// A long turn keeps every refresh made since its `turn/start`, including ones
+/// mid-turn requests already consumed, because no `turn/start` is written per
+/// model request; an idle parent can do the same with plain refreshes. The
+/// suffix after that start can therefore span many pages of changes, and each
+/// change can name more than one input. Every consumption query Prompt issues
+/// stays bounded, whichever page it is judging.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_inherited_suffix_keeps_each_consumption_query_bounded() {
+    // More than a thousand refreshes after S: the suffix a long turn or an
+    // idle parent can leave, and far more than one page of `prompt/changed`.
+    const REFRESHES: u32 = 1_200;
+
+    let store = Arc::new(CountContextReads::default());
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    agent.close().await.unwrap();
+    drop(session);
+
+    let key = dim_agent_runtime::TimelineKey {
+        session_id: id.clone(),
+        branch_id: "main".into(),
+    };
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    let timeline = dim_agent_runtime::Timeline::restore(
+        rutis::Ctx::root().unwrap(),
+        key.clone(),
+        Vec::new(),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    // S: a request start whose turn stays open, as a long turn's does.
+    timeline
+        .append(
+            EventKind::TurnStart(TurnStartData {
+                turn_id: "t1".into(),
+            })
+            .into(),
+        )
+        .unwrap();
+    // After S, refreshes that were consumed, standing for mid-turn requests.
+    // Each names two inputs and both are consumed.
+    for n in 0..REFRESHES {
+        let first = format!("a{n}");
+        let second = format!("b{n}");
+        timeline
+            .append_batch_registered(
+                vec![
+                    EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                        "turn",
+                        Some(InputMode::Append),
+                    )))
+                    .with_id(first.clone()),
+                    EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                        "turn",
+                        Some(InputMode::Append),
+                    )))
+                    .with_id(second.clone()),
+                    EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                        timeline: "main".into(),
+                        revision: format!("r{n}"),
+                        previous: None,
+                        reason: PromptChangeReason::Refresh,
+                        changes: vec![PromptChange::Set {
+                            entry: PromptEntry {
+                                source: "rules".into(),
+                                version: format!("{n}"),
+                                body: format!("value {n}"),
+                                scope: scope.clone(),
+                                delivery: PromptDelivery::Context,
+                                order: 0,
+                            },
+                        }],
+                        inputs: vec![first.clone(), second.clone()],
+                    })),
+                    EventDraft::new(EventKind::InputConsumed(InputConsumedData {
+                        input_id: first,
+                    })),
+                    EventDraft::new(EventKind::InputConsumed(InputConsumedData {
+                        input_id: second,
+                    })),
+                ],
+                |_| Ok(()),
+            )
+            .unwrap();
+    }
+    // The last refresh names two inputs that are never consumed: it is E.
+    timeline
+        .append_batch_registered(
+            vec![
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "turn",
+                    Some(InputMode::Append),
+                )))
+                .with_id("pending-a"),
+                EventDraft::new(EventKind::InputMessage(InputMessageData::text(
+                    "turn",
+                    Some(InputMode::Append),
+                )))
+                .with_id("pending-b"),
+                EventDraft::new(EventKind::PromptChanged(PromptChangedData {
+                    timeline: "main".into(),
+                    revision: "pending".into(),
+                    previous: None,
+                    reason: PromptChangeReason::Refresh,
+                    changes: vec![PromptChange::Set {
+                        entry: PromptEntry {
+                            source: "rules".into(),
+                            version: "pending".into(),
+                            body: "value pending".into(),
+                            scope: scope.clone(),
+                            delivery: PromptDelivery::Context,
+                            order: 0,
+                        },
+                    }],
+                    inputs: vec!["pending-a".into(), "pending-b".into()],
+                })),
+            ],
+            |_| Ok(()),
+        )
+        .unwrap();
+    let head = timeline.committed();
+    dim_agent_capabilities::prompt::migrate_prompt_references(Arc::new(timeline.clone()))
+        .await
+        .unwrap();
+    dim_agent_runtime::core::close_timeline(&timeline)
+        .await
+        .unwrap();
+    let before = store.property_queries.lock().unwrap().len();
+
+    let mut profile = builder_with_context(
+        Arc::new(EchoModel),
+        HistoryRenderer::default(),
+        Context::default(),
+    );
+    profile.timeline_store(store.clone());
+    let agent = MinimalHost::start(&profile).await.unwrap();
+    let session = agent
+        .restore_session(id)
+        .await
+        .expect("the restore succeeds");
+    let child = session
+        .branch(
+            "main".into(),
+            head,
+            BranchOptions {
+                prompt: "child".into(),
+                source: BranchSource::Host {
+                    operation_id: "long".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let state = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&child)
+        .unwrap()
+        .unwrap();
+    // The gate found E past the first page: the entries are the ones the
+    // refreshes up to 199 wrote, and the pending one is not among them.
+    let bodies: Vec<&str> = state
+        .entries
+        .values()
+        .map(|entry| entry.body.as_str())
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![format!("value {}", REFRESHES - 1).as_str()],
+        "the state carries the last delivered refresh, not the pending one"
+    );
+    // Every consumption query Prompt issued is bounded. Collected first,
+    // because the guard must not be held across the close below.
+    let widths: Vec<usize> = {
+        let property_queries = store.property_queries.lock().unwrap();
+        let mut widths = Vec::new();
+        for query in property_queries[before..].iter() {
+            let mut filters: Vec<_> = query.filter.iter().collect();
+            while let Some(filter) = filters.pop() {
+                match filter {
+                    QueryFilter::In {
+                        value: QueryOperand::Field { path },
+                        values,
+                    } if path == "data.input_id" => widths.push(values.len()),
+                    QueryFilter::And { conditions } | QueryFilter::Or { conditions } => {
+                        filters.extend(conditions)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        widths
+    };
+    assert!(!widths.is_empty(), "a consumption query was issued");
+    for width in widths {
+        assert!(
+            width <= 128,
+            "a consumption query names at most 128 ids: {width}"
+        );
+    }
     agent.close().await.unwrap();
 }

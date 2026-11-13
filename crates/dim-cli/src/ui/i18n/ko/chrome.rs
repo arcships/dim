@@ -218,6 +218,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "연결 끊김, 초안 보존됨. 종료 후 세션 재개"
         }
+        "Cannot open this Session; draft kept." => "이 세션을 열 수 없습니다, 초안 보존됨.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "연결 끊김, 초안 보존됨. 종료 후 실행: {command}"
         }
@@ -282,7 +283,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "오류: {message}",
         "working…  {elapsed}" => "작업 중…  {elapsed}",
         "thinking…  {elapsed}" => "생각 중…  {elapsed}",
-        "Ask anything..." => "무엇이든 물어보세요…",
+        "Ask anything... · Ctrl+J newline" => "무엇이든 물어보세요… · Ctrl+J 줄바꿈",
         "Earlier history · {id} · {count} messages" => "이전 기록 · {id} · 메시지 {count}개",
         "No active session" => "활성 세션 없음",
         "answer required" => "답변 필요",

@@ -147,9 +147,46 @@ impl ConfigurationPublisher {
         let effective_configuration = configuration
             .as_ref()
             .or_else(|| previous_configuration.map(|data| data.settings.as_ref()));
+        // A source leaving the System prompt: the prefix's configuration
+        // already composes it without that source, so the removal is written
+        // into the fact rather than derived from it when a line reads. It
+        // precedes the `Set` so a line applies it where the fact is found and
+        // waits only for the new value.
+        let mut written = Vec::with_capacity(changes.len());
+        for change in changes {
+            if let PromptChange::Set { entry } = &change
+                && entry.delivery != PromptDelivery::System
+                && before
+                    .entries
+                    .get(&(entry.source.clone(), entry.scope.clone()))
+                    .is_some_and(|replaced| replaced.delivery == PromptDelivery::System)
+            {
+                written.push(PromptChange::Revoke {
+                    source: entry.source.clone(),
+                    scope: entry.scope.clone(),
+                });
+            }
+            written.push(change);
+        }
+        let changes = written;
         let mut drafts: Vec<EventDraft> = Vec::new();
         if !changes.is_empty() {
             let revision = Uuid::new_v4().to_string();
+            // Each delivery input's id is assigned here, before the change is
+            // built, so the change names the blocks that will deliver it: a
+            // line that inherits the change applies it only once they were
+            // consumed in that line's prefix.
+            let deliveries: Vec<EventDraft> = inputs(before, &changes)
+                .into_iter()
+                .map(|block| {
+                    EventDraft::new(EventKind::InputMessage(InputMessageData {
+                        blocks: vec![block],
+                        mode: Some(InputMode::Append),
+                        ..Default::default()
+                    }))
+                    .with_id(Uuid::new_v4().to_string())
+                })
+                .collect();
             let data = PromptChangedData {
                 timeline: self.identity.branch_id.clone(),
                 revision: revision.clone(),
@@ -160,18 +197,14 @@ impl ConfigurationPublisher {
                     PromptChangeReason::Initialize
                 },
                 changes,
+                inputs: deliveries
+                    .iter()
+                    .map(|draft| draft.id.clone().expect("assigned delivery id"))
+                    .collect(),
             };
             let system = before.system_after(&data.changes);
-            let blocks = inputs(before, &data.changes);
             drafts.push(EventKind::PromptChanged(data).into());
-            drafts.extend(blocks.into_iter().map(|block| {
-                EventKind::InputMessage(InputMessageData {
-                    blocks: vec![block],
-                    mode: Some(InputMode::Append),
-                    ..Default::default()
-                })
-                .into()
-            }));
+            drafts.extend(deliveries);
             if let Some(system) = system {
                 let settings = effective_configuration.cloned().ok_or_else(|| {
                     AgentError::InvalidInput("system prompt update requires configuration".into())

@@ -1,9 +1,9 @@
 use crate::{
-    ServerConfig,
+    ProcessActivity, ProcessHold, ServerConfig,
     agent_records::AgentRecords,
     protocol::{AgentInfo, SessionOrigin},
     settings::SettingsService,
-    storage::{SessionStore, SqliteStorage},
+    storage::{PreparedWorktree, SessionStore, SqliteStorage},
 };
 use dim_agent_capabilities::host::ModelSelectionHost;
 use dim_agent_runtime::{
@@ -152,7 +152,7 @@ pub enum AgentOpError {
 /// `retain_versions` drop slots as Sessions end.
 #[derive(Default)]
 struct SessionSlot {
-    gate: tokio::sync::Mutex<()>,
+    gate: Arc<tokio::sync::Mutex<()>>,
     uses: AtomicUsize,
     /// Incremented by every `acquire`: while it stays unchanged and `uses`
     /// stays 0, no lease has held the Session (idle unload §6.1).
@@ -169,6 +169,7 @@ pub(crate) struct SessionUse {
     pub host: Arc<AgentHost>,
     pub session: Session,
     slot: Arc<SessionSlot>,
+    activity: Arc<ProcessHold>,
 }
 impl Clone for SessionUse {
     fn clone(&self) -> Self {
@@ -177,6 +178,7 @@ impl Clone for SessionUse {
             host: self.host.clone(),
             session: self.session.clone(),
             slot: self.slot.clone(),
+            activity: self.activity.clone(),
         }
     }
 }
@@ -363,6 +365,7 @@ impl Plugin for AgentDirectoryPlugin {
 /// loader. A reload of it is a reload of the directory logic only.
 pub struct AgentIndex {
     directory: Arc<AgentDirectory>,
+    activity: Arc<ProcessActivity>,
     builder: AgentBuilder,
     session_defaults: SessionConfig,
     /// Protected profiles resolve Session models through a `ModelSelectionHost`.
@@ -676,15 +679,24 @@ impl AgentIndex {
             .map(|host| host.agent.sessions().len())
             .sum()
     }
-    /// Loaded Sessions with a running turn on `main`: work an idle shutdown
-    /// must not disturb.
+    /// Loaded Sessions with accepted work on any branch or a runtime activity
+    /// hold, including detached work an idle shutdown must not disturb.
     pub(crate) fn running_sessions(&self) -> usize {
         self.hosts()
             .iter()
             .flat_map(|host| host.agent.sessions())
-            .filter(|session| session.state("main").is_ok_and(|state| state.running))
+            .filter(|session| session.in_use().is_some())
             .count()
     }
+
+    pub(crate) fn pause_sessions(&self) -> Option<Vec<dim_agent_runtime::SessionPause>> {
+        self.hosts()
+            .iter()
+            .flat_map(|host| host.agent.sessions())
+            .map(|session| session.pause_if_idle())
+            .collect()
+    }
+
     /// The public directory: the default Agent and the Agents
     /// `agent.create` made. An owned Agent belongs to one Team and is reached
     /// through Collaboration's tool.
@@ -867,6 +879,10 @@ impl AgentIndex {
         id: &str,
         expected_cwd: Option<&std::path::Path>,
     ) -> dim_agent_runtime::Result<SessionUse> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         if let Some(reason) = self.unavailable_session(id) {
             return Err(AgentError::Storage(reason));
         }
@@ -880,11 +896,11 @@ impl AgentIndex {
             }
             return Err(AgentError::Closed(id.into()));
         };
-        let _gate = slot.gate.lock().await;
+        let gate = slot.gate.clone().lock_owned().await;
         if slot.closed.load(Ordering::Acquire) || self.stopping.is_cancelled() {
             return Err(AgentError::Closed(id.into()));
         }
-        let session = match host.agent.get_session(id) {
+        let (session, _gate, activity) = match host.agent.get_session(id) {
             Some(session) => {
                 if expected_cwd
                     .is_some_and(|expected| std::path::Path::new(&session.config().cwd) != expected)
@@ -893,7 +909,7 @@ impl AgentIndex {
                         "Session cwd does not match expectedCwd".into(),
                     ));
                 }
-                session
+                (session, gate, activity)
             }
             None if self.session_store.is_some() => {
                 if self.settings.is_some() || expected_cwd.is_some() {
@@ -924,17 +940,29 @@ impl AgentIndex {
                 let version = self
                     .version_of(id)
                     .unwrap_or(crate::protocol::PROTOCOL_VERSION);
-                let session = host
-                    .agent
-                    .restore_session_for_version(id.into(), version)
+                let host = host.clone();
+                let slot = slot.clone();
+                let id = id.to_owned();
+                let ctx = self
+                    .ctx
+                    .get()
+                    .expect("AgentsPlugin apply sets its context")
+                    .clone();
+                tokio::spawn(async move {
+                    let _slot = slot;
+                    let session = host
+                        .agent
+                        .restore_session_for_version(id.clone(), version)
+                        .await?;
+                    ctx.parallel(SessionRestored {
+                        agent_id: host.agent_id.clone(),
+                        session_id: id,
+                    })
                     .await?;
-                let ctx = self.ctx.get().expect("AgentsPlugin apply sets its context");
-                ctx.parallel(SessionRestored {
-                    agent_id: host.agent_id.clone(),
-                    session_id: id.to_owned(),
+                    Ok::<_, AgentError>((session, gate, activity))
                 })
-                .await?;
-                session
+                .await
+                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))??
             }
             None => return Err(AgentError::Closed(id.into())),
         };
@@ -944,6 +972,7 @@ impl AgentIndex {
             host,
             session,
             slot: slot.clone(),
+            activity: Arc::new(activity),
         })
     }
     /// One pass of idle unload ([§6.1](../../../docs/design/appserver/idle-unload.md#61-the-pass)).
@@ -953,6 +982,9 @@ impl AgentIndex {
     /// gate, which the pass never waits for. The pass then drops the slots
     /// that nothing holds any more.
     async fn unload_idle(&self, marks: &mut HashMap<String, (Arc<SessionSlot>, u64)>) {
+        let Some(_activity) = self.activity.take_hold() else {
+            return;
+        };
         let mut next = HashMap::new();
         for host in self.hosts() {
             for session in host.agent.sessions() {
@@ -1321,6 +1353,7 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
@@ -1336,6 +1369,7 @@ impl AgentIndex {
                         version,
                         leader.as_deref(),
                         origin,
+                        worktree,
                     )
                     .await
             })
@@ -1377,11 +1411,16 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> dim_agent_runtime::Result<Session> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         let mut config = config;
         config.exclude_codemode_below(version);
         match self
-            .prepare_session(host, &config, version, leader, origin)
+            .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
             Some((id, prepare)) => {
@@ -1410,6 +1449,10 @@ impl AgentIndex {
         version: u32,
         creation: impl Future<Output = dim_agent_runtime::Result<Session>>,
     ) -> dim_agent_runtime::Result<Session> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         let created = creation.await;
@@ -1439,6 +1482,10 @@ impl AgentIndex {
     /// Session in use is closed and removed as before;
     /// [`Self::delete_if_inactive`] is the delete that refuses it.
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         Self::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
@@ -1915,6 +1962,11 @@ impl AgentIndex {
         profile: AgentProfile,
         owner: Option<String>,
     ) -> Result<Arc<AgentHost>, AgentOpError> {
+        let activity = Arc::new(
+            self.activity
+                .take_hold()
+                .ok_or_else(|| AgentError::Reloading("process admission".into()))?,
+        );
         let (loader, root) = self
             .loader
             .get()
@@ -1927,7 +1979,9 @@ impl AgentIndex {
             profile,
             owner,
         };
+        let creating = activity.clone();
         let mut creation = tokio::spawn(async move {
+            let _activity = creating;
             #[cfg(test)]
             tests::creation_held(&spec.agent_id, &root).await;
             loader.create_instance(&root, AGENT_GROUP).with(spec).await
@@ -1948,6 +2002,7 @@ impl AgentIndex {
             Err(_) => {
                 self.forget(&agent_id);
                 tokio::spawn(async move {
+                    let _activity = activity;
                     if let Ok(Ok(instance)) = creation.await {
                         let _ = instance.view.shutdown().await;
                     }
@@ -2148,6 +2203,7 @@ pub(crate) struct AgentsPlugin {
     settings: Option<Key<SettingsService>>,
     loader: Key<Loader>,
     directory: Key<AgentDirectory>,
+    activity: Key<ProcessActivity>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
 impl AgentsPlugin {
@@ -2169,6 +2225,7 @@ impl AgentsPlugin {
                 .transpose()?,
             loader: names.key()?,
             directory: names.key()?,
+            activity: names.key()?,
             parts: names.key()?,
             builder,
             config,
@@ -2191,6 +2248,7 @@ impl DynPlugin for AgentsPlugin {
         }
         injects.push(self.loader.erase());
         injects.push(self.directory.erase());
+        injects.push(self.activity.erase());
         injects.push(self.parts.erase());
         injects
     }
@@ -2253,6 +2311,7 @@ impl DynPlugin for AgentsPlugin {
             let _ = directory.default_agent_id.set(default_id);
             let index = AgentIndex {
                 directory,
+                activity: ctx.require_at(&self.activity)?,
                 builder,
                 session_defaults: self.config.session_defaults.clone(),
                 ctx: OnceLock::from(ctx.clone()),

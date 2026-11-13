@@ -44,6 +44,11 @@ struct Request {
     /// A steer was consumed while this Loop still owned the request, before
     /// its `context/prepare`: it ends Cancelled instead of being handed over.
     replaced: bool,
+    /// The failed request this one continues, when it is the turn's one
+    /// continuation: its `context/prepare` carries the attempts and the wait
+    /// already spent, so both requests share one retry budget
+    /// (model-retry-recovery §6.2).
+    chain: Option<FailureChain>,
 }
 struct Turn {
     id: String,
@@ -56,6 +61,17 @@ struct Turn {
     /// Set for a turn rebuilt after a reload: it ends Failed once its
     /// outstanding operations have terminals, and starts no new work.
     failed: Option<String>,
+    /// The turn's one automatic continuation is spent. ModelRecovery's
+    /// handover continuation and this Loop's continuation for calls that
+    /// were never executed are both §6.2 continuations, so they spend the
+    /// same slot (model-retry-recovery §6.2). Budget recovery is a separate
+    /// contract and does not read it.
+    continued: bool,
+    /// The chain of a continuation that yielded to a compaction step: the
+    /// step's resumption passes it to the request it starts, so the request
+    /// the step deferred still spends one retry budget with the request that
+    /// failed.
+    deferred: Option<FailureChain>,
 }
 /// An applied input waiting for this Loop to consume it.
 struct Applied {
@@ -220,6 +236,8 @@ impl AgentLoop {
             ending: false,
             interrupted: None,
             failed: None,
+            continued: false,
+            deferred: None,
         });
         self.timeline
             .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
@@ -291,11 +309,13 @@ impl AgentLoop {
         Ok(())
     }
     /// A step boundary unless `source` retries a request: a pending
-    /// compaction step runs before the next request, which waits for it.
+    /// compaction step runs before the next request, which waits for it and
+    /// keeps the chain it was started with.
     fn next_model(
         self: &Arc<Self>,
         turn: &mut Turn,
         source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
         at: u64,
     ) -> Result<()> {
         if let Some(error) = turn.failed.clone() {
@@ -313,15 +333,17 @@ impl AgentLoop {
             let mut compaction = self.compaction.lock().unwrap();
             if compaction.running() {
                 turn.request = None;
+                turn.deferred = chain;
                 return Ok(());
             }
             if compaction.waiting() {
                 turn.request = None;
+                turn.deferred = chain;
                 self.start_step(&mut compaction, Some(turn.id.clone()), at);
                 return Ok(());
             }
         }
-        self.start_request(turn, source)
+        self.start_request(turn, source, chain)
     }
     /// Starts the waiting step in a tracked task; its result resumes the Loop.
     fn start_step(
@@ -451,7 +473,12 @@ impl AgentLoop {
         Ok(())
     }
     /// Writes the inputs the next request consumes, then its `step/model-start`.
-    fn start_request(&self, turn: &mut Turn, source: Option<ContextPrepareData>) -> Result<()> {
+    fn start_request(
+        &self,
+        turn: &mut Turn,
+        source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
+    ) -> Result<()> {
         let chosen: Vec<String> = match source {
             Some(_) => Vec::new(),
             None => {
@@ -495,6 +522,7 @@ impl AgentLoop {
             preparation: None,
             started: Vec::new(),
             replaced: false,
+            chain,
         });
         Ok(())
     }
@@ -909,6 +937,8 @@ impl AgentLoop {
                     ending: false,
                     interrupted: None,
                     failed: Some(CAPABILITY_RELOADING.into()),
+                    continued: false,
+                    deferred: None,
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -1048,6 +1078,7 @@ impl AgentLoop {
                             preparation: None,
                             started: Vec::new(),
                             replaced: false,
+                            chain: None,
                         });
                         handed_over = false;
                         completed.clear();
@@ -1166,6 +1197,7 @@ impl AgentLoop {
         turn_id: String,
         request_id: String,
         recovery: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
     ) -> CancellationToken {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
@@ -1243,7 +1275,7 @@ impl AgentLoop {
                     }),
                     prompt,
                     recovery: None,
-                    failure_chain: None,
+                    failure_chain: chain,
                 }, Some(streamed)))
             }).catch_unwind();
             let result = tokio::select! {
@@ -1403,7 +1435,7 @@ impl AgentLoop {
                     })
                     .ok_or_else(|| AgentError::fault("Loop", "invalid turn/start"))?;
                 turn.open = true;
-                let result = self.next_model(turn, None, event.sequence);
+                let result = self.next_model(turn, None, None, event.sequence);
                 self.publish(&slot);
                 return result;
             }
@@ -1496,7 +1528,8 @@ impl AgentLoop {
                 }
                 return match slot.as_mut() {
                     Some(turn) if turn.open && !turn.ending => {
-                        self.next_model(turn, None, event.sequence)
+                        let deferred = turn.deferred.take();
+                        self.next_model(turn, None, deferred, event.sequence)
                     }
                     Some(_) => Ok(()),
                     None => self.try_start(&mut slot),
@@ -1564,6 +1597,7 @@ impl AgentLoop {
                     turn.id.clone(),
                     request.id.clone(),
                     request.source.clone(),
+                    request.chain.clone(),
                 ));
             }
             EventKind::ToolUseStart(data) if request.stage == Stage::Model => {
@@ -1574,7 +1608,34 @@ impl AgentLoop {
             }
             EventKind::ModelOutputEnd(data) if request.stage == Stage::Model => {
                 match &data.outcome {
-                    ModelOutputOutcome::Failed { error, budget, .. } => {
+                    ModelOutputOutcome::Failed {
+                        error,
+                        budget,
+                        failure,
+                        ..
+                    } => {
+                        // In order: the context-budget recovery keeps its own
+                        // contract and reads neither the turn's continuation nor
+                        // its slot; then one §6.2 continuation for a step whose
+                        // calls were announced and never executed, when a new
+                        // request can settle the failure at all; then an
+                        // output-limit stop, which ends the turn Completed because
+                        // no answer can be completed rather than because one
+                        // failed; then a failure.
+                        let limit = failure
+                            .as_deref()
+                            .is_some_and(|failure| failure.kind == ModelFailureKind::OutputLimit);
+                        // A continuation is worth one request only when the
+                        // provider did not veto retrying the failure and a new
+                        // request can settle it at all.
+                        let continues = failure.as_deref().is_some_and(|failure| {
+                            !failure.retry_forbidden && a_new_request_can_help(failure.kind)
+                        });
+                        let chain = failure.as_deref().map(|failure| FailureChain {
+                            from_request_id: request.id.clone(),
+                            attempts: failure.attempts,
+                            waited_ms: failure.waited_ms,
+                        });
                         if self.policy.is_some()
                             && budget.is_some()
                             && request
@@ -1584,7 +1645,23 @@ impl AgentLoop {
                         {
                             let mut source = request.source.clone().expect("checked source");
                             source.recovery = budget.clone();
-                            self.next_model(turn, Some(source), event.sequence)?;
+                            self.next_model(turn, Some(source), None, event.sequence)?;
+                        } else if continues
+                            && !request.started.is_empty()
+                            && !turn.continued
+                            && turn.interrupted.is_none()
+                            && !self.driven()
+                        {
+                            turn.continued = true;
+                            self.binding.release(&request.id);
+                            self.next_model(turn, None, chain, event.sequence)?;
+                        } else if limit && turn.interrupted.is_none() {
+                            self.end(
+                                turn,
+                                TurnOutcome::Completed {
+                                    reason: "output_limit".into(),
+                                },
+                            )?;
                         } else {
                             self.end(
                                 turn,
@@ -1600,7 +1677,7 @@ impl AgentLoop {
                             && self.driven()
                         {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             if reason == CAPABILITY_RELOADING {
                                 turn.failed = Some(CAPABILITY_RELOADING.into());
@@ -1627,7 +1704,7 @@ impl AgentLoop {
                             request.call_event_id = Some(event.id.clone());
                         } else if self.driven() {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             let reason = match finish_reason {
                                 FinishReason::EndTurn => "end_turn",
@@ -1663,7 +1740,7 @@ impl AgentLoop {
                     turn.failed = Some(CAPABILITY_RELOADING.into());
                 }
                 self.binding.release(&request.id);
-                self.next_model(turn, None, event.sequence)?;
+                self.next_model(turn, None, None, event.sequence)?;
             }
             _ => {
                 return Err(AgentError::fault(
@@ -1814,5 +1891,26 @@ impl DynPlugin for LoopPlugin {
             ctx.provide_at(self.loop_state.clone(), service as Arc<dyn LoopState>)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+/// Whether a new request can settle a failure that announced calls. The kinds
+/// that need the user or the provider's owner to act first are excluded: the
+/// same context fails the same way, and an unrecoverable rejection is not
+/// repeated behind the user's back.
+fn a_new_request_can_help(kind: ModelFailureKind) -> bool {
+    match kind {
+        ModelFailureKind::Network
+        | ModelFailureKind::RateLimited
+        | ModelFailureKind::ServerError
+        | ModelFailureKind::MalformedResponse
+        | ModelFailureKind::OutputLimit
+        | ModelFailureKind::Unknown => true,
+        ModelFailureKind::AuthRejected
+        | ModelFailureKind::QuotaExhausted
+        | ModelFailureKind::NotFound
+        | ModelFailureKind::InvalidRequest
+        | ModelFailureKind::ContentFiltered
+        | ModelFailureKind::ContextTooLong => false,
     }
 }

@@ -255,7 +255,7 @@ impl SessionStore {
                  CROSS JOIN session_owners o ON o.session_id=c.session_id \
                  CROSS JOIN timeline_branches b ON b.session_id=c.session_id AND b.branch_id='main' \
                  LEFT JOIN session_metadata m ON m.session_id=c.session_id \
-                 WHERE o.protocol_version=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
+                 WHERE o.protocol_version<=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
                  AND c.session_id NOT IN (SELECT value FROM json_each(?3))"
             );
             let mut values: Vec<rusqlite::types::Value> = vec![i64::from(version).into(), serde_json::to_string(&hosts).map_err(error)?.into(), serde_json::to_string(&closed).map_err(error)?.into()];

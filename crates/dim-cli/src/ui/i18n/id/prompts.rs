@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y keluar · n tetap · ←→ pindah · enter konfirmasi"
         }
-        "Restart dimcode?" => "Mulai ulang dimcode?",
-        "Restart" => "Mulai ulang",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y mulai ulang · n tetap · ←→ pindah · enter konfirmasi"
-        }
         // upgrade_dialog.rs
         "Update available" => "Pembaruan tersedia",
         "Version {latest} is available (you have {current})." => {
             "Versi {latest} tersedia (terpasang {current})."
         }
-        "Will run: {command}" => "Akan jalankan: {command}",
         "To update, run: {command}" => "Perbarui dengan: {command}",
-        "Update now" => "Perbarui",
         "Skip this version" => "Lewati versi ini",
         "Skipped {version}." => "{version} dilewati.",
-        "Later" => "Nanti",
         "Close" => "Tutup",
-        "Restart now" => "Mulai ulang",
-        "Updating to {version}..." => "Memperbarui ke {version}…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "Diperbarui ke {version}. Mulai ulang DimCode untuk memakai."
-        }
-        "Update failed: {error}" => "Pembaruan gagal: {error}",
         "←→ move · Enter confirm · Esc close" => "←→ pindah · Enter konfirmasi · Esc tutup",
         // prompts.rs: permission request
         "Permission required" => "Perlu izin",

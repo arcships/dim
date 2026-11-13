@@ -13,6 +13,7 @@ Lines share facts, not context:
 - Each line assembles its own context from its own facts.
 - Each line compacts on its own.
 - A line influences another line by writing input to that line's Timeline, and it learns about another line from its own reads of that line.
+- A rule or state change an ancestor appended without its delivery input consumed in the inherited prefix is not part of the line's inherited state: the line adopts the source's current value itself, and that block is its own event after the cut ([Prompt](../architecture/rust-agent/prompt.md)).
 
 The parent–child relation records where a history came from. It is also the only relation along which lines talk and read. It does not mean control, and it does not mean that a result is owed.
 

@@ -886,6 +886,15 @@ impl DynPlugin for PromptPlugin {
                                 }
                             }
                         }
+                        // The consumption query a gate needs cannot run with
+                        // the projection locked, so it is answered first.
+                        let delivered = match &event.kind {
+                            EventKind::PromptChanged(data) => {
+                                recovery::delivered(&prompt.timeline, &prompt.identity.branch_id, data, event.sequence)
+                                    .await?
+                            }
+                            _ => true,
+                        };
                         let opening = {
                             let mut projection = prompt.projection.lock().unwrap();
                             if event.kind.key() == recovery::KEY {
@@ -895,7 +904,13 @@ impl DynPlugin for PromptPlugin {
                                 }
                                 projection.publish(&prompt, event.sequence);
                             } else {
-                                projection.step(&prompt, &event.id, event.sequence, &event.kind)?;
+                                projection.step(
+                                    &prompt,
+                                    &event.id,
+                                    event.sequence,
+                                    &event.kind,
+                                    delivered,
+                                )?;
                             }
                             if matches!(event.kind,EventKind::BranchStart(_) | EventKind::BranchResume(_)) {
                                 let (sequence,snapshot) = projection.opening.take().ok_or_else(||AgentError::fault("Prompt","missing opening snapshot"))?;

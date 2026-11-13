@@ -30,7 +30,7 @@ use crate::model::session::{
     SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
-    LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
+    Earlier, LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
 };
 use crate::projection::Projection;
 use crate::wire::{
@@ -435,7 +435,10 @@ async fn run(
         ..Default::default()
     })));
     if let Err(error) = worker.open().await {
-        let _ = updates.send(Update::StartupFailed(error.to_string()));
+        let _ = updates.send(Update::StartupFailed {
+            message: error.to_string(),
+            resumable: client::resume_can_succeed(&error),
+        });
         return;
     }
     loop {
@@ -469,7 +472,10 @@ async fn run(
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
-                        worker.send(Update::StartupFailed(error.to_string()));
+                        worker.send(Update::StartupFailed {
+                            message: error.to_string(),
+                            resumable: client::resume_can_succeed(&error),
+                        });
                         break;
                     }
                     let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
@@ -746,11 +752,45 @@ impl Worker {
                 }
                 permission::select(&mut self.client, &id, preset)
                     .await
-                    .map_err(|error| format!("Cannot set the permission preset: {error}"))?;
+                    .map_err(|error| {
+                        client::resume_failure("Cannot set the permission preset", error)
+                    })?;
             }
             adopt_startup(&mut self.client, &self.options, &id).await?;
             return self.attach(id, SwitchKind::Resumed).await;
         }
+        if self.client.offers("session.model.preview")
+            && let Err(error) = self.preview_model().await
+        {
+            self.send(Update::Notice(format!(
+                "Cannot preview startup model: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn preview_model(&mut self) -> crate::Result<()> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Preview {
+            model: ModelId,
+            model_preferences: Option<dim_agent_types::ModelPreferences>,
+        }
+        let preview: Preview = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut params = session_create_from_options(&mut self.client, &self.options).await?;
+            let object = params.as_object_mut().expect("creation parameters");
+            object.remove("permissionPolicy");
+            // Creation-only member: `session.model.preview` denies it.
+            object.remove("worktree");
+            self.client.typed("session.model.preview", params).await
+        })
+        .await??;
+        self.send(Update::Ready(Configuration {
+            provider_id: preview.model.provider_id,
+            model_id: preview.model.model_id,
+            capability_snapshot: None,
+            model_preferences: preview.model_preferences,
+        }));
         Ok(())
     }
 
@@ -762,7 +802,12 @@ impl Worker {
         let mut params = if initial {
             session_create_from_options(&mut self.client, &self.options).await?
         } else {
-            session_create_params(&self.options)
+            let mut params = session_create_params(&self.options);
+            // `session_create_params` contacts no daemon, so the member
+            // `--worktree` asks for is added here; the initial path adds it
+            // in `session_create_from_options`.
+            crate::add_creation_worktree(&self.client, &self.options, &mut params)?;
+            params
         };
         let mut preferences = params.get("modelPreferences").cloned();
         let mut target = if initial {
@@ -820,13 +865,24 @@ impl Worker {
         .await;
         match result {
             Ok(created) => {
+                let worktree = created.worktree.map(|worktree| {
+                    format!(
+                        "worktree: {}\t{}",
+                        crate::sanitize::safe(&worktree.task_id),
+                        crate::sanitize::safe(&worktree.root)
+                    )
+                });
                 self.enter(
                     created.session_id,
                     Some(created.model),
                     SwitchKind::New,
                     attached_session,
                 )
-                .await
+                .await?;
+                if let Some(worktree) = worktree {
+                    self.send(Update::Notice(worktree));
+                }
+                Ok(())
             }
             Err(error) => {
                 self.parked = attached_session;
@@ -1817,14 +1873,6 @@ impl Worker {
             }
             Command::OauthStart(start) => self.login_start(start).await,
             Command::OauthCancel => self.login_cancel().await,
-            Command::UpgradeInstall(install) => {
-                let updates = self.updates.clone();
-                tokio::spawn(async move {
-                    let version = install.version.clone();
-                    let result = update::install(install).await;
-                    let _ = updates.send(Update::UpgradeInstalled { version, result });
-                });
-            }
             Command::OauthPaste(url) => self.login_complete(url, None).await,
             Command::RefreshAccountModels {
                 provider_id,
@@ -4624,6 +4672,7 @@ impl Worker {
             .task_history
             .get(&self.focus)
             .is_some_and(|branch| branch.window_complete);
+        snapshot.earlier = self.earlier_view();
         snapshot.task_history_loading = self
             .task_history
             .values()
@@ -4686,10 +4735,7 @@ fn effort_choices(
     if !reasoning.supported || !capabilities.reasoning {
         return (Vec::new(), None);
     }
-    let mut efforts = reasoning.effort_options.clone().unwrap_or_default();
-    if reasoning.off.is_some() && !efforts.iter().any(|effort| effort == "none") {
-        efforts.push("none".into());
-    }
+    let efforts = reasoning.offered_efforts();
     let default = reasoning
         .effort
         .clone()
@@ -4724,7 +4770,10 @@ pub(crate) async fn adopt_startup(
         .rpc("session.model.update", params)
         .await
         .map_err(|error| {
-            format!("Cannot adopt startup configuration for resumed Session: {error}")
+            client::resume_failure(
+                "Cannot adopt startup configuration for resumed Session",
+                error,
+            )
         })?;
     Ok(())
 }

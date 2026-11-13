@@ -18,8 +18,8 @@ use crate::model::session::{
 use crate::model::shell::Outcome as ShellOutcome;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
-    CompactionState, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome, TaskTarget,
-    ViewRow, ViewSnapshot,
+    CompactionState, Earlier, LineState, LineView, RowKind, SideLine, TaskFinish, TaskOutcome,
+    TaskTarget, ViewRow, ViewSnapshot,
 };
 use crate::ui::Env;
 use crate::ui::Initial;
@@ -80,7 +80,7 @@ use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
 use crate::wire::Configuration;
 
-const COMPOSER_PLACEHOLDER: &str = "Ask anything...";
+const COMPOSER_PLACEHOLDER: &str = "Ask anything... · Ctrl+J newline";
 const SHELL_PLACEHOLDER: &str = "Run a shell command · Esc to exit";
 /// `config.json` key of the three tool display forms.
 const TOOL_DETAILS_KEY: &str = "tuiToolDetails";
@@ -174,28 +174,10 @@ pub fn is_interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// How the interface ended.
-pub enum Leave {
-    Exit(i32),
-    /// "Restart now" after an update: start the updated CLI on the session.
-    Restart(Restart),
-}
-
-/// What starts the updated CLI where this one leaves off.
-pub struct Restart {
-    pub relaunch: PathBuf,
-    pub session_id: Option<String>,
-    pub fullscreen: bool,
-}
-
-pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> Leave {
-    let mut restart = None;
-    let code = run_terminal(host, surroundings, &mut restart);
+pub fn run(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
+    let code = run_terminal(host, surroundings);
     history::flush();
-    match restart {
-        Some(restart) => Leave::Restart(restart),
-        None => Leave::Exit(code),
-    }
+    code
 }
 
 /// Where the Web workspace is, as `dimcode web` reports it.
@@ -244,11 +226,7 @@ fn write_notifications(
     Ok(())
 }
 
-fn run_terminal(
-    host: Box<dyn SessionPort>,
-    surroundings: Env,
-    restart: &mut Option<Restart>,
-) -> i32 {
+fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut terminal = match Terminal::enter() {
         Ok(terminal) => terminal,
         Err(TerminalError::NotATerminal) => {
@@ -665,12 +643,13 @@ fn run_terminal(
             {
                 if let Some(full) = &mut full {
                     if key.code == KeyCode::PageUp && full.at_top() {
-                        app.host.send(Command::Earlier);
-                    }
-                    match key.code {
-                        KeyCode::Home => full.scroll_to_top(),
-                        KeyCode::End => full.follow(),
-                        code => full.page(code == KeyCode::PageDown),
+                        app.show_earlier();
+                    } else {
+                        match key.code {
+                            KeyCode::Home => full.scroll_to_top(),
+                            KeyCode::End => full.follow(),
+                            code => full.page(code == KeyCode::PageDown),
+                        }
                     }
                 }
                 dirty = true;
@@ -741,14 +720,6 @@ fn run_terminal(
                     app.host.send(Command::ToggleWeb);
                     dirty = true;
                 }
-                Outcome::Restart(relaunch) => {
-                    *restart = Some(Restart {
-                        relaunch,
-                        session_id: app.session_active().then(|| app.session_id.clone()),
-                        fullscreen: app.fullscreen,
-                    });
-                    break 0;
-                }
             },
         }
     };
@@ -760,11 +731,9 @@ fn run_terminal(
         }
         None => screen.leave(),
     };
-    if restart.is_none() {
-        let resume =
-            (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
-        bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
-    }
+    let resume =
+        (app.session_active() && !app.session_id.is_empty()).then_some(app.session_id.as_str());
+    bytes.extend(format!("\r\n{}\r\n", goodbye_panel(resume).join("\r\n")).into_bytes());
     let _ = terminal.write(&bytes);
     terminal.leave();
     app.host.shutdown();
@@ -807,8 +776,6 @@ enum Outcome {
     },
     /// `/web`: flip the daemon-owned Web entry switch without leaving.
     Web,
-    /// Start the updated CLI from this path on the session.
-    Restart(PathBuf),
     Exit(i32),
 }
 
@@ -944,8 +911,8 @@ fn edit_management(
     Ok(())
 }
 
-/// The adopted model as the label draws it: `provider / model`, and the
-/// reasoning effort the configuration sends when it carries one.
+/// The startup preview or adopted model: `provider / model` and its
+/// reasoning effort when present.
 struct ModelLabel {
     model: String,
     effort: Option<String>,
@@ -1020,9 +987,13 @@ struct App {
     report_sequence: u64,
     banner_committed: bool,
     snapshot: Option<ViewSnapshot>,
-    /// The adopted model and its reasoning effort, once the session exists.
+    /// Home's startup preview or the attached Session's adopted model.
     label: Option<ModelLabel>,
     failure: Option<String>,
+    /// Whether running the same command again could open the Session this
+    /// failure left; false only for a Session the daemon refuses for its
+    /// protocol version, which no run of this client opens.
+    failure_resumable: bool,
     exit_code: Option<i32>,
     failure_committed: bool,
     planner: StreamPlanner,
@@ -1101,6 +1072,10 @@ struct App {
     history_floor: usize,
     /// Fullscreen owes its load-more row before the next transcript commit.
     load_more: bool,
+    /// An earlier read whose page is to be revealed when it lands: set by
+    /// `show_earlier`, cleared once the page is shown or the read ends
+    /// without one.
+    reveal_pending: bool,
     /// The user message a `/timeline` jump or a loaded page lands on, once
     /// drawn: `(row id, pick it)`.
     landing: Option<(String, bool)>,
@@ -1458,6 +1433,7 @@ impl App {
             snapshot: None,
             label: None,
             failure: None,
+            failure_resumable: true,
             exit_code: None,
             failure_committed: false,
             planner: StreamPlanner::new(),
@@ -1498,6 +1474,7 @@ impl App {
             window_floor: 0,
             history_floor: 0,
             load_more: false,
+            reveal_pending: false,
             landing: None,
             awaiting_window: false,
             pending_boundary: None,
@@ -2122,7 +2099,9 @@ impl App {
                     }
                 }
                 self.runs.observe(&snapshot);
-                self.snapshot = Some(*snapshot);
+                let previous = self.snapshot.replace(*snapshot);
+                self.follow_floors(previous.as_ref());
+                self.apply_earlier(previous.as_ref());
                 self.refresh_compactions();
                 self.refresh_cards();
                 self.refresh_tool_origins();
@@ -2809,14 +2788,6 @@ impl App {
                 self.upgrade = Some(UpgradeDialog::new(offer));
                 self.reopen_upgrade();
             }
-            Update::UpgradeInstalled { version, result } => {
-                match (&mut self.prompt, &mut self.upgrade) {
-                    (Some(Prompt::Upgrade(dialog)), _) | (_, Some(dialog)) => {
-                        dialog.installed(result)
-                    }
-                    _ => self.notices.push(UpgradeDialog::outcome(&version, &result)),
-                }
-            }
             Update::ApprovalPending {
                 branch_id,
                 request_id,
@@ -2836,8 +2807,9 @@ impl App {
                 self.notices.push(message);
                 self.restore_unsent();
             }
-            Update::StartupFailed(message) => {
+            Update::StartupFailed { message, resumable } => {
                 self.failure = Some(message);
+                self.failure_resumable = resumable;
                 // A first message the invocation supplied has no Session
                 // to take it: keep it in the draft and stay, rather than
                 // exiting nonzero with nothing sent.
@@ -2950,7 +2922,11 @@ impl App {
                 return Outcome::Exit(0);
             }
             if key.code == KeyCode::Enter {
-                self.set_notice(t("Disconnected; draft kept. Exit and resume this Session."));
+                self.set_notice(if self.failure_resumable {
+                    t("Disconnected; draft kept. Exit and resume this Session.")
+                } else {
+                    t("Cannot open this Session; draft kept.")
+                });
             } else if key.code == KeyCode::Esc {
                 self.prompt = None;
             } else if self.prompt.is_none() {
@@ -3637,19 +3613,6 @@ impl App {
                 }
             }
             Effect::Exit => return Outcome::Exit(130),
-            Effect::Restart { confirmed } => {
-                if let Some(Prompt::Upgrade(dialog)) = self.prompt.take() {
-                    self.upgrade = Some(dialog);
-                }
-                if !confirmed && let Some(reason) = self.busy_reason() {
-                    self.prompt = Some(Prompt::Exit(ExitConfirm::restart(reason)));
-                    return Outcome::Continue;
-                }
-                if let Some(install) = self.upgrade.take().and_then(|dialog| dialog.offer.install) {
-                    return Outcome::Restart(install.relaunch);
-                }
-            }
-            Effect::UpgradeInstall(install) => self.host.send(Command::UpgradeInstall(install)),
             Effect::UpgradeSkip(version) => {
                 self.prompt = None;
                 match crate::update::skip(&self.home, &version) {
@@ -5004,7 +4967,11 @@ impl App {
                 Outcome::Continue
             }
             "earlier" => {
-                self.host.send(Command::Earlier);
+                if self.fullscreen {
+                    self.show_earlier();
+                } else {
+                    self.host.send(Command::Earlier);
+                }
                 Outcome::Continue
             }
             "export" => {
@@ -5484,26 +5451,35 @@ impl App {
             ]);
             self.record(Block::Failure(message));
             frame.commits.push(text);
-            let resume = if self.session_id.is_empty() {
-                "dimcode".to_owned()
+            // A Session the daemon refuses for its protocol version is refused
+            // again by every run of this client, so no command is offered.
+            let status = if self.failure_resumable {
+                let resume = if self.session_id.is_empty() {
+                    "dimcode".to_owned()
+                } else {
+                    format!("dimcode --resume {}", self.session_id)
+                };
+                Block::Status {
+                    text: tf(
+                        "Disconnected; draft kept. Exit and run: {command}",
+                        &[("command", &resume)],
+                    ),
+                    tone: Tone::Muted,
+                }
             } else {
-                format!("dimcode --resume {}", self.session_id)
-            };
-            let block = Block::Status {
-                text: tf(
-                    "Disconnected; draft kept. Exit and run: {command}",
-                    &[("command", &resume)],
-                ),
-                tone: Tone::Muted,
+                Block::Status {
+                    text: t("Cannot open this Session; draft kept.").to_owned(),
+                    tone: Tone::Muted,
+                }
             };
             frame.commits.push(chunk(&render_block(
-                &block,
+                &status,
                 width,
                 &self.palette,
                 &self.markdown,
                 self.fullscreen,
             )));
-            self.record(block);
+            self.record(status);
         }
 
         let mut live = tail;
@@ -5745,7 +5721,6 @@ impl App {
             let placeholder = match offer {
                 Some(text) => text,
                 None if shell.is_some() => t(SHELL_PLACEHOLDER).to_owned(),
-                None if self.fullscreen => String::new(),
                 None => t(COMPOSER_PLACEHOLDER).to_owned(),
             };
             rows.push(format!(
@@ -6484,6 +6459,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
+        self.reveal_pending = false;
         self.landing = None;
         self.window_info = (0, 0);
         self.history_request = None;
@@ -6564,6 +6540,7 @@ impl App {
         self.window_floor = 0;
         self.history_floor = 0;
         self.load_more = false;
+        self.reveal_pending = false;
         self.landing = None;
         self.window_info = (0, 0);
         self.history_request = None;
@@ -6670,6 +6647,76 @@ impl App {
         self.rebuild_window(start);
     }
 
+    /// Shows what comes before the drawn top, for PageUp at that top, the
+    /// load-more row and fullscreen `/earlier`: loaded rows first, a read from
+    /// the daemon when none are loaded, and nothing at the branch start.
+    fn show_earlier(&mut self) {
+        if self.hidden_messages() > 0 {
+            self.load_earlier();
+            return;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        match snapshot.earlier {
+            Earlier::Unread => {
+                self.host.send(Command::Earlier);
+                self.reveal_pending = true;
+            }
+            Earlier::Reading => self.reveal_pending = true,
+            Earlier::AtStart => {}
+        }
+    }
+
+    /// Message rows loaded above `window_floor`, which the drawn window hides.
+    fn hidden_messages(&self) -> usize {
+        let Some(snapshot) = &self.snapshot else {
+            return 0;
+        };
+        snapshot.rows[..self.window_floor.min(snapshot.rows.len())]
+            .iter()
+            .filter(|row| row.kind.is_message())
+            .count()
+    }
+
+    /// Reveals the page an earlier read just prepended, keeping the oldest
+    /// drawn message at the top of the view.
+    fn reveal_prepended(&mut self) {
+        if self.hidden_messages() > 0 {
+            self.load_earlier();
+        }
+        self.reveal_pending = false;
+    }
+
+    /// The pending reveal, once a snapshot arrived. A prepended page is shown;
+    /// a read that ended without one drops the request, so a later unrelated
+    /// prepend is not revealed by it. A live-turn snapshot during the read
+    /// changes nothing, which is why `Earlier::Reading` keeps it.
+    fn apply_earlier(&mut self, previous: Option<&ViewSnapshot>) {
+        if !self.reveal_pending {
+            return;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        // Rows were prepended when the old first row now sits below the top: a
+        // front trim changes the first row too and must not count.
+        let prepended = previous.is_some_and(|previous| {
+            previous.rows.first().is_some_and(|first| {
+                snapshot
+                    .rows
+                    .iter()
+                    .position(|row| row.row_id == first.row_id)
+                    .is_some_and(|index| index > 0)
+            })
+        });
+        if prepended {
+            self.reveal_prepended();
+        } else if snapshot.earlier != Earlier::Reading {
+            self.reveal_pending = false;
+        }
+    }
+
     /// Entering fullscreen: the shown line is drawn again from its window,
     /// earlier history scrollback drew page by page in order under the
     /// load-more row, so nothing else scrollback committed (an earlier
@@ -6695,6 +6742,47 @@ impl App {
         self.dropped += self.history.len();
         self.history.clear();
         self.stream_block = None;
+    }
+
+    /// Keeps the drawn window on the rows it showed, after the handler has
+    /// stored a new snapshot: each floor takes the new index of the row it
+    /// named, a floor of 0 included. Identity covers a prepend, an append and a
+    /// page trimmed from the front by the same rule (timeline UI §4.6).
+    ///
+    /// Nothing moves while a window is not armed: a line or session switch
+    /// resets both floors and `arm_window` sets them from scratch, so an
+    /// unarmed floor belongs to no row of this snapshot.
+    ///
+    /// When the floor's row is gone, the first row after it that survives takes
+    /// over, which covers a front trim; when none survives, 0, which covers a
+    /// trim that removed the whole window and the rows after it.
+    fn follow_floors(&mut self, previous: Option<&ViewSnapshot>) {
+        if self.awaiting_window {
+            return;
+        }
+        let (Some(previous), Some(snapshot)) = (previous, &self.snapshot) else {
+            return;
+        };
+        let index_of = |id: &str| snapshot.rows.iter().position(|row| row.row_id == id);
+        let moved = |floor: usize| -> usize {
+            let Some(rows) = previous.rows.get(floor..).filter(|rows| !rows.is_empty()) else {
+                return floor.min(snapshot.rows.len());
+            };
+            if let Some(index) = index_of(&rows[0].row_id) {
+                return index;
+            }
+            let present: std::collections::HashSet<&str> = snapshot
+                .rows
+                .iter()
+                .map(|row| row.row_id.as_str())
+                .collect();
+            rows.iter()
+                .find(|row| present.contains(row.row_id.as_str()))
+                .and_then(|row| index_of(&row.row_id))
+                .unwrap_or(0)
+        };
+        self.window_floor = moved(self.window_floor.min(previous.rows.len()));
+        self.history_floor = moved(self.history_floor.min(previous.rows.len()));
     }
 
     /// The block id a drawn user message `row` became.
@@ -7015,7 +7103,7 @@ impl App {
     /// member, or the line a marker opened.
     fn open_card(&mut self, request_event_id: &str) {
         if request_event_id == LOAD_MORE {
-            self.load_earlier();
+            self.show_earlier();
             return;
         }
         let Some(snapshot) = &self.snapshot else {
@@ -8706,55 +8794,13 @@ mod tests {
                     let offer = crate::update::Offer {
                         current: "0.12.0-alpha.123".into(),
                         version: "0.12.0-alpha.124".into(),
-                        manual: "npm install -g --prefer-online dimcode-alpha@0.12.0-alpha.124"
-                            .into(),
-                        install: Some(crate::update::Install {
-                            version: "0.12.0-alpha.124".into(),
-                            program: "npm".into(),
-                            args: vec![
-                                "install".into(),
-                                "-g".into(),
-                                "dimcode-alpha@0.12.0-alpha.124".into(),
-                            ],
-                            relaunch: "dima".into(),
-                        }),
+                        manual: "dima update".into(),
                     };
                     drawn.app.apply(Update::Upgrade(offer.clone()));
-                    for label in ["Update now", "Skip this version", "Later"] {
-                        assert!(shown(&mut drawn).contains(&format!("› {}", t(label))));
-                        drawn.key(KeyCode::Tab);
-                    }
-                    drawn.key(KeyCode::Enter);
-                    assert!(
-                        matches!(sent.borrow().last(), Some(Command::UpgradeInstall(install)) if Some(install) == offer.install.as_ref())
-                    );
-                    assert!(shown(&mut drawn).contains(t("Close")));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Err("npm EACCES: permission denied in /usr/local/lib/node_modules/dimcode-alpha\n请检查安装目录权限，然后重新尝试 END-OF-ERROR".into()),
-                    });
-                    assert!(
-                        shown(&mut drawn).contains(&tf("Update failed: {error}", &[("error", "")]))
-                    );
-                    for _ in 0..30 {
-                        drawn.key(KeyCode::Down);
-                        shown(&mut drawn);
-                    }
-                    assert!(shown(&mut drawn).contains("END-OF-ERROR"));
-                    drawn.app.apply(Update::UpgradeInstalled {
-                        version: offer.version.clone(),
-                        result: Ok(()),
-                    });
-                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Restart now"))));
-                    drawn.key(KeyCode::Right);
+                    assert!(shown(&mut drawn).contains(&format!("› {}", t("Skip this version"))));
+                    drawn.key(KeyCode::Tab);
                     assert!(shown(&mut drawn).contains(&format!("› {}", t("Close"))));
-                    drawn.key(KeyCode::Enter);
-                    assert!(drawn.app.prompt.is_none());
-
-                    drawn.app.apply(Update::Upgrade(crate::update::Offer {
-                        install: None,
-                        ..offer.clone()
-                    }));
+                    drawn.key(KeyCode::Tab);
                     let mut details = String::new();
                     for _ in 0..30 {
                         details.push_str(&shown(&mut drawn));
@@ -8765,12 +8811,15 @@ mod tests {
                         .filter(|c| !c.is_whitespace() && *c != '│')
                         .collect();
                     assert!(details.contains(&offer.current));
-                    assert!(details.contains("dimcode-alpha@0.12.0-alpha.124"));
+                    assert!(details.contains("dimaupdate"));
                     drawn.size = (80, 24);
                     assert!(shown(&mut drawn).contains(&offer.current));
                     drawn.size = size;
                     drawn.key(KeyCode::Enter);
-                    assert_eq!(sent.borrow().len(), 1, "only the explicit install is sent");
+                    assert!(
+                        sent.borrow().is_empty(),
+                        "the dialog sends nothing to install"
+                    );
                     assert_eq!(
                         drawn.app.notice.as_ref().unwrap().0,
                         tf("Skipped {version}.", &[("version", &offer.version)])
@@ -8796,8 +8845,7 @@ mod tests {
                     drawn.app.apply(Update::Upgrade(crate::update::Offer {
                         current: "1.0.0".into(),
                         version: "2.0.0".into(),
-                        install: None,
-                        manual: "npm install -g dimcode@2.0.0".into(),
+                        manual: "dima update".into(),
                     }));
                     let frame = drawn.app.frame(size);
                     assert!(
@@ -8842,6 +8890,51 @@ mod tests {
             drawn.app.fullscreen = fullscreen;
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             drawn.app.host = Box::new(Recorder(sent.clone()));
+            for (locale, hint) in [
+                (i18n::Locale::En, "Ask anything... · Ctrl+J newline"),
+                (i18n::Locale::ZhCn, "输入你的问题… · Ctrl+J 换行"),
+            ] {
+                i18n::set(locale);
+                let frame = drawn.app.frame(drawn.size);
+                let bytes = if fullscreen {
+                    FullScreen::new(drawn.size, true).render(
+                        &frame,
+                        drawn.size,
+                        &drawn.app.palette,
+                        &drawn.app,
+                    )
+                } else {
+                    Screen::new(drawn.size, true).render(&frame, drawn.size)
+                };
+                let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                emu.feed(&bytes);
+                assert!(
+                    emu.row(emu.cy).replace('\0', "").contains(hint),
+                    "fullscreen={fullscreen}: {:?}",
+                    emu.rows_text()
+                );
+            }
+            i18n::set(i18n::Locale::En);
+            typed(&mut drawn.app, "first line");
+            drawn.app.handle(InputEvent::Key(KeyEvent::new(
+                KeyCode::Char('j'),
+                Modifiers::CTRL,
+            )));
+            typed(&mut drawn.app, "second line");
+            assert_eq!(drawn.app.composer.text(), "first line\nsecond line");
+            assert!(
+                sent.borrow().is_empty(),
+                "newline must not submit the draft"
+            );
+            assert!(
+                !drawn
+                    .app
+                    .frame(drawn.size)
+                    .live
+                    .join("\n")
+                    .contains("Ctrl+J"),
+                "typing replaces the placeholder"
+            );
             let draft = (0..12)
                 .map(|n| format!("line {n:02}"))
                 .collect::<Vec<_>>()
@@ -16510,5 +16603,549 @@ mod tests {
         ] {
             assert!(expanded.contains(line), "{line:?} missing: {expanded}");
         }
+    }
+
+    /// A Session the daemon refuses for its protocol version is refused again
+    /// by every run of this client, so the failure block and the Enter notice
+    /// offer no command to run it.
+    #[test]
+    fn a_refused_protocol_version_offers_no_resume_command() {
+        for (resumable, offered) in [(true, true), (false, false)] {
+            let mut drawn = Drawn::new((100, 40), None, true);
+            drawn.app.switch_session("s1".into(), SwitchKind::Resumed);
+            drawn.app.apply(Update::StartupFailed {
+                message: "Session was created by protocol version 5; this connection speaks 4"
+                    .into(),
+                resumable,
+            });
+            drawn.draw();
+            let shown = drawn_text(&mut drawn);
+            assert_eq!(shown.contains("Exit and run:"), offered, "{shown}");
+            assert_eq!(shown.contains("dimcode --resume s1"), offered, "{shown}");
+            drawn.key(KeyCode::Enter);
+            let notice = drawn_text(&mut drawn);
+            assert_eq!(
+                notice.contains("Exit and resume this Session."),
+                offered,
+                "{notice}"
+            );
+            if !offered {
+                assert!(notice.contains("Cannot open this Session"), "{notice}");
+            }
+        }
+    }
+
+    /// #1474: `/resume` in a repository with several worktrees must draw one
+    /// page. The panel opens on the exact launch workspace and asks for its
+    /// first page; the git probe answers later with the repository's
+    /// worktrees, and that answer may not clear a page already drawn.
+    ///
+    /// The git read itself is covered where it lives
+    /// (`session_host::tests::the_git_read_answers_one_worktree_several_and_nothing_outside_git`);
+    /// this drives the client's state sequence, which is what the operator
+    /// sees, and injects the set that read publishes.
+    #[test]
+    fn resume_draws_one_page_in_a_repository_with_several_worktrees() {
+        use crate::model::session::{SessionItem, SessionsScope};
+
+        let root = tempfile::tempdir().unwrap();
+        let launch = root.path().join("main");
+        let sibling = root.path().join("fix");
+        std::fs::create_dir_all(&launch).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let set = vec![
+            launch.to_string_lossy().into_owned(),
+            sibling.to_string_lossy().into_owned(),
+        ];
+
+        let item = |id: &str, title: &str, cwd: &std::path::Path| SessionItem {
+            id: id.into(),
+            title: Some(title.into()),
+            preview: None,
+            cwd: cwd.to_string_lossy().into_owned(),
+            updated_at: u64::MAX,
+            model: "p/m".into(),
+            origin: None,
+        };
+        let here = item("s-here", "Fix the failing test", &launch);
+        let also = item("s-also", "Retry the flaky test", &launch);
+        let there = item("s-there", "Update the cache", &sibling);
+
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut drawn = Drawn::new((100, 30), None, true);
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+
+        // What the operator sees, in reading order: the panel's title, its
+        // loading line, and its rows.
+        const MARKS: [&str; 6] = [
+            "Sessions · This workspace",
+            "Sessions · This repository",
+            "Loading sessions...",
+            "Fix the failing test",
+            "Retry the flaky test",
+            "Update the cache",
+        ];
+        let states = |drawn: &mut Drawn| -> Vec<&'static str> {
+            drawn.draw();
+            let text = drawn.emu.rows_text().join("\n");
+            MARKS
+                .iter()
+                .copied()
+                .filter(|mark| text.contains(mark))
+                .collect()
+        };
+        // The first-page reads asked for since the last call: their id and
+        // their scope, which is `None` for a cursor-less first page.
+        let reads = |sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            let mut commands = sent.borrow_mut();
+            let reads: Vec<(String, SessionsScope)> = commands
+                .iter()
+                .filter_map(|command| match command {
+                    Command::ListSessions {
+                        id, scope, cursor, ..
+                    } => {
+                        assert!(cursor.is_none(), "a first page carries no cursor");
+                        Some((id.clone(), scope.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            commands.clear();
+            reads
+        };
+        // Pressing Enter resumes the selected row: the id it picks.
+        let pressed = |drawn: &mut Drawn, sent: &std::rc::Rc<std::cell::RefCell<Vec<Command>>>| {
+            sent.borrow_mut().clear();
+            drawn.key(KeyCode::Enter);
+            let picked = sent.borrow_mut().iter().find_map(|command| match command {
+                Command::Resume(id) => Some(id.clone()),
+                _ => None,
+            });
+            sent.borrow_mut().clear();
+            picked.expect("Enter resumes the selected row")
+        };
+
+        let mut sequence: Vec<(&str, Vec<&'static str>)> = Vec::new();
+        for open in 1..=2 {
+            typed(&mut drawn.app, "/resume");
+            drawn.key(KeyCode::Enter);
+            sequence.push(("opened", states(&mut drawn)));
+
+            let asked = reads(&sent);
+            assert_eq!(
+                asked.len(),
+                1,
+                "open {open}: one read is asked for at open: {asked:?}"
+            );
+            assert!(
+                matches!(asked[0].1, SessionsScope::Local(None)),
+                "open {open}: the opening read lists the exact launch workspace: {asked:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: asked[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), also.clone()], None)),
+            });
+            sequence.push(("first page", states(&mut drawn)));
+
+            // The operator moves to the second row before git answers, and the
+            // wider page lists that row third: the selection must stay on it,
+            // not on the same index.
+            drawn.key(KeyCode::Down);
+            drawn.app.apply(Update::RepositoryWorkspaces(set.clone()));
+            let answered = states(&mut drawn);
+            assert!(
+                !answered.contains(&"Loading sessions..."),
+                "open {open}: the git answer does not clear the drawn page: {answered:?}"
+            );
+            sequence.push(("git answer", answered));
+
+            drawn.app.tick();
+            let widened = reads(&sent);
+            assert!(
+                matches!(
+                    widened.as_slice(),
+                    [(_, SessionsScope::Local(Some(asked)))] if *asked == set
+                ),
+                "open {open}: the wider scope reads its first page: {widened:?}"
+            );
+            drawn.app.apply(Update::Sessions {
+                id: widened[0].0.clone(),
+                paged: true,
+                result: Ok((vec![here.clone(), there.clone(), also.clone()], None)),
+            });
+            sequence.push(("wider page", states(&mut drawn)));
+            assert_eq!(
+                pressed(&mut drawn, &sent),
+                "s-also",
+                "open {open}: the selection stays on its row, now the third"
+            );
+        }
+
+        for open in 1..=2 {
+            let state = |label: &str| -> &Vec<&'static str> {
+                sequence
+                    .iter()
+                    .filter_map(|(recorded, states)| (*recorded == label).then_some(states))
+                    .nth(open - 1)
+                    .unwrap_or_else(|| {
+                        panic!("open {open} {label} was not recorded: {sequence:#?}")
+                    })
+            };
+            assert_eq!(
+                state("opened"),
+                &["Sessions · This workspace", "Loading sessions..."],
+                "open {open} opens on the launch workspace"
+            );
+            assert_eq!(
+                state("wider page"),
+                &[
+                    "Sessions · This repository",
+                    "Fix the failing test",
+                    "Retry the flaky test",
+                    "Update the cache",
+                ],
+                "open {open} ends on the repository's page without a second loading line"
+            );
+        }
+    }
+
+    /// `count` message rows `u0..u{count-1}`, the way a loaded window holds them.
+    fn window_rows(count: usize) -> Vec<std::sync::Arc<ViewRow>> {
+        (0..count)
+            .map(|n| {
+                std::sync::Arc::new(ViewRow {
+                    row_id: format!("u{n}"),
+                    provisional_id: None,
+                    kind: RowKind::UserMessage,
+                    display: None,
+                    text: format!("ask {n}"),
+                    streaming: false,
+                    elapsed_ms: None,
+                    tone: None,
+                    call_id: None,
+                    tool_lookup_done: false,
+                    tool_name: None,
+                    tool_input: None,
+                    batch: None,
+                    parent_call_id: None,
+                    pending: false,
+                    parked: false,
+                    result_text: None,
+                    result_is_error: false,
+                    diff: None,
+                    exit_code: None,
+                    member: None,
+                    cut: Some(n as u64),
+                    line: None,
+                    parent_row: None,
+                    compaction: None,
+                    failure: None,
+                    reportable: false,
+                })
+            })
+            .collect()
+    }
+
+    /// Older rows `old0..old{count-1}`, distinct from `window_rows`.
+    fn older_rows(count: usize) -> Vec<std::sync::Arc<ViewRow>> {
+        (0..count)
+            .map(|n| {
+                let mut row = (*window_rows(1)[0]).clone();
+                row.row_id = format!("old{n}");
+                row.text = format!("older {n}");
+                std::sync::Arc::new(row)
+            })
+            .collect()
+    }
+
+    /// A fullscreen app showing one window of rows, armed, its floor at 0.
+    fn fullscreen_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<Command>>>) {
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            std::path::PathBuf::from("/tmp"),
+            "/work".into(),
+        );
+        app.fullscreen = true;
+        app.snapshot = Some(ViewSnapshot {
+            session_id: "s1".into(),
+            rows: window_rows(HISTORY_WINDOW),
+            focus: "main".into(),
+            history_complete: true,
+            ..ViewSnapshot::default()
+        });
+        app.window_floor = 0;
+        app.history_floor = 0;
+        (app, sent)
+    }
+
+    /// Publishes `rows` as `s1`'s snapshot. The first call arms the window
+    /// over the newest `HISTORY_WINDOW` messages, as a resume does.
+    fn show_window(drawn: &mut Drawn, rows: Vec<std::sync::Arc<ViewRow>>) {
+        // The host keeps publishing `earlier` until the read ends, so the
+        // fixture carries it from one snapshot to the next.
+        let earlier = drawn
+            .app
+            .snapshot
+            .as_ref()
+            .map_or(Earlier::AtStart, |snapshot| snapshot.earlier);
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier,
+            ..ViewSnapshot::default()
+        })));
+    }
+
+    #[test]
+    fn follow_floors_keeps_each_floor_on_its_row_through_prepend_append_and_trim() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        // Two windows of rows; the next frame arms the floor on the first
+        // message of the newest window, hiding one window's worth above it.
+        show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
+        drawn.draw();
+        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
+        // A prepend of one window of older rows keeps the anchored row where
+        // it was relative to the rows that follow it.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW);
+        // An append moves no floor.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
+        // A front trim removes rows above the anchored one only: it keeps its
+        // identity and moves down by the number removed.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
+        let trimmed = HISTORY_WINDOW / 2;
+        show_window(&mut drawn, rows[trimmed..].to_vec());
+        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW - trimmed);
+        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW - trimmed);
+        // A floor of 0 names the first row: a prepend of N rows moves it to N.
+        show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
+        drawn.app.window_floor = 0;
+        drawn.app.history_floor = 0;
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
+        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
+    }
+
+    #[test]
+    fn follow_floors_leaves_an_unarmed_window_alone() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert!(drawn.app.awaiting_window, "no frame has armed the window");
+        assert_eq!(drawn.app.window_floor, 0, "an unarmed floor stays put");
+        assert_eq!(drawn.app.history_floor, 0);
+    }
+
+    #[test]
+    fn follow_floors_lands_on_the_first_surviving_row_when_the_floor_row_is_gone() {
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
+        drawn
+            .app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        drawn.draw();
+        let floor = drawn.app.window_floor;
+        assert_eq!(
+            floor,
+            2 * HISTORY_WINDOW,
+            "three windows of messages hide two of them"
+        );
+        // A trim removes the floor row and the rows after it, up to old3.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(2 * HISTORY_WINDOW));
+        // rows[floor + 3] is the first row that survives the trim.
+        show_window(&mut drawn, rows[floor + 3..].to_vec());
+        assert_eq!(
+            drawn.app.window_floor, 0,
+            "the first surviving row after the gone one takes over"
+        );
+        assert_eq!(
+            drawn.app.snapshot.as_ref().unwrap().rows[0].row_id,
+            rows[floor + 3].row_id
+        );
+    }
+
+    #[test]
+    fn show_earlier_requests_unread_history_and_does_nothing_at_the_start() {
+        let theme = test_theme();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut app = App::new(
+            Box::new(Recorder(sent.clone())),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            std::path::PathBuf::from("/tmp"),
+            "/work".into(),
+        );
+        app.fullscreen = true;
+        app.snapshot = Some(ViewSnapshot {
+            session_id: "s1".into(),
+            rows: window_rows(2 * HISTORY_WINDOW),
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        });
+        // Every loaded row is drawn, so the request is the only way forward.
+        app.window_floor = 0;
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1, "an unread prefix is requested");
+        assert!(matches!(sent.borrow()[0], Command::Earlier));
+        assert!(app.reveal_pending, "the arriving page is to be revealed");
+        // A live-read snapshot keeps the request; it is still in flight.
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
+        app.apply_earlier(None);
+        assert!(
+            app.reveal_pending,
+            "a live snapshot must not drop the reveal"
+        );
+        // `Reading` asks for nothing new.
+        sent.borrow_mut().clear();
+        app.show_earlier();
+        assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
+        assert!(app.reveal_pending);
+        // At the start there is nothing to show and nothing is sent.
+        app.reveal_pending = false;
+        sent.borrow_mut().clear();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::AtStart;
+        let floor = app.window_floor;
+        app.show_earlier();
+        assert!(sent.borrow().is_empty(), "AtStart sends nothing");
+        assert!(!app.reveal_pending, "AtStart reveals nothing");
+        assert_eq!(app.window_floor, floor, "AtStart does not move the floor");
+    }
+
+    #[test]
+    fn a_pending_reveal_survives_a_live_snapshot_and_shows_the_page_that_lands() {
+        let (mut app, sent) = fullscreen_app();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Unread;
+        app.show_earlier();
+        assert!(matches!(sent.borrow().as_slice(), [Command::Earlier]));
+        assert!(app.reveal_pending);
+        // A live turn appends one row while the read is in flight.
+        let mut rows = window_rows(HISTORY_WINDOW);
+        let mut live = (*window_rows(1)[0]).clone();
+        live.row_id = "live".into();
+        live.text = "streamed".into();
+        rows.push(std::sync::Arc::new(live));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Reading,
+            ..ViewSnapshot::default()
+        })));
+        assert!(app.reveal_pending, "a live snapshot keeps the reveal");
+        assert_eq!(app.window_floor, 0, "a floor of 0 follows its row");
+        // The page lands above the drawn rows.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        let mut live = (*window_rows(1)[0]).clone();
+        live.row_id = "live".into();
+        rows.push(std::sync::Arc::new(live));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        })));
+        assert!(!app.reveal_pending, "the landed page was revealed");
+        assert_eq!(
+            app.window_floor, 0,
+            "the page is drawn, nothing left hidden"
+        );
+        assert_eq!(
+            app.landing.as_ref().map(|(id, _)| id.as_str()),
+            Some("u0"),
+            "the oldest drawn message stays at the top of the view"
+        );
+    }
+
+    #[test]
+    fn a_page_longer_than_one_window_leaves_the_rest_behind_the_load_more_row() {
+        let (mut app, sent) = fullscreen_app();
+        app.snapshot.as_mut().unwrap().earlier = Earlier::Unread;
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1);
+        // A page of one window plus ten messages lands.
+        let mut rows = older_rows(HISTORY_WINDOW + 10);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            earlier: Earlier::Unread,
+            ..ViewSnapshot::default()
+        })));
+        assert!(!app.reveal_pending);
+        assert_eq!(app.hidden_messages(), 10, "one window of the page is drawn");
+        assert_eq!(
+            app.landing.as_ref().map(|(id, _)| id.as_str()),
+            Some("u0"),
+            "the oldest drawn message stays at the top of the view"
+        );
+        // The next action draws the rest without reading again.
+        app.show_earlier();
+        assert_eq!(sent.borrow().len(), 1, "no second read is requested");
+        assert_eq!(app.hidden_messages(), 0, "the rest of the page is drawn");
+        assert_eq!(app.window_floor, 0);
+    }
+
+    #[test]
+    fn a_line_jump_to_a_message_that_earlier_read_prints_it() {
+        let (mut app, _sent) = fullscreen_app();
+        app.fullscreen = false;
+        // `/earlier` prepends a page of rows the scrollback has not printed.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            rows,
+            focus: "main".into(),
+            history_complete: true,
+            ..ViewSnapshot::default()
+        })));
+        assert_eq!(
+            app.history_floor, HISTORY_WINDOW,
+            "the scrollback floor followed its row below the prepended page"
+        );
+        app.jump_to(0);
+        assert_eq!(
+            app.history_request,
+            Some((0, HISTORY_WINDOW)),
+            "the jump schedules the page instead of saying it is already shown"
+        );
     }
 }

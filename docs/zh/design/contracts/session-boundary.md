@@ -462,6 +462,8 @@ ToolBinding 沿既有 Prompt / BranchOpening 流程完成匹配与必要的采�
 
 协议侧的决定被接受：v2/v3 的载荷就是共享的事件类型，客户端随 daemon 一起构建和发布，声明也只能随它所描述的结果携带，并且 v1 冻结的形状不变。
 
+`Usage.reasoningTokens` 是 `model/usage` 的一个可选字段，存储与 v1 投影都不因此放宽。原生存储取 v46，只动 marker，因为旧 daemon 无法解码带该字段的 `Usage`（[v46](../appserver/native-storage-format.md#v46modelusage-携带推理-token-数)）。v1 连接收到的 `model/usage` 不含该字段，所以 v1 冻结的形状不变；v2 及以后整条携带原生事件，冻结样本不变。
+
 ## 附录 B. 完整冲突表
 
 | 场景 | 序号顺序 | 结果 | 决定所有者 |

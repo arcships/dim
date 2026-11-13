@@ -129,7 +129,9 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 | `session/set_mode` | 条件可接 | 仅提供 `read-only`、`workspace-write`、`full-access`。先 get policy/version，再 update `{sessionId,branchId:"main",expectedVersion,policy:<保留工具列表，仅替换 preset>}`。冲突返回错误并刷新；不盲重试旧 policy，不映射 plan mode |
 | `session/set_config_option` | 条件可接 | `mode` 复用上一行。`model` 仅在安全 provider catalog 和 `session.model.update` 可用时提供：保留 catalog 中 native model id，使用生成该选项的 providerId 调用 `{sessionId,branchId:"main",providerId,modelId}`。等待原生 `{model,outcome:"adopted"|"unchanged"}` 并接收 `context/configured`，再返回完整 configOptions；`configuration_superseded` 时刷新并报错，不把请求值直接当 currentValue |
 
-mode 和 model 的选项来自当前 Session 的公开状态，不能用用户偏好默认值冒充已采用值。模型切换影响可用选项时重读 catalog；超时或连接丢失后的写入不能报告为未应用。effort、fast/service tier 的写入口虽然存在，公开 `context/configured` 视图现在也读回已采用的 `model_preferences`，但首版不发布这些 config options。不同 Session 的可选方法逐个检查，不能因另一个 Session 安装了插件就假定可用。
+mode 和 model 的选项来自当前 Session 的公开状态，不能用用户偏好默认值冒充已采用值。模型切换影响可用选项时重读 catalog；超时或连接丢失后的写入不能报告为未应用。fast/service tier 的写入口虽然存在，首版不发布这两个 config options。不同 Session 的可选方法逐个检查，不能因另一个 Session 安装了插件就假定可用。
+
+`effort` 选项（`category: "thought_level"`）由当前已采用模型的 `capability_snapshot.reasoning` 生成，值和选项来源为 CLI 同一规则：`effortOptions`，有 `off` 声明时补 `none`。选项首位固定为 `provider-default`，表示 Session 不发送任何 effort、模型自身默认生效。`currentValue` 恒为已采用配置的 `model_preferences.reasoningEffort`，该值不在声明选项内时照原样显示并追加进选项，绝不取 `provider.preferences` 保存值，也不取声明里的 `effort`。设置发送 `{sessionId,branchId:"main",modelPreferences:{reasoningEffort}}`，不含 `providerId`/`modelId`；选择 `provider-default` 发送 `{action:"clear"}`，由 Provider 的 `apply_preferences` 恢复模型声明配置，因此下一步的 current value 可能是该模型的声明默认值而不是 `provider-default`，这是 Session 真实发送的值。显示用但未声明的值不可设置，在任何 native 调用之前以参数错误拒绝。写入只作用于本 Session，不写保存偏好。模型切换后，该次 `session.model.update` 的结果回复已经带上新模型的 effort 选项：网关在应用 set 结果之前先折叠已排队的 native notice，因此结果到达时新模型的声明已经就位。其后的 `config_option_update` 再按同一份状态发布一次，不为此额外 attach。模型不声明推理、或 Session 不具备该偏好写入时不发布该选项。
 
 new/load/resume/fork 通过独立的 [TemporaryMcp](plugins/TemporaryMcp.md) Session 插件接入 `mcpServers`，与原生工具并存，不写共享配置。只有旧 daemon 缺少 `mcp.temporary.capabilities` 时保留接受并忽略行为，且不声明 HTTP/SSE MCP 能力。非空 `additionalDirectories` 仍在创建或 attach 前拒绝。
 
@@ -283,7 +285,7 @@ validating -> submitting -> accepted(input event id)
 
 native reply、事件和 live progress 可以先后任意到达。先登记 submissionId 与 ACP request，再发送 native submit；reply 未到先收到的事实保留，不能丢失。使用 input event id 关联 `input/applied` / `input/consumed`，以消费位置上的真实 `turn/start` 确定 T，绝不把别人的 `session.state.running=false` 当作当前 prompt 完成。
 
-`Completed` 默认 `end_turn`；只有 native terminal reason 明确对应 token/request 限制时才返回 `max_tokens` / `max_turn_requests`，不匹配错误文本。`model-output-end` 的失败 presentation 明确给出 `reason = max_tokens` 时，对其对应 turn 返回 `max_tokens`；Session 与 ACP 连接继续接受后续 prompt。`Cancelled` → `cancelled`；其他 `Failed` → `turn_failed` JSON-RPC 错误；本连接已收到 session/cancel 时，最终 prompt 回复必须是 `cancelled`，不能让清理异常改成泛化 failure。无在途 prompt 的重复 cancel 是一次 addressed stop，不制造 prompt response。
+`Completed` 默认 `end_turn`；只有 turn 自己的结束原因明确对应 token/request 限制时才返回 `max_tokens` / `max_turn_requests`，不匹配错误文本，也不看中间步骤。以 `output_limit` 为 reason 结算的 turn 返回 `max_tokens`；早先步骤停在输出上限、续接后正常结束的 turn 返回 `end_turn`，因为该 turn 没有停在它的上限。Session 与 ACP 连接继续接受后续 prompt。`Cancelled` → `cancelled`；其他 `Failed` → `turn_failed` JSON-RPC 错误；本连接已收到 session/cancel 时，最终 prompt 回复必须是 `cancelled`，不能让清理异常改成泛化 failure。无在途 prompt 的重复 cancel 是一次 addressed stop，不制造 prompt response。
 
 现有 Hooks 设计中的 `input_blocked` 尚不是此基线的已实现提交检查；首版不依赖 Hooks。如果服务端未来返回该“未写入”错误，展示原消息并返回 `refusal`，不在 Gateway 实现 Hook 或解析专属 marker。
 

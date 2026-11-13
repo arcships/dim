@@ -220,6 +220,13 @@ async fn product_compaction_runs_automatically_on_request_and_settles_after_a_cr
         assert_ok(&created);
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
+        let unavailable = client
+            .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
+            .await;
+        assert_eq!(unavailable["error"]["data"]["appError"], "context_model_failed");
+        assert_eq!(unavailable["error"]["message"], "Usage statistics are not available until the next model request");
+        assert!(provider.requests.lock().unwrap().is_empty());
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -498,6 +505,7 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
 
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc(
                 "session.context.usage",
@@ -641,6 +649,7 @@ async fn summary_reasoning_comes_from_factory_configuration() {
                 )
                 .await,
         );
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -758,6 +767,7 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
         assert_ok(&created);
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
+        turn(&mut client, &sid, "first").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -775,7 +785,6 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
             "the fixed request alone crosses the threshold: {overhead}"
         );
 
-        turn(&mut client, &sid, "first").await;
         let events = history(&mut client, &sid).await;
         let results: Vec<_> = events
             .iter()

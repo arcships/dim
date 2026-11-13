@@ -156,6 +156,7 @@ fn prompt_changes_and_scope_ends_are_not_projected() {
                         order: 0,
                     },
                 }],
+                inputs: Vec::new(),
             }),
         ),
         event(

@@ -133,6 +133,26 @@ pub fn web_hint(error: &crate::Error, executable: &Path, home: &Path) -> Option<
     }
 }
 
+/// Why a startup step of a resumed Session failed. A Session the daemon
+/// refuses for its protocol version is returned unchanged: its text names the
+/// recorded and the connection's versions when both are known, and no startup
+/// step is what refused it. Every other failure keeps `context` before the
+/// daemon's text.
+pub fn resume_failure(context: &str, error: crate::Error) -> crate::Error {
+    match app_error(&error) {
+        Some("session_protocol_version") => error,
+        _ => format!("{context}: {error}").into(),
+    }
+}
+
+/// Whether running the same command again could open the resumed Session:
+/// false when the daemon refuses it for its protocol version, which fails the
+/// same way for as long as the Session exists. The refusal arrives both
+/// through [`resume_failure`] and directly from `session.attach`.
+pub fn resume_can_succeed(error: &crate::Error) -> bool {
+    app_error(error) != Some("session_protocol_version")
+}
+
 /// The name the daemon shows in process lists.
 pub const SERVER_NAME: &str = if cfg!(windows) {
     "dimcode-server.exe"

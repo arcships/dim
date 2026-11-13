@@ -355,6 +355,10 @@ impl AgentIndex {
         self: &Arc<Self>,
         request: LaunchRequest,
     ) -> Result<LaunchReply, SessionsError> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| SessionsError::reloading("process admission"))?;
         let (host, config, policy) = self
             .until_unloaded(async {
                 if request.policy.as_ref().is_some_and(|policy| {
@@ -430,6 +434,7 @@ impl AgentIndex {
         let origin = request.origin.map(LaunchOrigin::session_origin);
         let index = self.clone();
         let session = tokio::spawn(async move {
+            let _activity = activity;
             let session = index
                 .create_session(
                     &host,
@@ -437,6 +442,7 @@ impl AgentIndex {
                     PROTOCOL_VERSION,
                     None,
                     origin.unwrap_or(SessionOrigin::Internal),
+                    None,
                 )
                 .await?;
             index.retain_versions();

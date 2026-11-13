@@ -97,7 +97,8 @@ pub enum Call {
     },
     Ping,
     Shutdown(Shutdown),
-    Create(Create),
+    Create(Box<Create>),
+    ModelPreview(ModelPreview),
     Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
@@ -520,8 +521,9 @@ pub struct Shutdown {
     #[serde(default)]
     pub force: bool,
     /// Refuse (`daemon_busy`) instead of stopping while another client
-    /// connection is open or a Session has an attached client or a running
-    /// turn. Advertised as `daemon.shutdown.ifIdle`.
+    /// connection is open or a Session has an attached client, accepted
+    /// branch work or a runtime activity hold. Advertised as
+    /// `daemon.shutdown.ifIdle`.
     #[serde(default)]
     pub if_idle: bool,
 }
@@ -532,6 +534,32 @@ pub struct ModelSelection {
     pub provider: Option<String>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub model_id: Option<String>,
+}
+/// `session.create`'s optional managed-worktree request: `cwd` is the source
+/// workspace the repository is resolved from, and the reply names the worktree
+/// and the Session's starting directory (#1451). Sent only when `hello.features`
+/// carries `session.create.worktree`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorktree {
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub base: Option<String>,
+    /// Create-only: an existing branch is refused, never attached.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub branch: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreview {
+    pub cwd: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model: Option<ModelSelection>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_preferences: Option<crate::provider::ModelPreferences>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub agent_id: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -570,6 +598,9 @@ pub struct Create {
     /// daemons reject unknown fields.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub language: Option<dim_agent_runtime::ReplyLanguage>,
+    /// The managed worktree to create with the Session; absent keeps `cwd`.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub worktree: Option<CreateWorktree>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -823,7 +854,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 39] = [
+const BUILTIN_METHODS: [&str; 40] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -838,6 +869,7 @@ const BUILTIN_METHODS: [&str; 39] = [
     "ui.shutdown",
     "ui.replace",
     "session.create",
+    "session.model.preview",
     "session.summaries",
     "session.catalog",
     "session.catalog.cancel",
@@ -915,7 +947,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
                 Call::Ping
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
-            "session.create" => Call::Create(params(raw_params)?),
+            "session.create" => Call::Create(Box::new(params(raw_params)?)),
+            "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
@@ -1174,6 +1207,13 @@ pub struct PingResult {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelPreviewResult {
+    pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
@@ -1183,6 +1223,9 @@ pub struct CreateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
     pub sequence: u64,
+    /// The managed worktree this creation made, when the request asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
 }
 /// The fork's id and its `main` head once it is published.
 #[derive(Debug, Serialize)]
@@ -1260,7 +1303,7 @@ pub struct SessionInfo {
 }
 /// The `session.attach` reply: the attached Session's directory record, as
 /// `session.summaries` gives it, plus the preferences its adopted
-/// configuration sends. Only this reply and `session.create` name them.
+/// configuration sends. Summaries do not include these preferences.
 #[derive(Debug, Serialize)]
 pub struct AttachResult {
     #[serde(flatten)]
@@ -1318,6 +1361,7 @@ pub enum Reply {
     Contributed(Value),
     Ping(PingResult),
     Create(CreateResult),
+    ModelPreview(ModelPreviewResult),
     Fork(ForkResult),
     /// The `session.delete` reply: whether this call removed the Session.
     Deleted(DeleteResult),

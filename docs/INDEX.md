@@ -7,7 +7,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Model startup](design/model-startup.md): temporary model, effort and multi-protocol connections with branch/member/compaction inheritance
 - [Model failures](design/model-failures.md)（[中文](zh/design/model-failures.md)）: the failure kind, the fact on the terminal event, who words the line, and retry (#1197)
 - [模型请求重试与任务续接方案](design/research/model-retry-recovery.md)（中文，#1210）：请求重试的可见性、独立恢复能力的边界及所有者合同需求
-- [服务面：跨语言形状的策略、盘点与第一批改造](design/service-faces.md)（中文，Draft）：#1289 的标记与检查、#1300 的当前 118 个名字 face 盘点、#1292 的第一批数据面
+- [服务面：跨语言形状的策略、盘点与第一批改造](design/service-faces.md)（中文，Draft），装配现状见[生成的服务目录](architecture/rust-agent/generated/catalog.md)。
 - [插件远程化：可行性与落地路径](design/research/remote-plugins.md)（中文，研究稿）：rutis 链路能跨什么、HostPlatform/exec/基础工具/存储各自能不能远程化、推荐拓扑与分阶段
 - [Resource and store data faces](design/resource-faces.md) (Draft): `execHost`, `fsHost` and `store` as the only public contracts for processes, files and Session state (#1295, #1296, #1297, #1298)
 - [Watch：任务观察与 side branch](design/research/side-eval.md)（中文，设计提案）：Watch 与 Pursuit 的用户边界、分支切点、订阅与 prompt 的组合、管理与关注、采样开销
@@ -80,6 +80,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Subagent model policy](design/subagent-model-policy.md) (#263)
 - [Subagent tool approval and permission inheritance](design/subagent-tool-approval.md): requesting-branch policy, leader decision tools, user review, cancellation and recovery (#19, #29, #257)
 - [Worktree access](design/worktree-access.md)（中文）：按需识别同仓库工作树、Session 根目录缓存、当前权限继承及持久使用关联 (#911)
+- [托管 Worktree](design/worktree-management.md)（中文）：产品 home 下的托管根、任务短 ID、创建事务及列出/删除/清理边界 (#1451)
 - [CLI background command output](design/background-task-output.md) (#324)
 - [Commands and members in the background-task list](design/background-task-list.md) (#324)
 - [Workflows in the CLI task view](design/workflow-task-view.md) (#264)

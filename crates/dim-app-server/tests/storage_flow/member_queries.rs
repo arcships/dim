@@ -661,8 +661,7 @@ fn unposted_filter() -> QueryFilter {
 }
 
 #[tokio::test]
-async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_identity_after_upgrade()
- {
+async fn notifications_preserve_original_close_boundaries_tails_and_task_identity_after_upgrade() {
     for (source, broken, resume) in [
         (41, false, false),
         (41, true, false),
@@ -672,6 +671,13 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         (43, true, false),
         (42, false, true),
         (43, false, true),
+        (44, false, true),
+        (44, false, false),
+        (44, true, false),
+        (45, false, false),
+        (45, true, false),
+        (46, false, false),
+        (46, true, false),
     ] {
         let database = Database::new();
         let db = SqliteStorage::open(database.0.clone()).unwrap();
@@ -776,6 +782,19 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         drop(db);
         {
             let connection = Connection::open(&database.0).unwrap();
+            if source < 45 {
+                connection
+                    .execute_batch("ALTER TABLE worktree_directories DROP COLUMN last_used_at_ms")
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO worktree_directories(repository,root) VALUES ('repo','root')",
+                        [],
+                    )
+                    .unwrap();
+            } else {
+                connection.execute("INSERT INTO worktree_directories(repository,root,last_used_at_ms) VALUES ('repo','root',123)", []).unwrap();
+            }
             if source == 41 || source == 42 && resume {
                 without_automation_origin(&connection);
             }
@@ -820,6 +839,7 @@ async fn v42_notifications_preserve_original_close_boundaries_tails_and_task_ide
         let store = SqliteTimelineStore::new(db.clone());
         let connection = Connection::open(&database.0).unwrap();
         assert_eq!(rows(&connection, "timeline_events"), facts);
+        assert_eq!(connection.query_row("SELECT last_used_at_ms FROM worktree_directories WHERE repository='repo' AND root='root'", [], |row| row.get::<_, Option<i64>>(0)).unwrap(), if source >= 45 {Some(123)} else {None});
         if resume {
             assert_eq!(
                 [

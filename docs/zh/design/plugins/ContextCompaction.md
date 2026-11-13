@@ -254,7 +254,7 @@ Session 值不持有状态。解析出的连接只存在于一次策略调用内
 
 公共字段由 ContextPolicy 填写，策略返回自己的对象。旧的扁平记录直接删除，不与新记录并存。冻结的 v1 样本不改，在 v1 模块中保留它们自己的扁平记录类型（§12）。
 
-`modelCallCount` 是策略发出的模型请求数，每个在发出时计数：它的分块、它自己的重试，以及共享失败策略的各次尝试（§5.2）。`durationMs` 在策略调用周围测量，所以它是一次摘要的耗时；策略层自身的本地工作不计。`modelUsage` 是策略各次回复报告的 `Usage` 之和——`promptTokens`、`completionTokens`、`totalTokens` 以及缓存读写的 token；`cost` 和 `currency` 不出现，没有发过请求的策略不报告它。`insufficientSpace` 恰好出现在总数——投影请求的大小，记录里报告为 `estimatedOutputTokens`——超过 `0.5 × B` 的已完成压缩上；超出的部分是总数减去 `0.5 × B`，`parts` 按从大到小列出覆盖这个差额的不可压缩部分，每项带它的 `count_tokens` 大小。部分名称为 `systemPrompt`、`tools`、`appendedMessages`、`keyedBaseline`、`pinnedInputs`、`digest` 和 `summary`；保留的尾部从不出现在其中（§5.3）。两个字段都是描述性的：没有任何后续决定读它们——触发点把已提交历史与最近一条开始事实的 `through` 比较，预算恢复把估算与 `B` 比较——所以它们是给读者看的内容（§9 规则 9）。
+`modelCallCount` 是策略发出的模型请求数，每个在发出时计数：它的分块、它自己的重试，以及共享失败策略的各次尝试（§5.2）。`durationMs` 在策略调用周围测量，所以它是一次摘要的耗时；策略层自身的本地工作不计。`modelUsage` 是策略各次回复报告的 `Usage` 之和——`promptTokens`、`completionTokens`、`totalTokens`、缓存读写的 token 以及 reasoning token；没有回复报告过的计数在和中保持缺失，`cost` 和 `currency` 同样不出现，没有发过请求的策略不报告它。`insufficientSpace` 恰好出现在总数——投影请求的大小，记录里报告为 `estimatedOutputTokens`——超过 `0.5 × B` 的已完成压缩上；超出的部分是总数减去 `0.5 × B`，`parts` 按从大到小列出覆盖这个差额的不可压缩部分，每项带它的 `count_tokens` 大小。部分名称为 `systemPrompt`、`tools`、`appendedMessages`、`keyedBaseline`、`pinnedInputs`、`digest` 和 `summary`；保留的尾部从不出现在其中（§5.3）。两个字段都是描述性的：没有任何后续决定读它们——触发点把已提交历史与最近一条开始事实的 `through` 比较，预算恢复把估算与 `B` 比较——所以它们是给读者看的内容（§9 规则 9）。
 
 每个走到策略的压缩都带上这段公共记录。验收失败的那个带上策略的记录；只要候选请求已完成投影，就在 `estimatedOutputTokens` 中记录其大小。候选不被采用，`entriesReplaced` 保持零。候选没有减少输入，与候选虽变小但仍达到或超出模型窗口，分别报告。策略内部失败的那个同样带着记录，只是没有压缩后大小：失败也是携带诊断的结果（§4.2），所以 `modelCallCount`、`modelUsage` 和 `durationMs` 与完成时一样报告。只有从未构造出请求的手动压缩没有诊断。
 
@@ -341,7 +341,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | 方法 | 值 |
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`，即目录值，含其现有覆盖 |
-| `output_tokens` | 采用后的输出额度：`request.config.maxTokens`，由 Provider 按声明的一对上限推导为 `max(1, min(声明的 maxOutputTokens, 131,072, contextWindow / 2))`。存储值缺失或高于该函数时，在请求边界读取时修复；声明值 `maxOutputTokens` 本身不被改写 |
+| `output_tokens` | 采用后的输出额度：`request.config.maxTokens`，由 Provider 按声明的一对上限推导为 `max(1, min(声明的 maxOutputTokens, 131,072, contextWindow / 2))`。存储值缺失或高于该函数时，在请求边界读取时修复；声明值 `maxOutputTokens` 本身不被改写。该额度约束的是整个回复而不只是答案：会思考的请求从其中为答案保留 `answer_tokens`，因此压缩按请求总共可花费的上限来计划 |
 | `threshold_tokens` | `B − reserve`，其中 `B = context_window − output_tokens`（输入预算），`reserve = min(max(0.10 × B, 16,000), 0.20 × B)`。余量用来吸收下一个请求的估算误差；它是暂定的经验值，不能覆盖每一个没有提供方基线的请求（[研究 §3.3、§6.4](../research/compaction-trigger.md#33-建议)） |
 | `count_tokens` | 序列化后的系统提示、消息和工具声明的 UTF-8 字节数除以 4；每个图片部件按固定 1,600 token 计。暂定（#128）。用于：在提供方的 `prompt_tokens` 之上算增量、第一个请求、`validate`、以及检查压缩是否减少了输入 |
 

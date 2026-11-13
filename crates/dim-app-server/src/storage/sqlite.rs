@@ -17,7 +17,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 44;
+pub const FORMAT: u32 = 47;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -56,7 +56,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 44))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 47))",
     ),
     (
         "settings_documents",
@@ -192,7 +192,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "worktree_directories",
-        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))",
+        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, last_used_at_ms INTEGER, PRIMARY KEY (repository, root))",
     ),
     (
         "session_worktrees",
@@ -265,10 +265,17 @@ UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;
 const V31_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
+/// The text of `worktree_directories` before v45 adds the last-used time;
+/// `schema_of` uses it to recognize a store older than v45.
+const WORKTREE_DIRECTORIES_BEFORE_V45: &str = "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))";
+/// v45 adds the directory's last-used time, written by the association's
+/// write and removal: an upgrade cannot fill the rows it never recorded, so
+/// the column is nullable and a `NULL` time is unknown.
+const V45_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 30] = [
+const UPGRADES: [(u32, &[&str]); 33] = [
     (
         13,
         &[
@@ -378,7 +385,23 @@ const UPGRADES: [(u32, &[&str]); 30] = [
     (41, &[]),
     // #1413: checked withdrawal candidates, unreadable by v42.
     (42, &[]),
-    (43, &["timeline_events_branch_interrupts"]),
+    // v44: one optional field on one event kind (`prompt/changed` names its
+    // delivery inputs); the marker only. A daemon from before this format does
+    // not decode stored events at startup, so it would accept a store holding
+    // the field and fail on the first `prompt/changed` it decodes; the marker
+    // makes it refuse the store at open instead.
+    (43, &[]),
+    // #1451: the managed worktree's last-used time; the column only, and a
+    // store this daemon rewrites keeps `NULL` for rows it never recorded.
+    (44, &[]),
+    // #1477: one optional field on one event (`model/usage` counts its
+    // reasoning tokens); the marker only. `Usage` denies unknown fields and
+    // startup does not decode stored events, so a daemon from before this
+    // format would accept a store holding the field and fail on the first
+    // `model/usage` it decodes; the marker makes it refuse the store at open
+    // instead.
+    (45, &[]),
+    (46, &["timeline_events_branch_interrupts"]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -413,6 +436,9 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
                 "agent_sessions" if version < 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
+                "worktree_directories" if version < 45 => {
+                    WORKTREE_DIRECTORIES_BEFORE_V45.to_owned()
+                }
                 "session_owners" if version < 41 => SESSION_OWNERS_BEFORE_V38.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
                 "timeline_events" if version < 31 => TIMELINE_EVENTS_BEFORE_V31.to_owned(),
@@ -453,6 +479,12 @@ fn main_schema(version: u32) -> Vec<(&'static str, String)> {
 fn resume_schema(version: u32) -> Vec<(&'static str, String)> {
     schema_of(44)
         .into_iter()
+        .chain(
+            SCHEMA
+                .iter()
+                .filter(|(name, _)| *name == "timeline_events_branch_interrupts")
+                .map(|(name, sql)| (*name, (*sql).to_owned())),
+        )
         .map(|(name, sql)| {
             let sql = match name {
                 "agent_store_format" => format_table(version),
@@ -526,12 +558,23 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
 }
 /// The format whose exact schema `actual` is: the current format, or one an
 /// upgrade step starts from.
-fn known_format(actual: &[(String, String)]) -> Option<u32> {
+fn known_format(actual: &[(String, String)], marker: Option<i64>) -> Option<u32> {
+    let matches = |version: u32| same_schema(actual, schema_of(version));
+    // A marker-only step shares the schema of the step before it (v42 and
+    // v43 differ only in the event encoding). The marker decides the version
+    // the schema cannot.
+    if let Some(marker) = marker
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value <= FORMAT)
+        && matches(marker)
+    {
+        return Some(marker);
+    }
     std::iter::once(FORMAT)
         .chain(UPGRADES.iter().map(|(from, _)| *from))
-        .find(|version| same_schema(actual, schema_of(*version)))
+        .find(|version| matches(*version))
         .or_else(|| {
-            [42, 43]
+            [42, 43, 44]
                 .into_iter()
                 .find(|version| same_schema(actual, resume_schema(*version)))
         })
@@ -1046,8 +1089,11 @@ impl SqliteStorage {
             connection
                 .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                 .map_err(storage)?;
-        } else if let Some(version) = known_format(&actual) {
-            let markers = markers(&connection)?;
+        } else if let Some(version) = {
+            let markers = markers(&connection).unwrap_or_default();
+            known_format(&actual, single_marker(&markers))
+        } {
+            let markers = markers(&connection).unwrap_or_default();
             if markers != [i64::from(version)] {
                 write_startup_failure(
                     &path,
@@ -1083,7 +1129,7 @@ impl SqliteStorage {
                     progress.report(true);
                 }
                 let resume =
-                    matches!(version, 42 | 43) && same_schema(&actual, resume_schema(version));
+                    matches!(version, 42..=44) && same_schema(&actual, resume_schema(version));
                 let upgrade_from = if version >= 37
                     && !actual
                         .iter()
@@ -1103,6 +1149,13 @@ impl SqliteStorage {
                     }
                     if *from == 29 {
                         connection.execute_batch(V30_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 44
+                        && actual.iter().any(|(name, sql)| {
+                            name == "worktree_directories" && sql == WORKTREE_DIRECTORIES_BEFORE_V45
+                        })
+                    {
+                        connection.execute_batch(V45_COLUMNS).map_err(storage)?;
                     }
                     if *from == 30 {
                         connection.execute_batch(V31_COLUMNS).map_err(storage)?;
@@ -1183,7 +1236,7 @@ impl SqliteStorage {
                             super::members::backfill_v40(&connection)?;
                         }
                     }
-                    if *from == 43 && !resume {
+                    if *from == 46 && !resume {
                         for (_, sql) in DERIVED_INDEXES {
                             connection.execute_batch(sql).map_err(storage)?;
                         }
@@ -1218,7 +1271,7 @@ impl SqliteStorage {
                 connection
                     .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
-                if known_format(&schema(&connection)?) != Some(FORMAT) {
+                if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT) {
                     return Err(storage("upgraded native store has an unexpected schema"));
                 }
                 upgraded_from = Some(version);
@@ -1336,8 +1389,10 @@ impl SqliteStorage {
                 path.display()
             ))
         };
-        let format = known_format(&schema(&connection)?).ok_or_else(unsupported)?;
-        if markers(&connection)? != [i64::from(format)] {
+        let stored_markers = markers(&connection).unwrap_or_default();
+        let format = known_format(&schema(&connection)?, single_marker(&stored_markers))
+            .ok_or_else(unsupported)?;
+        if stored_markers != [i64::from(format)] {
             return Err(unsupported());
         }
         Ok((
@@ -1689,7 +1744,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
             path.display()
         ))
     };
-    if known_format(&schema(&connection)?) != Some(FORMAT)
+    if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT)
         || markers(&connection)? != [i64::from(FORMAT)]
     {
         return Err(unsupported());

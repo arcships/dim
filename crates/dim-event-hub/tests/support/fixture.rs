@@ -539,6 +539,8 @@ impl Fixture {
             .unwrap();
         root.provide_as::<PartRegistry>(Arc::new(PartRegistry::default()))
             .unwrap();
+        root.provide_as::<dim_app_server::ProcessActivity>(Arc::default())
+            .unwrap();
         let sessions = FakeSessions::default();
         root.provide_at::<dyn HostDispatch>(host_key("sessions"), Arc::new(sessions.clone()))
             .unwrap();
@@ -774,6 +776,8 @@ impl LoaderFixture {
         let path = path.clone();
         let host = MinimalHost::start_with(&builder, move |root, _| {
             root.plugin(FileStoragePlugin::new(vec![path.clone()]));
+            root.provide_as::<dim_app_server::ProcessActivity>(Arc::default())
+                .map_err(dim_agent_runtime::AgentError::from)?;
             root.provide_at::<dyn HostDispatch>(host_key("sessions"), Arc::new(fake.clone()))
                 .map_err(dim_agent_runtime::AgentError::from)?;
             if let Some(session_files) = session_files {

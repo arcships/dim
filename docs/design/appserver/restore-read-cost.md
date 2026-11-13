@@ -168,3 +168,19 @@ These anonymous/file categories are full-group samples at editable history, not 
 The correction reduces selected content and avoids unnecessary work even though the selected display payload is only tens of KiB. It does not eliminate the existing program/file-page footprint or compaction summary's inline-body reads. Those costs remain in the measurement, and no causal claim assigns the multi-MiB peak movement solely to display bytes.
 
 Validation for this sizing correction: 3 shared-client flows, 1 ACP load flow, 5 CLI window/attach flows and 17 Web flows passed; affected client/CLI/ACP all-target Clippy, Web type checking, formatting and ADR checks passed. Server code, storage format and indexes are unchanged, so the preceding server-query evidence remains applicable.
+
+## 9. Cold CLI acceptance after request reuse
+
+Measured release source `020ec8e68`, SHA-256 `edd7cbdd94008e7ad46fd46244bc85822a7e089bad9a27393184bd302adbf8a3`. This measurement precedes the subsequent main/v47 integration. Five independent cold launches per fixture use the same nonresident executable/database/configuration procedure, actual CLI PTY and 256 MiB/no-swap group limit from §7. The timer ends only after expected history and typed text are rendered, with terminal echo disabled. Format preparation is outside the timer; all fifteen samples have zero limit/OOM events.
+
+| Fixture | Physical event rows | Editable ms, min–max | Median ms | CLI + daemon CPU ms | Group anonymous MiB | Group peak observed at editable input, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ordinary, saved usage, 1,000 turns | 25,049 | 158.8–168.6 | 160.1 | 180–200 | 35.9–36.4 | 157.4–159.1 |
+| Completed compaction, 2.43 MB replacement, missing usage | 25,050 | 158.2–168.6 | 162.7 | 170–200 | 37.3–37.8 | 168.5–178.1 |
+| 1,280 old turns, one open approval and one lost background task | 17,970 | 135.5–143.4 | 139.7 | 170–190 | 36.1–37.0 | 151.8–154.3 |
+
+CPU and memory are sampled sequentially immediately after editing becomes available; CPU time is not wall time. The full group includes the terminal probe and file cache. File memory at that point is 116.8–118.0, 123.0–132.2 and 111.3–112.5 MiB respectively; these samples are not a decomposition of the earlier peak. Combined CLI/daemon physical reads are 58.01–58.27, 58.34–60.03 and 55.81–56.23 MiB. Executable/library I/O remains included. No new memory-saving claim follows from these measurements.
+
+Ordinary and compacted samples make no model request. In the unfinished case, restoration settles the lost process and old approval; the existing notification starts one new turn. Its preparation overlaps the final portion of UI loading and continues after editing is available. The local deterministic provider receives the request at approximately 394–412 ms after launch and the new turn ends at 411–426 ms. Neither is the resume endpoint. The unfinished-case CPU/memory samples include some overlapping execution; they must not be relabeled as pure restore costs or subtracted to invent one. Five further typed tokens per sample render with a maximum observed latency of 8.7 ms.
+
+These fifteen samples satisfy the three-fixture 200 ms acceptance on this machine and revision. They do not establish P95, arbitrary-session bounds, first-upgrade cost or the behavior of the later main/v47 merge. The raw manifests, residency checks, counters and PTY captures were recorded under `/mnt/data/dim-resume-final-20261113`; no benchmark instrumentation is part of the product.

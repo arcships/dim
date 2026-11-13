@@ -143,10 +143,7 @@ pub async fn run(
                 .as_ref()
                 .filter(|reasoning| reasoning.supported && supports_reasoning)
                 .ok_or("This model does not advertise reasoning preferences")?;
-            let mut choices = reasoning.effort_options.clone().unwrap_or_default();
-            if reasoning.off.is_some() && !choices.iter().any(|choice| choice == "none") {
-                choices.push("none".into());
-            }
+            let choices = reasoning.offered_efforts();
             if let Some(value) = value {
                 if !choices.iter().any(|choice| choice == value) {
                     return Err("Reasoning effort is not advertised by this model".into());

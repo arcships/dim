@@ -232,6 +232,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "切断。下書きは保持。終了してセッションを再開"
         }
+        "Cannot open this Session; draft kept." => "このセッションは開けません。下書きは保持。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "切断。下書きは保持。終了して実行：{command}"
         }
@@ -296,7 +297,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "エラー：{message}",
         "working…  {elapsed}" => "処理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "何でも質問…",
+        "Ask anything... · Ctrl+J newline" => "何でも質問… · Ctrl+J 改行",
         "Earlier history · {id} · {count} messages" => "過去の履歴 · {id} · {count} 件",
         "No active session" => "アクティブセッションなし",
         "answer required" => "要回答",

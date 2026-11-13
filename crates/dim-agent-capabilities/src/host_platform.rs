@@ -399,8 +399,7 @@ impl HostPlatform {
         }
         resolved.status.clone()
     }
-    /// The command for `spec`: its own tree, a cleared environment and piped
-    /// stdout and stderr. `stdin` is the caller's choice.
+    /// The command for `spec` with a cleared environment; `stdin` is the caller's choice.
     fn command(spec: &ProcessSpec, stdin: Stdio) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&spec.executable);
         command
@@ -408,20 +407,18 @@ impl HostPlatform {
             .current_dir(&spec.cwd)
             .env_clear()
             .envs(spec.env.iter().map(|(key, value)| (key, value)))
-            .stdin(stdin)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(stdin);
         command
     }
     /// Starts `spec` as the root of its own process tree.
     pub fn spawn(&self, spec: ProcessSpec) -> io::Result<ProcessTree> {
-        native::spawn(Self::command(&spec, Stdio::null()))
+        ProcessTree::spawn(Self::command(&spec, Stdio::null()))
     }
     /// [`Self::spawn`] with `stdin` written to the child's standard input,
     /// which then closes. A child that exits before reading it does not fail
     /// the start.
     pub fn spawn_with_stdin(&self, spec: ProcessSpec, stdin: Vec<u8>) -> io::Result<ProcessTree> {
-        let mut tree = native::spawn(Self::command(&spec, Stdio::piped()))?;
+        let mut tree = ProcessTree::spawn(Self::command(&spec, Stdio::piped()))?;
         if let Some(mut pipe) = tree.child.stdin.take() {
             tokio::spawn(async move {
                 let _ = pipe.write_all(&stdin).await;
@@ -915,6 +912,13 @@ pub struct ProcessTree {
     temporary: Option<TemporaryDirectory>,
 }
 impl ProcessTree {
+    /// Starts a command in its own process tree with piped stdout and stderr.
+    /// The caller controls stdin, arguments, environment and working directory.
+    pub fn spawn(mut command: tokio::process::Command) -> io::Result<Self> {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        native::spawn(command)
+    }
+
     /// Keeps the tree's isolated TMPDIR until this handle is dropped.
     pub(crate) fn hold(&mut self, temporary: Option<TemporaryDirectory>) {
         self.temporary = temporary;
