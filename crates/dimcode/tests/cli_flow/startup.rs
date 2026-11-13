@@ -1247,6 +1247,7 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
         let mut command = command(&home);
         command.args(["--resume", "session"]);
         let mut terminal = Terminal::launch_tui(command);
+        terminal.resize(160, 32);
         terminal.until(&format!("{provider} / model"));
         terminal.write(b"/new\r");
         // The palette row ("start a new session") carries the words before

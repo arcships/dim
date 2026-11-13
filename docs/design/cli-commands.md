@@ -1661,7 +1661,8 @@ draft is kept and the interface reports that the first message was not sent
 instead of restoring it. The interface does not exit for that case. Without
 `-p` the existing startup rule stands: a resumed Session that cannot start
 shows the error and exits nonzero, and Home remains available after a failed
-creation.
+creation. A startup failure dismisses any open panel so the cause is visible before
+exit or beside the restored draft.
 
 ### Daemon startup failure
 
@@ -2772,6 +2773,8 @@ Workspace write is purple and Full access is yellow; the shortcut hint is muted.
 use darker shades for contrast, and limited-color terminals use their cyan, magenta and yellow
 slots. The permission label takes priority over the hint and other status content on narrow
 terminals. Fullscreen retains run, goal, context and notice information in the composer border.
+In scrollback, when the permission prefix and model fit together, the right-aligned model
+reserves its space before optional goal, context, notice and background text is clipped.
 
 With the composer owning the keys, Shift+Tab cycles Read only → Workspace write → Full access
 → Read only without submitting or changing the draft, including during a running turn. It

@@ -2800,6 +2800,7 @@ impl App {
                 self.restore_unsent();
             }
             Update::StartupFailed { message, resumable } => {
+                self.prompt = None;
                 self.failure = Some(message);
                 self.failure_resumable = resumable;
                 // A first message the invocation supplied has no Session
@@ -7257,6 +7258,7 @@ impl App {
         if self.fullscreen {
             return clip(&left, total).0;
         }
+        let prefix_width = width_of(&left);
         let slot = self.slot();
         if let Some(goal) = self.goal_label() {
             left.push_str(&fg(&format!("  {goal}"), &p.muted));
@@ -7283,10 +7285,11 @@ impl App {
         let label = self
             .label
             .as_ref()
-            .and_then(|label| label.fitted(|text| width_of(&left) + 2 + width_of(text) <= total));
+            .and_then(|label| label.fitted(|text| prefix_width + 2 + width_of(text) <= total));
         let line = match label {
             Some(ref label) => {
-                let gap = total - width_of(&left) - width_of(label);
+                let (left, width) = clip(&left, total - width_of(label) - 2);
+                let gap = total - width - width_of(label);
                 format!("{left}{}", " ".repeat(gap))
             }
             None => clip(&left, total).0,

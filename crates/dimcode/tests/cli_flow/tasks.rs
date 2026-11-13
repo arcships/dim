@@ -635,6 +635,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     let mut launch = home.command();
     launch.args(["--resume", "session"]);
     let mut terminal = Terminal::launch_tui(launch);
+    terminal.resize(160, 32);
     terminal.until("test / model");
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
     terminal.write(b"/tasks\r");
@@ -1872,6 +1873,7 @@ fn tui_workflow_inventory_errors_block_stop_all_until_reopen_and_stops_follow_ot
         wire.quiet(Duration::from_millis(1500));
     });
     let mut terminal = Terminal::resume_tui(home.command());
+    terminal.resize(160, 32);
     terminal.until("2 in background");
     terminal.write(b"/tasks\r");
     terminal.until("Workflow: last observed; refresh failed");
