@@ -690,9 +690,15 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
     })
     .await
     .expect("round two is delivered");
+    // The input write precedes the settle, so a round read straight after the
+    // history shows it can still be the round before the settle.
+    wait_for("the round to settle", || {
+        stored_loops(home.path())[0]["round"] == json!(3)
+    })
+    .await;
     assert_eq!(
-        stored_loops(home.path())[0]["round"],
-        json!(3),
+        loop_rounds(&history(&mut client, &session).await).len(),
+        2,
         "round two is the second delivery"
     );
 }
