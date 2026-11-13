@@ -887,6 +887,157 @@ async fn find_scans_only_its_starting_points() {
     harness.shutdown().await;
 }
 
+/// Runs `commands` through `exec` in one turn and reports, for each, whether
+/// the high-cost scan guard refused it. A command the guard accepts runs, so
+/// a missing binary or a non-zero exit still counts as accepted.
+async fn refusals(commands: &[&str]) -> Vec<bool> {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    for directory in ["src", "src/build", "src/node_modules", "build", "target"] {
+        std::fs::create_dir_all(harness.cwd.join(directory)).unwrap();
+    }
+    std::fs::write(harness.cwd.join("src/a.rs"), "fn main() {}\n").unwrap();
+    let calls: Vec<(&str, Value)> = commands
+        .iter()
+        .map(|command| ("exec", json!({ "command": command })))
+        .collect();
+    harness.run(&session, &calls).await;
+    let events = until(&session, "scan verdicts", |events| {
+        results(events).len() >= commands.len()
+    })
+    .await;
+    let results = results(&events);
+    assert_eq!(results.len(), commands.len(), "one result per command");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+    results
+        .iter()
+        .map(|result| code(result) == Some("exec_high_cost_target_refused"))
+        .collect()
+}
+
+/// Each row is a command and whether the scan guard refuses it. A row the
+/// command scans nothing high-cost in must not be refused, whatever names the
+/// option values, the pattern or a redirect target.
+async fn assert_verdicts(rows: &[(&str, bool)]) {
+    let commands: Vec<&str> = rows.iter().map(|(command, _)| *command).collect();
+    let refused = refusals(&commands).await;
+    for ((command, expected), refused) in rows.iter().zip(refused) {
+        match (expected, refused) {
+            (false, true) => panic!("refused a command that scans nothing high-cost: {command}"),
+            (true, false) => panic!("accepted a command that scans a high-cost path: {command}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn grep_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("grep -rn build src", false),
+        ("grep -m 5 build src", false),
+        ("grep -m5 build src", false),
+        ("grep --max-count=5 build src", false),
+        ("grep -rn --max-count 5 build src", false),
+        ("grep -rn -e build src", false),
+        ("grep -rn --regexp=build src", false),
+        ("grep -rn --regexp build src", false),
+        ("grep -rn -A 3 build src", false),
+        ("grep -rn --exclude-dir=node_modules build src", false),
+        ("grep -rn foo src > build/out.txt", false),
+        ("grep -rn foo src >> build/out.txt", false),
+        ("grep -rn foo src >build/out.txt", false),
+        ("grep -rn foo src 2> target/err.log", false),
+        ("grep -rn foo src 2>target/err.log", false),
+        ("grep -rn foo < build/input.txt", false),
+        ("grep -rn foo src 2>&1", false),
+        ("grep -rn foo -m 5 build src", true),
+        ("grep -rn foo build", true),
+        ("grep -rn -e foo build src", true),
+        ("grep -rn foo build > out.txt", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rg_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("rg -t py dist src", false),
+        ("rg --type py dist src", false),
+        ("rg -g '!build' foo src", false),
+        ("rg --glob build foo src", false),
+        ("rg -T build foo src", false),
+        ("rg -j 2 foo src", false),
+        ("rg -m 5 foo src", false),
+        ("rg -e build src", false),
+        ("rg --files src", false),
+        ("rg --files -g '!build' src", false),
+        ("rg -t py dist build src", true),
+        ("rg foo build", true),
+        ("rg --files src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fd_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("fd -E target foo src", false),
+        ("fd --exclude build foo src", false),
+        ("fd -e rs -t f foo src", false),
+        ("fd --max-depth 2 foo src", false),
+        ("fd -d 2 foo src", false),
+        ("fd foo src", false),
+        ("fd build src", false),
+        ("fd foo build", true),
+        ("fd foo src/build", true),
+        ("fd -E target foo build src", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tree_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("tree -I node_modules src", false),
+        ("tree --ignore-case -L 2 src", false),
+        ("tree -L 2 -P '*.rs' src", false),
+        ("tree src", false),
+        ("tree src/node_modules", true),
+        ("tree -I node_modules src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn du_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("du -d 1 src", false),
+        ("du --max-depth 1 src", false),
+        ("du -B 512 src", false),
+        ("du --exclude build src", false),
+        ("du -I node_modules src", false),
+        ("du src", false),
+        ("du src/node_modules", true),
+        ("du -d 1 src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ag_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("ag -G '\\.rs$' foo src", false),
+        ("ag --ignore build foo src", false),
+        ("ag -m 5 foo src", false),
+        ("ag -m 5 build src", false),
+        ("ag foo src", false),
+        ("ag foo src/build", true),
+        ("ag -G build foo node_modules src", true),
+    ])
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn commands_see_the_service_environment_with_forced_variables() {
     let harness = Harness::new(
