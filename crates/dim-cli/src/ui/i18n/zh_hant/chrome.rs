@@ -5,13 +5,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter steer · x delete held · Esc close" => "Enter steer · x 刪除暫存訊息 · Esc 關閉",
         "No queued messages." => "佇列中沒有訊息。",
         "Held · awaiting application" => "暫存中 · 等待套用",
-        "Incorporating · awaiting model consumption" => "納入中 · 等待模型讀取",
-        "Unread · waiting for your next message" => "未讀取 · 等待你的下一則訊息",
         "Unread" => "未讀取",
-        "/queue view · awaiting model consumption" => "/queue 檢視 · 等待模型讀取",
-        "/queue view · waiting for your next message" => "/queue 檢視 · 等待你的下一則訊息",
         "Held" => "暫存中",
-        "Incorporating" => "納入中",
         "Enter export · Esc cancel" => "Enter 匯出 · Esc 取消",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "附有附件的訊息會留在佇列中；使用 /queue 對其執行 steer 或刪除"
