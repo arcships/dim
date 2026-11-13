@@ -12,8 +12,10 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// Where an update stages, inside the installation prefix so that the staged
-/// and live packages share a filesystem and can be exchanged.
+/// Where an installation keeps staging, inside the installation prefix so that
+/// the staged and live packages share a filesystem and can be exchanged. Each
+/// package identity has its own directory inside it, so an update never reads
+/// or removes what the other one left.
 const STAGING: &str = ".dimcode-staging";
 
 /// What an interruption during the post-switch check reports.
@@ -33,7 +35,8 @@ enum Outcome {
 /// Installs the new version beside the live package and switches it in, or
 /// leaves the live package as it was.
 pub(super) async fn update(install: &Install, cancel: &CancellationToken) -> Result<(), String> {
-    let root = install.directory.join(STAGING);
+    let kept = install.directory.join(STAGING);
+    let root = kept.join(&install.package);
     clear(install, &root)?;
     let staging = root.join(format!("staging-{}", std::process::id()));
     std::fs::create_dir_all(&staging)
@@ -42,27 +45,39 @@ pub(super) async fn update(install: &Install, cancel: &CancellationToken) -> Res
         Outcome::Switched => {
             // A staging directory left behind costs space, not correctness:
             // the next update clears it.
-            let _ = std::fs::remove_dir_all(&root);
+            finished(&root, &kept);
             Ok(())
         }
         Outcome::Failed(error) => {
-            let _ = std::fs::remove_dir_all(&root);
+            finished(&root, &kept);
             Err(error)
         }
         Outcome::Stranded(error) => Err(error),
     }
 }
 
-/// Removes what an earlier update staged. The update holds the installation's
-/// exclusive lease, so nothing else can be using it. When staging holds the only
-/// copy of a tree, the error names that tree and the one move that restores it.
+/// Drops this package's staging root, and the parent once no package leaves
+/// anything in it. The parent is shared with the other package identity, so it
+/// goes only when it is empty.
+fn finished(root: &Path, kept: &Path) {
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir(kept);
+}
+
+/// Removes what an earlier update of this package staged.
+///
+/// Call it only while holding the installation's exclusive update lease: it
+/// deletes everything under the package's staging root, including the tree a
+/// failed exchange left there, and only that lease ensures no other update of
+/// this prefix is using the root. When that tree is the only copy of the
+/// package, the error names it and the one move that restores it.
 fn clear(install: &Install, root: &Path) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
     }
     let live = package_at(&install.directory, &install.package);
     if !live.is_dir()
-        && let Some(previous) = retired_package(root, &install.package)
+        && let Some(previous) = retired(root)
     {
         return Err(format!(
             "An earlier update left {} at {} and the installation has no package, so {} was kept. Restore it with:\n  mv {} {}",
@@ -79,19 +94,11 @@ fn clear(install: &Install, root: &Path) -> Result<(), String> {
 
 /// The package folder the two-rename fallback retired, in a staging directory an
 /// earlier update did not finish clearing.
-fn retired_package(root: &Path, package: &str) -> Option<PathBuf> {
+fn retired(root: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     entries.flatten().find_map(|entry| {
         let retired = entry.path().join("retired");
-        retired
-            .join("package.json")
-            .is_file()
-            .then(|| retired.join("package.json"))
-            .and_then(|manifest| {
-                let value: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
-                (value.get("name")?.as_str()? == package).then(|| retired.clone())
-            })
+        retired.is_dir().then_some(retired)
     })
 }
 

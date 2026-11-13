@@ -195,7 +195,7 @@ impl Installed {
     }
 
     fn staging(&self) -> PathBuf {
-        self.prefix.join(".dimcode-staging")
+        self.prefix.join(".dimcode-staging").join("dimcode-alpha")
     }
 
     /// The arguments of the last manager run, one per line. A flag's value
@@ -518,6 +518,92 @@ fn a_command_another_package_owns_is_never_taken() {
     assert!(
         !installed.staging().exists(),
         "the refused update must leave no staging directory"
+    );
+}
+
+#[test]
+fn one_packages_staging_survives_the_others_update() {
+    // A stable update interrupted in the two-rename window leaves its only copy
+    // at its own staging root. An alpha update of the same prefix must not read
+    // or remove it.
+    let installed = Installed::new(CURRENT, &["dima"]);
+    installed.mock_npm();
+    installed.release();
+    let stable = installed.staging().parent().unwrap().join("dimcode");
+    let retired = stable.join("staging-4242/retired");
+    fs::create_dir_all(retired.join("bin")).unwrap();
+    fs::write(
+        retired.join("package.json"),
+        "{\"name\":\"dimcode\",\"version\":\"0.1.0-alpha.1\"}",
+    )
+    .unwrap();
+    let payload = retired.join("bin/dim");
+    fs::write(&payload, "stable payload\n").unwrap();
+    let before = fs::read(&payload).unwrap();
+    let version = next_version();
+    let output = installed
+        .update(
+            &version,
+            &[("dima", "bin/dimcode.mjs")],
+            &[("UPDATE_COMMAND", REPORTS_VERSION)],
+        )
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(installed.installed(), version, "{stderr}");
+    assert_eq!(
+        fs::read(&payload).ok().as_deref(),
+        Some(&before[..]),
+        "the other package's only copy must be byte-identical afterwards: {stderr}"
+    );
+    assert!(
+        retired.is_dir(),
+        "an alpha update must not remove the stable package's staging: {stderr}"
+    );
+
+    // The stable update with the same residue still refuses, and names the one
+    // move that restores its package. It runs from a recognised installation
+    // whose `dimcode` package is the one the residue holds, so the live package
+    // is missing, as it is after the interrupted fallback.
+    let stable_updater = installed.prefix.join("lib/node_modules/dimcode-alpha/bin");
+    let updater = stable_updater.join("dim-stable");
+    fs::copy(env!("CARGO_BIN_EXE_dimcode"), &updater).unwrap();
+    fs::set_permissions(&updater, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut command = Command::new(fs::canonicalize(updater).unwrap());
+    command
+        .args([
+            "--home",
+            installed.home.0.to_str().unwrap(),
+            "update",
+            "--confirm-legacy-exited",
+        ])
+        .env("DIMCODE_NPM_PACKAGE", "dimcode")
+        .env("UPDATE_ARGS", installed.home.0.join("install-args"))
+        .env("UPDATE_VERSION", &version)
+        .env(
+            "UPDATE_PACKAGE_JSON",
+            "{\"name\":\"dimcode\",\"version\":\"9.9.9\"}",
+        )
+        .env("UPDATE_BINS", "dim=bin/dimcode.mjs")
+        .env("UPDATE_GATE", installed.home.0.join("gate"))
+        .env("UPDATE_WAITING", installed.home.0.join("waiting"))
+        .env("UPDATE_COMMAND", REPORTS_VERSION);
+    let output = command.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("An earlier update left dimcode at"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("mv {}", retired.display())),
+        "the refusal must name the one move that restores the package: {stderr}"
+    );
+    assert_eq!(
+        fs::read(&payload).ok().as_deref(),
+        Some(&before[..]),
+        "the refusal must keep the only copy: {stderr}"
     );
 }
 
