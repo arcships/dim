@@ -223,6 +223,21 @@ pub struct HistoryPage {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    /// The `inputId` an earlier write or lookup named.
+    pub input_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply {
+    pub pending: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WithdrawRequest {
     pub session_id: String,
     pub branch_id: String,
@@ -634,6 +649,27 @@ impl AgentIndex {
         .await
     }
 
+    /// Answers whether `inputId` is still pending on the branch
+    /// (session-access §2): pending from its `input/message` until
+    /// `input/applied` followed by `input/consumed`, or `input/deleted`,
+    /// references it. The branch's own InputQueue holds exactly that set, so
+    /// this reads it and reads no Timeline. An id the branch does not hold is
+    /// not pending.
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError> {
+        self.until_unloaded(async {
+            if request.input_id.is_empty() {
+                return Err(SessionsError::rejected("inputId must not be empty"));
+            }
+            let lease = self.acquire(&request.session_id).await?;
+            let pending = lease
+                .session
+                .service::<InputQueue>(&request.branch_id)?
+                .pending(&request.input_id);
+            Ok(PendingReply { pending })
+        })
+        .await
+    }
+
     /// Withdraws an input the caller wrote, by its `inputId`, through the
     /// branch's InputQueue, and returns InputQueue's decision. A deletion
     /// replies once `input/deleted` is published.
@@ -715,7 +751,7 @@ impl HostDispatch for SessionsService {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
-            "history": "async", "withdraw": "async", "stop": "async", "idle": "async",
+            "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
             "delete": "async",
         }))
     }
@@ -781,6 +817,7 @@ async fn call(
         "lookup" => reply(index.lookup(request(args)?).await?),
         "exists" => reply(index.exists(request(args)?).await?),
         "history" => reply(index.history(request(args)?).await?),
+        "pending" => reply(index.pending(request(args)?).await?),
         "withdraw" => reply(match index.withdraw(request(args)?).await? {
             Withdrawal::Deleted { sequence } => json!({"status": "deleted", "sequence": sequence}),
             Withdrawal::NotHeld => json!({"status": "notHeld"}),
