@@ -15,6 +15,12 @@ pub struct Command {
     /// The argument a slash command takes inline (`<prompt>`): choosing it
     /// fills the composer instead of running it.
     pub argument: Option<&'static str>,
+    /// Whether submitting the command with no argument runs it. It matters
+    /// only when `argument` is `Some`: every other command takes no argument,
+    /// so a bare submission always runs. `/loop` alone lists the line's loops
+    /// on its own, so its argument is optional; `/rename` and `/branch` need
+    /// theirs and keep the refusal.
+    pub argument_optional: bool,
     /// Dispatch requires the exact name or alias; other matches only complete.
     pub requires_exact_name: bool,
     pub needs: Needs,
@@ -94,6 +100,7 @@ const fn slash(
         slash: true,
         key: None,
         argument: None,
+        argument_optional: false,
         requires_exact_name: false,
         needs,
     }
@@ -112,6 +119,7 @@ const fn action(
         slash: false,
         key: Some(key),
         argument: None,
+        argument_optional: false,
         requires_exact_name: false,
         needs,
     }
@@ -204,6 +212,17 @@ pub const COMMANDS: &[Command] = &[
         &[],
         Needs::Session,
     ),
+    Command {
+        name: "loop",
+        description: "run a prompt on a rhythm, or list and stop the shown line's loops",
+        aliases: &[],
+        slash: true,
+        key: None,
+        argument: Some("[PROMPT | INTERVAL PROMPT | stop [ID]]"),
+        argument_optional: true,
+        requires_exact_name: false,
+        needs: Needs::Session,
+    },
     slash(
         "tasks",
         "view command output or interrupt a member",

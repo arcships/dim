@@ -463,6 +463,24 @@ async fn a_turn_reads_writes_and_runs_an_approved_command_with_real_tools() {
             "edit", "exec", "glob", "grep", "read", "skill", "wait", "write"
         ]
     );
+    let edit = first
+        .tools
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|tool| tool.name == "edit")
+        .unwrap();
+    assert_eq!(
+        edit.input_schema.required.as_deref(),
+        Some(["path".to_owned(), "edits".to_owned()].as_slice()),
+        "the model reads one shape: a path and a list of replacements"
+    );
+    let edits = &edit.input_schema.properties.as_ref().unwrap()["edits"];
+    assert_eq!(edits.extensions["minItems"], serde_json::json!(1));
+    assert_eq!(
+        edits.items.as_ref().unwrap().required.as_deref(),
+        Some(["oldText".to_owned(), "newText".to_owned()].as_slice())
+    );
     let exec: Vec<_> = requests
         .iter()
         .map(|request| {

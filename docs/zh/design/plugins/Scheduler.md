@@ -499,6 +499,88 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 - 客户端规则：调用 `schedule.watch`，在 `seq: 0` 到达之后用 `schedule.list` 与 `schedule.history` 读取，从而关闭注册与读取之间的竞态；每收到一项就重新读取；遇到 `seq` 缺口就全部重新读取；收到 `operation_interrupted` 后再次调用 `schedule.watch`。`schedule.list` 与 `schedule.history` 才是真相。
 - 不声明通知名：`hello.features` 与命名空间的其他方法一起列出 `schedule.watch`，这些项是该调用的 progress，不是通知。
 
+## 12. Loop
+
+Loop 是 Scheduler 的一种记录，其每一轮都是某条分支上的普通输入。`/loop` 是它的入口：保存的 prompt 立刻运行一轮，自定节奏时由模型安排下一轮。它不是 job。job 是 `schedule` Settings 源里用户写的持久配置，由 `/scheduled` 管理且从不过期；loop 属于 Session 且有界。一种记录承载两种节奏，因此一个 `list`、一个 `stop` 和一个过期规则服务两者。
+
+### 12.1 记录
+
+Loop 存在 `scheduler/loops.json`：内层 v1 JSON 文档放在宿主的 `{version, text}` 封套里，与 [`scheduler/wakeups.json`](#101-所有者与记录) 共用同一 `pluginFiles` 锁与替换事务。不是有效 v1 的文件使行失败，字节保持不变。
+
+| 字段 | 含义 |
+| --- | --- |
+| `loop_id` | 记录身份；工具与方法返回它 |
+| `session_id`, `branch_id` | 目标；记录从不改变它们 |
+| `prompt` | 每轮投递的文本（非空，至多 32 KiB，同 job prompt） |
+| `cadence` | `self_paced`，或向上取整到整分钟的 `every_seconds` 及其 `anchor` |
+| `state` | `running`、`waiting`、`stopped` 或 `expired` |
+| `next_at?` | 下一轮的到期时刻；`waiting` 与终态时缺失 |
+| `round` | 下一次投递携带的轮次，从 1 开始 |
+| `delivering_round?` | 输入可能尚未结算的那一轮，写外部效果之前先持久化 |
+| `expires_at` | 边界：创建 + 7 天 |
+| `created_at`, `last_round_at?`, `stopped_reason?`, `settled_at?` | 规范 UTC 时刻；目标消失时 `stopped_reason` 写入错误码 |
+
+`running` 是有轮次到期或未结算的 loop；`waiting` 是上一轮没有安排下一轮的自定节奏 loop。只有 `stopped` 与 `expired` 是终态，也只有它们带 `settled_at`。终态记录在结算满七天后被删除。
+
+### 12.2 每一轮都是一次投递
+
+每轮都是一条经公共 `sessions.input` 写入的 `input/message`，`mode: queue`，投给开始该 loop 的分支，`submissionId` 为 `loop:<loop_id>:<round>`，首个原始块为 `<dim-scheduler kind="loop" loop="<id>" round="<n>">`。分支对每个身份只接受一次，因此重试幂等。目标自己的 InputQueue 与 turn 调度器决定这条输入变成什么：空闲分支起一轮，忙分支排在后面，与 job 投递完全相同（§3.2）。不调用其他任何东西，Scheduler 不读目标的 Timeline。
+
+loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）：读一次文件、取一次时钟、对它改动的记录至多写一次。`delivering_round` 在写任何外部效果之前持久化，因此重启后按 `sessions.lookup` 用同一 submission id 结算，而不是再写一轮（§A.6 对 job 投递的规则）。
+
+`session.loop.start` 记录 `next_at = now`，因此第 1 轮是带 loop 标记的普通投递，绝不是普通用户消息。
+
+### 12.3 等待，且没有兜底轮
+
+自定节奏的一轮若没有安排下一轮，loop 进入 `waiting` 且没有 `next_at`：`list` 显示它和上一轮时间，`next` 恢复它，`stop` 或过期结算它。Scheduler 写完就忘（§3.2），因此它无法观察一轮的 turn 何时结束，而系统选定的兜底轮恰恰需要这个。`kind="loop"` 的 guide 条目告诉模型：loop 只通过 `loop next` 继续。
+
+固定节奏不需要这条规则：它的窗口在记录里，忙分支是推迟该轮而不是结束 loop。
+
+### 12.4 自定节奏的延迟
+
+`loop` 的 `action=next` 接受 `delay_seconds` 并夹到 60..3600。这个范围是边界，不是日程：选多久属于模型，描述要求它在无事可做时等久一些、工作完成时停止而不是继续等。Scheduler 不声明任何 prompt cache 窗口，因为缓存寿命由 provider 决定，此处没有契约声明它。
+
+### 12.5 边界与结果
+
+| 情形 | 记录 | 它说明什么 |
+| --- | --- | --- |
+| 一轮的输入已发布 | `round` 前进，无未结算项 | 分支接受了这一轮一次 |
+| 自定节奏的一轮没有安排下一轮 | `waiting` | `next` 恢复它 |
+| `stop`，来自工具或客户端 | `stopped` | 第二次 stop 报送已结算记录且不写入 |
+| 过了 `expires_at` | `expired` | 不重放 |
+| 目标消失（`session_closed`、`branch_missing`、`branch_ended`） | `stopped` 并带 `stopped_reason` | 写入失败；loop 需要新目标 |
+| 一轮的 turn 失败 | 不变 | loop 是时间安排，不是这一轮工作成果的裁判：下一轮照常到达，由模型决定是否停止 |
+| 一个 Session 里两次 start | 存活 8 个时 `loop_limit` | 边界统计存活记录 |
+
+### 12.6 接口
+
+| 接口 | 种类 | 用途 |
+| --- | --- | --- |
+| `loop` | 用 `toolRegistry` 注册的工具（Session），risk `persistent_configuration` | 模型开始、安排、停止、列出 loop |
+| `session.loop.start` | `sessionMethods`（命名空间 `session.loop`），mutating，`interruption: drain` | 客户端开始一个 loop |
+| `session.loop.list` | `sessionMethods`，non-mutating，`interruption: report` | 客户端读本分支的 loop |
+| `session.loop.stop` | `sessionMethods`，mutating，`interruption: drain` | 客户端停止一个 loop |
+| Session 通知 | `{source: "Scheduler", kind: "loop", data: {branchId, loopId, state, round, nextAt?}}` | 记录已变更；`session.loop.list` 是真相 |
+| `loops` | 进程组数据面，注册为 shared，在 `host_key("loops")` 提供 dispatcher | `start`、`next`、`list`、`stop`，即 Session 部分调用的 owner 操作；投递 pass、恢复与 `settle_delivering` 保持内部 |
+
+工具与方法对非交互 Session 和 Collaboration member 一律拒绝，与 `schedule`、`wakeup` 相同。一轮的工具由目标分支自己的 Permission 状态授权；loop 不携带 policy，也不预批准任何东西。记录是 Scheduler 自己的业务存储，工具与方法都通过同一 typed 服务访问它：Session 部分用 `names.key()` 声明 `loops` 并直接调用原生 `Loops` 绑定，其他语言通过 `loops` 数据面访问同一 owner 操作。投递 pass、恢复与 `settle_delivering` 不在该面上。
+
+`/loop` 的读法：`/loop` 打印用法与本分支的 loop，`/loop <prompt>` 开始自定节奏 loop，`/loop <interval> <prompt>` 开始固定节奏，`/loop stop [id]` 停止一个。间隔只在行首且能解析时才算，否则整行都是 prompt。
+
+### 12.7 规则检查
+
+| 规则 | 本节如何满足 |
+| --- | --- |
+| §4.1 改动他人状态的指令事件 | 一轮是一经 `sessions.input` 写入的 `input/message`；由 InputQueue 与 Loop 决定它变成什么 |
+| §4.2 交接后不撤回 | Scheduler 从不撤回已投递的一轮 |
+| §4.6 模型上下文只含已交接事件 | 一轮只作为目标分支已消费的输入进入模型 |
+| §4.9 只有后续决定用到的事实进入 Timeline | 没有 loop 事件；记录在 Scheduler 自己的存储里 |
+| ADR 002 D1 | loop 跨 Session 且必须比客户端活得久，因此记录与 pass 属于 process 部件；工具属于 Session |
+
+### 12.8 向机制所有者提出的需求
+
+无。
+
 ## 附录 A. 接口细节
 
 ### A.1 记录
@@ -547,7 +629,7 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 
 把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
 
-`scheduleJobs`、`wakeups` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
+`scheduleJobs`、`wakeups`、`loops` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
 
 ### A.3 管理方法
 
@@ -759,7 +841,7 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | --- | --- |
 | 注册到 `toolRegistry` 的工具 `schedule` | Session 部分经 `names.key()` 取得 `ToolRegistry`，并在 `apply` 中调用 `tools.register(ctx, ToolContribution {definition, handler})`，与 `dim-agent-questions` 相同 |
 | 注册到 `managementMethods` 的命名空间 `schedule` | 进程部分取得 `ManagementMethods` 并调用 `methods.register(ctx, "schedule", declarations, handler)`；Rpc 每次调用查找它，不持有对 Scheduler 的依赖 |
-| `scheduleJobs`、`wakeups` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明两项依赖并直接调用；wire 投影仅在 bridge 边界发生 |
+| `scheduleJobs`、`wakeups`、`loops` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups`、`Loops` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明这些依赖并直接调用；wire 投影仅在 bridge 边界发生。`loops` 提供 `start`、`next`、`list`、`stop`；投递 pass、恢复与 `settle_delivering` 保持内部（§12.6） |
 | `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFileTransactions`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
 | 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |

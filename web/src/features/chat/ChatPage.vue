@@ -2,7 +2,6 @@
 import { computed, ref, watch } from "vue"
 import { RouterLink, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { GitBranch, Menu } from "lucide-vue-next"
 import BrandMark from "../../components/BrandMark.vue"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import ApprovalPrompt from "./ApprovalPrompt.vue"
@@ -13,6 +12,7 @@ import TimelineView from "./TimelineView.vue"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
 import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
+import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
 import { useModelsStore } from "../../stores/models"
@@ -46,7 +46,7 @@ const storesPastes = computed(() => view.value?.methods.includes("attachment.put
 const searchFiles = computed(() => view.value?.methods.includes("session.files.search") ? (query: string) => chat.searchFiles(props.sessionId, query) : undefined)
 const permissionControl = computed(() => {
   const session = view.value
-  if (session?.status !== "ready" || !session.methods.includes("session.permission.get") || !session.methods.includes("session.permission.update")) return undefined
+  if (session?.status !== "ready" || !connection.supports("session.permission.get") || !connection.supports("session.permission.update")) return undefined
   return { policy: session.permission, select: setPermission }
 })
 const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, MAIN_BRANCH, view.value?.approvals ?? []))
@@ -74,6 +74,7 @@ const sessionCommands = computed(() => {
     usage: session.methods.includes("session.context.usage") ? usage : undefined,
     fork: connection.supports("session.fork") && session.lastTurnEnd !== undefined ? fork : undefined,
     goal: session.methods.includes("session.goal.set") ? goal : undefined,
+    loop: session.methods.includes("session.loop.start") ? loop : undefined,
     effort: effortChoices.value !== undefined && effortChoices.value.length > 0 ? effort : undefined,
   }
 })
@@ -185,6 +186,40 @@ async function goal(words: string): Promise<void> {
   }
 }
 
+/** `/loop` shows the line's loops, starts one, or stops one, the same forms the terminal client takes. */
+async function loop(words: string): Promise<void> {
+  const request = parseLoopRequest(words)
+  if (request === undefined) {
+    toast.push({ tone: "info", title: t("loop.usage") })
+    return
+  }
+  try {
+    if (request.form === "show") {
+      const loops = await chat.readLoops(props.sessionId)
+      toast.push({ tone: "info", title: loops.length === 0 ? t("loop.none") : t("loop.listed", { count: loops.length }), description: loopReport(loops).join("\n") })
+      return
+    }
+    if (request.form === "start") {
+      const id = await chat.startLoop(props.sessionId, request.prompt, request.interval === undefined ? undefined : intervalSeconds(request.interval))
+      toast.push({ tone: "success", title: t("loop.started", { id }) })
+      return
+    }
+    let loopId = request.loopId
+    if (loopId === undefined) {
+      const live = (await chat.readLoops(props.sessionId)).filter((entry) => !["stopped", "expired"].includes(entry.state))
+      if (live.length !== 1) {
+        toast.push({ tone: "info", title: t("loop.noSingle") })
+        return
+      }
+      loopId = live[0]!.loopId
+    }
+    await chat.stopLoop(props.sessionId, loopId)
+    toast.push({ tone: "success", title: t("loop.stopped", { id: loopId }) })
+  } catch (cause) {
+    failure(cause)
+  }
+}
+
 /** `/effort` with no words lists the choices; `/effort VALUE` sets the main line's reasoning effort. */
 async function effort(words: string): Promise<void> {
   const choices = effortChoices.value
@@ -240,7 +275,7 @@ async function fork(): Promise<void> {
   <section v-if="view?.status === 'closed'" class="removed-state route-page">
     <h1 data-route-heading tabindex="-1">{{ t("chat.removedTitle") }}</h1>
     <p>{{ t("chat.removedDescription") }}</p>
-    <RouterLink to="/chat/new">{{ t("sidebar.newSession") }}</RouterLink>
+    <UButton to="/chat/new" color="neutral" variant="soft">{{ t("sidebar.newSession") }}</UButton>
   </section>
 
   <section v-else-if="view?.status === 'failed'" class="removed-state route-page">
@@ -258,7 +293,17 @@ async function fork(): Promise<void> {
     <ConfirmDialog ref="forkConfirm" />
     <div class="chat-page-top">
       <header class="session-header">
-        <button v-if="ui.shellMode === 'compact'" class="ui-icon-button session-nav" data-variant="ghost" data-size="md" type="button" :aria-label="t('sidebar.openMenu')" @click="ui.drawerOpen = true"><Menu aria-hidden="true" /></button>
+        <UButton
+          v-if="ui.shellMode === 'compact'"
+          class="session-nav"
+          color="neutral"
+          variant="ghost"
+          size="md"
+          square
+          icon="i-lucide-menu"
+          :aria-label="t('sidebar.openMenu')"
+          @click="ui.drawerOpen = true"
+        />
         <div class="session-heading">
           <template v-if="summary">
             <span class="workspace-crumb" :title="summary.cwd">{{ workspaceName(summary.cwd) }}</span>
@@ -267,35 +312,43 @@ async function fork(): Promise<void> {
           <h1 data-route-heading tabindex="-1" :title="title">{{ title }}</h1>
         </div>
         <ExtensionMenu :session-id="sessionId" />
-        <button
+        <UButton
           v-if="connection.supports('session.branch_end')"
-          class="ui-button session-lines"
-          data-variant="ghost"
-          data-size="sm"
-          type="button"
+          class="session-lines"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          icon="i-lucide-git-branch"
           :aria-label="t('lines.open')"
           @click="ui.toggleLines(sessionId)"
         >
-          <GitBranch aria-hidden="true" />
           <span>{{ t("lines.title") }}</span>
-          <span v-if="lineCount > 0" class="ui-badge" data-size="sm" :data-tone="linesBusy ? 'warning' : undefined">{{ lineCount }}</span>
-        </button>
-        <span v-if="view.sessionRunning" class="ui-badge session-running" data-tone="primary"><span class="status-dot" data-state="running" aria-hidden="true" />{{ t(view.stopping ? "status.stopping" : "status.running") }}</span>
+          <template v-if="lineCount > 0" #trailing>
+            <UBadge size="sm" :color="linesBusy ? 'warning' : 'neutral'" variant="subtle" class="session-lines-badge">{{ lineCount }}</UBadge>
+          </template>
+        </UButton>
+        <UBadge v-if="view.sessionRunning" class="session-running" color="primary" variant="subtle">
+          <span class="status-dot" data-state="running" aria-hidden="true" />{{ t(view.stopping ? "status.stopping" : "status.running") }}
+        </UBadge>
       </header>
       <div v-if="parentId || children.length" class="session-relations">
         <RouterLink v-if="parentId" :to="{ name: 'chat-session', params: { sessionId: parentId } }">
           {{ t("session.parent", { title: parent?.title ?? parent?.preview ?? parentId }) }}
         </RouterLink>
-        <details v-if="children.length" :key="sessionId">
-          <summary>{{ t("session.children", { count: children.length }) }}</summary>
-          <ul>
-            <li v-for="child in children" :key="child.sessionId">
-              <RouterLink :to="{ name: 'chat-session', params: { sessionId: child.sessionId } }">
-                {{ child.title ?? child.preview ?? child.sessionId }}
-              </RouterLink>
-            </li>
-          </ul>
-        </details>
+        <UCollapsible v-if="children.length" :key="sessionId">
+          <UButton color="neutral" variant="link" size="xs" trailing-icon="i-lucide-chevron-down" class="px-0">
+            {{ t("session.children", { count: children.length }) }}
+          </UButton>
+          <template #content>
+            <ul>
+              <li v-for="child in children" :key="child.sessionId">
+                <RouterLink :to="{ name: 'chat-session', params: { sessionId: child.sessionId } }">
+                  {{ child.title ?? child.preview ?? child.sessionId }}
+                </RouterLink>
+              </li>
+            </ul>
+          </template>
+        </UCollapsible>
       </div>
     </div>
     <TimelineView
@@ -345,7 +398,7 @@ async function fork(): Promise<void> {
 .session-running { gap: 6px; }
 .session-running > .status-dot { border: 0; }
 .session-lines { gap: 6px; flex: none; }
-.session-lines .ui-badge { min-width: 18px; padding-inline: 4px; }
+.session-lines-badge { min-width: 18px; padding-inline: 4px; }
 .session-relations { padding: 0 var(--space-4) var(--space-2); font-size: var(--text-sm); overflow-wrap: anywhere; }
 .session-relations summary { cursor: pointer; }
 .session-relations ul { max-height: 10rem; overflow-y: auto; margin: var(--space-1) 0; padding-inline-start: var(--space-6); }

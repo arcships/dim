@@ -8,7 +8,7 @@ Agents 的稳定目录还提供生成的只读服务 `sessionPermissions`：`per
 
 ## 1. 概要
 
-Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`stop`、`idle` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
+Agents 提供进程服务 `sessions`，让任何语言的进程插件都能像 Collaboration 那样启动和驱动 Session。方法为 `launch`、`input`、`lookup`、`exists`、`history`、`withdraw`、`pending`、`stop`、`idle` 和 `delete`，每个都映射到 Agents 现有的 Session 创建与准入（`AgentIndex`）和公共 Session 门面。`withdraw` 转交给 S1 已加入的 InputQueue 撤回服务，`delete` 转交给 S5c 的 `AgentIndex::delete`。
 
 - **形态。** 一个具名进程服务 `sessions`，没有实例 key。它是 `host_key("sessions")` 上的 `dyn HostDispatch`，像 `pluginFiles` 一样经服务目录跨语言共享。由 Agents 中从不重载的目录部分提供，每次调用时查找 Agents 索引，因此使用方从不随索引重载（#35）。
 - **启动。** `launch` 创建非交互 Session。它的权限策略是请求的策略，以启动方分支的当前策略为上限；当前策略即由 `permission/changed` 事实折叠出的 `PermissionState`。没有启动方时，上限是宿主的 Session 默认值。Agents 在创建前经 `SessionConfig.permission_policy` 施加上限。
@@ -314,6 +314,14 @@ Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQu
 `{sessionId}` → `{exists}`；错误 `rejected`、`reloading`。
 
 这次读取回答该 id 是否有所有者或 SessionStore 记录，这正是 `acquire` 在恢复任何东西之前读取的内容(`crates/dim-app-server/src/agents.rs:832-843`)：`false` 表示该 Session 已被删除，已关闭但可恢复的 Session 为 `true`。它不取得任何东西、不取租约、不恢复 Session、不写事件，所以对空闲卸载没有影响。它服务于必须把自己的记录与 Session 删除对账、又不能用轮询把一个关闭当成删除的使用方(EventHub §3.4)。Agents 重载时回答 `reloading`；调用方保留自己的记录，稍后再问。
+
+### 6.10 pending
+
+`{sessionId, branchId, inputId}` → `{pending}`；错误 `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`。
+
+该读取回答该输入在该分支上是否仍待处理，规则见 [session 访问 §2](../contracts/session-access.md#2-数据与状态)：从 `input/message` 起待处理，直到引用它的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。该分支自己的 InputQueue 恰好持有这个集合，因此本方法用 `Session::service::<InputQueue>(branch)` 读取它——即 `withdraw` 使用的路径（§6.6）——并且不读 Timeline。它像除 `launch`、`delete` 与 `exists` 之外的每个方法一样取得 Session，因此未加载的分支会为这次回答而被恢复。
+
+分支不持有的 `inputId` 回答 `false`；这既覆盖已被消费或删除的 id，也覆盖重启丢失的 id。固定节奏的 loop 在投递下一个窗口之前读取它，因此仍排在运行中 turn 之后的一轮会推迟该窗口，而不是再排一轮。
 
 ## 7. 时序
 
@@ -643,6 +651,8 @@ pub struct WithdrawRequest {
     pub session_id: String, pub branch_id: String,
     pub input_id: String, pub reason: Option<String>,
 }
+pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
+pub struct PendingReply { pub pending: bool }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() 由错误码决定
 
@@ -652,6 +662,8 @@ impl AgentIndex {
     pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError>;
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError>;
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal 来自 S1
+    /// 输入是否仍在该分支上待处理（§6.10）。
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c 的删除，作为 `sessions.delete {sessionId}` 提供（§6.8）。
