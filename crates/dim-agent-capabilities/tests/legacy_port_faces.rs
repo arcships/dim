@@ -2,7 +2,7 @@
 //! a Session's attached clients and the Session method reservation check. Each
 //! owner binds its read as the port's operation; these tests pin that the Rust
 //! binding and the face answer the same
-//! ([service faces §4.9](../../docs/design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
+//! ([service faces §4.9](../../../docs/design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
 use dim_agent_capabilities::environment_clients::{
     ClientChannel, ClientPresence, SessionClientsHost, SessionPresenceRequest,
     SessionPresencesReply,

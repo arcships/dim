@@ -1,7 +1,7 @@
 //! The App Server's legacy host ports whose content is data: the addresses the
 //! transport bound. The owner provides the port and the face is the same
 //! operation; this test pins that the Rust binding and the face answer the
-//! same ([service faces §4.9](../../docs/design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
+//! same ([service faces §4.9](../../../docs/design/service-faces.md#49-旧主机端口credentialvariableshost-等六个)).
 use dim_app_server::{BoundAddresses, ListenAddresses};
 use rutis::Ctx;
 use rutis::host::CtxHost;
