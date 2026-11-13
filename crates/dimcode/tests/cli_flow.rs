@@ -6075,7 +6075,9 @@ fn tui_shell_mode_runs_through_session_methods_and_shows_the_recorded_run() {
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"!echo recorded\r");
     terminal.until("live-out");
@@ -10346,7 +10348,9 @@ fn tui_tasks_panel_stops_the_selected_command_or_member() {
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"go\r");
     terminal.until("Agent: reviewer");
@@ -10556,7 +10560,9 @@ fn tui_approval_alias_selects_presets_and_remembers_them() {
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"/approval\r");
     terminal.until("Full access");
@@ -11268,7 +11274,9 @@ fn tui_context_warning_starts_at_the_threshold_share_and_a_compaction_refreshes_
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("179.9K / 256K");
     assert!(
         !terminal
@@ -11882,7 +11890,9 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
             wire.reply(&request, result);
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"/models\r");
     terminal.until("Subagent models: Agent choice");
