@@ -558,6 +558,14 @@ impl TasksPanel {
                     ),
                 };
                 content.push(fg(&truncate_cells(&status, inner), color));
+                if let Some(command) = &detail.task.command {
+                    lines.extend(
+                        wrap_cells(&safe(command), inner)
+                            .into_iter()
+                            .map(|line| fg(&line, &p.muted)),
+                    );
+                    lines.push(String::new());
+                }
                 let text = if text.is_empty() {
                     match state {
                         TaskOutputState::Loading => t("Loading output..."),

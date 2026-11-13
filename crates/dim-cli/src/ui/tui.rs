@@ -372,11 +372,9 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         }
         let now = Instant::now();
         let current = terminal.size();
-        let laid_out = match &full {
+        let laid_out = match &mut full {
             Some(full) => {
-                if full.size() != current {
-                    dirty = true;
-                }
+                dirty |= full.resize(current);
                 (full.layout_cols(), current.1)
             }
             None => screen.size(),
@@ -501,6 +499,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             }
             Wait::Event(InputEvent::Mouse(event)) => {
                 let Some(full) = &mut full else { continue };
+                dirty |= full.resize(terminal.size());
                 match full.mouse(event, &app) {
                     MouseOutcome::Ignored => {}
                     MouseOutcome::Redraw => dirty = true,
@@ -9862,6 +9861,7 @@ mod tests {
                 task_id: id.into(),
             }),
             label: label.into(),
+            command: Some(label.into()),
             agent: None,
             agent_id: None,
             started_at: 0,

@@ -587,6 +587,116 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
 }
 
 #[test]
+fn tui_titled_silent_command_details_keep_the_command() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            let mut started = command("silent", 1, 1000, "sleep 60");
+            started["data"]["title"] = json!("Wait for build");
+            wire.reply(
+                &history,
+                json!({"events":[started],"through":1,"nextAfter":1,"done":true}),
+            );
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            let output = wire.read("session.exec.output");
+            assert_eq!(
+                output["params"],
+                json!({"sessionId":"session","branchId":"main","taskId":"silent"})
+            );
+            wire.reply(&output, json!({"text":""}));
+            wire.hold();
+        });
+        let mut launch = home.command();
+        launch.args(["--resume", "session"]);
+        if fullscreen {
+            launch.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(launch);
+        terminal.until("test / model");
+        terminal.write(b"/tasks\r");
+        terminal.until("Wait for build");
+        let opened = terminal.transcript.len();
+        terminal.write(b"\r");
+        terminal.until("No output yet");
+        let detail = strip_ansi(&terminal.transcript[opened..]);
+        assert!(detail.contains("Wait for build"), "{detail}");
+        assert!(detail.contains("sleep 60"), "{detail}");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn tui_fullscreen_resize_cancels_a_task_release_before_reflow() {
+    let home = Home::new();
+    let (sent, received) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[command("silent",1,1000,"sleep 60")],"through":1,"nextAfter":1,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let request = wire.read_any();
+        sent.send(request).unwrap();
+        wire.hold();
+    });
+    let mut launch = home.command();
+    launch.args(["--resume", "session", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(launch);
+    terminal.until("test / model");
+    terminal.write(b"kept draft");
+    terminal.until("kept draft");
+    terminal.until("\x1b[?2026l");
+    terminal.write(b"\x1b[<0;5;18M processed");
+    terminal.until("kept draft processed");
+    terminal.until("\x1b[?2026l");
+    terminal.signal(libc::SIGSTOP);
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(terminal.child.id() as i32, &mut status, libc::WUNTRACED) },
+        terminal.child.id() as i32
+    );
+    assert!(libc::WIFSTOPPED(status));
+    let size = libc::winsize {
+        ws_row: 24,
+        ws_col: 79,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    assert_eq!(
+        unsafe {
+            libc::ioctl(
+                terminal.master.as_ref().unwrap().as_raw_fd(),
+                libc::TIOCSWINSZ,
+                &size,
+            )
+        },
+        0
+    );
+    terminal.write(b"\x1b[<0;5;18m after resize\r");
+    terminal.signal(libc::SIGCONT);
+    let request = received.recv_timeout(PATIENCE).unwrap();
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    assert_eq!(request["method"], "session.submit", "{request}");
+    assert_eq!(
+        request["params"]["text"],
+        "kept draft processed after resize"
+    );
+}
+
+#[test]
 fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     let home = Home::new();
     let (ready, readiness) = std::sync::mpsc::channel();
@@ -652,8 +762,11 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     proceed.send(()).unwrap();
     terminal.until("Failed");
     terminal.until("created while history failed");
+    let opened = terminal.transcript.len();
     terminal.write(b"Restore child build\r");
     terminal.until("real child terminal");
+    let detail = strip_ansi(&terminal.transcript[opened..]);
+    assert!(detail.contains("restored child command"), "{detail}");
     assert!(
         !terminal
             .transcript

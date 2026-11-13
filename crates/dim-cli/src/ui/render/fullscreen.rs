@@ -359,9 +359,19 @@ impl FullScreen {
         }
     }
 
-    /// The terminal size of the last frame.
-    pub fn size(&self) -> (u16, u16) {
-        self.size
+    /// Cancels gestures and stale task hits immediately, before deferred reflow.
+    pub fn resize(&mut self, size: (u16, u16)) -> bool {
+        if size == self.size {
+            return false;
+        }
+        self.size = size;
+        self.press = None;
+        self.selection = None;
+        self.thumb_drag = None;
+        self.clicks = None;
+        self.task_rows.clear();
+        self.invalidate();
+        true
     }
 
     /// The width the transcript is laid out for.
@@ -989,14 +999,7 @@ impl FullScreen {
         palette: &Palette,
         doc: &dyn Document,
     ) -> Vec<u8> {
-        if size != self.size {
-            self.size = size;
-            self.press = None;
-            self.selection = None;
-            self.thumb_drag = None;
-            self.clicks = None;
-            self.invalidate();
-        }
+        self.resize(size);
         let (cols, rows) = (size.0 as usize, size.1.max(1) as usize);
         let width = content_width(cols);
         self.sync(doc);

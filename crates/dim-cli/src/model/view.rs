@@ -296,6 +296,7 @@ pub struct TaskView {
     pub branch_id: String,
     pub kind: TaskKind,
     pub label: String,
+    pub command: Option<String>,
     /// The member Agent's name, or its id until `agent.list` names it.
     pub agent: Option<String>,
     /// An existing native Agent that `agent.list` can name.

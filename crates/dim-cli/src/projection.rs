@@ -828,18 +828,17 @@ impl Projection {
             return;
         }
 
-        let label = data.title.clone().unwrap_or_else(|| {
-            self.rows
-                .iter()
-                .find(|row| {
-                    row.call_id.as_deref() == Some(data.call_id.as_str())
-                        && row.batch.as_deref() == Some(data.request_id.as_str())
-                })
-                .and_then(|row| row.tool_input.as_ref()?.get("command")?.as_str())
-                .filter(|command| !command.is_empty())
-                .unwrap_or(data.description.as_str())
-                .to_owned()
-        });
+        let command = self
+            .rows
+            .iter()
+            .find(|row| {
+                row.call_id.as_deref() == Some(data.call_id.as_str())
+                    && row.batch.as_deref() == Some(data.request_id.as_str())
+            })
+            .and_then(|row| row.tool_input.as_ref()?.get("command")?.as_str())
+            .filter(|command| !command.is_empty())
+            .unwrap_or(data.description.as_str())
+            .to_owned();
         let target = TaskTarget {
             branch_id: branch_id.to_owned(),
             task_id: data.task_id.clone(),
@@ -848,7 +847,8 @@ impl Projection {
             id: event_id.to_owned(),
             branch_id: branch_id.to_owned(),
             kind: TaskKind::Command(target.clone()),
-            label,
+            label: data.title.as_ref().unwrap_or(&command).clone(),
+            command: Some(command),
             agent: None,
             agent_id: None,
             started_at,
@@ -888,6 +888,7 @@ impl Projection {
                 .title
                 .clone()
                 .unwrap_or_else(|| data.prompt.lines().next().unwrap_or("").to_owned()),
+            command: None,
             agent: Some(agent),
             agent_id,
             started_at,
@@ -990,6 +991,7 @@ impl Projection {
             branch_id: branch.into(),
             kind: TaskKind::Command(target.clone()),
             label: task.title.as_ref().unwrap_or(&task.description).clone(),
+            command: Some(task.description.clone()),
             agent: None,
             agent_id: None,
             started_at: task.started_at,
@@ -1271,6 +1273,7 @@ impl Projection {
             id: run.run_id.clone(),
             branch_id: branch_id.to_owned(),
             label: run.name.clone(),
+            command: None,
             agent: None,
             agent_id: None,
             started_at: run.created_at,

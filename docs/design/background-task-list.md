@@ -183,6 +183,20 @@ command titles. The CLI uses the title when present. For historical tasks withou
 one, retain the existing command/description or first prompt line as the label;
 do not invent or persist a replacement title.
 
+Command details retain the original command independently of the title and show
+it before the output in the scrollable body, including silent, finished and
+restored commands from another branch. Use the matching tool input when available,
+otherwise the owner fact or pending inventory's description.
+
+```text
++-- Wait for build ---------------------------------------------+
+| Tail preview - last 2,000 lines / 50 KiB                        |
+| sleep 60                                                      |
+|                                                               |
+| No output yet                                                 |
++----------------------------- x stop command · Esc back --------+
+```
+
 Member tasks carry their Agent name independently of the title. A temporary
 profile supplies its name immediately; an existing Agent uses its id until
 `agent.list` supplies its name. The task list, member card and composer rows
@@ -209,9 +223,10 @@ open command output, and member rows use the existing
 [member conversation contract](member-conversation.md). A click requires press
 and release on the same cell with the same task identity still at that row.
 Dragging, resizing or replacing the task at that row cancels the click;
-elapsed-time updates do not. Rows clipped out of the viewport are not clickable,
-and an open prompt or overlay blocks task-row clicks. Scrollback mode retains
-its keyboard-only entry points.
+resize cancellation is immediate even while transcript reflow is debounced.
+Elapsed-time updates do not cancel a click. Rows clipped out of the viewport
+are not clickable, and an open prompt or overlay blocks task-row clicks.
+Scrollback mode retains its keyboard-only entry points.
 
 ```text
   ◐ Fix esbuild bundling · Builder                         27m57s
