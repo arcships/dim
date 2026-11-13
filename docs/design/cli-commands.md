@@ -99,10 +99,12 @@ explicit member-conversation entry keep separate actions; the member's tool
 header toggles its details instead of navigating. Existing Tab/Shift+Tab
 transcript traversal includes committed tool headers; Enter/Space toggles only
 the focused tool. A press on the scrollbar column drags the view instead of
-selecting: the thumb keeps the held point under the pointer, a press on the
-track centres the thumb there first, and dragging past the last transcript row
-follows new output again. Motion without the button, or another press, ends a
-drag whose release the terminal lost. Mouse-off retains native
+selecting: the view moves as far as the thumb moves with the pointer, so a
+drag along the grabbed row keeps the view; a press on the track centres the
+thumb there first. The first and last transcript rows reach the top and the
+bottom, and dragging past the last one follows new output again. Motion without
+the button, or another press, ends a drag whose release the terminal lost.
+Mouse-off retains native
 terminal selection. Free-motion reports are enabled and restored with fullscreen
 mouse mode; unsupported terminals retain click and keyboard operation.
 

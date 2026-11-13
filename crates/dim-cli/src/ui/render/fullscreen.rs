@@ -305,9 +305,9 @@ pub struct FullScreen {
     /// The last frame had an overlay: the wheel belongs to it.
     overlay_open: bool,
     selection: Option<Selection>,
-    /// While the scrollbar thumb is dragged: where the pointer holds it,
-    /// in eighths of a row from its start.
-    thumb_grab: Option<usize>,
+    /// While the scrollbar thumb is dragged: the viewport row it was grabbed
+    /// on and the top row the view had then.
+    thumb_drag: Option<(usize, usize)>,
     /// Block id of the user message or member card picked with Tab.
     focus: Option<usize>,
     /// The picked member card in that block, by delegation id.
@@ -344,7 +344,7 @@ impl FullScreen {
             wheel: Wheel::default(),
             overlay_open: false,
             selection: None,
-            thumb_grab: None,
+            thumb_drag: None,
             focus: None,
             focus_card: None,
             focus_tool: None,
@@ -675,10 +675,9 @@ impl FullScreen {
             .flatten()
     }
 
-    /// A press on the scrollbar grabs the thumb where it is hit; on the
-    /// track beside it the thumb centres on the press first. The hold stays
-    /// at least half a row inside the thumb, so dragging to the first or
-    /// last transcript row reaches the top or the bottom.
+    /// A press on the scrollbar grabs the thumb where it is; on the track
+    /// beside it the thumb centres on the press first. The drag starts from
+    /// that row and view.
     fn grab_thumb(&mut self, column: usize, row: usize) -> bool {
         let content = self.content_rows();
         let Some(thumb) = Thumb::new(self.view_rows, content) else {
@@ -687,29 +686,41 @@ impl FullScreen {
         if column + 1 != self.size.0 as usize || row >= self.view_rows {
             return false;
         }
-        let start = thumb.room * self.top() / (content - self.view_rows);
-        let at = row * 8 + 4;
-        let on_thumb = row * 8 < start + thumb.size && start < row * 8 + 8;
-        let grab = match on_thumb {
-            true => at.saturating_sub(start).clamp(4, thumb.size - 4),
-            false => thumb.size / 2,
-        };
-        self.thumb_grab = Some(grab);
-        if !on_thumb {
-            self.drag_thumb(row, grab);
+        let start = thumb.start(self.top(), self.view_rows, content);
+        if !(row * 8 < start + thumb.size && start < row * 8 + 8) {
+            let centre = (row * 8 + 4).saturating_sub(thumb.size / 2);
+            self.pin(thumb.top_at(centre, self.view_rows, content));
         }
+        self.thumb_drag = Some((row, self.top()));
         true
     }
 
-    /// Moves the view so the thumb, held `grab` eighths from its start,
-    /// sits under the pointer on viewport row `row`.
-    fn drag_thumb(&mut self, row: usize, grab: usize) {
+    /// Moves the view of a drag that started on row `from` at top row `top`
+    /// as far as the thumb moves with the pointer, now on row `row`. The
+    /// starting row keeps the starting view, so a drag along it never
+    /// scrolls; the first and the last transcript row snap to the top and
+    /// the bottom, and so does the dock below them.
+    fn drag_thumb(&mut self, row: usize, (from, top): (usize, usize)) {
         let content = self.content_rows();
         let Some(thumb) = Thumb::new(self.view_rows, content) else {
             return;
         };
-        let at = row.min(self.view_rows - 1) * 8 + 4;
-        self.pin(thumb.top_at(at.saturating_sub(grab), self.view_rows, content));
+        let max_top = content - self.view_rows;
+        let next = if row >= self.view_rows {
+            max_top
+        } else if row == from || thumb.room == 0 {
+            top
+        } else if row == 0 {
+            0
+        } else if row + 1 == self.view_rows {
+            max_top
+        } else {
+            let rows = (row as isize - from as isize) * 8 * max_top as isize;
+            let room = thumb.room as isize;
+            let delta = (rows + rows.signum() * room / 2) / room;
+            (top as isize + delta).clamp(0, max_top as isize) as usize
+        };
+        self.pin(next);
     }
 
     fn hover(&mut self, doc: &dyn Document) -> bool {
@@ -735,14 +746,14 @@ impl FullScreen {
         let row = event.row as usize;
         let column = event.column as usize;
         self.pointer = Some((column, row));
-        if let Some(grab) = self.thumb_grab {
+        if let Some(start) = self.thumb_drag {
             match event.kind {
                 MouseKind::Drag => {
-                    self.drag_thumb(row, grab);
+                    self.drag_thumb(row, start);
                     return MouseOutcome::Redraw;
                 }
                 MouseKind::Release => {
-                    self.thumb_grab = None;
+                    self.thumb_drag = None;
                     return if self.hover(doc) {
                         MouseOutcome::Redraw
                     } else {
@@ -751,7 +762,7 @@ impl FullScreen {
                 }
                 // Motion or a press without a release first: the terminal
                 // lost it (the button came up outside the window).
-                _ => self.thumb_grab = None,
+                _ => self.thumb_drag = None,
             }
         }
         let hovered = self.hover(doc);
@@ -942,7 +953,7 @@ impl FullScreen {
             self.size = size;
             self.press = None;
             self.selection = None;
-            self.thumb_grab = None;
+            self.thumb_drag = None;
             self.clicks = None;
             self.invalidate();
         }
@@ -971,7 +982,7 @@ impl FullScreen {
         self.overlay_open = dim;
         if dim {
             self.press = None;
-            self.thumb_grab = None;
+            self.thumb_drag = None;
             self.clicks = None;
             self.clicked = None;
         }
@@ -1819,8 +1830,13 @@ impl Thumb {
         })
     }
 
+    /// The eighth the thumb starts at for a view whose top row is `top`.
+    fn start(self, top: usize, view: usize, content: usize) -> usize {
+        self.room * top / (content - view)
+    }
+
     /// The top row that draws the thumb starting at eighth `start`, rounded
-    /// to the nearest so a drag puts the thumb where the pointer holds it.
+    /// to the nearest.
     fn top_at(self, start: usize, view: usize, content: usize) -> usize {
         match self.room {
             0 => 0,
@@ -1833,11 +1849,11 @@ impl Thumb {
 /// starting at `top`, one cell per row, in eighths of a row; `None` when
 /// everything fits.
 fn scrollbar(view: usize, content: usize, top: usize, palette: &Palette) -> Option<Vec<String>> {
-    let Thumb { size, room } = Thumb::new(view, content)?;
+    let bar = Thumb::new(view, content)?;
     let track = &palette.scroll_track;
     let thumb = &palette.scroll_thumb;
-    let start = room * top / (content - view);
-    let end = start + size;
+    let start = bar.start(top, view, content);
+    let end = start + bar.size;
     let cell = |text: &str, fg: &str, bg: &str| {
         paint(
             text,
@@ -2821,7 +2837,37 @@ mod tests {
         let (mut screen, mut emu) = setup();
         draw(&mut screen, &mut emu, &frame(&[], &DOCK), &short);
         screen.mouse(at(MouseKind::Press, bar, 5), &short);
-        assert_eq!(screen.thumb_grab, None);
+        assert_eq!(screen.thumb_drag, None);
+    }
+
+    #[test]
+    fn a_partly_covered_thumb_moves_only_as_far_as_the_pointer() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        for i in 0..1_000 {
+            doc.say(&[&format!("row {i}")]);
+        }
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        screen.scroll(-994);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert_eq!(screen.top(), 1000);
+        let bar = SIZE.0 - 1;
+        let at = |kind, column, row| MouseEvent { kind, column, row };
+        // 2,000 rows: a one-row thumb covers the lower half of row 2 and the
+        // upper half of row 3 (the same glyph, colours swapped).
+        let thumb_on = |emu: &Emu, row: usize| emu.row(row).ends_with('▄');
+        assert!(thumb_on(&emu, 2) && thumb_on(&emu, 3) && !thumb_on(&emu, 4));
+        screen.mouse(at(MouseKind::Press, bar, 2), &doc);
+        screen.mouse(at(MouseKind::Drag, bar - 3, 2), &doc);
+        assert_eq!(screen.top(), 1000, "a sideways drag never scrolls");
+        screen.mouse(at(MouseKind::Drag, bar, 3), &doc);
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        assert_eq!(screen.top(), 1399, "one row of track");
+        assert!(!thumb_on(&emu, 2) && thumb_on(&emu, 3) && thumb_on(&emu, 4));
+        screen.mouse(at(MouseKind::Drag, bar, 2), &doc);
+        assert_eq!(screen.top(), 1000, "back to the grab row, back to its view");
+        screen.mouse(at(MouseKind::Drag, bar, 0), &doc);
+        assert_eq!(screen.top(), 0);
     }
 
     #[test]
