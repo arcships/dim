@@ -2911,11 +2911,20 @@
       "file": "crates/dim-app-server/src/model_catalog.rs",
       "unexpandedMacros": [
         "b",
-        "format",
         "include_str",
         "inherit",
         "inherit_capability",
         "macro_rules",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::model_catalog::id",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::model_catalog",
+      "file": "crates/dim-app-server/src/model_catalog/id.rs",
+      "unexpandedMacros": [
+        "format",
         "matches",
         "serde_json::json",
         "vec"
@@ -28623,6 +28632,28 @@
         "use dim_agent_types::ModelServiceTier",
         "use dim_agent_types::ReasoningBudget",
         "use dim_agent_types::ReasoningOff"
+      ]
+    },
+    {
+      "from": "dim_app_server::model_catalog",
+      "to": "dim_app_server::model_catalog::id",
+      "references": [
+        "mod id",
+        "path id",
+        "path variants",
+        "use self::id::variants"
+      ]
+    },
+    {
+      "from": "dim_app_server::model_catalog::id",
+      "to": "dim_app_server::model_catalog",
+      "references": [
+        "path BundledCatalog",
+        "path ModelEntry",
+        "path ModelSource::Custom",
+        "path ProviderProjection",
+        "path model_kind",
+        "path strings"
       ]
     },
     {
