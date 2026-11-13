@@ -118,10 +118,52 @@ pub struct ModelMetadata {
     pub match_score: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_match_reason: Option<String>,
+    /// How this entry was identified, and what supplied a limit it does not
+    /// declare. Absent when nothing named the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identification: Option<ModelIdentification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_override_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub raw: Map<String, Value>,
+}
+
+/// The one model an id named, and the numbers something else supplied.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelIdentification {
+    /// The step that named the row, as `Rule`'s own word.
+    pub rule: String,
+    /// Step 3's display name settled several canonical hits.
+    pub narrowed_by_display_name: bool,
+    /// The rows a step still disagreed on, when it reported an ambiguity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateId>,
+    /// The limits this entry did not declare and something else supplied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filled: Vec<FilledLimit>,
+}
+
+/// One row an ambiguity named.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateId {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+/// A limit an entry did not declare, the entry that supplied it and how that
+/// entry was identified, so a filled value never reads as a declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilledLimit {
+    /// `contextWindow` or `maxOutputTokens`.
+    pub field: String,
+    pub value: u64,
+    pub provider_id: String,
+    pub model_id: String,
+    /// How the supplying entry was identified.
+    pub rule: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -346,7 +388,12 @@ impl BundledCatalog {
             .map(|m| m.capability_override_fields.clone())
             .unwrap_or_default();
         let lookup = self.lookup(provider, &id);
-        if let Some((pid, found, strategy, score)) = lookup {
+        let identification = self.identify_record(provider, &id);
+        if let Some(found_lookup) = lookup {
+            let pid = found_lookup.provider_id.clone();
+            let found = found_lookup.entry;
+            let strategy = found_lookup.strategy;
+            let score = found_lookup.score;
             entry = merge_entry(entry, &found, &explicit);
             let declared = input.get("capabilities").and_then(Value::as_object);
             if input.get("modalities").is_none()
@@ -381,11 +428,42 @@ impl BundledCatalog {
             metadata.match_strategy = Some("provider-default".into());
             metadata.metadata_match_reason = Some("no_unique_match".into());
         }
+        entry.metadata.get_or_insert_default().identification = identification;
         self.apply_provider_rules(provider, &mut entry);
         if !limits_valid(&entry.capabilities) {
             return Err(ProjectionError::InvalidLimits);
         }
         Ok(entry)
+    }
+
+    /// How an id was identified, as the entry carries it. `None` when no step
+    /// named a row; the candidates when a step refused the id.
+    fn identify_record(
+        &self,
+        provider: &ProviderProjection,
+        id: &str,
+    ) -> Option<ModelIdentification> {
+        match self.identify(provider, id) {
+            Ok(Some(found)) => Some(ModelIdentification {
+                rule: found.rule.into(),
+                narrowed_by_display_name: found.narrowed,
+                candidates: Vec::new(),
+                filled: Vec::new(),
+            }),
+            Err(candidates) => Some(ModelIdentification {
+                rule: "ambiguous".into(),
+                narrowed_by_display_name: false,
+                candidates: candidates
+                    .into_iter()
+                    .map(|candidate| CandidateId {
+                        provider_id: candidate.provider_id,
+                        model_id: candidate.model_id,
+                    })
+                    .collect(),
+                filled: Vec::new(),
+            }),
+            Ok(None) => None,
+        }
     }
 
     pub fn effective_models(
@@ -398,9 +476,12 @@ impl BundledCatalog {
             .iter()
             .map(|model| {
                 let mut model = model.clone();
-                if let Some((provider_id, fallback, strategy, score)) =
-                    self.lookup(provider, &model.model_id)
-                {
+                let identification = self.identify_record(provider, &model.model_id);
+                if let Some(found) = self.lookup(provider, &model.model_id) {
+                    let provider_id = found.provider_id;
+                    let fallback = found.entry;
+                    let strategy = found.strategy;
+                    let score = found.score;
                     let explicit = model
                         .metadata
                         .as_ref()
@@ -415,6 +496,7 @@ impl BundledCatalog {
                     metadata.match_score = Some(score);
                     metadata.metadata_match_reason = None;
                 }
+                model.metadata.get_or_insert_default().identification = identification;
                 self.apply_provider_rules(provider, &mut model);
                 model
             })
@@ -505,7 +587,7 @@ impl BundledCatalog {
     /// Bundled metadata for a model served by a relay outside the catalog.
     pub fn fallback(&self, id: &str) -> Option<ModelEntry> {
         self.lookup(&ProviderProjection::default(), id)
-            .map(|(_, model, _, _)| model)
+            .map(|found| found.entry)
     }
 
     fn apply_provider_rules(&self, provider: &ProviderProjection, entry: &mut ModelEntry) {

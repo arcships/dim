@@ -712,3 +712,68 @@ fn a_custom_provider_row_is_a_declaration() {
         assert!(entry.capabilities.missing_limits().is_empty(), "{input}");
     }
 }
+
+/// The outcome reaches `metadata.identification`, and an ambiguity carries the
+/// rows that disagree without becoming a projection error.
+#[test]
+fn the_identification_reaches_the_entry_and_names_an_ambiguity() {
+    use dim_app_server::model_catalog::ModelIdentification;
+
+    let catalog = BundledCatalog::load().unwrap();
+    let identified = relay(&catalog, "deepseek-v4.1-flash");
+    let identification: &ModelIdentification = identified
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "canonical");
+    assert!(identification.narrowed_by_display_name);
+    assert!(identification.candidates.is_empty());
+    assert!(identification.filled.is_empty());
+
+    let exact = relay(&catalog, "glm-5.2");
+    assert_eq!(
+        exact
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .as_ref()
+            .unwrap()
+            .rule,
+        "token"
+    );
+
+    let ambiguous = relay(&catalog, "ark-code-latest");
+    let identification = ambiguous
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    let mut named: Vec<_> = identification
+        .candidates
+        .iter()
+        .map(|candidate| candidate.provider_id.as_str())
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        ["ark-agent-plan", "ark-code", "byteplus-coding-plan"]
+    );
+
+    let unmatched = relay(&catalog, "zzzz-nothing-names-this");
+    assert!(
+        unmatched
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .is_none(),
+        "nothing named the model, so there is no identification"
+    );
+}

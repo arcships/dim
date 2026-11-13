@@ -40,6 +40,16 @@ impl Rule {
             Rule::Canonical { .. } => 0.95,
         }
     }
+
+    /// The step's own word, as `metadata.identification.rule` carries it.
+    fn word(self) -> &'static str {
+        match self {
+            Rule::ProviderExact => "provider-exact",
+            Rule::Token => "token",
+            Rule::Canonical { .. } => "canonical",
+            Rule::CustomProvider => "custom-provider",
+        }
+    }
 }
 
 /// One row a step considered, named the way a client can read it.
@@ -50,19 +60,9 @@ pub(super) struct Candidate {
     rule: Rule,
 }
 
-/// The one model an id names, and the row that supplied it.
-struct Identification {
-    provider_id: String,
-    entry: ModelEntry,
-    /// The step that named it, plus the strategy word and score derived
-    /// from it.
-    strategy: String,
-    score: f64,
-}
-
 /// What identification found.
 enum Outcome {
-    One(Box<Identification>),
+    One(Box<Lookup>),
     /// Several rows still disagree, so no row may supply numbers.
     Ambiguous(Vec<Candidate>),
     None,
@@ -109,7 +109,39 @@ impl Row<'_> {
 }
 
 /// The bundled row an id names, plus the step's strategy word and score.
-pub(super) type Lookup = (String, ModelEntry, String, f64);
+pub(super) struct Lookup {
+    pub(super) provider_id: String,
+    pub(super) entry: ModelEntry,
+    /// The word `metadata.matchStrategy` carries.
+    pub(super) strategy: String,
+    pub(super) score: f64,
+    /// The step that named the row, as `metadata.identification.rule` carries
+    /// it: `provider-exact`, `token`, `canonical`, `custom-provider`, or
+    /// `legacy` for the older walk.
+    pub(super) rule: &'static str,
+    /// Step 3's display name settled several canonical hits.
+    pub(super) narrowed: bool,
+}
+
+impl Lookup {
+    fn new(
+        provider_id: String,
+        entry: ModelEntry,
+        strategy: String,
+        score: f64,
+        rule: &'static str,
+        narrowed: bool,
+    ) -> Self {
+        Self {
+            provider_id,
+            entry,
+            strategy,
+            score,
+            rule,
+            narrowed,
+        }
+    }
+}
 
 /// The identification index, built once at load: every row the steps read,
 /// its precomputed token tuple, canonical tokens and display tokens, and a
@@ -234,12 +266,7 @@ impl BundledCatalog {
         id: &str,
     ) -> Result<Option<Lookup>, Vec<Candidate>> {
         match self.identify_steps(provider, id) {
-            Outcome::One(found) => Ok(Some((
-                found.provider_id,
-                found.entry,
-                found.strategy,
-                found.score,
-            ))),
+            Outcome::One(found) => Ok(Some(*found)),
             Outcome::Ambiguous(candidates) => Err(candidates),
             Outcome::None => Ok(None),
         }
@@ -248,7 +275,7 @@ impl BundledCatalog {
     fn identify_steps(&self, provider: &ProviderProjection, id: &str) -> Outcome {
         if let Some((provider_id, entry)) = self.own_row(provider, id) {
             let strategy = Rule::ProviderExact.strategy(&provider_id, &entry.model_id, id);
-            return self.one(provider_id, entry, strategy, Rule::ProviderExact.score());
+            return self.one(provider_id, entry, strategy, Rule::ProviderExact);
         }
         let Some(query) = Query::parse(id) else {
             return Outcome::None;
@@ -293,14 +320,18 @@ impl BundledCatalog {
         Some((provider.provider_id.clone(), entry))
     }
 
-    /// One row answered, with the strategy word and score that describe how.
-    fn one(&self, provider_id: String, entry: ModelEntry, strategy: String, score: f64) -> Outcome {
-        Outcome::One(Box::new(Identification {
+    /// One row answered, with the strategy word, score and step that describe
+    /// how.
+    fn one(&self, provider_id: String, entry: ModelEntry, strategy: String, rule: Rule) -> Outcome {
+        let narrowed = matches!(rule, Rule::Canonical { narrowed: true });
+        Outcome::One(Box::new(Lookup::new(
             provider_id,
             entry,
             strategy,
-            score,
-        }))
+            rule.score(),
+            rule.word(),
+            narrowed,
+        )))
     }
 
     fn rows_in(&self, positions: &[usize]) -> Vec<Row<'_>> {
@@ -467,7 +498,7 @@ impl BundledCatalog {
             chosen.provider_id.to_owned(),
             chosen.entry.clone(),
             strategy,
-            rule.score(),
+            rule,
         )
     }
 
@@ -669,11 +700,7 @@ impl BundledCatalog {
     /// The older walk: the projection's own list by exact id, then a fixed
     /// list of family and aggregator sources, then any provider by exact id
     /// and by a normalized id.
-    fn lookup_legacy(
-        &self,
-        provider: &ProviderProjection,
-        id: &str,
-    ) -> Option<(String, ModelEntry, String, f64)> {
+    fn lookup_legacy(&self, provider: &ProviderProjection, id: &str) -> Option<Lookup> {
         let mut ids = vec!["custom-provider"];
         let normalized = variants(id);
         for (prefix, sources) in [
@@ -703,7 +730,14 @@ impl BundledCatalog {
             if let Some(models) = self.bundled_models(pid)
                 && let Some((m, kind, score)) = match_models(models, id)
             {
-                return Some((pid.into(), m.clone(), format!("{pid}-{kind}"), score));
+                return Some(Lookup::new(
+                    pid.into(),
+                    m.clone(),
+                    format!("{pid}-{kind}"),
+                    score,
+                    "legacy",
+                    false,
+                ));
             }
         }
         for exact in [true, false] {
@@ -725,21 +759,25 @@ impl BundledCatalog {
                 && candidates.iter().all(|(_, _, other)| other == signature)
             {
                 let kind = if exact { "exact" } else { "normalized" };
-                return Some((
+                return Some(Lookup::new(
                     p.provider_id.clone(),
                     (*m).clone(),
                     format!("{}-{kind}", p.provider_id),
                     if exact { 1. } else { 0.98 },
+                    "legacy",
+                    false,
                 ));
             }
         }
         if provider.source == Some(ModelSource::Custom) {
             provider.models.iter().find(|m| m.model_id == id).map(|m| {
-                (
+                Lookup::new(
                     provider.provider_id.clone(),
                     m.clone(),
                     "custom-config-exact".into(),
                     1.,
+                    "legacy",
+                    false,
                 )
             })
         } else {
