@@ -158,7 +158,8 @@ guessed complete selection.
 `/effort VALUE`, alias `/reasoning VALUE`, sends `reasoningEffort` without a target.
 The `/models` picker cycles a model's advertised efforts with ←/→. Enter saves a
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
-saved preferences. Enter also writes the default the next Session in the launch
+saved preferences — the server reads the value just saved, which is why the save
+completes before the adoption is sent. Enter also writes the default the next Session in the launch
 workspace reads — the workspace's own row when the folder has one, else `global`
 ([provider management §4](appserver/provider-management.md#4-client-integration)).
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
@@ -334,13 +335,18 @@ configuration with defaults. This adds no service key, runtime state, persisted
 field or second adopted-configuration type.
 
 [Provider management](appserver/provider-management.md#33-probe-preference-adoption-and-usage)
-stores per-model `ModelPreferences`. Clients read them and explicitly pass chosen
-preferences through the existing Session adoption methods. The server never
-applies them automatically. Clients include the exact `{providerId, modelId}`
-with saved preferences for that pair; an unavailable target fails without retrying
-with an implicit selection. `/fast` changes only the current Session. A saved
-`serviceTier` takes effect only when a client passes it; no persisted `fast`
-boolean or additional F3 adoption path is introduced.
+stores per-model `ModelPreferences`. The server applies them on a client
+adoption: for each field the request leaves unstated, `session.create`,
+`session.model.preview` and a targeted `session.model.update` take the value saved
+for that `{providerId, modelId}`, then the model's declared default. A stated field
+wins. A saved value the model no longer accepts is dropped for that field and the
+declared default stands, with one warning; a stated value it rejects still fails
+the adoption. Clients include the exact `{providerId, modelId}`; an unavailable
+target fails without retrying with an implicit selection. `/fast` changes only the
+current Session. A saved `serviceTier` takes effect on the same terms as a saved
+effort; no persisted `fast` boolean or additional F3 adoption path is introduced.
+`sessions.launch` and every other consumer model keep catalog defaults and do not
+inherit these preferences.
 
 ## Clearing one preference
 
