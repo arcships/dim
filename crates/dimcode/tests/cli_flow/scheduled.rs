@@ -186,10 +186,6 @@ fn read_failed(wire: &mut Wire, request: &Value) {
         "message":"the scheduler is unavailable"}}));
 }
 
-/// An action the daemon accepted is reported as done even when the read that
-/// follows fails: the owner's answer is printed, the read error goes to
-/// stderr, and the command exits 0. A run and an add are the two verbs whose
-/// answer is the owner's record, so one test drives both.
 #[test]
 fn scheduled_keeps_the_owners_answer_when_the_read_back_fails() {
     let home = Home::new();

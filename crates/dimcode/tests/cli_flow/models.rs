@@ -455,6 +455,11 @@ fn models_uses_each_saved_interface_language() {
             let request = wire.read("provider.management");
             wire.reply(&request, provider(models(true), 3));
             let request = wire.read("provider.models.set_enabled");
+            assert_eq!(
+                request["params"],
+                json!({"providerId":"fixture","expectedVersion":3,"modelIds":["custom","tuned"]}),
+                "every locale sends the same frame"
+            );
             wire.reply(&request, json!({}));
             let request = wire.read("provider.management");
             wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
@@ -1335,11 +1340,7 @@ fn tui_models_area_rereads_after_a_conflict() {
     );
 }
 
-/// A conflict whose re-read fails is still a conflict, on both surfaces: the
-/// command prints the owner's sentence, then the read error, and says where
-/// the text is; the panel shows the same sentence and error once, drops the
-/// view and the stale link, and Ctrl+R reads the area again so the next edit
-/// opens the current document.
+/// Both surfaces report the conflict, then the failed re-read.
 #[test]
 fn tui_models_area_reports_a_conflict_whose_reread_fails() {
     let home = Home::new();
@@ -1468,8 +1469,6 @@ fn tui_models_area_reports_a_conflict_whose_reread_fails() {
         "no kept file holds the user's text: {kept:?}"
     );
 
-    // The one-line surface states the same rule: the command prints the
-    // owner's sentence, then the read error, and says where the text is.
     let home = Home::new();
     let path = home.0.join("flash.json");
     let kept = path.display().to_string();

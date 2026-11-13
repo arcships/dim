@@ -2122,8 +2122,6 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
     }
     peer.close();
     daemon.join().unwrap();
-    // The `mode` key alone: the policy it names reaches `session.create`
-    // before creation and the modes the reply reports, and writes no model.
     for mode in ["read-only", "workspace-write", "full-access"] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {

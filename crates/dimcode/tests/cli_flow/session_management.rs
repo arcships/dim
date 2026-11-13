@@ -712,8 +712,6 @@ fn session_delete_reads_a_reply_without_the_field_as_a_delete() {
     );
 }
 
-/// Both Session verbs that remove records refuse a daemon without their
-/// method by name, before it reads or writes anything.
 #[test]
 fn session_delete_and_cleanup_report_a_daemon_without_the_method() {
     let home = Home::new();

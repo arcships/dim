@@ -166,18 +166,33 @@ fn the_upgrade_line_follows_the_saved_locale() {
 #[test]
 fn a_starting_daemon_that_reports_nothing_fails_at_the_bound() {
     let home = Home::new();
+    let note = note_path(&home);
     let server = script(&home, "silent-server", "exec sleep 5");
+    let started = Instant::now();
     let output = home
         .command()
         .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "1500")
         .args(["--server", server.to_str().unwrap(), "models", "fixture"])
         .output()
         .unwrap();
+    let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("did not start in time"), "{stderr}");
     assert!(stderr.contains("daemon.log"), "{stderr}");
     assert!(!stderr.contains(UPGRADING), "{stderr}");
+    assert!(
+        !note.exists(),
+        "a child that reports nothing left a progress note"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(1500),
+        "the wait ended before the bound it was given: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "the wait outlived its bound: {elapsed:?}"
+    );
 }
 
 /// A progress note for another pid does not extend the wait.
@@ -185,23 +200,48 @@ fn a_starting_daemon_that_reports_nothing_fails_at_the_bound() {
 fn progress_for_another_pid_does_not_extend_the_wait() {
     let home = Home::new();
     let note = note_path(&home);
+    let copies = home.0.join("copied-notes");
     let mut body = String::new();
     for counter in 1..=35 {
         body.push_str(&note_write(&note, "999999", counter));
+        body.push_str(&format!(
+            "\ncat '{note}' >> '{copies}'\n",
+            note = note.display(),
+            copies = copies.display()
+        ));
         body.push_str("\nsleep 0.1\n");
     }
     body.push_str("exec sleep 5");
     let server = script(&home, "foreign-server", &body);
+    let started = Instant::now();
     let output = home
         .command()
         .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "1500")
         .args(["--server", server.to_str().unwrap(), "models", "fixture"])
         .output()
         .unwrap();
+    let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("did not start in time"), "{stderr}");
     assert!(!stderr.contains(UPGRADING), "{stderr}");
+    let written = fs::read_to_string(&copies).unwrap_or_default();
+    let named: Vec<&str> = written
+        .lines()
+        .filter(|line| line.starts_with("dimcode-startup-progress v1 pid="))
+        .collect();
+    assert!(
+        named.len() > 1,
+        "the child reported no progress at all: {written}"
+    );
+    assert!(
+        named.iter().all(|line| line.contains("pid=999999")),
+        "a note named a pid other than the one under test: {written}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "a note for another pid extended the wait: {elapsed:?}"
+    );
 }
 
 /// A note written as the daemon does: a private temp file renamed over the
@@ -445,9 +485,18 @@ fn the_upgrade_line_stays_off_json_stdout() {
         !lines.is_empty(),
         "exec --json wrote a JSON stream: {stdout}"
     );
-    for line in lines {
-        serde_json::from_str::<Value>(line).expect("stdout is JSON lines");
+    for line in &lines {
+        let parsed: Value = serde_json::from_str(line).expect("stdout is JSON lines");
+        assert_eq!(parsed["jsonrpc"], json!("2.0"), "{line}");
+        assert!(parsed["method"].is_string(), "{line}");
     }
+    let turn_end = lines.iter().any(|line| {
+        let record: Value = serde_json::from_str(line).expect("stdout is JSON lines");
+        record["method"] == json!("session.event")
+            && record["params"]["event"]["type"] == json!("turn")
+            && record["params"]["event"]["name"] == json!("end")
+    });
+    assert!(turn_end, "the stream carries the turn's end: {stdout}");
     assert!(!stdout.contains("Upgrading the local store"), "{stdout}");
     assert_eq!(stderr.matches(UPGRADING).count(), 1, "{stderr}");
 }
@@ -468,6 +517,7 @@ fn a_child_finding_the_store_owned_reports_the_owner() {
     // Another daemon owns the store and writes no progress note: a fresh
     // store, or one already at this format, upgrades nothing.
     lease.lock().unwrap();
+    let owner = std::process::id();
     let output = home
         .command()
         .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "15000")
@@ -480,6 +530,14 @@ fn a_child_finding_the_store_owned_reports_the_owner() {
     assert!(
         stderr.contains("Another dimcode-server is using the store"),
         "the client names the owner: {stderr}"
+    );
+    assert!(
+        !stderr.contains("is upgrading it from format"),
+        "the note claimed an upgrade this store did not run: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("pid {owner}")),
+        "the note described this test's lease as an upgrading daemon: {stderr}"
     );
     assert!(stderr.contains("Details:"), "{stderr}");
     assert!(

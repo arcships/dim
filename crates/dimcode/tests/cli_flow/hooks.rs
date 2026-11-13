@@ -539,8 +539,10 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
     fs::create_dir(&project).unwrap();
     let exported = home.0.join("export.jsonl");
     let done = home.0.join("export.done");
+    let received = home.0.join("received-home");
     let command = format!(
-        "{} export \"$DIM_SESSION_ID\" --output {} && touch {}",
+        "printf '%s' \"$DIMCODE_HOME\" > {} && {} export \"$DIM_SESSION_ID\" --output {} && touch {}",
+        received.display(),
         env!("CARGO_BIN_EXE_dimcode"),
         exported.display(),
         done.display()
@@ -592,6 +594,11 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(done.exists(), "the Stop hook did not finish its export");
+        assert_eq!(
+            fs::read_to_string(&received).unwrap_or_default(),
+            home.0.to_str().unwrap(),
+            "the hook was given the daemon's own product home"
+        );
         let text = fs::read_to_string(&exported).unwrap_or_default();
         assert!(
             text.contains(session.id()),
@@ -1292,9 +1299,7 @@ fn tui_hooks_panel_offers_no_edit_without_a_user_document() {
     }
 }
 
-/// A daemon that reports no user document refuses both write verbs by name
-/// before either reads its input: `edit` never opens the editor and `set -`
-/// leaves no draft behind.
+/// Both verbs refuse before reading their input: no editor, no draft.
 #[test]
 fn hooks_edit_and_set_refuse_a_daemon_without_a_user_document() {
     let home = Home::new();
@@ -1459,10 +1464,7 @@ const ANSWERS_STORED: &str = "case \"$(cat \"$1\")\" in\n\
     *) printf '%s' '{\"hooks\":{\"Stop\":[\"old\"]}}' > \"$1\";;\n\
     esac";
 
-/// Enter's toggle and Ctrl+E's save each settle when only the read after them
-/// fails: each reports what it did and the read error once, keeps no view or
-/// draft, and Ctrl+R reads the area again so the next edit opens the document
-/// that read returned, in both terminal modes.
+/// The failed read leaves no view and no draft.
 #[test]
 fn tui_hooks_panel_settles_a_write_whose_read_fails() {
     for fullscreen in [false, true] {
@@ -1489,13 +1491,11 @@ fn tui_hooks_panel_settles_a_write_whose_read_fails() {
             wait_shown.recv_timeout(PATIENCE).unwrap();
             let request = wire.read("hooks.catalog");
             wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
-            // The write reads the project revision immediately before it.
             let request = wire.read("hooks.catalog");
             wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
             let request = wire.read("hooks.set_enabled");
             assert_eq!(request["params"]["enabled"], true);
             wire.reply(&request, json!({"revision": "projects:2"}));
-            // The toggle is committed; the report after it is what fails.
             let request = wire.read("hooks.catalog");
             wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
                 "code":-32000,
