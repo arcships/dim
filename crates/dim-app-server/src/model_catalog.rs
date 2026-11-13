@@ -167,6 +167,8 @@ pub(crate) struct CatalogMetadata {
     #[serde(default)]
     reasoning_off_overrides: bool,
     role: Option<ProviderRole>,
+    #[serde(default)]
+    plan: bool,
     pub(crate) raw: Option<CatalogRawMetadata>,
 }
 
@@ -309,6 +311,12 @@ impl BundledCatalog {
     /// them. `None` when the provider is not bundled or lists no models.
     pub fn role(&self, provider_id: &str) -> Option<ProviderRole> {
         self.provider(provider_id)?.metadata.as_ref()?.role
+    }
+
+    /// Whether the bundled declarations for `provider_id` belong to a
+    /// subscription or coding plan rather than the vendor's API entry.
+    pub fn is_plan(&self, provider_id: &str) -> Option<bool> {
+        Some(self.provider(provider_id)?.metadata.as_ref()?.plan)
     }
 
     pub fn project(

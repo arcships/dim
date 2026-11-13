@@ -390,3 +390,20 @@ fn every_bundled_provider_states_whether_it_serves_or_resells() {
     assert!(resellers.contains(&"openrouter"));
     assert_eq!(catalog.role("not-a-provider"), None);
 }
+
+#[test]
+fn a_plan_provider_is_marked_and_its_api_entry_is_not() {
+    let catalog = BundledCatalog::load().unwrap();
+    assert_eq!(catalog.is_plan("openai-codex"), Some(true));
+    assert_eq!(catalog.is_plan("openai"), Some(false));
+    assert_eq!(catalog.is_plan("not-a-provider"), None);
+    let plans: Vec<_> = catalog
+        .providers()
+        .filter(|provider| catalog.is_plan(&provider.provider_id) == Some(true))
+        .map(|provider| provider.provider_id.as_str())
+        .collect();
+    assert_eq!(plans.len(), 27, "{plans:?}");
+    for api in ["openai", "moonshot", "zai", "deepseek", "minimax"] {
+        assert_eq!(catalog.is_plan(api), Some(false), "{api}");
+    }
+}
