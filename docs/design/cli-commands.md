@@ -1690,7 +1690,7 @@ matching note the embedded server reports the existing
 the flag must name a standalone `dim-app-server` binary. The failed launch
 removes the note after reading; a successful connection removes any note. The
 CLI never prints `daemon.log`, never deletes, recreates, downgrades or rewrites
-the store, and exits 1.
+the store. A failed startup exits 1 unless it enters the recovery below.
 
 While a store format upgrade runs, the daemon writes the same note as a progress
 kind, `dimcode-startup-progress v1 pid=<pid>` with
@@ -1722,6 +1722,40 @@ Error: Cannot open native store /Users/me/.dimcode-alpha/rust/dimcode.sqlite.
   This daemon cannot read the store. Existing data was preserved.
   Run a build supporting v30, or use --home PATH for a separate environment.
   Details: /Users/me/.dimcode-alpha/rust/daemon.log
+```
+
+#### Update recovery for a newer store
+
+An interactive TUI launch can recover when its own embedded daemon identifies
+a newer store in the [startup note](appserver/native-storage-format.md#启动不兼容诊断).
+The CLI displays the store diagnostic and checks the installation's channel
+once. It honors automatic-update settings and skipped versions. This runs
+before the TUI takes over and uses stderr. Source builds, external servers,
+noninteractive commands, and other startup failures use the normal error path.
+
+On macOS and Linux, a released npm global installation can stage the newer
+version resolved from its current channel. The existing
+[update command](#update-dialog) owns the installation lock, legacy-consumer
+confirmation, progress, and cancellation. Before switching, the updater checks
+the staged host platform's release manifest for the exact version and the
+store's format. A missing declaration or unsupported format stops recovery
+before replacing the live installation.
+
+After a verified switch, the CLI runs the installed launcher with the same
+arguments and working directory. The new invocation opens the same home and
+must complete normal daemon startup and handshake to enter the TUI. An
+environment marker prevents a second recovery in that invocation. Failed
+lookup, installation, or restart reports the cause. The storage gate still
+decides whether the daemon can open the store.
+
+```text
+$ dima
+Cannot open native store <home>/rust/dimcode.sqlite.
+  Store format: v46
+  Daemon format: v38
+  ...
+Checking dimcode-alpha on the alpha channel...
+Error: Startup update failed: 0.1.0-alpha.23 does not declare support for native store v46.
 ```
 
 The line-client export parser reads the format token and treats the remainder
