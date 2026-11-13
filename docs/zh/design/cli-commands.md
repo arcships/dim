@@ -1274,8 +1274,34 @@ alpha 使用 `alpha`，beta 使用 `beta`，稳定版使用 `latest`。按可执
 留出空间，整行不换行。结束时清除进度行再显示成功或错误。重定向 stderr 时只输出
 开始和最终结果，不含动画或终端控制符；只重定向 stdout 时，进度和结果仍留在终端。
 耗时不是完成百分比。Ctrl+C、SIGTERM 或进度写入失败会终止并等待安装进程树，
-然后以非零状态返回；这不回滚包管理器已经做出的修改。安装失败显示安装器错误，
-未知安装布局（包括源码构建）显示手动安装或重建说明。
+然后以非零状态返回。安装失败显示安装器错误，未知安装布局（包括源码构建）显示手动
+安装或重建说明。
+
+npm 安装到安装目录内的暂存目录 `<prefix>/.dimcode-staging/staging-<pid>/`，因此中断
+或失败的安装只破坏暂存目录，已装的命令仍可运行。更新在开始前会清除上一次留下的暂存
+目录，此时它持有排他锁。暂存安装显式传入 `--globalconfig <prefix>/etc/npmrc`：只给
+`--prefix` 会让 npm 读暂存目录自己的 `etc/npmrc`，丢掉操作者用 `npm config set -g`
+保存的 registry、镜像与凭据。需要安装走镜像时，请配置 `.npmrc` 或 `npm config`。
+
+包管理器成功退出后，更新要求暂存 `package.json` 的版本比已装版本更新且属于同一渠道，
+要求该包安装的每个命令都存在于暂存包内，并要求暂存包旁存在平台包。任一项不满足就保持
+已装版本并以非零状态退出，因此退出却不写入、或写入已装版本的包管理器算失败，而不是
+静默成功。
+
+随后暂存包以一次原子交换替换当前包：macOS 用 `renamex_np(..., RENAME_SWAP)`，Linux 用
+`renameat2(..., RENAME_EXCHANGE)`。新版本自证可用之前，旧版本只存在于暂存目录。更新把
+新包安装的每个命令指向新包，目标本来就正确的命令保持不变，删除旧版本安装而新版本不再
+安装的链接，然后对每个已安装命令执行 `--version`，要求输出包声明的版本。该项校验失败，或命令在
+30 秒内没有应答时，同一次交换把旧版本放回，更新以非零状态退出，并在消息中指出该命令。
+交换期间崩溃只会留下一个完整的版本和暂存目录里的另一个，不会两个都不在。只有当文件系统
+拒绝交换（`ENOTSUP`、`EINVAL`、`ENOSYS`）时，更新才退回两次 rename，两者之间有几个
+系统调用的窗口；在该窗口内崩溃会把旧版本留在
+`<prefix>/.dimcode-staging/staging-<pid>/retired`，恢复命令为
+`mv <prefix>/.dimcode-staging/staging-<pid>/retired <prefix>/lib/node_modules/<package>`。
+
+bun、pnpm、yarn 与 volta 仍原地安装，因此仍存在命令缺失的窗口。Windows 同样保持原样：
+npm 装在 `<prefix>\node_modules` 下并把命令 shim 直接放在 `<prefix>`，而运行中的更新
+程序本身就在被替换的目录里。
 
 启动器把 `DIMCODE_NPM_PACKAGE` 设为 `dimcode` 或 `dimcode-alpha`；其他值在启动安装器前
 被拒绝。未设置时由构建选择默认包；它只选择包，不决定发布渠道。`DIMCODE_NPM_REGISTRY`
