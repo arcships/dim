@@ -69,6 +69,16 @@ pub enum ProviderError {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("Managed provider catalog is stale; refresh or sign in before retrying")]
+    CatalogStale {
+        provider_id: String,
+        expected_version: u32,
+        current_version: u32,
+        issuer: Option<String>,
+        subject: Option<String>,
+    },
+    #[error("Managed account changed during the operation; reread account status")]
+    AccountChanged,
     #[error("{0}")]
     InvalidConfig(String),
     #[error("{0}")]
@@ -131,7 +141,7 @@ impl From<managed_oauth::OAuthError> for ProviderError {
         match error {
             OAuthError::Missing | OAuthError::RecoveryRequired => Self::AuthRequired,
             OAuthError::Rejected => Self::AuthFailed,
-            OAuthError::AccountChanged => Self::Conflict("Managed account changed".into()),
+            OAuthError::AccountChanged => Self::AccountChanged,
             OAuthError::Transient(Some(401 | 403)) => Self::AuthFailed,
             OAuthError::Transient(_) => Self::TransportFailed,
             OAuthError::Closed => Self::Cancelled,
@@ -143,7 +153,7 @@ impl From<crate::managed_provider::ManagedProviderError> for ProviderError {
     fn from(error: crate::managed_provider::ManagedProviderError) -> Self {
         match error.code {
             "account_required" | "account_recovery_required" => Self::AuthRequired,
-            "account_changed" => Self::Conflict("Managed account changed".into()),
+            "account_changed" => Self::AccountChanged,
             "account_identity_rejected" => Self::AuthFailed,
             _ => Self::Failed,
         }
@@ -447,6 +457,35 @@ pub struct ProviderRecordError {
 }
 
 impl ProviderRecord {
+    fn check_write(
+        &self,
+        provider_id: &str,
+        expected_version: u32,
+        account: &AccountSnapshot,
+    ) -> Result<(), ProviderError> {
+        if self.version != expected_version {
+            return Err(ProviderError::Conflict(
+                "Provider version changed; reread before retrying".into(),
+            ));
+        }
+        if account.account.is_none() || !same_account(&self.account, account) {
+            return Err(ProviderError::CatalogStale {
+                provider_id: provider_id.into(),
+                expected_version,
+                current_version: self.version,
+                issuer: account
+                    .account
+                    .as_ref()
+                    .map(|account| account.issuer.clone()),
+                subject: account
+                    .account
+                    .as_ref()
+                    .map(|account| account.subject.clone()),
+            });
+        }
+        Ok(())
+    }
+
     /// Every model as this record serves it: the base entry with its
     /// override's limits inherited and the bundled limits filled in, and the
     /// reason those effective limits leave it unusable. The catalog, the
@@ -1930,7 +1969,7 @@ impl ProviderService {
         let catalog = self.oauth.catalog(&provider_id, cancel).await?;
         let current = self.oauth.status(&provider_id, cancel).await?;
         if !same_account(&current, &catalog.account) {
-            return Err(ProviderError::Conflict("Managed account changed".into()));
+            return Err(ProviderError::AccountChanged);
         }
         let db = self.db.clone();
         let bundled = self.bundled.clone();
@@ -1985,7 +2024,7 @@ impl ProviderService {
             .await?;
         let settled = self.oauth.status(&id, cancel).await?;
         if !same_account(&current, &settled) {
-            return Err(ProviderError::Conflict("Managed account changed".into()));
+            return Err(ProviderError::AccountChanged);
         }
         Ok(result)
     }

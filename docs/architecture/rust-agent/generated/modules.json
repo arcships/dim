@@ -3088,6 +3088,7 @@
       "file": "crates/dim-app-server/src/provider/management.rs",
       "unexpandedMacros": [
         "matches",
+        "serde_json::json",
         "unreachable"
       ]
     },
@@ -29708,14 +29709,15 @@
       "from": "dim_app_server::provider::management",
       "to": "dim_agent_capabilities::methods",
       "references": [
+        "path ErrorData",
         "path Interruption::Drain",
         "path MethodCall",
         "path MethodDecl::new",
         "path RpcError",
-        "path RpcError::app",
         "path RpcError::invalid",
         "path params",
         "path reply",
+        "use dim_agent_capabilities::methods::ErrorData",
         "use dim_agent_capabilities::methods::Interruption",
         "use dim_agent_capabilities::methods::MethodCall",
         "use dim_agent_capabilities::methods::MethodDecl",
@@ -29837,7 +29839,6 @@
         "path capability_snapshot",
         "path read_catalog",
         "path read_static",
-        "path same_account",
         "path save_catalog",
         "path static_catalog",
         "path static_entries",
@@ -52206,6 +52207,10 @@
     },
     {
       "module": "dim_app_server::provider::management",
+      "path": "ProviderError::AccountChanged"
+    },
+    {
+      "module": "dim_app_server::provider::management",
       "path": "ProviderError::AuthFailed"
     },
     {
@@ -52215,6 +52220,10 @@
     {
       "module": "dim_app_server::provider::management",
       "path": "ProviderError::Cancelled"
+    },
+    {
+      "module": "dim_app_server::provider::management",
+      "path": "ProviderError::CatalogStale"
     },
     {
       "module": "dim_app_server::provider::management",
