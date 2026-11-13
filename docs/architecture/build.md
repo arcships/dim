@@ -52,16 +52,46 @@ node scripts/update-provider-catalog.ts --sync                # Sync all configu
 
 The bundled catalog owns provider settings such as authentication, adapter, and
 `remoteModelList`. Upstream supplies model descriptors and the API base URL. Sync derives
-the default model from the refreshed model list. The script's `remoteProviders` table can
-keep a provider's base URL, default model, and curated models local. When onboarding an
-upstream-backed provider, add its definition to the catalog and its policy to that table.
-The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus subscribers.
-The same model ID supports a larger window on higher tiers. [Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+the default model from the refreshed model list.
 
-Sync applies the existing reasoning overrides and replaces the complete catalog after
-validation. A sync must supply at least one usable upstream model for a provider whose
-bundled catalog includes models outside its local policy. A sync that produces the same
-content preserves the file and its timestamp.
+Two tables beside the catalog drive it. `provider-sync.json` states a policy for every
+provider: `remote` for one refreshed from PublicProviderConf's published `dist/`, `local`
+for one maintained here, with a one-line reason a reviewer reads, and a `local` provider
+is never touched by a sync. A `remote` policy may keep the provider's base URL, default
+model, or curated model list, name the upstream file when it differs from the provider id,
+or declare its bundled rows authoritative. `model-overrides.json` holds field patches per
+provider and model, re-applied after every sync. A patch merges key by key into the
+upstream row, so a `limit` patch keeps the output cap upstream states, and a patch that no
+longer matches a model fails the run instead of disappearing.
+
+The offline validation checks the tables against the catalog: every provider has a policy,
+no policy names a provider the catalog lacks, a `local` policy states a reason, every model
+override names a provider whose policy is `remote`, every provider with models states
+whether it is a `vendor` or an `aggregator`, and each provider's `metadata.source` follows
+its policy. The bundled `k3.1-pro` context limit uses the 262,144 tokens available to Plus
+subscribers, and its override states it. The same model ID supports a larger window on
+higher tiers.
+[Kimi Code model limits](https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html)
+
+Sync replaces the complete catalog after validation and prints a summary. The changes a
+reviewer must judge come first: per provider, the models added and removed, and every
+changed context window, output cap, status, capability or effort option with its old and
+new value. A model whose override differs from upstream ends that line with
+`(override: limit.context)`, naming the leaves the table decides rather than upstream.
+Next comes the override report, each patched leaf with the value upstream states beside
+it, so a divergence is visible without reading the diff, plus a line for an override that
+repeats upstream's own
+value and can be retired. The local providers and the reason each one is not synced come
+last. An up-to-date run prints the override report too, since a redundant override never
+changes the catalog. Read that summary instead of the diff. A sync must supply at least one
+usable upstream model for a provider whose bundled catalog includes models outside its
+local policy. A sync that produces the same content preserves the file and its timestamp.
 A fetch or validation failure leaves the catalog as it was. Review and commit the complete
 catalog after a sync. Model entries occupy individual lines for review. Upstream responses
 and intermediate model lists stay in memory.
+
+Before a release, run `node scripts/update-provider-catalog.ts --sync` with the Node version
+in `.node-version` and read its summary. Commit the regenerated catalog with the summary in
+the commit message, so a reviewer reads the summary rather than the diff. A patch that no
+longer matches a model fails the run instead of being dropped; fix the override or the
+policy and run again.
