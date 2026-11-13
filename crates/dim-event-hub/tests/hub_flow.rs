@@ -567,33 +567,30 @@ async fn a_delete_announces_after_its_gate_is_released() {
     let session = create_session(&mut client, home.path()).await;
     subscribe(&mut client, &session, vec!["im.*"], None).await;
 
-    // The gate: a write on the store, so the delete blocks in
-    // `delete_session` while it holds the Session's admission gate.
+    let mut deleter = connect(&server).await;
+    let mut subscriber = connect(&server).await;
+    let loaded = server.agent().unwrap().get_session(&session).unwrap();
     let connection = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE").unwrap();
 
-    // Of the two calls, the delete is the one held: this transaction keeps it
-    // inside `delete_session`, its admission gate in hand, so the subscribe
-    // that arrives next takes the EventHub Session lock and waits at the
-    // gate. On a machine slow enough for the delete to reach its store write
-    // only after the commit, no cycle forms and the assertions below pass
-    // without proving the fix; a correct build is never failed by that.
-    let mut deleter = connect(&server).await;
     let target = session.clone();
     let deleting = tokio::spawn(async move {
         deleter
             .rpc("session.delete", json!({"sessionId": target}))
             .await
     });
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !loaded.is_closing() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("delete starts closing the Session while holding its admission gate");
     assert!(
         !deleting.is_finished(),
         "the delete is held by the store write, its gate in hand"
     );
 
-    // The subscribe waits for the gate inside `sessions.input`, its EventHub
-    // Session lock taken.
-    let mut subscriber = connect(&server).await;
     let target = session.clone();
     let subscribing = tokio::spawn(async move {
         subscriber
