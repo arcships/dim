@@ -2732,6 +2732,23 @@ fn every_inert_script_leaves_the_scan_at_the_top_level() {
             );
         }
     }
+    for (row, edition) in REJECTS_THE_LINE {
+        let listed = BY_EDITION.iter().any(|(script, verdicts)| {
+            script == row
+                && EDITIONS
+                    .iter()
+                    .zip(verdicts)
+                    .any(|(candidate, refused)| candidate == edition && !*refused)
+        });
+        assert!(
+            listed,
+            "{edition:?} does not accept {row:?}: remove the entry from REJECTS_THE_LINE"
+        );
+        assert!(
+            !refuses(&format!("{row}\nsleep 5 &"), *edition),
+            "{edition:?} already refuses {row:?} with a marker: remove the entry from REJECTS_THE_LINE"
+        );
+    }
 }
 
 /// Accepted pairs whose shell rejects the whole line, so a marker appended after
@@ -2740,14 +2757,6 @@ fn every_inert_script_leaves_the_scan_at_the_top_level() {
 const REJECTS_THE_LINE: &[(&str, ShellEdition)] = &[
     ("echo $'a\\' ' & sleep 5 &", ShellEdition::Dash),
     ("echo ${v:-$'a\\'b'} & sleep 5 &", ShellEdition::Dash),
-    (
-        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
-        ShellEdition::Zsh,
-    ),
-    (
-        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
-        ShellEdition::Ksh,
-    ),
 ];
 
 /// The refusal names the marker that decided: the first one a reading refuses,
