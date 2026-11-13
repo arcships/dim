@@ -323,6 +323,9 @@ struct ShellReading {
     /// An unquoted heredoc delimiter matches a logical line joined from several
     /// physical lines: bash and zsh. dash and ksh compare physical lines only.
     joined_delimiter: bool,
+    /// A continuation between two characters of an operator joins them: bash
+    /// and dash. zsh rejects a split operator and ksh reads two markers.
+    joins_operators: bool,
 }
 
 /// How one shell reads the constructs that differ. Measured on bash 3.2.57,
@@ -333,24 +336,28 @@ const BASH: ShellReading = ShellReading {
     pipe_ampersand: true,
     amp_redirect: true,
     joined_delimiter: true,
+    joins_operators: true,
 };
 const ZSH: ShellReading = ShellReading {
     arithmetic_command: true,
     pipe_ampersand: true,
     amp_redirect: true,
     joined_delimiter: true,
+    joins_operators: false,
 };
 const DASH: ShellReading = ShellReading {
     arithmetic_command: false,
     pipe_ampersand: false,
     amp_redirect: false,
     joined_delimiter: false,
+    joins_operators: true,
 };
 const KSH: ShellReading = ShellReading {
     arithmetic_command: true,
     pipe_ampersand: false,
     amp_redirect: false,
     joined_delimiter: false,
+    joins_operators: false,
 };
 
 /// An `&` outside `' '` and `" "`, when neither neighbour makes it inert.
@@ -403,6 +410,11 @@ struct ShellScan {
     heredocs: Vec<Heredoc>,
     depth: usize,
     reading: ShellReading,
+    /// Whether a continuation is removed while reading ahead. Every shell joins
+    /// in `" "`, `${...}`, arithmetic, backquotes, a heredoc delimiter and an
+    /// unquoted heredoc body, and none joins in a comment, `' '` or a quoted
+    /// heredoc body. In shell text [`ShellReading::joins_operators`] decides.
+    join: bool,
 }
 
 impl ShellScan {
@@ -415,15 +427,37 @@ impl ShellScan {
             heredocs: Vec::new(),
             depth: 0,
             reading,
+            join: false,
+        }
+    }
+
+    /// The physical index of the character `offset` logical characters ahead.
+    ///
+    /// A logical character is a physical one, with a continuation removed first
+    /// where [`Self::join`] is set.
+    fn at(&self, offset: usize) -> Option<usize> {
+        let mut index = self.index;
+        let mut left = offset;
+        loop {
+            let ch = *self.chars.get(index)?;
+            if self.join && ch == '\\' && self.chars.get(index + 1) == Some(&'\n') {
+                index += 2;
+                continue;
+            }
+            if left == 0 {
+                return Some(index);
+            }
+            left -= 1;
+            index += 1;
         }
     }
 
     fn peek(&self, offset: usize) -> Option<char> {
-        self.chars.get(self.index + offset).copied()
+        self.at(offset).map(|index| self.chars[index])
     }
 
     fn skip(&mut self, count: usize) {
-        self.index = (self.index + count).min(self.chars.len());
+        self.index = self.at(count).unwrap_or(self.chars.len());
     }
 
     fn enter(&mut self) -> bool {
@@ -441,6 +475,8 @@ impl ShellScan {
         if !self.enter() {
             return;
         }
+        let joins = self.join || self.reading.joins_operators;
+        let joined = std::mem::replace(&mut self.join, joins);
         let mut done = false;
         let mut word_start = true;
         let mut parens = 0_usize;
@@ -586,27 +622,28 @@ impl ShellScan {
         if !done && close.is_some() {
             self.unclosed = true;
         }
+        self.join = joined;
         self.depth -= 1;
     }
 
     fn comment(&mut self) {
-        while let Some(ch) = self.peek(0) {
-            if ch == '\n' {
+        while let Some(ch) = self.chars.get(self.index) {
+            if *ch == '\n' {
                 return;
             }
-            self.skip(1);
+            self.index += 1;
         }
     }
 
     fn single_quoted(&mut self) {
-        self.skip(1);
+        self.index += 1;
         loop {
-            let Some(ch) = self.peek(0) else {
+            let Some(ch) = self.chars.get(self.index) else {
                 self.unclosed = true;
                 return;
             };
-            self.skip(1);
-            if ch == '\'' {
+            self.index += 1;
+            if *ch == '\'' {
                 return;
             }
         }
@@ -615,6 +652,12 @@ impl ShellScan {
     /// `" "`, where the shell runs substitutions and reads every other `&` as
     /// text.
     fn double_quoted(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.double_quoted_inner();
+        self.join = joined;
+    }
+
+    fn double_quoted_inner(&mut self) {
         loop {
             let Some(ch) = self.peek(0) else {
                 self.unclosed = true;
@@ -644,7 +687,10 @@ impl ShellScan {
     /// a context is rewound to its opener and read as shell text instead.
     fn arithmetic(&mut self, opener: usize) {
         let start = self.index;
-        if let Some(end) = self.arithmetic_end(opener) {
+        let joined = std::mem::replace(&mut self.join, true);
+        let end = self.arithmetic_end(opener);
+        self.join = joined;
+        if let Some(end) = end {
             self.index = end;
             return;
         }
@@ -707,7 +753,18 @@ impl ShellScan {
     }
 
     /// `${...}`, where `&` is part of the word unless a substitution runs.
+    ///
+    /// `${ command; }` and `${|command; }` hold shell text rather than a
+    /// parameter name. bash 5.3 and ksh93 run the command in the current shell;
+    /// an edition without the form rejects it as a bad substitution and starts
+    /// nothing, so reading it as command text loses nothing real.
     fn parameter(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.parameter_inner();
+        self.join = joined;
+    }
+
+    fn parameter_inner(&mut self) {
         if matches!(
             self.peek(2),
             Some(' ') | Some('\t') | Some('\n') | Some('|')
@@ -769,6 +826,12 @@ impl ShellScan {
     }
 
     fn heredoc_opener(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.heredoc_opener_inner();
+        self.join = joined;
+    }
+
+    fn heredoc_opener_inner(&mut self) {
         self.skip(2);
         let strip_tabs = self.peek(0) == Some('-');
         if strip_tabs {
@@ -885,13 +948,10 @@ impl ShellScan {
         Some((line, terminated))
     }
 
-    /// `${ command; }` and `${|command; }` hold shell text rather than a
-    /// parameter name. bash 5.3 and ksh93 run the command in the current shell;
-    /// an edition without the form rejects it as a bad substitution and starts
-    /// nothing, so reading it as command text loses nothing real.
     /// A heredoc body under an unquoted delimiter: only expansions run, and
     /// every other character, `&` and quotes included, is text.
     fn expansions(&mut self) {
+        self.join = true;
         while let Some(ch) = self.peek(0) {
             match ch {
                 '\\' => self.skip(2),
@@ -2327,6 +2387,10 @@ const ALWAYS_REFUSED: &[&str] = &[
     "cat <<EOF\nabc\\\\\nEOF\nsleep 5 &\nEOF",
     "cat <<'EOF'\nabc\\\nEOF\nsleep 5 &\nEOF",
     "cat <<EOF\nabc\\\nEOF\n'\nEOF\nsleep 5 &\necho '",
+    "echo \"$\\\n(sleep 5 &)\"",
+    "echo \"${v:-$\\\n(sleep 5 &)}\"",
+    "# note \\\nsleep 5 &",
+    "/bin/sle\\\nep 5 &",
 ];
 
 /// An `&` whose verdict differs by edition, in [`EDITIONS`] order: `true` is
@@ -2350,6 +2414,28 @@ const BY_EDITION: &[(&str, [bool; 6])] = &[
     // The inner `)` closes the subshell before `))`, so `&` is a marker where
     // the line parses at all; dash and ksh reject it instead of running it.
     ("(( (1 & 2) ))", [false, false, false, true, true, false]),
+    // A continuation between the two halves of `&&`: bash and dash read an
+    // `&&`, zsh rejects it, and ksh reads `&` followed by a marker.
+    (
+        "sleep 5 &\\\n& echo hi",
+        [false, false, true, false, false, true],
+    ),
+    // `$\` + newline + `(cmd)`: a continuation joins inside `" "` and `${...}`
+    // for every edition, because joining can only add a substitution to read.
+    (
+        "echo \"$\\\n(sleep 5 &)\"",
+        [true, true, true, true, true, true],
+    ),
+    (
+        "echo \"${v:-$\\\n(sleep 5 &)}\"",
+        [true, true, true, true, true, true],
+    ),
+    // A continuation between the two halves of `<<`: bash and dash join it and
+    // start the job, while zsh and ksh reject the operator and start nothing.
+    (
+        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
+        [true, true, false, true, true, false],
+    ),
     // `|&` is a ksh coprocess, which runs in the background.
     ("sleep 5 |& cat", [false, false, false, true, true, true]),
     // `&>` and `&>>` are a marker plus a redirect outside bash and zsh.
@@ -2373,7 +2459,7 @@ const INERT: &[&str] = &[
     "cat <<EOF\na & b\nEOF",
     "cat <<-EOF\n\ta & b\n\tEOF",
     "cat <<\\EOF\na & b\nEOF",
-    "cat <<'true'\ntr\\\nue\nsleep 5 &\ntrue",
+    "cat <<'true'\ntr\\\nue\n(sleep 5 &)\ntrue",
     "cat <<\"EOF\"\na & b\nEOF",
     "cat <<A <<B\nx & y\nA\na & b\nB",
     "v=$(cat <<'EOF'\na & b\nEOF\n)",
