@@ -374,15 +374,16 @@ pub enum MemberConversationState {
 }
 
 /// Whether the shown line has history older than the loaded window, and
-/// whether a read for it is in flight.
+/// whether an earlier read for it is requested or in flight.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Earlier {
-    /// The shown line's first event is loaded: nothing earlier to read.
+    /// The shown line's first event is loaded, or no window has loaded yet:
+    /// nothing earlier to read.
     #[default]
     AtStart,
     /// Older history exists and is not loaded.
     Unread,
-    /// An earlier read is in flight.
+    /// An earlier read is requested or in flight. It follows `Unread` only.
     Reading,
 }
 

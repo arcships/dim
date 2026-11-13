@@ -17,6 +17,8 @@ The human walkthrough is [Rust alpha release](../../docs/release/alpha.html); CI
 
 ## Local Mac command
 
+This route runs the same catalog step from `dim-release` first, on the same clean `main` checkout.
+
 ```sh
 node scripts/publish-alpha.mjs                # build and publish next alpha
 node scripts/publish-alpha.mjs 0.1.0-alpha.3  # build and publish an explicit version
