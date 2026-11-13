@@ -1059,37 +1059,22 @@ impl FullScreen {
                                     && self.press.as_ref().is_some_and(|p| {
                                         p.target == target && self.hovered == target
                                     });
-                                if pressed || focused {
+                                if pressed
+                                    || focused
+                                    || target.is_some()
+                                        && (self.hovered == target || self.clicked == target)
+                                {
+                                    let background = palette
+                                        .surface
+                                        .as_deref()
+                                        .or(palette.tool_hover.as_deref());
                                     header_feedback(
                                         &row,
                                         Paint {
-                                            fg: Some(&palette.on_accent),
-                                            bg: Some(&palette.accent),
-                                            bold: true,
-                                            ..Paint::default()
-                                        },
-                                    )
-                                } else if target.is_some() && self.hovered == target {
-                                    header_feedback(
-                                        &row,
-                                        Paint {
-                                            fg: Some(&palette.highlight),
-                                            bg: palette
-                                                .surface
-                                                .as_deref()
-                                                .or(palette.tool_hover.as_deref()),
-                                            ..Paint::default()
-                                        },
-                                    )
-                                } else if target.is_some() && self.clicked == target {
-                                    header_feedback(
-                                        &row,
-                                        Paint {
-                                            fg: Some(&palette.text_soft),
-                                            bg: palette
-                                                .surface
-                                                .as_deref()
-                                                .or(palette.tool_hover.as_deref()),
+                                            fg: Some(&palette.text),
+                                            bg: background,
+                                            bold: pressed || focused,
+                                            underline: background.is_none(),
                                             ..Paint::default()
                                         },
                                     )
@@ -2014,92 +1999,107 @@ mod tests {
 
     #[test]
     fn disclosure_feedback_only_repaints_the_exact_header_and_deduplicates_motion() {
-        let (mut screen, mut emu) = setup();
-        let mut doc = Doc::new();
-        doc.say(&["parent", " child", "body"]);
-        doc.headers.insert((Some(0), 1), "parent".into());
-        doc.headers.insert((Some(0), 2), "child".into());
-        let f = frame(&[], &DOCK);
-        draw(&mut screen, &mut emu, &f, &doc);
-        let before = emu.rows_text();
-        let at = |kind, row| MouseEvent {
-            kind,
-            column: 2,
-            row,
-        };
-        let palette = terminal_palette(ColorMode::TrueColor, Appearance::Dark);
-        assert_eq!(
-            screen.mouse(at(MouseKind::Move, 4), &doc),
-            MouseOutcome::Redraw
-        );
-        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
-        assert!(
-            bytes.contains(&paint(
-                " child",
-                Paint {
-                    fg: Some(&palette.highlight),
-                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
-                    ..Paint::default()
+        for (mode, appearance, id, style) in [
+            (ColorMode::Ansi16, Appearance::Dark, "system", "4"),
+            (ColorMode::Ansi16, Appearance::Light, "system", "4"),
+            (
+                ColorMode::TrueColor,
+                Appearance::Dark,
+                "system",
+                "48;2;28;28;28",
+            ),
+            (
+                ColorMode::TrueColor,
+                Appearance::Light,
+                "system",
+                "48;2;245;245;245",
+            ),
+            (ColorMode::Ansi256, Appearance::Dark, "system", "48;5;234"),
+            (ColorMode::Ansi256, Appearance::Light, "system", "48;5;255"),
+            (
+                ColorMode::TrueColor,
+                Appearance::Dark,
+                "carsar",
+                "38;2;228;228;228;48;2;36;36;36",
+            ),
+        ] {
+            let palette = crate::ui::theme::Theme::named(id, mode, appearance, None).palette;
+            let draw = |screen: &mut FullScreen, emu: &mut Emu, f: &Frame, doc: &Doc| {
+                let bytes = screen.render(f, SIZE, &palette, doc);
+                emu.feed(&bytes);
+                bytes
+            };
+            let (mut screen, mut emu) = setup();
+            let mut doc = Doc::new();
+            doc.say(&["parent", " child", "body"]);
+            doc.headers.insert((Some(0), 1), "parent".into());
+            doc.headers.insert((Some(0), 2), "child".into());
+            let f = frame(&[], &DOCK);
+            draw(&mut screen, &mut emu, &f, &doc);
+            let before = emu.rows_text();
+            let at = |kind, row| MouseEvent {
+                kind,
+                column: 2,
+                row,
+            };
+            assert_eq!(
+                screen.mouse(at(MouseKind::Move, 4), &doc),
+                MouseOutcome::Redraw
+            );
+            let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+            assert!(
+                bytes.contains(&format!("\x1b[{style}m child\x1b[0m")),
+                "{id} {mode:?} {appearance:?}: {bytes:?}"
+            );
+            assert!(
+                !bytes.contains("parent") && !bytes.contains("body"),
+                "{bytes:?}"
+            );
+            assert_eq!(
+                screen.mouse(at(MouseKind::Move, 4), &doc),
+                MouseOutcome::Ignored
+            );
+            assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+            assert_eq!(
+                screen.mouse(at(MouseKind::Press, 4), &doc),
+                MouseOutcome::Redraw
+            );
+            let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+            assert!(
+                bytes.contains(&format!("\x1b[1;{style}m child\x1b[0m")),
+                "{id} {mode:?} {appearance:?}: {bytes:?}"
+            );
+            assert_eq!(
+                screen.mouse(at(MouseKind::Release, 4), &doc),
+                MouseOutcome::Click {
+                    block: Some(0),
+                    row: 2
                 }
-            )),
-            "{bytes:?}"
-        );
-        assert!(
-            !bytes.contains("parent") && !bytes.contains("body"),
-            "{bytes:?}"
-        );
-        assert_eq!(
-            screen.mouse(at(MouseKind::Move, 4), &doc),
-            MouseOutcome::Ignored
-        );
-        assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
-        assert_eq!(
-            screen.mouse(at(MouseKind::Press, 4), &doc),
-            MouseOutcome::Redraw
-        );
-        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
-        assert!(
-            bytes.contains(&paint(
-                " child",
-                Paint {
-                    fg: Some(&palette.on_accent),
-                    bg: Some(&palette.accent),
-                    bold: true,
-                    ..Paint::default()
-                }
-            )),
-            "{bytes:?}"
-        );
-        assert_eq!(
-            screen.mouse(at(MouseKind::Release, 4), &doc),
-            MouseOutcome::Click {
-                block: Some(0),
-                row: 2
-            }
-        );
-        screen.mouse(at(MouseKind::Move, 5), &doc);
-        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
-        assert!(
-            bytes.contains(&paint(
-                " child",
-                Paint {
-                    fg: Some(&palette.text_soft),
-                    bg: palette.surface.as_deref().or(palette.tool_hover.as_deref()),
-                    ..Paint::default()
-                }
-            )),
-            "{bytes:?}"
-        );
-        assert!(
-            !bytes.contains("parent") && !bytes.contains("body"),
-            "{bytes:?}"
-        );
-        assert_eq!(emu.rows_text(), before);
-        doc.headers.remove(&(Some(0), 2));
-        let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
-        assert!(bytes.contains("\x1b[2K child"), "{bytes:?}");
-        screen.mouse(at(MouseKind::Move, 4), &doc);
-        assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+            );
+            screen.mouse(at(MouseKind::Move, 5), &doc);
+            let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+            assert!(
+                bytes.contains(&format!("\x1b[{style}m child\x1b[0m")),
+                "{id} {mode:?} {appearance:?}: {bytes:?}"
+            );
+            assert!(
+                !bytes.contains("parent") && !bytes.contains("body"),
+                "{bytes:?}"
+            );
+            assert_eq!(emu.rows_text(), before);
+            screen.focus_older(&doc);
+            assert_eq!(screen.focused_tool(), Some((Some(0), 2)));
+            let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+            assert!(
+                bytes.contains(&format!("\x1b[1;{style}m child\x1b[0m")),
+                "{id} {mode:?} {appearance:?}: {bytes:?}"
+            );
+            doc.headers.remove(&(Some(0), 2));
+            let bytes = String::from_utf8(draw(&mut screen, &mut emu, &f, &doc)).unwrap();
+            assert!(bytes.contains("\x1b[2K child"), "{bytes:?}");
+            screen.mouse(at(MouseKind::Move, 4), &doc);
+            assert!(draw(&mut screen, &mut emu, &f, &doc).is_empty());
+        }
     }
 
     #[test]
