@@ -660,6 +660,27 @@ async fn the_subscription_service_answers_the_same_through_the_binding_and_the_f
     .unwrap();
     assert_eq!(removed, json!({}));
 
+    let typed = binding
+        .unsubscribe(UnsubscribeCall {
+            session_id: "other".into(),
+            subscription_id: id.clone(),
+        })
+        .await
+        .unwrap_err();
+    let through_face = call_service::<Value>(
+        &fixture.root,
+        "eventSubscriptions",
+        "unsubscribe",
+        (UnsubscribeCall {
+            session_id: "other".into(),
+            subscription_id: id.clone(),
+        },),
+    )
+    .await
+    .expect_err("another Session's subscription is unknown");
+    assert_eq!(through_face.code(), Some("subscription_unknown"));
+    assert!(through_face.to_string().contains(&typed.message));
+
     let list = ListCall {
         session_id: "session".into(),
     };
@@ -694,25 +715,4 @@ async fn the_subscription_service_answers_the_same_through_the_binding_and_the_f
             .map(Vec::len),
         Some(0)
     );
-
-    let typed = binding
-        .unsubscribe(UnsubscribeCall {
-            session_id: "other".into(),
-            subscription_id: id.clone(),
-        })
-        .await
-        .unwrap_err();
-    let through_face = call_service::<Value>(
-        &fixture.root,
-        "eventSubscriptions",
-        "unsubscribe",
-        (UnsubscribeCall {
-            session_id: "other".into(),
-            subscription_id: id,
-        },),
-    )
-    .await
-    .expect_err("another Session's subscription is unknown");
-    assert_eq!(through_face.code(), Some("subscription_unknown"));
-    assert!(through_face.to_string().contains(&typed.message));
 }
