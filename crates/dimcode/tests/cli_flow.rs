@@ -1786,6 +1786,114 @@ fn line_mode_reports_each_retry_attempt_once_on_stderr() {
 }
 
 #[test]
+fn exec_exits_zero_when_the_turn_completed_at_its_output_limit() {
+    for json_mode in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(|wire| {
+            wire.start(false);
+            let submit = wire.read("session.submit");
+            wire.reply(&submit, json!({"event":{}}));
+            let idle = wire.read("session.idle");
+            // An output-limit stop: the request keeps its failure fact with
+            // its presentation, and the turn ends Completed.
+            wire.event(
+                9,
+                "model-output-end",
+                json!({
+                    "turn_id": "turn", "request_id": "model-request", "status": "failed",
+                    "error": "Model local/fixture stopped at max_tokens",
+                    "presentation": {
+                        "source": "local", "reason": "max_tokens",
+                        "serverMessage": "Model local/fixture stopped at max_tokens",
+                        "action": "Increase the output token limit and retry.",
+                    },
+                    "failure": {
+                        "kind": "output_limit", "reason": "stopped at max_tokens",
+                        "attempts": 1, "waitedMs": 0,
+                    },
+                }),
+            );
+            wire.end(json!({"turn_id":"turn","status":"completed","reason":"output_limit"}));
+            wire.reply(&idle, json!({"sequence":3}));
+            wire.detach();
+        });
+        let mut args = vec!["exec", "-p", "go"];
+        if json_mode {
+            args.push("--json");
+        }
+        let output = home.command().args(&args).output().unwrap();
+        daemon.join().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "json {json_mode}: status {:?} stdout {} stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Line mode writes the human line to stderr; `--json` writes the events
+        // to stdout and keeps stderr for the daemon notes.
+        let (shown, other) = if json_mode {
+            (
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        } else {
+            (
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+            )
+        };
+        if json_mode {
+            assert!(
+                shown.contains("\"model-output-end\"") || shown.contains("step"),
+                "{shown}"
+            );
+        } else {
+            assert!(
+                shown.contains("stopped at max_tokens"),
+                "no failure line: {shown:?}"
+            );
+            assert_eq!(
+                shown.matches("[failed]").count(),
+                1,
+                "one failure line, no turn repeat: {shown}"
+            );
+        }
+        assert!(other.is_empty() || other.contains("workspace:"), "{other}");
+    }
+}
+
+#[test]
+fn exec_keeps_exit_two_for_a_failure_with_no_calls() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.start(false);
+        let submit = wire.read("session.submit");
+        wire.reply(&submit, json!({"event":{}}));
+        let idle = wire.read("session.idle");
+        wire.event(
+            9,
+            "model-output-end",
+            json!({
+                "turn_id": "turn", "request_id": "model-request", "status": "failed",
+                "error": "The provider rejected the request: bad tool schema.",
+                "failure": {
+                    "kind": "invalid_request", "reason": "bad tool schema",
+                    "attempts": 1, "waitedMs": 0,
+                },
+            }),
+        );
+        wire.end(json!({"turn_id":"turn","status":"failed","error":"The provider rejected the request: bad tool schema."}));
+        wire.reply(&idle, json!({"sequence":2}));
+        wire.detach();
+    });
+    let output = home.command().args(["exec", "-p", "go"]).output().unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn exec_prints_the_model_failure_line_not_the_daemon_sentence() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {

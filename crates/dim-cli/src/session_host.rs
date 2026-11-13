@@ -30,7 +30,7 @@ use crate::model::session::{
     SuggestionSetting, SwitchKind, Update, Usage, stored_title,
 };
 use crate::model::view::{
-    LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
+    Earlier, LineState, LineView, SideLine, TaskOutputState, TaskTarget, WorkflowInventory,
 };
 use crate::projection::Projection;
 use crate::wire::{
@@ -4565,6 +4565,7 @@ impl Worker {
             .task_history
             .get(&self.focus)
             .is_some_and(|branch| branch.done);
+        snapshot.earlier = self.earlier_view();
         snapshot.task_history_loading = self
             .task_history
             .values()
