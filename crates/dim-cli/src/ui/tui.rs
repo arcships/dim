@@ -9415,24 +9415,23 @@ mod tests {
             row
         };
         // The `@` picker for `@note`: the panel's title row and the file
-        // names it offers, read from one frame once the walk reports that it
-        // has finished.
+        // names it offers. One frame starts the walk, the loop polls until
+        // the walk reports that it has finished, and the rows are read from
+        // a frame drawn after that.
         let picker = |app: &mut App, cols: u16| -> (String, Vec<String>) {
             let names = ["launch-note.txt", "session-note.txt"];
             typed(app, "@note");
+            let _ = app.frame((cols, 30));
             let started = Instant::now();
-            let rows = loop {
-                let frame = app.frame((cols, 30));
-                let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
-                if !app.composer.mention_searching() {
-                    break rows;
-                }
+            while app.composer.mention_searching() {
                 assert!(
                     started.elapsed() < Duration::from_secs(10),
                     "the `@` walk did not finish"
                 );
                 std::thread::sleep(Duration::from_millis(5));
-            };
+            }
+            let frame = app.frame((cols, 30));
+            let rows: Vec<String> = frame.live.iter().map(|row| strip_escapes(row)).collect();
             app.composer.clear();
             // The title row is where the panel writes its heading: the row
             // carrying the `Files` title, whatever its box draws above it.
