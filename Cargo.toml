@@ -8,6 +8,7 @@ version = "0.1.0-alpha.18"
 edition = "2024"
 license = "MIT"
 rust-version = "1.100"
+repository = "https://github.com/arcships/dim"
 
 [workspace.dependencies]
 rutis = "0.19.3"

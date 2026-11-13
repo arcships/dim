@@ -3,6 +3,7 @@ name = "dim-codemode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Code Mode: a bounded QuickJS program that calls the branch's pinned tools"
 
 [dependencies]

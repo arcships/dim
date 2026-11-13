@@ -3,6 +3,7 @@ name = "dim-agent-scheduler"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "Scheduled jobs: a native process owner and Session feature for Dim"

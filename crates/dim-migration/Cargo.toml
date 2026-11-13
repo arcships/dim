@@ -3,6 +3,7 @@ name = "dim-migration"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "On-demand legacy CLI and Desktop data migration plugin"
 

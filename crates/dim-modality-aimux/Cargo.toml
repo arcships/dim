@@ -3,6 +3,7 @@ name = "dim-modality-aimux"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 description = "The built-in Modality adapter: media operations executed through aimux"
 

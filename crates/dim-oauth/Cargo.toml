@@ -3,6 +3,7 @@ name = "dim-oauth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "The Dim account provider (dimcode-api-oauth) as a managed provider plugin"
