@@ -19,6 +19,8 @@ const connection = useConnectionStore()
 const sessions = useSessionsStore()
 /** Every row the daemon stores, closed ones included; the browser decides which of them are hidden. */
 const rows = ref<SessionSummary[]>([])
+/** True only for rows from a completed successful read; a pending or failed read proves nothing. */
+const listingValid = ref(false)
 const busy = ref(false)
 const error = ref("")
 const actionError = ref("")
@@ -28,7 +30,9 @@ const query = ref("")
 const cwd = ref("")
 
 const archived = computed(() => rows.value.filter((row) => archive.has(row.sessionId)))
-const unavailable = computed(() => archive.hidden.filter((id) => !rows.value.some((row) => row.sessionId === id)).length)
+const unavailable = computed(() => listingValid.value
+  ? archive.hidden.filter((id) => !rows.value.some((row) => row.sessionId === id)).length
+  : 0)
 const visible = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   return archived.value.filter((row) => {
@@ -69,8 +73,10 @@ async function load(): Promise<void> {
   if (busy.value) return
   busy.value = true
   error.value = ""
+  listingValid.value = false
   try {
     rows.value = await readArchived()
+    listingValid.value = true
     pruneFilter()
   } catch (cause) {
     error.value = messageFrom(cause)
@@ -83,19 +89,19 @@ function storageFailed(): void {
   actionError.value = s("This browser cannot store the archive list.", "此浏览器无法保存归档列表。")
 }
 
-function restore(row: SessionSummary): void {
+function restore(row: SessionSummary): boolean {
   if (!archive.restore(row.sessionId)) {
     storageFailed()
-    return
+    return false
   }
   actionError.value = ""
   report.value = ""
   pruneFilter()
+  return true
 }
 
 function open(row: SessionSummary): void {
-  restore(row)
-  if (actionError.value === "") void router.push({ name: "chat-session", params: { sessionId: row.sessionId } })
+  if (restore(row)) void router.push({ name: "chat-session", params: { sessionId: row.sessionId } })
 }
 
 function confirmDelete(targets: SessionSummary[]): boolean {
@@ -138,6 +144,7 @@ function deleteAll(): void {
 }
 
 function dropUnavailable(): void {
+  if (busy.value || !listingValid.value) return
   const available = new Set(rows.value.map((row) => row.sessionId))
   if (!archive.drop(archive.hidden.filter((id) => !available.has(id)))) storageFailed()
 }
@@ -175,16 +182,16 @@ onMounted(() => load())
       <p v-if="rowErrors[row.sessionId]" class="settings-row-error" role="alert">{{ rowErrors[row.sessionId] }}</p>
       <div class="settings-actions">
         <UButton color="neutral" variant="outline" @click="restore(row)">{{ s('Restore', '恢复') }}</UButton>
-        <UButton v-if="!row.closed" color="neutral" variant="outline" :to="{ name: 'chat-session', params: { sessionId: row.sessionId } }" @click="open(row)">{{ s('Open', '打开') }}</UButton>
+        <UButton v-if="!row.closed" color="neutral" variant="outline" @click="open(row)">{{ s('Open', '打开') }}</UButton>
         <UButton color="error" variant="ghost" :disabled="busy || !canDelete || row.running" :title="canDelete ? undefined : deleteBlocked" @click="confirmDelete([row]) && deleteRows([row], false)">{{ s('Delete permanently', '永久删除') }}</UButton>
       </div>
     </section>
-    <p v-if="!busy && archived.length === 0" role="status">{{ s('No archived sessions in this browser.', '此浏览器还没有归档会话。') }}</p>
-    <p v-else-if="archived.length > 0 && visible.length === 0" role="status">{{ s('No matching archived sessions.', '没有匹配的已归档会话。') }}</p>
-    <section v-if="unavailable > 0" class="settings-card">
+    <p v-if="listingValid && !busy && archived.length === 0" role="status">{{ s('No archived sessions in this browser.', '此浏览器还没有归档会话。') }}</p>
+    <p v-else-if="listingValid && archived.length > 0 && visible.length === 0" role="status">{{ s('No matching archived sessions.', '没有匹配的已归档会话。') }}</p>
+    <section v-if="listingValid && unavailable > 0" class="settings-card">
       <p>{{ s(`${unavailable} archived entries are not stored by this daemon.`, `${unavailable} 个归档条目不在当前 daemon 中。`) }}</p>
       <div class="settings-actions">
-        <UButton color="neutral" variant="outline" @click="dropUnavailable">{{ s('Remove unavailable', '移除不可用条目') }}</UButton>
+        <UButton color="neutral" variant="outline" :disabled="busy" @click="dropUnavailable">{{ s('Remove unavailable', '移除不可用条目') }}</UButton>
       </div>
     </section>
     <div v-if="archived.length > 0" class="settings-actions">

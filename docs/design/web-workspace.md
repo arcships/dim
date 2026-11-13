@@ -473,7 +473,7 @@ the host path identifying each workspace. They do not ask for browser-local path
 Agent's scope applies only to the default model for new Sessions; collaboration
 policy and the command shell remain user-wide. MCP's workspace adds that project's
 servers to the catalog, not a working-directory override for any server. Skills'
-workspace includes project discovery. Saved sessions instead has an all-workspace
+workspace includes project discovery. Archived sessions instead has an all-workspace
 filter; it never changes configuration. Switching configuration scope confirms
 discarding unsaved edits, and a cancelled or failed load keeps the previous scope.
 
@@ -849,8 +849,8 @@ storage format or Timeline event. Archiving changes nothing the daemon owns.
 | --- | --- |
 | State | `localStorage["dim-web.archive.v1"]`: a JSON array of the Session ids this browser hides. It holds no preview, workspace, title, model, running or closed state |
 | Owner | `web/src/stores/archive.ts`, beside `stores/ui.ts` and `stores/appearance.ts`, which own the other browser-local values. Rows always come from the daemon's reply; the store decides which of them are hidden |
-| Read | Once at start: a value that is not an array contributes nothing, and a non-string item is dropped, as `ui.ts` reads its own key |
-| Write | Best effort. A failed write (storage full or disabled) is reported at the action and the row stays visible, so a reload cannot bring back a row the user saw disappear |
+| Read | Once at start and again before each change: a value that is not an array contributes nothing, and a non-string item is dropped, as `ui.ts` reads its own key. A `storage` event for this key refreshes the in-memory list |
+| Write | Best effort. Each change re-reads the key, applies the change and writes the result, so sequential changes from two open tabs are preserved; simultaneous writes remain last-writer-wins because `localStorage` has no cross-tab compare-and-set. A read or write that storage refuses (disabled or full) is reported at the action and the row stays visible, so a reload cannot bring back a row the user saw disappear |
 | Identity | `localStorage` is per browser origin, and the entry serves at `http://127.0.0.1:<port>` (§2.1). One daemon keeps its list across browser reloads and every restart that reaches the same address; two daemons, or a restart that takes another port because the old address is busy, are separate origins with separate lists. Two product homes served one after another on the same address cannot be told apart by the browser and share the key, so a marker is an id and nothing more: a foreign id hides nothing and is reported as unavailable (below) instead of hiding another home's Session |
 | Lifecycle | A marker leaves the list on Restore, on a confirmed delete of that Session from this page, or on Remove unavailable. Nothing else removes it: a Session closed elsewhere is not listed by a read without `includeClosed`, which is why the archived page asks for those rows (below) instead of treating them as gone |
 
@@ -966,7 +966,9 @@ hidden and its history is intact after Restore. Serve two entries (two ports) an
 Hide every Session of one workspace: the workspace leaves the sidebar and stays in the archived page's workspace
 filter, where search and that filter still find its rows. Cancel and confirm both delete actions. Refuse a running
 Session. Close a hidden Session from another client and check that it stays a row with the closed state rather than
-becoming unavailable, and that it returns to the sidebar after a daemon restart. Delete a hidden Session from another
+becoming unavailable; a still-hidden Session stays hidden after a daemon restart, and after Restore it returns to the
+sidebar. Let the listing stay pending or fail, including on refresh, and check that the page claims no unavailable
+entries and cannot remove markers. Delete a hidden Session from another
 client so its marker becomes unavailable, then check that Delete all archived skips it and that a failure (an in-use
 target, or a lost reply) is reported while the remaining targets are deleted and the rows that are not hidden are
 untouched. Render the sidebar row action and the page in desktop and compact layouts; the page's states get a

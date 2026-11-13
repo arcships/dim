@@ -122,6 +122,7 @@ test("restoring and opening remove the marker without a server call, and Remove 
   await action(card(root, "Alpha"), "Open").props.onClick()
   await flush()
   assert.deepEqual(harness.navigations, [{ name: "chat-session", params: { sessionId: "alpha" } }])
+  assert.equal(harness.navigations.length, 1, "Open navigates exactly once")
   assert.deepEqual(harness.archive.hidden, ["gone"])
   assert.doesNotMatch(text(root), /Alpha/)
 
@@ -130,6 +131,76 @@ test("restoring and opening remove the marker without a server call, and Remove 
   assert.deepEqual(harness.archive.hidden, [])
   assert.doesNotMatch(text(root), /not stored by this daemon/)
   assert.deepEqual(calls.map(([method]) => method), ["session.summaries"], "the browser list never calls session.delete")
+})
+
+test("a failed unhide reports the storage error and does not navigate", async t => {
+  const { root, harness } = mount(t, async () => [row({ sessionId: "alpha", preview: "Alpha" })], { hidden: ["alpha"] })
+  await flush()
+
+  harness.archive.restore = () => false
+  await action(card(root, "Alpha"), "Open").props.onClick()
+  await flush()
+  assert.deepEqual(harness.navigations, [])
+  assert.deepEqual(harness.archive.hidden, ["alpha"])
+  assert.match(text(root), /This browser cannot store the archive list/)
+  assert.match(text(root), /Alpha/, "the row stays visible when the marker could not be removed")
+})
+
+test("a pending listing claims nothing about stored markers", async t => {
+  let resolve
+  const reply = new Promise(done => { resolve = done })
+  const { root, harness } = mount(t, () => reply, { hidden: ["alpha", "gone"] })
+  await flush()
+
+  assert.match(text(root), /Working/)
+  assert.doesNotMatch(text(root), /No archived sessions/)
+  assert.doesNotMatch(text(root), /not stored by this daemon/)
+  assert.equal(action(root, "Remove unavailable"), undefined)
+  assert.deepEqual(harness.archive.hidden, ["alpha", "gone"])
+
+  resolve([row({ sessionId: "alpha", preview: "Alpha" })])
+  await flush()
+  assert.doesNotMatch(text(root), /No archived sessions/)
+  assert.match(text(root), /1 archived entries are not stored by this daemon/)
+  assert.ok(action(root, "Remove unavailable"))
+})
+
+test("a failed listing leaves markers untouched and offers no cleanup", async t => {
+  const { root, harness } = mount(t, async () => { throw new Error("listing failed") }, { hidden: ["alpha"] })
+  await flush()
+
+  assert.match(text(root), /listing failed/)
+  assert.doesNotMatch(text(root), /No archived sessions/)
+  assert.doesNotMatch(text(root), /not stored by this daemon/)
+  assert.equal(action(root, "Remove unavailable"), undefined)
+  assert.deepEqual(harness.archive.hidden, ["alpha"])
+})
+
+test("a failed refresh keeps the rows but stops claiming unavailable markers", async t => {
+  let calls = 0
+  let reject
+  const reply = new Promise((_, fail) => { reject = fail })
+  const { root, harness } = mount(t, async () => {
+    calls += 1
+    return calls === 1 ? [row({ sessionId: "alpha", preview: "Alpha" })] : reply
+  }, { hidden: ["alpha", "gone"] })
+  await flush()
+  assert.match(text(root), /1 archived entries are not stored by this daemon/)
+
+  harness.connection.phase = "reconnecting"
+  await flush()
+  harness.connection.phase = "connected"
+  await flush()
+  assert.match(text(root), /Working/)
+  assert.doesNotMatch(text(root), /not stored by this daemon/, "a pending refresh is not proof")
+  assert.match(text(root), /Alpha/, "the last successful rows stay visible")
+
+  reject(new Error("refresh failed"))
+  await flush()
+  assert.match(text(root), /refresh failed/)
+  assert.doesNotMatch(text(root), /not stored by this daemon/)
+  assert.equal(action(root, "Remove unavailable"), undefined)
+  assert.deepEqual(harness.archive.hidden, ["alpha", "gone"])
 })
 
 test("deleting one row is confirmed and reported, and a bulk failure keeps the row that was not deleted", async t => {

@@ -59,7 +59,7 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload))
         <UButton color="neutral" variant="ghost" size="md" square icon="i-lucide-arrow-left" :to="parent" :aria-label="t('back')" />
         <span>{{ t(category ?? 'settings') }}</span>
       </div>
-      <fieldset class="settings-content" :disabled="connection.phase !== 'connected' && !['appearance', 'account', 'providers'].includes(category ?? '')">
+      <fieldset class="settings-content" :disabled="connection.phase !== 'connected' && !['appearance', 'account', 'providers', 'archived'].includes(category ?? '')">
         <RouterView v-slot="{ Component }"><component :is="Component" :key="category === 'providers' ? 'providers' : route.path" /></RouterView>
       </fieldset>
     </div>
