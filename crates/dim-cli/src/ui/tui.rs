@@ -5012,6 +5012,16 @@ impl App {
                 }
                 Outcome::Continue
             }
+            "loop" => {
+                match crate::loop_view::request(args) {
+                    Some(request) => self.host.send(Command::Loop(request)),
+                    None => self.reports.push(Block::Status {
+                        text: crate::loop_view::USAGE.to_owned(),
+                        tone: Tone::Muted,
+                    }),
+                }
+                Outcome::Continue
+            }
             "mcp" => {
                 // Bare `/mcp` opens the panel; every argument form stays the
                 // line command it was.
@@ -12337,6 +12347,73 @@ mod tests {
         );
     }
 
+    /// The reviewer's case on a real 80x24 frame: thirty replacements keep the
+    /// target line and the choices on screen, and the keys reach the last entry,
+    /// in both renderers.
+    #[test]
+    fn a_long_edit_approval_fits_an_80x24_frame_and_reaches_its_last_entry() {
+        use crate::model::view::ApprovalView;
+
+        let size = (80, 24);
+        let edits: Vec<_> = (1..=30)
+            .map(|n| serde_json::json!({"oldText": format!("old {n}"), "newText": format!("new {n}")}))
+            .collect();
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new(size, None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                approvals: vec![ApprovalView {
+                    member: None,
+                    request_id: "approval-1".into(),
+                    branch_id: "main".into(),
+                    reason: "source: tool_rule".into(),
+                    tool_name: "edit".into(),
+                    tool_input: serde_json::json!({"path": "src/lib.rs", "edits": edits}),
+                    always: None,
+                }],
+                ..ViewSnapshot::default()
+            })));
+            let screen_text = |drawn: &mut Drawn| -> String {
+                if fullscreen {
+                    let frame = drawn.app.frame(size);
+                    let mut full = FullScreen::new(size, true);
+                    let bytes = full.render(&frame, size, &drawn.app.palette, &drawn.app);
+                    let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                    emu.feed(&bytes);
+                    emu.rows_text().join("\n")
+                } else {
+                    drawn.draw();
+                    drawn.emu.rows_text().join("\n")
+                }
+            };
+            let first = screen_text(&mut drawn);
+            for shown in [
+                "# source: tool_rule",
+                "$ edit 30 replacements in src/lib.rs",
+                "1 · old 1 → new 1",
+                "Allow once",
+            ] {
+                assert!(first.contains(shown), "{fullscreen}: {shown:?} in {first}");
+            }
+            for _ in 0..30 {
+                let _ = drawn
+                    .app
+                    .handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                        KeyCode::Down,
+                        Modifiers::NONE,
+                    )));
+            }
+            let last = screen_text(&mut drawn);
+            for shown in ["30 · old 30 → new 30", "# source: tool_rule", "Allow once"] {
+                assert!(
+                    last.contains(shown),
+                    "{fullscreen}: after scrolling, {shown:?} in {last}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_window_topic_stays_mains_message_while_a_line_is_shown() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -14750,6 +14827,93 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_loop_form_completes_then_dispatches_its_request_in_both_modes() {
+        for fullscreen in [false, true] {
+            for (words, expected) in [
+                ("", crate::loop_view::Request::Show),
+                (
+                    "check the deploy",
+                    crate::loop_view::Request::Start {
+                        prompt: "check the deploy".into(),
+                        every_seconds: None,
+                    },
+                ),
+                (
+                    "5m check the deploy",
+                    crate::loop_view::Request::Start {
+                        prompt: "check the deploy".into(),
+                        every_seconds: Some(300),
+                    },
+                ),
+                ("stop", crate::loop_view::Request::Stop(None)),
+                ("7f2", crate::loop_view::Request::Stop(Some("7f2".into()))),
+            ] {
+                let (mut app, sent, _home) = session_with_queue(false, &[]);
+                app.fullscreen = fullscreen;
+                typed(&mut app, "/loop");
+                // Selection completes the command and does not dispatch it.
+                press(&mut app, KeyCode::Enter);
+                assert_eq!(app.composer.text(), "/loop ");
+                if words == "7f2" {
+                    typed(&mut app, "stop ");
+                }
+                typed(&mut app, words);
+                press(&mut app, KeyCode::Enter);
+                assert!(
+                    matches!(sent.borrow().as_slice(), [Command::Loop(request)] if *request == expected),
+                    "{words:?} dispatches {expected:?}"
+                );
+                assert!(app.composer.is_empty());
+            }
+        }
+    }
+
+    /// An argument the command needs is refused when it is missing, so a bare
+    /// `/rename` or `/branch` never reaches its handler with an empty value.
+    /// Only `/loop` runs on its own, and its argument is declared optional.
+    #[test]
+    fn a_command_that_needs_its_argument_refuses_a_bare_submission() {
+        for (command, needed) in [
+            ("/rename", "/rename needs <title>"),
+            ("/branch", "/branch needs <prompt>"),
+        ] {
+            let (mut app, sent, _home) = session_with_queue(false, &[]);
+            // The palette completes the command and its argument hint first;
+            // the submission that matters is the second Enter.
+            typed(&mut app, command);
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Enter);
+            assert!(
+                sent.borrow().is_empty(),
+                "{command} alone dispatches nothing"
+            );
+            // A refused submission lands in the status notice, not the
+            // transcript (`tui.rs:3171`, `:1781-1783`).
+            let frame = app.frame((100, 16)).live.join("\n");
+            assert!(
+                frame.contains(needed),
+                "{command} alone prints {needed}: {frame}"
+            );
+        }
+    }
+
+    /// A second `stop` word is a usage error, which leaves the composer alone
+    /// and prints the usage rather than dispatching.
+    #[test]
+    fn an_unreadable_loop_form_prints_usage_and_dispatches_nothing() {
+        let (mut app, sent, _home) = session_with_queue(false, &[]);
+        typed(&mut app, "/loop stop two words");
+        press(&mut app, KeyCode::Enter);
+        assert!(sent.borrow().is_empty(), "no command is dispatched");
+        assert!(
+            app.reports.iter().any(
+                |block| matches!(block, Block::Status { text, .. } if text.contains("Usage: /loop"))
+            ),
+            "the usage is printed"
+        );
     }
 
     fn describe(commands: &[Command]) -> Vec<String> {

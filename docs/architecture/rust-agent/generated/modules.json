@@ -1945,6 +1945,28 @@
       ]
     },
     {
+      "id": "dim_agent_scheduler::loops",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler",
+      "file": "crates/dim-agent-scheduler/src/loops.rs",
+      "unexpandedMacros": [
+        "format",
+        "json",
+        "matches",
+        "tracing::debug",
+        "tracing::warn"
+      ]
+    },
+    {
+      "id": "dim_agent_scheduler::loops::tests",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler::loops",
+      "file": "crates/dim-agent-scheduler/src/loops.rs",
+      "unexpandedMacros": [
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_agent_scheduler::methods",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
@@ -4108,6 +4130,48 @@
       ]
     },
     {
+      "id": "dim_cli::loop_command",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/loop_command.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches",
+        "serde_json::json"
+      ]
+    },
+    {
+      "id": "dim_cli::loop_command::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::loop_command",
+      "file": "crates/dim-cli/src/loop_command.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "panic"
+      ]
+    },
+    {
+      "id": "dim_cli::loop_view",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/loop_view.rs",
+      "unexpandedMacros": [
+        "format",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_cli::loop_view::tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::loop_view",
+      "file": "crates/dim-cli/src/loop_view.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_cli::maintenance",
       "crate": "dim_cli",
       "parent": "dim_cli",
@@ -4284,6 +4348,7 @@
       "parent": "dim_cli",
       "file": "crates/dim-cli/src/member_approval.rs",
       "unexpandedMacros": [
+        "format",
         "matches",
         "vec"
       ]
@@ -5762,6 +5827,7 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
+        "assert_ne",
         "panic",
         "serde_json::json",
         "vec"
@@ -18082,6 +18148,16 @@
         "path Isolation",
         "path Os::Windows",
         "path ProcessTree",
+        "path ShellEdition",
+        "path ShellEdition::Bash",
+        "path ShellEdition::Cmd",
+        "path ShellEdition::Dash",
+        "path ShellEdition::GitBash",
+        "path ShellEdition::Ksh",
+        "path ShellEdition::Pwsh",
+        "path ShellEdition::Sh",
+        "path ShellEdition::WindowsPowershell",
+        "path ShellEdition::Zsh",
         "path ShellKind::Posix",
         "path TemporaryDirectory",
         "use crate::host_platform::EXEC_SHELL_CONFIG_INVALID",
@@ -18091,6 +18167,7 @@
         "use crate::host_platform::Isolation",
         "use crate::host_platform::Os",
         "use crate::host_platform::ProcessTree",
+        "use crate::host_platform::ShellEdition",
         "use crate::host_platform::ShellKind",
         "use crate::host_platform::TemporaryDirectory"
       ]
@@ -18566,6 +18643,14 @@
       "references": [
         "path JsonObject",
         "use dim_agent_types::JsonObject"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::files::edit",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ToolContent::Text",
+        "use dim_agent_types::ToolContent"
       ]
     },
     {
@@ -20938,6 +21023,18 @@
     },
     {
       "from": "dim_agent_scheduler",
+      "to": "dim_agent_scheduler::loops",
+      "references": [
+        "mod loops",
+        "path Loops",
+        "use loops::LOOPS_FILE",
+        "use loops::Loop",
+        "use loops::LoopState",
+        "use loops::Loops"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler",
       "to": "dim_agent_scheduler::methods",
       "references": [
         "mod methods",
@@ -21137,6 +21234,113 @@
       ]
     },
     {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_capabilities::session_broadcast",
+      "references": [
+        "path SessionNotice",
+        "path notify",
+        "use dim_agent_capabilities::session_broadcast::SessionNotice",
+        "use dim_agent_capabilities::session_broadcast::notify"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::document",
+      "references": [
+        "path MAX_PROMPT_BYTES",
+        "path canonical_instant",
+        "path format_instant",
+        "use crate::document::MAX_PROMPT_BYTES",
+        "use crate::document::canonical_instant",
+        "use crate::document::format_instant"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::engine",
+      "references": [
+        "path crate::engine::target_gone",
+        "path crate::engine::uncertain",
+        "path sessions",
+        "use crate::engine::sessions"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::loops::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::methods",
+      "references": [
+        "path Shared",
+        "path face_arguments",
+        "path face_call",
+        "path face_failure",
+        "use crate::methods::Shared",
+        "use crate::methods::face_arguments",
+        "use crate::methods::face_call",
+        "use crate::methods::face_failure"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::runs",
+      "references": [
+        "path SchedulerError",
+        "path SchedulerError::invalid_data",
+        "path SchedulerError::new",
+        "use crate::runs::SchedulerError"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_scheduler::session",
+      "references": [
+        "path LoopListParams",
+        "path LoopNextParams",
+        "path LoopStartParams",
+        "path LoopStopParams",
+        "path loop_list_scope",
+        "path loop_next_target",
+        "path loop_start_request",
+        "path loop_stop_target",
+        "use crate::session::LoopListParams",
+        "use crate::session::LoopNextParams",
+        "use crate::session::LoopStartParams",
+        "use crate::session::LoopStopParams",
+        "use crate::session::loop_list_scope",
+        "use crate::session::loop_next_target",
+        "use crate::session::loop_start_request",
+        "use crate::session::loop_stop_target"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "use dim_agent_types::markup::escaped"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops",
+      "to": "dim_app_server::plugin_files",
+      "references": [
+        "path dim_app_server::plugin_files::PluginFileTransactions"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::loops::tests",
+      "to": "dim_agent_scheduler::loops",
+      "references": [
+        "path Cadence",
+        "path Cadence::Every"
+      ]
+    },
+    {
       "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_capabilities::methods",
       "references": [
@@ -21229,6 +21433,20 @@
         "path crate::engine::recover",
         "path crate::engine::settle_delivering",
         "path crate::engine::tick"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_agent_scheduler::loops",
+      "references": [
+        "path Lookup",
+        "path Lookup::NextMinute",
+        "path Lookup::NextTick",
+        "path Lookup::Settled",
+        "path crate::loops::Loops",
+        "path crate::loops::LoopsFace",
+        "path crate::loops::read",
+        "use crate::loops::Lookup"
       ]
     },
     {
@@ -21465,6 +21683,20 @@
       "references": [
         "path MAX_PROMPT_BYTES",
         "use crate::document::MAX_PROMPT_BYTES"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::session",
+      "to": "dim_agent_scheduler::loops",
+      "references": [
+        "path Loops",
+        "path StartRequest",
+        "path loops",
+        "path loops::Loop",
+        "use crate::loops",
+        "use crate::loops::Loops",
+        "use crate::loops::StartRequest",
+        "use crate::loops::wire_loop"
       ]
     },
     {
@@ -33858,6 +34090,20 @@
     },
     {
       "from": "dim_cli",
+      "to": "dim_cli::loop_command",
+      "references": [
+        "mod loop_command"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "mod loop_view"
+      ]
+    },
+    {
+      "from": "dim_cli",
       "to": "dim_cli::maintenance",
       "references": [
         "mod maintenance",
@@ -35174,6 +35420,102 @@
       "references": [
         "path Client",
         "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_cli",
+      "references": [
+        "path Result",
+        "path crate::Error",
+        "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_cli::display",
+      "references": [
+        "path Display",
+        "use crate::display::Display"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_cli::loop_command::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path loop_view::Loop",
+        "path loop_view::Loop::from_wire",
+        "path loop_view::NOT_AVAILABLE",
+        "path loop_view::Request::Show",
+        "path loop_view::Request::Start",
+        "path loop_view::Request::Stop",
+        "path loop_view::USAGE",
+        "path loop_view::cadence_text",
+        "path loop_view::report",
+        "path loop_view::request",
+        "use crate::loop_view"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_cli::session",
+      "references": [
+        "path Interrupts",
+        "path settle",
+        "use crate::session::Interrupts",
+        "use crate::session::settle"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_client",
+      "references": [
+        "path Client",
+        "use crate::client::Client"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command",
+      "to": "dim_client::wire",
+      "references": [
+        "path dim_client::wire::MethodTable"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command::tests",
+      "to": "dim_cli::loop_command",
+      "references": [
+        "path start_request"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_command::tests",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path loop_view::Request::Start",
+        "path loop_view::request"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_view",
+      "to": "dim_cli::loop_view::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::loop_view::tests",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path Loop",
+        "path report"
       ]
     },
     {
@@ -36919,6 +37261,13 @@
     },
     {
       "from": "dim_cli::model::session",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path crate::loop_view::Request"
+      ]
+    },
+    {
+      "from": "dim_cli::model::session",
       "to": "dim_cli::management::skills",
       "references": [
         "path crate::management::skills::Entry"
@@ -38175,6 +38524,14 @@
     },
     {
       "from": "dim_cli::session",
+      "to": "dim_cli::loop_command",
+      "references": [
+        "path loop_command::command",
+        "use crate::loop_command"
+      ]
+    },
+    {
+      "from": "dim_cli::session",
       "to": "dim_cli::mcp",
       "references": [
         "path mcp::State",
@@ -38562,6 +38919,28 @@
     },
     {
       "from": "dim_cli::session_host",
+      "to": "dim_cli::loop_command",
+      "references": [
+        "path crate::loop_command::available",
+        "path crate::loop_command::list",
+        "path crate::loop_command::only_live",
+        "path crate::loop_command::start_request"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path crate::loop_view::NOT_AVAILABLE",
+        "path crate::loop_view::Request",
+        "path crate::loop_view::Request::Show",
+        "path crate::loop_view::Request::Start",
+        "path crate::loop_view::Request::Stop",
+        "path crate::loop_view::report"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
       "to": "dim_cli::management",
       "references": [
         "path crate::management::SessionLine",
@@ -38639,6 +39018,7 @@
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
+        "path Command::Loop",
         "path Command::Management",
         "path Command::Mcp",
         "path Command::NewSession",
@@ -43032,7 +43412,8 @@
       "to": "dim_cli::member_approval",
       "references": [
         "path crate::member_approval::DetailError",
-        "path crate::member_approval::lines"
+        "path crate::member_approval::lines",
+        "path crate::member_approval::tool_line"
       ]
     },
     {
@@ -43064,7 +43445,8 @@
       "from": "dim_cli::ui::prompts",
       "to": "dim_cli::sanitize",
       "references": [
-        "path crate::sanitize::safe"
+        "path crate::sanitize::safe",
+        "path crate::sanitize::safe_line"
       ]
     },
     {
@@ -43194,6 +43576,22 @@
     },
     {
       "from": "dim_cli::ui::prompts::tests",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path dim_agent_types::ApprovalCallData"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::prompts::tests",
+      "to": "dim_agent_types::member_approval",
+      "references": [
+        "path dim_agent_types::MEMBER_APPROVAL_ALLOW",
+        "path dim_agent_types::MemberApprovalDescriptor",
+        "path dim_agent_types::MemberApprovalTarget"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::prompts::tests",
       "to": "dim_cli::ui::prompts",
       "references": [
         "path AskUserPrompt",
@@ -43202,6 +43600,7 @@
         "path Effect::Approval",
         "path ExitConfirm::new",
         "path ExitReason::AgentRunning",
+        "path PermissionPrompt",
         "path PermissionPrompt::grant_for",
         "path PermissionPrompt::new"
       ]
@@ -46319,6 +46718,14 @@
     },
     {
       "from": "dim_cli::ui::tui",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path crate::loop_view::USAGE",
+        "path crate::loop_view::request"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui",
       "to": "dim_cli::management",
       "references": [
         "path management::applied_line",
@@ -46372,6 +46779,7 @@
         "path Command::LoginStatus",
         "path Command::LoginUsage",
         "path Command::Logout",
+        "path Command::Loop",
         "path Command::Management",
         "path Command::Mcp",
         "path Command::NewSession",
@@ -47475,6 +47883,15 @@
         "path i18n::LOCALES",
         "path i18n::Locale::En",
         "path i18n::Locale::ZhCn"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
+      "to": "dim_cli::loop_view",
+      "references": [
+        "path crate::loop_view::Request::Show",
+        "path crate::loop_view::Request::Start",
+        "path crate::loop_view::Request::Stop"
       ]
     },
     {
@@ -52716,6 +53133,10 @@
     {
       "module": "dim_cli::input",
       "path": "INPUT_RECORD::default"
+    },
+    {
+      "module": "dim_cli::loop_view",
+      "path": "char::is_whitespace"
     },
     {
       "module": "dim_cli::management::mcp",
