@@ -84,11 +84,13 @@ impl Observation {
         }
     }
 
-    /// Ends the observation: it read nothing and has nothing left to read.
+    /// Releases display data while admitted requests finish attachment cleanup.
     fn release(&mut self) {
         self.closing = true;
+        self.projection = Projection::default();
+        self.model = None;
         self.window = Default::default();
-        self.live.clear();
+        self.live = Vec::new();
         self.earlier = EarlierRead::None;
     }
 }
@@ -162,6 +164,9 @@ impl Worker {
         self.members.selected = None;
         self.members.unavailable.clear();
         self.members.pages.clear();
+        for observation in self.members.observations.values_mut() {
+            observation.release();
+        }
     }
 
     pub(super) fn observes_member(&self, session_id: &str) -> bool {
@@ -435,6 +440,9 @@ impl Worker {
             .expect("matched observation");
         let pending = observation.pending.take().expect("matched member request");
         match pending {
+            Pending::Attach(_) if observation.closing => {
+                observation.attached = result.is_ok();
+            }
             Pending::Attach(_) => match result {
                 Ok(value) => {
                     let attached: Attached = match serde_json::from_value(value) {
@@ -449,12 +457,9 @@ impl Worker {
                         .model
                         .map(|model| format!("{} / {}", model.provider_id, model.model_id));
                     observation.attached = true;
-                    if !observation.closing {
-                        self.members.pages.push_back(id.clone());
-                    }
+                    self.members.pages.push_back(id.clone());
                 }
-                Err(error) if !observation.closing => self.fail_member(&id, error.to_string()),
-                Err(_) => {}
+                Err(error) => self.fail_member(&id, error.to_string()),
             },
             Pending::Detach(_) => {
                 self.members.observations.remove(&id);
@@ -882,7 +887,179 @@ mod tests {
         );
     }
 
-    /// A closed member reports its start: its window is gone with the Session.
+    #[tokio::test]
+    async fn replacing_leaders_releases_member_display_before_admitted_requests_settle() {
+        let (mut worker, _receiver, sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        let text = json!({
+            "id":"old-text", "sequence":1, "create_at":2000,
+            "type":"step", "name":"text",
+            "data":{"turn_id":"t", "request_id":"r", "delta":"old member transcript"}
+        });
+        let mut expected_requests = 0;
+        for iteration in 0..12 {
+            worker.session_id = format!("leader-{iteration}");
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            let Some(Pending::Attach(attach)) = worker.members.observations["member"].pending
+            else {
+                panic!("each selection starts a fresh member attachment");
+            };
+            expected_requests += 1;
+            let pending = if iteration % 2 == 0 {
+                attach
+            } else {
+                worker
+                    .message(Message::Response {
+                        id: attach,
+                        result: Ok(json!({"sequence":1})),
+                    })
+                    .await
+                    .unwrap();
+                worker.poll_member().await.unwrap();
+                expected_requests += 1;
+                let Some(Pending::History(history)) = worker.members.observations["member"].pending
+                else {
+                    panic!("the attached member starts its bounded history read");
+                };
+                let observation = worker.members.observations.get_mut("member").unwrap();
+                observation
+                    .projection
+                    .replay("main", &serde_json::from_value(text.clone()).unwrap());
+                observation.model = Some("observed model".into());
+                assert_eq!(observation.projection.rows().len(), 1);
+                history
+            };
+            worker.member_notice("member", Notice::State(true));
+            assert!(!worker.members.observations["member"].live.is_empty());
+
+            worker.invalidate_projection();
+            let observation = &worker.members.observations["member"];
+            assert!(observation.closing);
+            assert!(observation.projection.rows().is_empty());
+            assert!(observation.model.is_none());
+            assert_eq!(observation.live.capacity(), 0);
+            assert!(observation.window.through.is_none());
+            assert!(worker.members.pages.is_empty());
+            worker
+                .message(Message::Notice {
+                    method: "session.state".into(),
+                    params: json!({"sessionId":"member","branchId":"main","running":true}),
+                })
+                .await
+                .unwrap();
+            assert!(worker.members.observations["member"].live.is_empty());
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            assert_eq!(worker.members.observations.len(), 1);
+            worker
+                .message(Message::Response {
+                    id: pending,
+                    result: Ok(json!({"sequence":1,"events":[text],"through":1,"nextBefore":1})),
+                })
+                .await
+                .unwrap();
+            assert!(
+                worker.members.observations["member"]
+                    .projection
+                    .rows()
+                    .is_empty()
+            );
+            assert!(worker.members.pages.is_empty());
+            worker.poll_member().await.unwrap();
+            let Some(Pending::Detach(detach)) = worker.members.observations["member"].pending
+            else {
+                panic!("the obsolete attachment is detached after its admitted request");
+            };
+            expected_requests += 1;
+            worker.invalidate_projection();
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            assert!(matches!(
+                worker.members.observations["member"].pending,
+                Some(Pending::Detach(id)) if id == detach
+            ));
+            worker
+                .message(Message::Response {
+                    id: detach,
+                    result: Ok(json!({})),
+                })
+                .await
+                .unwrap();
+            assert!(worker.members.observations.is_empty());
+        }
+        worker.poll_member().await.unwrap();
+        for reply in [
+            json!({"sequence":1}),
+            json!({"events":[text],"through":1,"nextBefore":1,"nextAfter":1,"done":true}),
+            json!({"branchId":"main","through":1,"turn":null,"output":null}),
+            json!({"methods":[]}),
+        ] {
+            let id = match worker.members.observations["member"].pending {
+                Some(
+                    Pending::Attach(id)
+                    | Pending::History(id)
+                    | Pending::Turn(id)
+                    | Pending::Methods(id),
+                ) => id,
+                _ => panic!("the current member completes its normal opening flow"),
+            };
+            worker
+                .message(Message::Response {
+                    id,
+                    result: Ok(reply),
+                })
+                .await
+                .unwrap();
+            worker.poll_member().await.unwrap();
+            expected_requests += 1;
+        }
+        assert_eq!(
+            worker.members.observations["member"].state,
+            MemberConversationState::Live
+        );
+        assert_eq!(
+            worker.members.observations["member"].projection.rows()[0].text,
+            "old member transcript"
+        );
+        worker
+            .message(Message::Notice {
+                method: "session.state".into(),
+                params: json!({"sessionId":"member","branchId":"main","running":true}),
+            })
+            .await
+            .unwrap();
+        assert!(
+            worker.members.observations["member"]
+                .projection
+                .snapshot()
+                .running
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while sent.lock().unwrap().len() < expected_requests {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let requests = sent.lock().unwrap();
+        assert_eq!(requests.len(), expected_requests);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "session.detach")
+                .count(),
+            12
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "session.history")
+                .count(),
+            7
+        );
+    }
+
     #[tokio::test]
     async fn a_closed_member_reports_its_start() {
         let (mut worker, _receiver, _sent) =
