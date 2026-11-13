@@ -118,6 +118,10 @@ pub enum MouseOutcome {
     Overlay(isize),
     /// A click landed on a link: its target, to open.
     Open(String),
+    /// A click landed on a dock task row: its stable task id.
+    Task(String),
+    /// A click landed on the composer's model label.
+    Models,
     /// A click landed elsewhere in the transcript: on row `row` of block
     /// `block` (stable id), or on row `row` of the live tail when `None`.
     Click {
@@ -281,6 +285,8 @@ pub struct FullScreen {
     cache: HashMap<usize, Vec<String>>,
     /// The live tail of the last frame (streaming answer, running tools).
     tail: Vec<String>,
+    task_rows: HashMap<usize, String>,
+    model_label: Option<(usize, std::ops::Range<usize>)>,
     /// Where the last press landed and the row it showed: a click counts
     /// only while that row still shows the same text at the release, so
     /// output that moves the transcript in between cannot redirect it.
@@ -333,6 +339,8 @@ impl FullScreen {
             starts: vec![0],
             cache: HashMap::new(),
             tail: Vec::new(),
+            task_rows: HashMap::new(),
+            model_label: None,
             press: None,
             pointer: None,
             hovered: None,
@@ -355,9 +363,20 @@ impl FullScreen {
         }
     }
 
-    /// The terminal size of the last frame.
-    pub fn size(&self) -> (u16, u16) {
-        self.size
+    /// Cancels gestures and stale task hits immediately, before deferred reflow.
+    pub fn resize(&mut self, size: (u16, u16)) -> bool {
+        if size == self.size {
+            return false;
+        }
+        self.size = size;
+        self.press = None;
+        self.selection = None;
+        self.thumb_drag = None;
+        self.clicks = None;
+        self.task_rows.clear();
+        self.model_label = None;
+        self.invalidate();
+        true
     }
 
     /// The width the transcript is laid out for.
@@ -804,6 +823,34 @@ impl FullScreen {
                     || hovered
                     || self.press.as_ref().is_some_and(|p| p.target.is_some());
                 self.press = None;
+                let action = if self
+                    .model_label
+                    .as_ref()
+                    .is_some_and(|(y, columns)| *y == row && columns.contains(&column))
+                {
+                    Some(MouseOutcome::Models)
+                } else if column < content_width(self.size.0 as usize)
+                    && let Some(task) = self.task_rows.get(&row)
+                {
+                    Some(MouseOutcome::Task(task.clone()))
+                } else {
+                    None
+                };
+                if let Some(spot) = action {
+                    self.clicks = None;
+                    self.press = Some(Press {
+                        spot,
+                        text: String::new(),
+                        target: None,
+                        link: None,
+                        cell: (column, row),
+                    });
+                    return if shown {
+                        MouseOutcome::Redraw
+                    } else {
+                        MouseOutcome::Ignored
+                    };
+                }
                 let Some((index, text)) = self
                     .pointer_index()
                     .and_then(|index| Some((index, self.row(index)?.to_owned())))
@@ -868,6 +915,11 @@ impl FullScreen {
                 }
             }
             MouseKind::Drag => {
+                if self.press.as_ref().is_some_and(|press| {
+                    matches!(press.spot, MouseOutcome::Task(_) | MouseOutcome::Models)
+                }) {
+                    self.press = None;
+                }
                 let Some(selection) = self.selection else {
                     return MouseOutcome::Ignored;
                 };
@@ -897,6 +949,35 @@ impl FullScreen {
             }
             MouseKind::Release => {
                 let press = self.press.take();
+                if let Some(Press {
+                    spot: MouseOutcome::Models,
+                    cell,
+                    ..
+                }) = &press
+                {
+                    return if *cell == (column, row)
+                        && self
+                            .model_label
+                            .as_ref()
+                            .is_some_and(|(y, columns)| *y == row && columns.contains(&column))
+                    {
+                        MouseOutcome::Models
+                    } else {
+                        MouseOutcome::Ignored
+                    };
+                }
+                if let Some(Press {
+                    spot: MouseOutcome::Task(task),
+                    cell,
+                    ..
+                }) = &press
+                {
+                    return if *cell == (column, row) && self.task_rows.get(&row) == Some(task) {
+                        MouseOutcome::Task(task.clone())
+                    } else {
+                        MouseOutcome::Ignored
+                    };
+                }
                 let changed = hovered || press.as_ref().is_some_and(|p| p.target.is_some());
                 let Some(selection) = self.selection else {
                     return if changed {
@@ -949,14 +1030,7 @@ impl FullScreen {
         palette: &Palette,
         doc: &dyn Document,
     ) -> Vec<u8> {
-        if size != self.size {
-            self.size = size;
-            self.press = None;
-            self.selection = None;
-            self.thumb_drag = None;
-            self.clicks = None;
-            self.invalidate();
-        }
+        self.resize(size);
         let (cols, rows) = (size.0 as usize, size.1.max(1) as usize);
         let width = content_width(cols);
         self.sync(doc);
@@ -972,6 +1046,29 @@ impl FullScreen {
             .max(1);
         let dock_skip = dock.len().saturating_sub(dock_rows);
         self.view_rows = rows - dock_rows.min(rows);
+        let model_label = frame.model_label.as_ref().and_then(|(row, columns)| {
+            row.checked_sub(split + dock_skip)
+                .filter(|row| *row < dock_rows)
+                .map(|row| (self.view_rows + row, columns.clone()))
+        });
+        if self.model_label != model_label
+            && self
+                .press
+                .as_ref()
+                .is_some_and(|press| press.spot == MouseOutcome::Models)
+        {
+            self.press = None;
+        }
+        self.model_label = model_label;
+        self.task_rows = frame
+            .task_rows
+            .iter()
+            .filter_map(|(row, task)| {
+                row.checked_sub(split + dock_skip)
+                    .filter(|row| *row < dock_rows)
+                    .map(|row| (self.view_rows + row, task.clone()))
+            })
+            .collect();
         self.load(doc);
         let top = self.top();
         if self.pinned.is_none() {
@@ -988,7 +1085,13 @@ impl FullScreen {
         }
         self.hover(doc);
         if self.press.as_ref().is_some_and(|press| {
+            if press.spot == MouseOutcome::Models {
+                return false;
+            }
             let (_, row) = press.cell;
+            if let MouseOutcome::Task(task) = &press.spot {
+                return self.task_rows.get(&row) != Some(task);
+            }
             row >= self.view_rows
                 || self.at(row).is_none_or(|index| {
                     self.spot(index) != press.spot
@@ -2977,6 +3080,8 @@ mod tests {
                         let frame = Frame {
                             commits: Vec::new(),
                             live,
+                            task_rows: Vec::new(),
+                            model_label: None,
                             cursor,
                             dock,
                             anchor: dock,

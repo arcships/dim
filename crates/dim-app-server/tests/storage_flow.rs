@@ -8818,6 +8818,7 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
         (44, false),
         (45, false),
         (46, false),
+        (47, false),
     ] {
         let database = Database::new();
         let connection = Connection::open(&database.0).unwrap();
@@ -8898,9 +8899,13 @@ async fn main_and_branch_formats_upgrade_to_the_current_format_without_reinterpr
             "facts changed: v{version}, main={main_layout}"
         );
         assert_eq!(rows(&connection, "session_owners"), owners);
-        if version == 42 {
+        if matches!(version, 42 | 46 | 47) {
             for (table, expected) in &business {
-                assert_eq!(rows(&connection, table), *expected, "v42 rows in {table}");
+                assert_eq!(
+                    rows(&connection, table),
+                    *expected,
+                    "v{version} rows in {table}"
+                );
             }
         }
         assert_eq!(schema(&connection), schema_of(STORE_FORMAT));

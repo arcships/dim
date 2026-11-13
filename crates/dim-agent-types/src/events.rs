@@ -134,6 +134,8 @@ pub struct ExecStartedData {
     pub call_id: String,
     pub task_id: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub output_path: String,
 }
 
@@ -1097,6 +1099,8 @@ pub struct CollaborationRequestData {
     pub call_id: String,
     pub target: CollaborationTarget,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Payload of `collaboration/cancel` and `collaboration/close`.

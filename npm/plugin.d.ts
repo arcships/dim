@@ -253,6 +253,32 @@ export interface EventHub {
   publish(request: EventHubPublishRequest): Promise<EventHubPublishReply>;
 }
 
+/** `eventSubscriptions.subscribe`: the subscription the calling row creates
+ * for one Session (design A.3, §3.3). */
+export interface EventSubscriptionCall {
+  sessionId: string;
+  types: string[];
+  match?: Record<string, string>;
+  mode?: 'queue' | 'steer' | 'append';
+  /** Defaults to `main`. */
+  branchId?: string;
+}
+/** `eventSubscriptions.unsubscribe` (design A.3). */
+export interface EventUnsubscribeCall {
+  sessionId: string;
+  subscriptionId: string;
+}
+/** Process service `eventSubscriptions`, EventHub's subscription core: a row
+ * of any language manages the subscriptions of the Session it names, as
+ * `eventhub.subscribe`, `eventhub.unsubscribe` and `eventhub.subscriptions`
+ * do (design Appendix F). */
+export interface EventSubscriptions {
+  sources(): Promise<unknown>;
+  subscribe(call: EventSubscriptionCall): Promise<unknown>;
+  unsubscribe(call: EventUnsubscribeCall): Promise<unknown>;
+  list(call: { sessionId: string }): Promise<unknown>;
+}
+
 /** The host's creation-time snapshot (`sessionConfig.get()`, `ToolCall.config`);
  * provider-owned nested objects remain JSON. */
 export interface SessionConfig {

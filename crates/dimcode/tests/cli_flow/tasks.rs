@@ -650,6 +650,126 @@ fn tui_task_history_resume_windows_complete_main_pages_and_preserves_the_draft()
 }
 
 #[test]
+fn tui_titled_silent_command_details_keep_the_command() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            let mut started = command("silent", 1, 1000, "sleep 60");
+            started["data"]["title"] = json!("Wait for build");
+            wire.reply(
+                &history,
+                json!({"events":[started],"through":1,"nextAfter":1,"done":true}),
+            );
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            let output = wire.read("session.exec.output");
+            assert_eq!(
+                output["params"],
+                json!({"sessionId":"session","branchId":"main","taskId":"silent"})
+            );
+            wire.reply(&output, json!({"text":""}));
+            wire.hold();
+        });
+        let mut launch = home.command();
+        launch.args(["--resume", "session"]);
+        if fullscreen {
+            launch.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(launch);
+        terminal.until("test / model");
+        terminal.write(b"/tasks\r");
+        terminal.until("Wait for build");
+        let opened = terminal.transcript.len();
+        terminal.write(b"\r");
+        terminal.until("No output yet");
+        let detail = strip_ansi(&terminal.transcript[opened..]);
+        assert!(detail.contains("Wait for build"), "{detail}");
+        assert!(detail.contains("sleep 60"), "{detail}");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn tui_fullscreen_resize_cancels_a_task_release_before_reflow() {
+    let home = Home::new();
+    let (sent, received) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[command("silent",1,1000,"sleep 60")],"through":1,"nextAfter":1,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let request = wire.read_any();
+        sent.send(request).unwrap();
+        wire.hold();
+    });
+    let mut launch = home.command();
+    launch.args(["--resume", "session", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(launch);
+    terminal.until("test / model");
+    terminal.until("sleep 60");
+    terminal.write(b"kept draft");
+    terminal.until("kept draft");
+    terminal.until("\x1b[?2026l");
+    let task_row = terminal
+        .transcript
+        .rsplit_once("\x1b[17;1H")
+        .expect("task row 17 was painted")
+        .1;
+    assert!(
+        strip_ansi(task_row).trim_start().starts_with("◐ sleep 60"),
+        "{task_row}"
+    );
+    terminal.write(b"\x1b[<0;5;17M processed");
+    terminal.until("kept draft processed");
+    terminal.until("\x1b[?2026l");
+    terminal.signal(libc::SIGSTOP);
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(terminal.child.id() as i32, &mut status, libc::WUNTRACED) },
+        terminal.child.id() as i32
+    );
+    assert!(libc::WIFSTOPPED(status));
+    let size = libc::winsize {
+        ws_row: 24,
+        ws_col: 79,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    assert_eq!(
+        unsafe {
+            libc::ioctl(
+                terminal.master.as_ref().unwrap().as_raw_fd(),
+                libc::TIOCSWINSZ,
+                &size,
+            )
+        },
+        0
+    );
+    terminal.write(b"\x1b[<0;5;17m after resize\r");
+    terminal.signal(libc::SIGCONT);
+    let request = received.recv_timeout(PATIENCE).unwrap();
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    assert_eq!(request["method"], "session.submit", "{request}");
+    assert_eq!(
+        request["params"]["text"],
+        "kept draft processed after resize"
+    );
+}
+
+#[test]
 fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     let home = Home::new();
     let (ready, readiness) = std::sync::mpsc::channel();
@@ -673,8 +793,10 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
         event(wire, "child", fact("child-end",5,9000,"exec","ended",json!({
             "task_id":"child-command","status":"failed","result":{"content":"real child terminal","structuredContent":{"exitCode":7}},
         })));
+        let mut restored = pending_command("child-command", 1, 1000, "restored child command");
+        restored["title"] = json!("Restore child build");
         wire.reply(&child, json!({"branchId":"child","through":4,
-            "tasks":[pending_command("child-command",1,1000,"restored child command")],"next":"second"}));
+            "tasks":[restored],"next":"second"}));
         let second = owner_request(wire, "session.exec.pending", "child");
         assert_eq!(second["params"]["after"], "second");
         wire.send(json!({"jsonrpc":"2.0","id":second["id"],"error":{"code":-32000,"message":"owner page unavailable"}}));
@@ -687,7 +809,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
         ready.send(()).unwrap();
         control.recv_timeout(Duration::from_secs(10)).unwrap();
         wire.reply(&retry, json!({"branchId":"child","through":4,
-            "tasks":[pending_command("child-command",1,1000,"restored child command")],"next":null}));
+            "tasks":[restored],"next":null}));
         let turn = owner_request(wire, "session.turn.get", "child");
         wire.empty_state(&turn);
         control.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -698,6 +820,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     let mut launch = home.command();
     launch.args(["--resume", "session"]);
     let mut terminal = Terminal::launch_tui(launch);
+    terminal.resize(160, 32);
     terminal.until("test / model");
     readiness.recv_timeout(Duration::from_secs(10)).unwrap();
     terminal.write(b"/tasks\r");
@@ -713,8 +836,11 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     proceed.send(()).unwrap();
     terminal.until("Failed");
     terminal.until("created while history failed");
-    terminal.write(b"restored child\r");
+    let opened = terminal.transcript.len();
+    terminal.write(b"Restore child build\r");
     terminal.until("real child terminal");
+    let detail = strip_ansi(&terminal.transcript[opened..]);
+    assert!(detail.contains("restored child command"), "{detail}");
     assert!(
         !terminal
             .transcript
@@ -900,6 +1026,8 @@ fn tui_task_stop_all_keeps_its_finite_targets_and_waits_only_for_replies() {
             fact("finished-end",8,8000,"exec","ended",json!({"task_id":"finished-command","status":"completed","result":{"content":"already complete"}})),
         ],"through":8,"nextAfter":8,"done":true}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let observe = wire.read("session.attach");
         assert_eq!(observe["params"], json!({"sessionId":"member"}));
         let providers = wire.read("account.providers");
@@ -1301,6 +1429,8 @@ fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
         assert_eq!(submit["params"]["text"], "start leader");
         wire.reply(&submit, json!({"event":{}}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let attach = wire.read("session.attach");
         assert_eq!(attach["params"], json!({"sessionId":"member"}));
         wire.reply(&attach, attach_record(&attach));
@@ -1334,14 +1464,27 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         assert_eq!(wire.trailing_request(), None, "unexpected member input/configuration or leader cleanup");
     });
     let mut launch = home.command();
-    launch.args(["--permission", "full-access"]);
+    launch.args(["--permission", "full-access", "--fullscreen"]);
     let mut terminal = Terminal::launch_tui(launch);
     terminal.until("Ask anything...");
     terminal.write(b"start leader\r");
     terminal.until("test / model");
-    terminal.write(b"kept leader draft\x0ftasks\r");
     terminal.until("Inspect member code");
-    terminal.write(b"\r");
+    terminal.write(b"kept leader draft");
+    terminal.until("kept leader draft");
+    terminal.until("\x1b[?2026l");
+    let task_row = terminal
+        .transcript
+        .rsplit_once("\x1b[17;1H")
+        .expect("task row 17 was painted")
+        .1;
+    assert!(
+        strip_ansi(task_row)
+            .trim_start()
+            .starts_with("◐ Inspect member code"),
+        "{task_row}"
+    );
+    terminal.write(b"\x1b[<0;5;17M\x1b[<0;5;17m");
     terminal.until("Member Session: member");
     terminal.until("member original + live");
     terminal.until("live member thought");
@@ -1369,8 +1512,9 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
     terminal.write(b"readonly typing\r");
     terminal.write(b"\x1b[200~hidden detail paste\x1b[201~");
     terminal.write(b"x");
-    terminal.until("Delegation result: Cancelled");
     terminal.until("real cancelled delegation result");
+    terminal.write(b"\x1b[A");
+    terminal.until("Delegation result: Cancelled");
     assert!(!terminal.transcript.contains("never-copy"));
     assert!(!terminal.transcript.contains("wrong member branch"));
     assert!(!terminal.transcript.contains("wrong leader branch thought"));
@@ -1379,9 +1523,6 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
             .transcript
             .contains("member original + live + live")
     );
-    terminal.write(b"\x1b[27u");
-    terminal.until("Background tasks");
-    terminal.until("Inspect member");
     terminal.write(b"\x1b[27u and continue\r");
     terminal.until("leader resumed after view");
     assert!(terminal.transcript.contains("leader notice while reading"));
@@ -1408,6 +1549,8 @@ fn tui_member_conversation_settles_old_attach_or_page_before_observing_a_replace
                 ended("result-b",5,"request-b"),ended("result-a",6,"request-a"),
             ],"through":6,"nextAfter":6,"done":true}));
             wire.no_context();
+            let names = wire.read("agent.list");
+            wire.reply(&names, json!([]));
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             let first_attach = wire.read("session.attach");
@@ -1472,6 +1615,8 @@ fn tui_member_conversation_keeps_errors_local_and_reopens_from_a_fresh_history()
             let history = wire.read("session.history");
             wire.reply(&history, json!({"events":[delegation("request",1,"member detail"),delivery("delivered",2,"request"),ended("result",3,"request")],"through":3,"nextAfter":3,"done":true}));
             wire.no_context();
+            let names = wire.read("agent.list");
+            wire.reply(&names, json!([]));
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             let attach = wire.read("session.attach");
@@ -1568,6 +1713,8 @@ fn tui_member_conversation_yields_to_a_leader_approval_and_cleans_up_its_held_pa
         let history = wire.read("session.history");
         wire.reply(&history, json!({"events":[delegation("request",1,"member approval detail"),delivery("delivered",2,"request"),ended("result",3,"request")],"through":3,"nextAfter":3,"done":true}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         let attach = wire.read("session.attach");
@@ -1935,6 +2082,7 @@ fn tui_workflow_inventory_errors_block_stop_all_until_reopen_and_stops_follow_ot
         wire.quiet(Duration::from_millis(1500));
     });
     let mut terminal = Terminal::resume_tui(home.command());
+    terminal.resize(160, 32);
     terminal.until("2 in background");
     terminal.write(b"/tasks\r");
     terminal.until("Workflow: last observed; refresh failed");
@@ -2063,7 +2211,9 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");
         let mut events = Vec::new();
-        events.extend(agent_request(1, "r1", "call-1", json!({"kind":"agent","agent_id":"reviewer"}), "Check crate dependencies"));
+        let mut titled = agent_request(1, "r1", "call-1", json!({"kind":"agent","agent_id":"reviewer"}), "Working directory: /workspace/runtime (read-only)\nCheck crate dependencies");
+        titled[1]["data"]["title"] = json!("Review dependency boundaries");
+        events.extend(titled);
         events.push(delivered(4, "req-1", "reviewer", "member-a"));
         events.extend(agent_request(5, "r2", "call-1", json!({"kind":"temporary","profile":{"name":"inspect tests","description":"","systemPrompt":""}}), "Review the integration coverage"));
         events.push(delivered(8, "req-5", "temporary-agent", "member-b"));
@@ -2123,6 +2273,7 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
     terminal.until("test / model");
     terminal.write(b"/tools\r");
     terminal.until("Agent: Code Reviewer");
+    assert!(terminal.transcript.contains("Review dependency boundaries"));
     terminal.write(b"/tools\r");
     terminal.write(b"\x1b[5~");
     terminal.until("member-provider / member-model-2");
@@ -2298,6 +2449,72 @@ fn tui_member_cards_name_a_native_agent_the_hello_does_not_announce() {
     daemon.join().unwrap();
     home.kill(&terminal);
     terminal.wait();
+}
+
+#[test]
+fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
+    for cached in [false, true] {
+        let home = Home::new();
+        fs::write(
+            home.0.join("config.json"),
+            json!({"locale":"en","tuiToolDetailsExpanded":true}).to_string(),
+        )
+        .unwrap();
+        let (drawn, wait_drawn) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            let current_agent = if cached { "reviewer" } else { "current" };
+            let mut events = agent_request(10, "current", "current-call", json!({"kind":"agent","agent_id":current_agent}), "Current review").to_vec();
+            events.push(delivered(13, "req-10", current_agent, "current-member"));
+            events.push(fact("current-ended",14,14000,"collaboration","result",json!({"request_event_id":"req-10","agent_id":current_agent,"session_id":"current-member","status":"completed","text":"Current review complete"})));
+            wire.reply(&history, json!({"events":events,"through":14,"nextAfter":14,"nextBefore":10,"done":true}));
+            let earlier = loop {
+                let request = wire.read_any();
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "agent.list" => wire.reply(&request, json!([{"agentId":current_agent,"name":if cached { "History Reviewer" } else { "Current Reviewer" }}])),
+                    "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                    "session.history" => break request,
+                    method => panic!("Unexpected startup read: {method}"),
+                }
+            };
+            assert_eq!(earlier["params"]["before"], 10);
+            let mut events = agent_request(1, "historical", "historical-call", json!({"kind":"agent","agent_id":"reviewer"}), "Historical dependency review").to_vec();
+            events.push(delivered(4, "req-1", "reviewer", "member"));
+            events.push(ended("historical-ended", 5, "req-1"));
+            wire.reply(&earlier, json!({"events":events,"through":14,"nextAfter":5,"nextBefore":1,"done":true}));
+            if !cached {
+                let list = wire.read("agent.list");
+                wire.reply(&list, json!([
+                    {"agentId":"current","name":"Current Reviewer"},
+                    {"agentId":"reviewer","name":"History Reviewer"}
+                ]));
+            }
+            wait_drawn.recv_timeout(PATIENCE).unwrap();
+            wire.quiet(Duration::from_millis(150));
+        });
+        let mut command = home.command();
+        command.arg("--fullscreen");
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        terminal.until_anywhere(if cached {
+            "Agent: History Reviewer"
+        } else {
+            "Agent: Current Reviewer"
+        });
+        terminal.write(b"/earlier\r");
+        probe_1476_drain(&mut terminal, Duration::from_millis(200));
+        terminal.write(b"\x1b[H\x1b[6~");
+        terminal.until_row("Historical dependency review", "· Agent: History Reviewer");
+        terminal.until_anywhere("Task: Historical dependency review");
+        drawn.send(()).unwrap();
+        daemon.join().unwrap();
+        home.kill(&terminal);
+        terminal.wait();
+    }
 }
 
 /// A failed shared read keeps the id on the card it covered, a later card for

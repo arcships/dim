@@ -56,6 +56,8 @@ mod server;
 mod session_management;
 #[path = "cli_flow/skills.rs"]
 mod skills;
+#[path = "cli_flow/staged_update.rs"]
+mod staged_update;
 #[path = "cli_flow/startup.rs"]
 mod startup;
 #[path = "cli_flow/tasks.rs"]
@@ -587,6 +589,23 @@ fn a_build_from_source_reports_its_version_as_source() {
     );
 }
 
+/// The command reports the version in its own package's manifest, so a flow can
+/// read back which version an installation is on. It resolves the link it was
+/// started through, as the installed command does.
+const REPORTS_VERSION: &str = r#"#!/bin/sh
+target=$0
+while [ -L "$target" ]; do
+  link=$(readlink "$target")
+  case $link in
+    /*) target=$link ;;
+    *) target=$(dirname "$target")/$link ;;
+  esac
+done
+directory=$(cd "$(dirname "$target")" && pwd)
+while [ ! -f "$directory/package.json" ]; do directory=$(dirname "$directory"); done
+sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$directory/package.json"
+"#;
+
 #[test]
 fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
     let home = Home::new();
@@ -598,6 +617,27 @@ fn update_uses_the_installed_package_and_prefix_without_a_daemon() {
     let executable = fs::canonicalize(executable).unwrap();
     let prefix = fs::canonicalize(prefix).unwrap();
     fs::create_dir(prefix.join("bin")).unwrap();
+    // The package the update replaces, shaped the way npm installs one: a
+    // manifest naming the command, a command that reports its own version, and
+    // a platform package beside it.
+    let package = prefix.join("lib/node_modules/dimcode-alpha");
+    fs::create_dir_all(package.join("node_modules/dimcode-darwin-arm64/bin")).unwrap();
+    let report = package.join("bin/report");
+    fs::write(&report, REPORTS_VERSION).unwrap();
+    fs::set_permissions(&report, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        package.join("package.json"),
+        format!(
+            "{{\"name\":\"dimcode-alpha\",\"version\":\"{}\",\"bin\":{{\"dima\":\"bin/report\"}}}}\n",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../lib/node_modules/dimcode-alpha/bin/report",
+        prefix.join("bin/dima"),
+    )
+    .unwrap();
     let npm = prefix.join("bin/npm");
     fs::write(
         &npm,
@@ -620,6 +660,27 @@ if [ -n "$UPDATE_CHILD" ]; then
 elif [ -n "$UPDATE_CONTINUE" ]; then
   while [ ! -f "$UPDATE_CONTINUE" ]; do sleep 0.1; done
 fi
+prefix=
+previous=
+for argument in "$@"; do
+  if [ "$previous" = --prefix ]; then prefix=$argument; fi
+  previous=$argument
+done
+for argument in "$@"; do
+  case $argument in *@*) name=${argument%@*} ;; esac
+done
+live="$FIXTURE_PREFIX/lib/node_modules/dimcode-alpha"
+staged="$prefix/lib/node_modules/$name"
+current=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$live/package.json")
+number=$(printf '%s\n' "$current" | sed 's/.*\.//')
+next=$(printf '%s\n' "$current" | sed "s/\.[0-9]*$/.$((number + 1))/")
+mkdir -p "$(dirname "$staged")"
+cp -R "$live" "$staged"
+if [ "$name" = dimcode-alpha ]; then command=dima; else command=dim; fi
+printf '{"name":"%s","version":"%s","bin":{"%s":"bin/report"}}\n' \
+  "$name" "$next" "$command" > "$staged/package.json"
+mkdir -p "$prefix/bin"
+ln -sfn "../lib/node_modules/$name/bin/report" "$prefix/bin/$command"
 echo 'Installed package'
 "#,
     )
@@ -637,6 +698,7 @@ echo 'Installed package'
             .args(extra)
             .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
             .env("UPDATE_ARGS", &recorded)
+            .env("FIXTURE_PREFIX", &prefix)
             .output()
             .unwrap()
     };
@@ -752,16 +814,30 @@ echo 'Installed package'
             .env("DIMCODE_UPDATE_CHECK", "0")
             .env("DIM_EFFORT_LEVEL", "invalid")
             .env("UPDATE_ARGS", &recorded)
+            .env("FIXTURE_PREFIX", &prefix)
             .env("UPDATE_FAIL", if fail { "1" } else { "0" })
             .output()
             .unwrap();
         assert_eq!(output.status.success(), !fail, "{output:?}");
+        let argv = fs::read_to_string(&recorded).unwrap();
         assert_eq!(
-            fs::read_to_string(&recorded).unwrap(),
-            format!(
-                "install\n-g\n--prefer-online\n--prefix\n{}\n{package}@{tag}\n",
-                prefix.display()
-            )
+            argv.lines().take(3).collect::<Vec<_>>(),
+            ["install", "-g", "--prefer-online"]
+        );
+        assert!(
+            argv.lines()
+                .any(|line| line.starts_with(&format!("{}/.dimcode-staging/", prefix.display()))),
+            "the install must go into staging: {argv}"
+        );
+        assert!(
+            argv.contains(&format!("--globalconfig\n{}/etc/npmrc\n", prefix.display())),
+            "the staged install must read the live global configuration: {argv}"
+        );
+        assert!(
+            argv.lines()
+                .last()
+                .is_some_and(|line| line.starts_with(&format!("{package}@"))),
+            "{argv}"
         );
         if fail {
             assert!(String::from_utf8_lossy(&output.stderr).contains("fixture install failed"));
@@ -825,6 +901,7 @@ echo 'Installed package'
             .args(["--home", home.0.to_str().unwrap(), "update"])
             .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
             .env("UPDATE_ARGS", &recorded)
+            .env("FIXTURE_PREFIX", &prefix)
             .env("UPDATE_CONTINUE", &resume)
             .env("UPDATE_FAIL", if fail { "1" } else { "0" });
         let mut terminal = launch(command, width);
@@ -851,6 +928,7 @@ echo 'Installed package'
                     .args(["--home", other.0.to_str().unwrap(), "update"])
                     .env("DIMCODE_NPM_PACKAGE", "dimcode")
                     .env("UPDATE_ARGS", &other_install)
+                    .env("FIXTURE_PREFIX", &prefix)
                     .output()
                     .unwrap();
                 assert!(!output.status.success(), "{output:?}");
@@ -899,6 +977,7 @@ echo 'Installed package'
             .args(["--home", home.0.to_str().unwrap(), "update"])
             .env("DIMCODE_NPM_PACKAGE", "dimcode-alpha")
             .env("UPDATE_ARGS", &recorded)
+            .env("FIXTURE_PREFIX", &prefix)
             .env("UPDATE_CONTINUE", &resume)
             .env("UPDATE_LOG", &log);
         let mut terminal = launch(command, 80);
@@ -3614,6 +3693,24 @@ impl Terminal {
             utf8_pending: Vec::new(),
             consumed: 0,
         }
+    }
+    fn resize(&self, cols: u16, rows: u16) {
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::ioctl(
+                    self.master.as_ref().unwrap().as_raw_fd(),
+                    libc::TIOCSWINSZ,
+                    &size,
+                )
+            },
+            0
+        );
     }
     fn record(&mut self, bytes: &[u8]) {
         self.utf8_pending.extend_from_slice(bytes);
@@ -10341,6 +10438,7 @@ fn tui_permissions_keep_pending_file_and_member_questions_and_save_command_rules
         }
     });
     let mut terminal = Terminal::resume_tui(home.command());
+    terminal.resize(160, 32);
     terminal.until("test / model");
     terminal.write(b"/approvals\r");
     terminal.until("Full access");
@@ -10475,6 +10573,125 @@ fn tui_approval_alias_selects_presets_and_remembers_them() {
         serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
     assert_eq!(config["permission"], "workspace-write");
     assert!(config.get("permissionPreset").is_none());
+}
+
+#[test]
+fn tui_shift_tab_cycles_permissions_and_preserves_the_draft_in_both_modes() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (submitted, wait_submitted) = std::sync::mpsc::channel();
+        let (controls, wait_controls) = std::sync::mpsc::channel();
+        let (checked, wait_checked) = std::sync::mpsc::channel();
+        let (burst, wait_burst) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.permission.get", "session.permission.update"]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(&history, json!({"events":[
+                {"id":"input","sequence":1,"create_at":1,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"earlier message"}]},"mode":"queue"}},
+                {"id":"adopted","sequence":2,"create_at":1,"type":"input","name":"applied","data":{"input_id":"input","mode":"queue"}}
+            ],"through":8,"nextAfter":8,"done":true}));
+            let mut policy = json!({"preset":"read-only","allowedTools":["read"],"disallowedTools":["blocked"]});
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":1,"policy":policy}));
+            wire.no_context();
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            wait_controls.recv_timeout(PATIENCE).unwrap();
+            wire.quiet(Duration::from_millis(200));
+            checked.send(()).unwrap();
+            for (version, preset) in [(1, "workspace-write"), (2, "full-access"), (3, "read-only")] {
+                let read = wire.read("session.permission.get");
+                wire.reply(&read, json!({"version":version,"policy":policy}));
+                policy["preset"] = json!(preset);
+                let update = wire.read("session.permission.update");
+                assert_eq!(update["params"], json!({"sessionId":"session","branchId":"main","expectedVersion":version,"policy":policy}));
+                wire.reply(&update, json!({"version":version + 1}));
+            }
+            for (version, preset) in [(4, "workspace-write"), (5, "full-access"), (6, "read-only")] {
+                let read = wire.read("session.permission.get");
+                if version == 4 {
+                    wait_burst.recv_timeout(PATIENCE).unwrap();
+                }
+                wire.reply(&read, json!({"version":version,"policy":policy}));
+                policy["preset"] = json!(preset);
+                let update = wire.read("session.permission.update");
+                assert_eq!(update["params"], json!({"sessionId":"session","branchId":"main","expectedVersion":version,"policy":policy}));
+                wire.reply(&update, json!({"version":version + 1}));
+            }
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":7,"policy":policy}));
+            let update = wire.read("session.permission.update");
+            wire.send(json!({"jsonrpc":"2.0","id":update["id"],"error":{"code":-32000,"message":"permission update refused"}}));
+            let read = wire.read("session.permission.get");
+            wire.reply(&read, json!({"version":7,"policy":policy}));
+            policy["preset"] = json!("workspace-write");
+            let update = wire.read("session.permission.update");
+            assert_eq!(update["params"]["policy"], policy);
+            wire.reply(&update, json!({"version":8}));
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["text"], "keep this draft");
+            wire.reply(&submit, json!({"event":{}}));
+            submitted.send(()).unwrap();
+            assert!(wire.trailing_request().is_none());
+        });
+        let mut command = home.command();
+        command.arg(if fullscreen {
+            "--fullscreen"
+        } else {
+            "--scrollback"
+        });
+        command
+            .env("COLORTERM", "truecolor")
+            .env("DIM_TERMINAL_APPEARANCE", "dark");
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.resize(160, 32);
+        terminal.until("test / model");
+        terminal.until_anywhere("⏵⏵ Read only");
+        terminal.until_anywhere("(shift+tab to cycle)");
+        if fullscreen {
+            terminal.write(b"\t\x1b[Z");
+        }
+        terminal.write(b"/permissions\r");
+        terminal.until("Permission mode");
+        terminal.write(b"\x1b[Z\x1b");
+        controls.send(()).unwrap();
+        wait_checked.recv_timeout(PATIENCE).unwrap();
+        terminal.write(b"keep this draft");
+        for (preset, label, color) in [
+            ("workspace-write", "Workspace write", "177;139;255"),
+            ("full-access", "Full access", "255;204;0"),
+            ("read-only", "Read only", "117;216;227"),
+        ] {
+            terminal.write(b"\x1b[Z");
+            terminal.until(&format!("Permission: {preset} (also for new sessions)"));
+            terminal.until_anywhere(&format!("\x1b[38;2;{color}m⏵⏵ {label}"));
+            let config: Value =
+                serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap())
+                    .unwrap();
+            assert_eq!(config["permission"], preset);
+        }
+        terminal.write(b"\x1b[Z\x1b[Z\x1b[Zx");
+        terminal.until("keep this draftx");
+        terminal.write(b"\x7f");
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["permission"], "read-only");
+        burst.send(()).unwrap();
+        terminal.write(b"\x1b[Z");
+        terminal.until("permission update refused");
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(home.0.join("config.json")).unwrap()).unwrap();
+        assert_eq!(config["permission"], "read-only");
+        terminal.write(b"\x1b[Z");
+        terminal.until("Permission: workspace-write (also for new sessions)");
+        terminal.write(b"\r");
+        wait_submitted.recv_timeout(PATIENCE).unwrap();
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
 }
 
 /// The terminal's program status (OSC 7501) follows a run through a

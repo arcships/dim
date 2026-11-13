@@ -560,6 +560,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab 循环切换权限（输入框聚焦时）"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "选中历史项时 Shift+Tab 选择较新项 · Esc 返回输入框"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab 切换)",
         "Fullscreen" => "全屏",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown 滚动 · Home/End 到顶部或底部 (草稿为空时) · Tab 选择消息，e 编辑，q 引用"
