@@ -7,7 +7,6 @@
 //! instant a couple of seconds ahead, and a short poll with a hard timeout.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
-use dim_agent_scheduler::install;
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Server};
@@ -113,10 +112,27 @@ fn home() -> tempfile::TempDir {
 }
 
 async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
+    start_armed(home, model, |_| {}).await
+}
+
+/// [`start`] with the server's hooks armed before it starts, so a startup pass
+/// cannot run before the test's seam is in force.
+async fn start_armed(
+    home: &Path,
+    model: Arc<Script>,
+    arm: impl FnOnce(&dim_agent_scheduler::testing::Holds),
+) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
-    install(&mut builder);
+    let holds = Arc::new(dim_agent_scheduler::testing::Holds::default());
+    arm(&holds);
+    dim_agent_scheduler::install_with_testing(
+        &mut builder,
+        dim_agent_scheduler::SchedulerTexts::default(),
+        holds,
+    )
+    .expect("the built-in texts are valid");
     serve(
         builder,
         ServerConfig {
@@ -559,6 +575,70 @@ async fn a_restart_settles_a_delivering_round_by_lookup() {
     assert_eq!(
         after, delivered,
         "the accepted round found by lookup settles it; nothing is written again"
+    );
+}
+
+/// A restart whose one startup lookup answers nothing settles the round on the
+/// timer's next pass, not a minute later: while the round is unsettled the
+/// loop writes nothing, so a minute of waiting is a minute without a round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restart_retries_an_unanswered_lookup_on_the_next_tick() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &[], true).await;
+
+    client
+        .rpc(
+            "session.loop.start",
+            json!({"sessionId": session, "prompt": "watch"}),
+        )
+        .await
+        .unwrap();
+    wait_for("round 1", || {
+        stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["round"] == json!(2))
+    })
+    .await;
+    let delivered = loop_rounds(&history(&mut client, &session).await).len();
+    assert_eq!(delivered, 1);
+
+    // The state a crash between the input write and the settle leaves.
+    edit_loops(home.path(), |loops| {
+        loops[0]["round"] = json!(1);
+        loops[0]["delivering_round"] = json!(1);
+        loops[0]["state"] = json!("running");
+        loops[0]["next_at"] = Value::Null;
+        loops[0]["last_round_at"] = Value::Null;
+    });
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start_armed(home.path(), Arc::new(Script::default()), |holds| {
+        holds.fail_lookups(1);
+    })
+    .await;
+    let mut client = connect(&server).await;
+
+    // Ten seconds is far short of the minute a one-shot startup pass would
+    // leave the round unsettled for, and far longer than the per-tick retry.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !stored_loops(home.path())
+            .first()
+            .is_some_and(|record| record["delivering_round"].is_null())
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the per-tick pass settles the round after the unanswered startup lookup");
+
+    let after = loop_rounds(&history(&mut client, &session).await).len();
+    assert_eq!(
+        after, delivered,
+        "the accepted round is settled by lookup; nothing is written again"
     );
 }
 

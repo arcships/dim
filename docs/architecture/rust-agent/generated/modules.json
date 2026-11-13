@@ -1952,7 +1952,8 @@
       "unexpandedMacros": [
         "format",
         "json",
-        "matches"
+        "matches",
+        "tracing::warn"
       ]
     },
     {

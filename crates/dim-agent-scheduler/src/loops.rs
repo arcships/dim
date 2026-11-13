@@ -876,17 +876,22 @@ impl Loops {
     /// that round's submission id (A.5). A definite answer settles it and
     /// nothing is ever written a second time; an unresolved answer leaves the
     /// record for the next pass.
-    pub async fn settle_delivering(&self) -> Result<(), SchedulerError> {
+    ///
+    /// `Ok(false)` says at least one record got no definite answer, so the
+    /// window it holds stays shut until a later pass asks again (§12.1). A
+    /// daemon with no live loop answers `Ok(true)`: it has nothing to settle.
+    pub(crate) async fn settle_delivering(&self) -> Result<bool, SchedulerError> {
         if !self.any_live() {
-            return Ok(());
+            return Ok(true);
         }
         let Some(_activity) = self.shared.activity.take_hold() else {
-            return Ok(());
+            return Ok(false);
         };
         let _hold = self.shared.loops.lock().await;
         let now = Utc::now();
         let snapshot = read(&self.shared.files).await?;
         let mut changes: Vec<Change> = Vec::new();
+        let mut answered = true;
         for record in snapshot
             .iter()
             .filter(|record| record.delivering_round.is_some())
@@ -894,12 +899,27 @@ impl Loops {
             let Some(round) = record.delivering_round else {
                 continue;
             };
-            let lookup = json!({
+            let request = json!({
                 "sessionId": record.session_id,
                 "branchId": record.branch_id,
                 "submissionId": submission(&record.loop_id, round),
             });
-            match sessions(self.shared.sessions.as_ref(), "lookup", lookup).await {
+            // The flow tests' seam: an armed failure makes this lookup the one
+            // that answers nothing.
+            #[cfg(feature = "testing")]
+            let answer = if self
+                .shared
+                .holds
+                .as_ref()
+                .is_some_and(|holds| holds.take_lookup_failure())
+            {
+                Err("lookup reply lost".to_owned())
+            } else {
+                sessions(self.shared.sessions.as_ref(), "lookup", request).await
+            };
+            #[cfg(not(feature = "testing"))]
+            let answer = sessions(self.shared.sessions.as_ref(), "lookup", request).await;
+            match answer {
                 Ok(Ok(value)) => {
                     if value.get("status").and_then(|s| s.as_str()) == Some("accepted") {
                         // The lookup names the round's input, so the settled
@@ -929,10 +949,33 @@ impl Loops {
                     LoopState::Stopped,
                     Some(code),
                 )),
-                _ => {}
+                // No fact about the round: the record stays `delivering` and
+                // the next pass asks again with the same submission id. While
+                // it stays unsettled the loop writes no round, so a restart
+                // whose one startup lookup is unanswered must not wait for the
+                // minute-long retry (§12.1).
+                Ok(Err(code)) => {
+                    answered = false;
+                    tracing::warn!(
+                        loop_id = %record.loop_id,
+                        round,
+                        %code,
+                        "scheduler loop lookup left the round unsettled"
+                    );
+                }
+                Err(error) => {
+                    answered = false;
+                    tracing::warn!(
+                        loop_id = %record.loop_id,
+                        round,
+                        %error,
+                        "scheduler loop lookup left the round unsettled"
+                    );
+                }
             }
         }
-        self.settle(changes, Vec::new()).await
+        self.settle(changes, Vec::new()).await?;
+        Ok(answered)
     }
 
     /// Applies the pass's changes in one write and announces each record.

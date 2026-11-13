@@ -121,6 +121,7 @@ impl DynPlugin for SchedulerPlugin {
                 wakeups: tokio::sync::Mutex::new(()),
                 loops: tokio::sync::Mutex::new(()),
                 live_loops: std::sync::atomic::AtomicBool::new(false),
+                loop_lookup: std::sync::atomic::AtomicBool::new(false),
                 stop: ctx.cancellation_token(),
                 tasks: TaskTracker::new(),
                 retention: Default::default(),
@@ -242,15 +243,16 @@ impl DynPlugin for SchedulerPlugin {
                     .collect(),
             );
             // Every `delivering` record is settled by lookup at the next
-            // start, before any window writes again (A.6).
+            // start, before any window writes again (A.6). A lookup that
+            // answers nothing leaves the round unsettled for as long as the
+            // answer is missing, so the timer repeats the pass on its next
+            // tick rather than waiting for the minute-long one (§12.1).
             {
                 let startup = shared.clone();
                 let loops_startup = loops.clone();
                 shared.spawn(async move {
                     crate::engine::settle_delivering(&startup).await;
-                    if let Err(error) = loops_startup.settle_delivering().await {
-                        tracing::warn!(%error, "scheduler loop lookup pass failed");
-                    }
+                    note_loop_lookup(&startup, loops_startup.settle_delivering().await);
                 });
             }
             shared.spawn(crate::engine::prune(shared.clone()));
@@ -280,14 +282,15 @@ impl DynPlugin for SchedulerPlugin {
                         tracing::warn!(%error, "scheduler loop pass failed");
                     }
                     ticks += 1;
-                    if ticks.is_multiple_of(60) {
+                    let minute = ticks.is_multiple_of(60);
+                    if minute {
                         crate::engine::settle_delivering(&timer).await;
-                        if let Err(error) = loops.settle_delivering().await {
-                            tracing::warn!(%error, "scheduler loop lookup pass failed");
-                        }
-                        if timer.retention_pending() {
-                            crate::engine::prune(timer.clone()).await;
-                        }
+                    }
+                    if minute || timer.loop_lookup_pending() {
+                        note_loop_lookup(&timer, loops.settle_delivering().await);
+                    }
+                    if minute && timer.retention_pending() {
+                        crate::engine::prune(timer.clone()).await;
                     }
                 }
             });
@@ -329,6 +332,11 @@ pub(crate) struct Shared {
     /// the pass takes no process hold and reads no file (design 12.2). Every
     /// write under `loops` recomputes it.
     pub(crate) live_loops: std::sync::atomic::AtomicBool,
+    /// Whether the last loop lookup pass left a round without an answer. While
+    /// it holds, the loop writes no round (`delivering_round` stays set), so
+    /// the timer runs the pass again on its next tick instead of a minute later
+    /// (§12.1).
+    pub(crate) loop_lookup: std::sync::atomic::AtomicBool,
     /// Cancelled when this generation starts to unload.
     pub(crate) stop: CancellationToken,
     /// The timer, delivery tasks and retention passes; cleanup waits for them.
@@ -355,6 +363,12 @@ impl Shared {
         self.retention.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the last loop lookup pass left a round without an answer, so the
+    /// timer repeats it on its next tick instead of a minute later.
+    pub(crate) fn loop_lookup_pending(&self) -> bool {
+        self.loop_lookup.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Waits `delay`; `false` once the owner is unloading, when the caller
     /// stops and leaves an unsettled delivery to the next generation's
     /// recovery.
@@ -364,6 +378,22 @@ impl Shared {
             _ = tokio::time::sleep(delay) => true,
         }
     }
+}
+
+/// Records what the loop lookup pass answered: a round without an answer, or a
+/// pass that failed as a whole, keeps the retry pending so the timer runs the
+/// pass on its next tick instead of a minute later (§12.1).
+fn note_loop_lookup(shared: &Shared, answer: Result<bool, SchedulerError>) {
+    let pending = match answer {
+        Ok(answered) => !answered,
+        Err(error) => {
+            tracing::warn!(%error, "scheduler loop lookup pass failed");
+            true
+        }
+    };
+    shared
+        .loop_lookup
+        .store(pending, std::sync::atomic::Ordering::Release);
 }
 
 fn handler(shared: Arc<Shared>) -> Handler {
