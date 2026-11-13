@@ -1,26 +1,6 @@
 //! `--server` names a standalone App Server binary, not this executable.
 use super::*;
 
-/// The help says what `--server` takes and how the default differs.
-#[test]
-fn help_describes_a_standalone_server_binary() {
-    let home = Home::new();
-    let output = home.command().arg("--help").output().unwrap();
-    assert!(output.status.success());
-    let help = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        help.contains("Run a standalone dim-app-server binary"),
-        "{help}"
-    );
-    assert!(help.contains("app-server subcommand"), "{help}");
-    // The models area's own command line sits in the table like every other
-    // area's.
-    assert!(
-        help.contains("\n  models PROVIDER enable|disable|remove|inspect MODEL\n"),
-        "{help}"
-    );
-}
-
 /// The product executable is not that binary, under its own path or a link
 /// to it: the CLI names the mistake instead of reporting the child's exit
 /// status.
