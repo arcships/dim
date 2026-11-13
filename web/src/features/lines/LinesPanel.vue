@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch, ListTree, Maximize2, Minimize2, Plus, X } from "lucide-vue-next"
 import { MAIN_BRANCH } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useToastStore } from "../../stores/toast"
@@ -90,33 +89,32 @@ function onKeydown(event: KeyboardEvent): void {
           :class="{ 'is-active': active === undefined }"
           @click="openLines"
         >
-          <ListTree :size="14" aria-hidden="true" />
+          <UIcon name="i-lucide-list-tree" class="size-3.5 shrink-0" aria-hidden="true" />
           <span class="lines-tab-title">{{ t("lines.title") }}</span>
-          <span v-if="lineCount > 0" class="ui-badge" data-size="sm">{{ lineCount }}</span>
+          <UBadge v-if="lineCount > 0" color="neutral" variant="subtle" size="sm">{{ lineCount }}</UBadge>
         </button>
         <div v-for="branchId in tabs" :key="branchId" class="lines-tab-wrap" :class="{ 'is-active': active === branchId }">
           <button type="button" class="lines-tab" role="tab" :aria-selected="active === branchId" @click="activate(branchId)">
-            <GitBranch :size="14" aria-hidden="true" :class="{ 'is-running': busy(branchId) }" />
+            <UIcon name="i-lucide-git-branch" class="size-3.5 shrink-0" :class="{ 'is-running': busy(branchId) }" aria-hidden="true" />
             <span class="lines-tab-title">{{ title(branchId) }}</span>
             <span class="lines-tab-id">{{ shortId(branchId) }}</span>
             <span v-if="showDot(branchId)" class="lines-tab-dot" :data-tone="tone(branchId)" aria-hidden="true" />
           </button>
           <button type="button" class="lines-tab-close" :aria-label="t('lines.closeTab')" @click.stop="closeTab(branchId)">
-            <X :size="12" aria-hidden="true" />
+            <UIcon name="i-lucide-x" class="size-3" aria-hidden="true" />
           </button>
         </div>
       </div>
       <div class="lines-tab-actions">
-        <button type="button" class="ui-icon-button" data-variant="ghost" data-size="sm" :aria-label="t('lines.newLine')" v-tooltip="t('lines.newLine')" @click="newLine">
-          <Plus aria-hidden="true" />
-        </button>
-        <button type="button" class="ui-icon-button" data-variant="ghost" data-size="sm" :aria-label="ui.detailExpanded ? t('lines.collapse') : t('lines.expand')" v-tooltip="ui.detailExpanded ? t('lines.collapse') : t('lines.expand')" @click="ui.detailExpanded = !ui.detailExpanded">
-          <Minimize2 v-if="ui.detailExpanded" aria-hidden="true" />
-          <Maximize2 v-else aria-hidden="true" />
-        </button>
-        <button type="button" class="ui-icon-button" data-variant="ghost" data-size="sm" :aria-label="t('lines.closePanel')" v-tooltip="t('lines.closePanel')" @click="ui.closeDetail">
-          <X aria-hidden="true" />
-        </button>
+        <UTooltip :text="t('lines.newLine')">
+          <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-plus" :aria-label="t('lines.newLine')" @click="newLine" />
+        </UTooltip>
+        <UTooltip :text="ui.detailExpanded ? t('lines.collapse') : t('lines.expand')">
+          <UButton color="neutral" variant="ghost" size="sm" square :icon="ui.detailExpanded ? 'i-lucide-minimize-2' : 'i-lucide-maximize-2'" :aria-label="ui.detailExpanded ? t('lines.collapse') : t('lines.expand')" @click="ui.detailExpanded = !ui.detailExpanded" />
+        </UTooltip>
+        <UTooltip :text="t('lines.closePanel')">
+          <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-x" :aria-label="t('lines.closePanel')" @click="ui.closeDetail" />
+        </UTooltip>
       </div>
     </header>
 

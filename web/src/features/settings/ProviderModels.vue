@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { Plus, Search, X } from "lucide-vue-next"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { settingsMessages } from "../../i18n/settings"
 import { readManagement, type ManagementModel, type ManagementProvider } from "../../rpc/management"
@@ -10,6 +9,7 @@ import { useConnectionStore } from "../../stores/connection"
 import { useModelsStore } from "../../stores/models"
 import { messageFrom } from "./context"
 
+const INHERIT = "__inherit__"
 const props = defineProps<{ provider: ManagementProvider }>()
 const emit = defineEmits<{ updated: [provider: ManagementProvider] }>()
 const dirty = defineModel<boolean>("dirty", { default: false })
@@ -37,6 +37,19 @@ const confirm = ref<InstanceType<typeof ConfirmDialog>>()
 const models = computed(() => (props.provider.models ?? []).filter((m) => `${m.model.modelId} ${m.model.displayName}`.toLowerCase().includes(query.value.toLowerCase())))
 const allowedEfforts = computed(() => original.value?.model.metadata?.reasoning?.effortOptions ?? [])
 const tiers = computed(() => original.value?.model.metadata?.serviceTier?.options ?? [])
+const endpointItems = computed(() => [
+  { label: t("inherit"), value: INHERIT },
+  ...["openai", "openai-response", "openai-response-compact", "anthropic", "gemini"].map((kind) => ({ label: kind, value: kind })),
+])
+const effortItems = computed(() => [
+  { label: t("inherit"), value: INHERIT },
+  ...allowedEfforts.value.map((value) => ({ label: value, value })),
+])
+const tierItems = computed(() => [
+  { label: t("inherit"), value: INHERIT },
+  ...tiers.value.map((value) => ({ label: value, value })),
+])
+function fromInherit(value: unknown): string { return value === INHERIT ? "" : String(value ?? "") }
 function snapshot(): string { return JSON.stringify([modelId.value, name.value, context.value, output.value, tools.value, vision.value, reasoning.value, efforts.value, effort.value, tier.value, endpoint.value]) }
 watch(() => editing.value && snapshot() !== baseline.value, (value) => { dirty.value = value }, { flush: "sync" })
 function open(model?: ManagementModel): void {
@@ -132,31 +145,76 @@ async function save(): Promise<void> {
 <template>
   <section>
     <ConfirmDialog ref="confirm" />
-    <div class="settings-list-toolbar"><h3>{{ t("models") }}</h3><button v-if="provider.actions.includes('models.create')" class="ui-button" data-variant="secondary" data-size="sm" :disabled="busy || editing || provider.version === null" @click="open()"><Plus aria-hidden="true" />{{ t("addModel") }}</button></div>
+    <div class="settings-list-toolbar">
+      <h3>{{ t("models") }}</h3>
+      <UButton v-if="provider.actions.includes('models.create')" color="neutral" variant="outline" size="sm" icon="i-lucide-plus" :disabled="busy || editing || provider.version === null" @click="open()">{{ t("addModel") }}</UButton>
+    </div>
     <p class="settings-help" style="margin-bottom: 16px">{{ t("modelDescription") }}</p>
-    <p v-if="error" class="ui-banner settings-banner" data-tone="danger" role="alert">{{ error }}</p>
+    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-alert-circle" :description="error" role="alert" class="settings-banner" />
     <form v-if="editing" class="settings-card settings-form" @submit.prevent="save">
-      <div class="settings-list-toolbar"><h3>{{ t(original ? "edit" : "addModel") }}</h3><button class="ui-icon-button" data-variant="close" type="button" :disabled="busy" :aria-label="t('close')" @click="close"><X aria-hidden="true" /></button></div>
+      <div class="settings-list-toolbar">
+        <h3>{{ t(original ? "edit" : "addModel") }}</h3>
+        <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-x" :disabled="busy" :aria-label="t('close')" @click="close" />
+      </div>
       <fieldset class="settings-form" :disabled="busy || connection.phase !== 'connected'" style="margin: 0; padding: 0; border: 0; min-width: 0">
-        <label><span>{{ t("modelId") }}</span><input v-model="modelId" class="ui-field" required :readonly="!!original" /></label>
-        <label><span>{{ t("name") }}</span><input v-model="name" class="ui-field" required /></label>
-        <div class="settings-grid"><label><span>{{ t("context") }}</span><input v-model="context" class="ui-field" type="number" min="1" step="1" :required="original?.model.capabilities.contextWindow !== undefined" :placeholder="t('unknownLimits')" /></label><label><span>{{ t("output") }}</span><input v-model="output" class="ui-field" type="number" min="1" step="1" :required="original?.model.capabilities.maxOutputTokens !== undefined" :placeholder="t('unknownLimits')" /></label></div>
-        <div class="settings-inline-actions"><label class="settings-check"><input v-model="tools" type="checkbox" />{{ t("tools") }}</label><label class="settings-check"><input v-model="vision" type="checkbox" />{{ t("vision") }}</label><label class="settings-check"><input v-model="reasoning" type="checkbox" />{{ t("reasoning") }}</label></div>
-        <label v-if="reasoning"><span>{{ t("effort") }}</span><input v-model="efforts" class="ui-field" placeholder="low, medium, high" /></label>
-        <label v-if="original && provider.connection?.driverKind === 'new-api-router'"><span>{{ t("endpoint") }}</span><select v-model="endpoint" class="ui-field"><option value="">{{ t("inherit") }}</option><option v-for="kind in ['openai', 'openai-response', 'openai-response-compact', 'anthropic', 'gemini']" :key="kind" :value="kind">{{ kind }}</option></select></label>
+        <UFormField :label="t('modelId')">
+          <UInput v-model="modelId" required :readonly="!!original" class="w-full" />
+        </UFormField>
+        <UFormField :label="t('name')">
+          <UInput v-model="name" required class="w-full" />
+        </UFormField>
+        <div class="settings-grid">
+          <UFormField :label="t('context')">
+            <UInput v-model="context" type="number" min="1" step="1" :required="original?.model.capabilities.contextWindow !== undefined" :placeholder="t('unknownLimits')" class="w-full" />
+          </UFormField>
+          <UFormField :label="t('output')">
+            <UInput v-model="output" type="number" min="1" step="1" :required="original?.model.capabilities.maxOutputTokens !== undefined" :placeholder="t('unknownLimits')" class="w-full" />
+          </UFormField>
+        </div>
+        <div class="settings-inline-actions">
+          <UCheckbox v-model="tools" :label="t('tools')" />
+          <UCheckbox v-model="vision" :label="t('vision')" />
+          <UCheckbox v-model="reasoning" :label="t('reasoning')" />
+        </div>
+        <UFormField v-if="reasoning" :label="t('effort')">
+          <UInput v-model="efforts" placeholder="low, medium, high" class="w-full" />
+        </UFormField>
+        <UFormField v-if="original && provider.connection?.driverKind === 'new-api-router'" :label="t('endpoint')">
+          <USelect :model-value="endpoint || INHERIT" :items="endpointItems" class="w-full" @update:model-value="endpoint = fromInherit($event)" />
+        </UFormField>
       </fieldset>
       <template v-if="original && provider.actions.includes('preferences.update') && (allowedEfforts.length || tiers.length)">
-        <h3>{{ t("preferences") }}</h3><div class="settings-grid"><label v-if="allowedEfforts.length"><span>{{ t("effort") }}</span><select v-model="effort" class="ui-field" :disabled="busy || connection.phase !== 'connected'"><option value="">{{ t("inherit") }}</option><option v-for="value in allowedEfforts" :key="value">{{ value }}</option></select></label><label v-if="tiers.length"><span>{{ t("tier") }}</span><select v-model="tier" class="ui-field" :disabled="busy || connection.phase !== 'connected'"><option value="">{{ t("inherit") }}</option><option v-for="value in tiers" :key="value">{{ value }}</option></select></label></div>
+        <h3>{{ t("preferences") }}</h3>
+        <div class="settings-grid">
+          <UFormField v-if="allowedEfforts.length" :label="t('effort')">
+            <USelect :model-value="effort || INHERIT" :items="effortItems" :disabled="busy || connection.phase !== 'connected'" class="w-full" @update:model-value="effort = fromInherit($event)" />
+          </UFormField>
+          <UFormField v-if="tiers.length" :label="t('tier')">
+            <USelect :model-value="tier || INHERIT" :items="tierItems" :disabled="busy || connection.phase !== 'connected'" class="w-full" @update:model-value="tier = fromInherit($event)" />
+          </UFormField>
+        </div>
       </template>
-      <div class="settings-actions"><button class="ui-button" data-variant="secondary" type="button" :disabled="busy" @click="close">{{ t("cancel") }}</button><button class="ui-button" data-variant="primary" type="submit" :disabled="busy || !dirty || connection.phase !== 'connected'">{{ busy ? t("saving") : t("save") }}</button></div>
+      <div class="settings-actions">
+        <UButton color="neutral" variant="outline" :disabled="busy" @click="close">{{ t("cancel") }}</UButton>
+        <UButton color="primary" type="submit" :disabled="busy || !dirty || connection.phase !== 'connected'">{{ busy ? t("saving") : t("save") }}</UButton>
+      </div>
     </form>
     <template v-else>
-      <label class="ui-field-wrap" style="margin-bottom: 12px"><Search aria-hidden="true" /><input v-model="query" class="ui-field" type="search" :placeholder="t('search')" /></label>
+      <UInput v-model="query" type="search" icon="i-lucide-search" :placeholder="t('search')" class="mb-3 w-full" />
       <div class="provider-models">
         <div v-for="entry in models" :key="entry.model.modelId" class="settings-row">
-          <input v-if="entry.actions.includes('set_enabled')" type="checkbox" :checked="entry.enabled" :aria-label="`${t('enabled')} ${entry.model.displayName}`" :disabled="busy || connection.phase !== 'connected'" @change="toggle(entry)" />
-          <div class="settings-row-main"><strong>{{ entry.model.displayName }}</strong><small>{{ entry.model.modelId }}</small><small v-if="entry.unavailableReason">{{ entry.unavailableReason }}</small><small v-else>{{ entry.model.capabilities.contextWindow?.toLocaleString() ?? t('unknownLimits') }} · {{ entry.source }}</small></div>
-          <div class="settings-inline-actions"><button v-if="entry.actions.includes('edit')" class="ui-button" data-variant="ghost" data-size="sm" :disabled="busy" @click="open(entry)">{{ t("edit") }}</button><button v-if="entry.actions.includes('reset')" class="ui-button" data-variant="ghost" data-size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, true)">{{ t("reset") }}</button><button v-if="entry.actions.includes('delete')" class="ui-button" data-variant="danger-ghost" data-size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, false)">{{ t("remove") }}</button></div>
+          <UCheckbox v-if="entry.actions.includes('set_enabled')" :model-value="entry.enabled" :aria-label="`${t('enabled')} ${entry.model.displayName}`" :disabled="busy || connection.phase !== 'connected'" @update:model-value="toggle(entry)" />
+          <div class="settings-row-main">
+            <strong>{{ entry.model.displayName }}</strong>
+            <small>{{ entry.model.modelId }}</small>
+            <small v-if="entry.unavailableReason">{{ entry.unavailableReason }}</small>
+            <small v-else>{{ entry.model.capabilities.contextWindow?.toLocaleString() ?? t('unknownLimits') }} · {{ entry.source }}</small>
+          </div>
+          <div class="settings-inline-actions">
+            <UButton v-if="entry.actions.includes('edit')" color="neutral" variant="ghost" size="sm" :disabled="busy" @click="open(entry)">{{ t("edit") }}</UButton>
+            <UButton v-if="entry.actions.includes('reset')" color="neutral" variant="ghost" size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, true)">{{ t("reset") }}</UButton>
+            <UButton v-if="entry.actions.includes('delete')" color="error" variant="ghost" size="sm" :disabled="busy || connection.phase !== 'connected'" @click="remove(entry, false)">{{ t("remove") }}</UButton>
+          </div>
         </div>
       </div>
       <p v-if="!models.length" class="settings-empty">{{ t(query ? "noResults" : provider.actions.includes("refresh") ? "noModelsRefresh" : provider.actions.includes("models.create") ? "noModelsAdd" : "noProviderModels") }}</p>

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue"
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, RouterView, useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { Activity, Archive, ArrowLeft, Box, Brain, Clock3, Palette, Plug, Settings2, ShieldCheck, SlidersHorizontal, UserCircle, Wrench } from "lucide-vue-next"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { settingsMessages } from "../../i18n/settings"
 import { useConnectionStore } from "../../stores/connection"
@@ -18,11 +17,11 @@ const dirty = ref(false)
 const confirm = ref<InstanceType<typeof ConfirmDialog>>()
 provide(settingsDirtyKey, dirty)
 const categories = [
-  { id: "account", icon: UserCircle }, { id: "appearance", icon: Palette }, { id: "agent", icon: Settings2 },
-  { id: "providers", icon: Brain }, { id: "modality", icon: SlidersHorizontal }, { id: "mcp", icon: Wrench },
-  { id: "plugins", icon: Plug }, { id: "skills", icon: Box }, { id: "permissions", icon: ShieldCheck },
-  { id: "scheduled", icon: Clock3 },
-  { id: "archived", icon: Archive }, { id: "diagnostics", icon: Activity },
+  { id: "account", icon: "i-lucide-user-circle" }, { id: "appearance", icon: "i-lucide-palette" }, { id: "agent", icon: "i-lucide-settings-2" },
+  { id: "providers", icon: "i-lucide-brain" }, { id: "modality", icon: "i-lucide-sliders-horizontal" }, { id: "mcp", icon: "i-lucide-wrench" },
+  { id: "plugins", icon: "i-lucide-plug" }, { id: "skills", icon: "i-lucide-box" }, { id: "permissions", icon: "i-lucide-shield-check" },
+  { id: "scheduled", icon: "i-lucide-clock-3" },
+  { id: "archived", icon: "i-lucide-archive" }, { id: "diagnostics", icon: "i-lucide-activity" },
 ]
 const compact = computed(() => ui.shellMode === "compact")
 const index = computed(() => route.name === "settings-index")
@@ -48,16 +47,16 @@ onBeforeUnmount(() => window.removeEventListener("beforeunload", beforeUnload))
   <section class="settings-shell">
     <ConfirmDialog ref="confirm" />
     <aside v-if="!compact || index" class="settings-nav">
-      <RouterLink class="settings-back" :to="{ name: 'root' }"><ArrowLeft :size="16" aria-hidden="true" />{{ t("back") }}</RouterLink>
+      <RouterLink class="settings-back" :to="{ name: 'root' }"><UIcon name="i-lucide-arrow-left" class="size-4 shrink-0" aria-hidden="true" />{{ t("back") }}</RouterLink>
       <nav :aria-label="t('settings')">
         <RouterLink v-for="item in categories" :key="item.id" :to="`/settings/${item.id}`" :class="{ 'is-active': category === item.id }" :aria-current="category === item.id ? 'page' : undefined">
-          <component :is="item.icon" :size="16" aria-hidden="true" /><span>{{ t(item.id) }}</span>
+          <UIcon :name="item.icon" class="size-4 shrink-0" aria-hidden="true" /><span>{{ t(item.id) }}</span>
         </RouterLink>
       </nav>
     </aside>
     <div v-if="!compact || !index" class="settings-body app-scroll-viewport">
       <div v-if="compact" class="settings-compact-bar">
-        <RouterLink class="ui-icon-button" data-variant="ghost" :to="parent" :aria-label="t('back')"><ArrowLeft aria-hidden="true" /></RouterLink>
+        <UButton color="neutral" variant="ghost" size="md" square icon="i-lucide-arrow-left" :to="parent" :aria-label="t('back')" />
         <span>{{ t(category ?? 'settings') }}</span>
       </div>
       <fieldset class="settings-content" :disabled="connection.phase !== 'connected' && !['appearance', 'account', 'providers'].includes(category ?? '')">

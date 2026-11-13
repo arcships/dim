@@ -4,6 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
@@ -48,7 +49,7 @@ const submit = async (root, label) => { await all(root).find(el => el.type === "
 function mount(t, component, call, supports = () => true) {
   globalThis.window = { confirm: () => true }
   globalThis.defaultsConnection = reactive({ phase: "connected", supports, client: { call: async (method, params, read) => read(await call(method, params)) } })
-  const root = node("root"), app = renderer.createApp(component)
+  const root = node("root"), app = renderer.createApp(component).use(nuxtUiTestPlugin)
   app.mount(root)
   t.after(() => { app.unmount(); delete globalThis.window; delete globalThis.defaultsConnection })
   return root
@@ -218,19 +219,17 @@ test("default-model scope changes preserve cancelled or failed drafts and never 
   const scope = field(root, "Default model scope"), model = field(root, "Model"), policy = field(root, "Model policy")
   model.props["onUpdate:modelValue"](JSON.stringify(["fixture", "b"])); await flush()
   globalThis.window.confirm = () => false
-  const cancelled = { value: "/project" }
-  await scope.props.onChange({ target: cancelled }); await flush()
-  assert.equal(cancelled.value, "")
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
+  assert.equal(scope.props.value, "__user__")
   globalThis.window.confirm = () => true
   fail = true
-  const failed = { value: "/project" }
-  await scope.props.onChange({ target: failed }); await flush()
-  assert.equal(failed.value, "")
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
+  assert.equal(scope.props.value, "__user__")
   assert.match(text(root), /project unavailable/)
   await submit(root, "Save defaults")
   assert.equal(writes[0][1].cwd, undefined)
   fail = false
-  await scope.props.onChange({ target: { value: "/project" } }); await flush()
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
   model.props["onUpdate:modelValue"](JSON.stringify(["fixture", "b"]))
   policy.props["onUpdate:modelValue"]("inherit"); await flush()
   await submit(root, "Save defaults")
