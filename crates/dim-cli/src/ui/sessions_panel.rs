@@ -114,8 +114,12 @@ impl SessionsPanel {
                     self.names.extend(names);
                     self.list.append_items(rows);
                 } else {
+                    // The rows a replacing page takes over are still drawn: a
+                    // widened scope keeps the selection on its row, and a row
+                    // the operator moved to while the wider page was read wins.
+                    let selected = self.list.selected_id();
                     self.names = names;
-                    self.list.set_items(Ok(rows), None);
+                    self.list.set_items(Ok(rows), selected.as_deref());
                 }
             }
             Err(error) => self.set_items(Err(error)),
@@ -149,7 +153,9 @@ impl SessionsPanel {
     /// set of more than one changes what it lists, so the cursor is dropped
     /// and the first page is read again; a one-entry set lists exactly the
     /// launch workspace — canonical `cwd` treats it as the same filter — so
-    /// only the title changes, and a list already read stays.
+    /// only the title changes, and a list already read stays. The rows stay
+    /// drawn while the wider page is read, and the selection stays on its
+    /// row.
     pub fn repository(&mut self, workspaces: Vec<String>) {
         if workspaces.is_empty() {
             // A failed git read sends nothing; keep the exact launch
@@ -164,7 +170,7 @@ impl SessionsPanel {
                 // drop the cursor and read the first page again.
                 self.list.set_title(t(TITLE_REPOSITORY));
                 self.list.set_empty_text(EMPTY_OTHER);
-                self.refresh();
+                self.drop_page();
             } else {
                 // Only the title changes: a one-entry set lists exactly the
                 // launch workspace, so `cwd` is the filter already under way.
@@ -174,10 +180,16 @@ impl SessionsPanel {
     }
 
     pub fn refresh(&mut self) {
+        self.drop_page();
+        self.list.loading();
+    }
+
+    /// Drops the page identity and asks for the first page again. The rows
+    /// stay drawn until its reply replaces them.
+    fn drop_page(&mut self) {
         self.request_id = None;
         self.next_cursor = None;
         self.due = Some(Instant::now());
-        self.list.loading();
     }
 
     fn filter_changed(&mut self) {
