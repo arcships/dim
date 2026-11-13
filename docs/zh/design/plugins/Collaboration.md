@@ -23,6 +23,8 @@ guide 条目的文本是代码（[Prompt §5](Prompt.md#5-复现它的事实)）
 
 leader 的 `agent` request schema 要求新生成的调用带有字符串 `title`：它是后台任务列表中的简短任务标签，与完整的 `prompt`、Agent profile 的 `name` 和 `description`、会话标题相互独立。运行时准入仍接受旧调用省略此字段。工具边界拒绝非字符串、按空白判断为空或包含 CR、LF、NEL、LINE SEPARATOR、PARAGRAPH SEPARATOR 的标题。接受的标题保持原文；消费者不规范化，也不从 prompt 或 Agent profile 推导标题。
 
+为兼容不同 Provider，标题 schema 只使用 `type: string` 和 `minLength: 1`，不使用正则表达式；非空白、单行的合同由准入检查执行。
+
 `collaboration/request` 将 `title` 持久化为可选字符串，`session.collaboration.pending` 在每项的 `request` 中原样携带它。每次 request 都拥有自己的标题，包括向现有成员发起的 request。缺失标题保持缺失：没有此字段的旧调用和事实仍可读取，序列化时省略缺失值。持久化采用[原生格式 v47](../../../design/appserver/native-storage-format.md#v47-task-titles)，只升级格式标记、单向准入，使旧的严格读取器在启动时拒绝新库。schema 对标题的描述是此显示字段的 protocol；协调 policy、成员执行、取消与结算不变。既有 Collaboration 服务数据面不变，不新增服务。
 
 ## 2. guide 条目

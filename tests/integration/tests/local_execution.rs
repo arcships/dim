@@ -1080,6 +1080,8 @@ async fn exec_results_declare_the_command_they_started() {
         })
         .unwrap();
     assert_eq!(schema["required"], json!(["command", "title"]));
+    assert_eq!(schema["properties"]["title"]["minLength"], 1);
+    assert!(schema["properties"]["title"].get("pattern").is_none());
     let declared = results(&events);
     assert_eq!(
         declared[0].effects,

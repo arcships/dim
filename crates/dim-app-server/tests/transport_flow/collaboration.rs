@@ -1906,6 +1906,15 @@ async fn leader_delegates_and_team_members_communicate() {
             .iter()
             .any(|variant| variant["required"] == json!(["action", "prompt", "title", "profile"]))
     );
+    for variant in schema["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|variant| variant["properties"]["action"]["enum"][0] == "request")
+    {
+        assert_eq!(variant["properties"]["title"]["minLength"], 1);
+        assert!(variant["properties"]["title"].get("pattern").is_none());
+    }
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(!validator.is_valid(&json!({"action":"cancel","agentId":"exec-unknown"})));
     assert!(!validator.is_valid(&json!({"action":"list","agentId":"unexpected"})));
@@ -1923,21 +1932,21 @@ async fn leader_delegates_and_team_members_communicate() {
     assert!(
         !validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent}))
     );
-    for title in [
-        json!(""),
-        json!("  "),
-        json!("two\nlines"),
-        json!("trailing\n"),
-        json!("two\rlines"),
-        json!("two\u{0085}lines"),
-        json!("two\u{2028}lines"),
-        json!("two\u{2029}lines"),
-        json!(null),
-        json!(7),
+    for (title, schema_valid) in [
+        (json!(""), false),
+        (json!("  "), true),
+        (json!("two\nlines"), true),
+        (json!("trailing\n"), true),
+        (json!("two\rlines"), true),
+        (json!("two\u{0085}lines"), true),
+        (json!("two\u{2028}lines"), true),
+        (json!("two\u{2029}lines"), true),
+        (json!(null), false),
+        (json!(7), false),
     ] {
         let input =
             json!({"action":"request","prompt":"work","title":title,"agentId":default_agent});
-        assert!(!validator.is_valid(&input), "{input}");
+        assert_eq!(validator.is_valid(&input), schema_valid, "{input}");
         let before = facts(&lead_session).await;
         say(&mut client, &lead, tool(input), "queue").await;
         idle(&mut client, &lead).await;

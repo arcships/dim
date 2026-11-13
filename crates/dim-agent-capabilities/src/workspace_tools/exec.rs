@@ -64,7 +64,7 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute."},
-                "title": {"type": "string", "minLength": 1, "pattern": "^(?!\\s*$)[^\\r\\n\u{0085}\u{2028}\u{2029}]+$", "description": "Short, nonblank single-line task title shown in the background task list; separate from the command."},
+                "title": {"type": "string", "minLength": 1, "description": "Short, nonblank single-line task title shown in the background task list; separate from the command."},
                 "cwd": {"type": "string", "description": "Working directory. Defaults to session cwd."},
                 "runInBackground": {
                     "type": "boolean",

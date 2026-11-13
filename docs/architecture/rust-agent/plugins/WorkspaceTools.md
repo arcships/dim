@@ -164,6 +164,8 @@ tool-result code is preserved, with instructions to fix the file and retry.
 
 Exec's schema requires a `title` string for newly generated calls: a short task-specific label for the background task list, independent of the shell `command`. Runtime admission still accepts omission for existing callers. The external tool boundary rejects a supplied title that is not a string, is blank after checking whitespace, or contains CR, LF, NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR, with `exec_invalid_request` before starting a process. An accepted title is passed verbatim to BackgroundExec on either immediate or automatic handoff; consumers do not normalize it. The command-derived `description` retains its existing meaning. Omitting the title keeps existing callers working and creates no inferred title. The title schema and its description are protocol under [model-facing prompts §4](../../../design/model-prompts.md#4-protocol-and-policy); execution policy is unchanged.
 
+For provider compatibility, the title schema uses `type: string` and `minLength: 1` without a regular expression; admission enforces the nonblank, single-line contract.
+
 Exec takes no input that selects a boundary. The user's `Process isolation` control in
 `/permissions` or `/settings` selects the existing `sandbox` and `network` settings
 ([process isolation](../../../design/host-platform-isolation.md#process-isolation));

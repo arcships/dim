@@ -3177,7 +3177,6 @@ fn agent_definition(
             properties["resultId"] = json!({"type": "string"});
             properties["prompt"] = json!({"type": "string"});
             properties["title"] = json!({"type": "string", "minLength": 1,
-                "pattern": "^(?!\\s*$)[^\\r\\n\u{0085}\u{2028}\u{2029}]+$",
                 "description": "Short, nonblank single-line title for this task in the background task list; separate from prompt and the Agent profile name."});
             properties["profile"] = json!({
                 "type": "object",
