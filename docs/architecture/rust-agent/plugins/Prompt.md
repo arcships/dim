@@ -7,9 +7,9 @@ ConfigureControl and projects adopted prompt and configuration state.
 `Branch::get<PromptSnapshot>()` reads the last adopted `context/configured` without
 replaying history. Prompt owns the current projection and its effective entry references under one
 lock. Recovery reads the latest v2 effective references and adoption revisions,
-then the actual prompt changes after changed_through. Configuration is obtained
+then at most one committed adoption after changed_through, checked against the saved revision. Missing legacy references require the explicit owner migration, never normal history replay. Configuration is obtained
 separately from its latest fact. Referenced event/element pairs read only effective
-entries, with turn/task lifetime boundaries checked by complete scope keys.
+entries, with later turn/task endings checked by complete scope keys; accepted sets do not re-query their historical starts.
 No turns, tasks or configuration identity is copied into a recovery record.
 The publisher receives explicit adopted state instead of rebuilding history.
 

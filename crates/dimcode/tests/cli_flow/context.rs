@@ -45,7 +45,7 @@ fn tui_display_details_use_one_typed_reply_and_retry_after_collapse() {
             wire.reply(&attach, attach_record(&attach));
             let history = wire.read("session.history.display");
             assert_eq!(history["params"]["latestTurn"], true);
-            assert_eq!(history["params"]["limit"], 256);
+            assert_eq!(history["params"]["limit"], 64);
             let reading = hold_initial_usage(wire);
             wire.reply(&reading, usage(40000.));
             wire.reply(&history, json!({"items":[{
@@ -799,13 +799,11 @@ fn tui_usage_withholds_the_cache_hit_rate_until_main_history_loads() {
         let first = wire.read("session.history");
         assert_eq!(
             first["params"],
-            json!({"sessionId":"session","branchId":"main","latestTurn":true,"limit":256})
+            json!({"sessionId":"session","branchId":"main","latestTurn":true,"limit":64})
         );
         wire.reply(
             &first,
-            json!({"events":[history_usage(7, 9200.0),
-                {"id":"event-8","sequence":8,"create_at":1,"type":"step","name":"text",
-                 "data":{"turn_id":"turn","request_id":"request","delta":"history loaded"}}],
+            json!({"events":[history_usage(7, 9200.0)],
                 "through":8,"nextBefore":7,"nextAfter":8,"done":false}),
         );
         let mut second = None;
@@ -831,7 +829,7 @@ fn tui_usage_withholds_the_cache_hit_rate_until_main_history_loads() {
         let second = second.expect("main history pages");
         assert_eq!(
             second["params"],
-            json!({"sessionId":"session","branchId":"main","before":7,"limit":256,"through":8})
+            json!({"sessionId":"session","branchId":"main","before":7,"limit":64,"through":8})
         );
         // The first `/usage` reads the context while the second page is
         // outstanding, and only then does the page land.
@@ -840,7 +838,10 @@ fn tui_usage_withholds_the_cache_hit_rate_until_main_history_loads() {
         wait_read.recv_timeout(PATIENCE).unwrap();
         wire.reply(
             &second,
-            json!({"events":[history_usage(5, 5000.0)],"through":8,"nextBefore":1,"nextAfter":6,"done":true}),
+            json!({"events":[history_usage(5, 5000.0),
+                {"id":"event-6","sequence":6,"create_at":1,"type":"step","name":"text",
+                 "data":{"turn_id":"turn","request_id":"request","delta":"history loaded"}}],
+                "through":8,"nextBefore":1,"nextAfter":6,"done":true}),
         );
         let loaded = wire.read("session.context.usage");
         wire.reply(&loaded, usage(64000.0));

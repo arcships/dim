@@ -147,6 +147,8 @@ export type TimelineQueryScope =
 export type QueryOperand =
   | { kind: "field"; path: string }
   | { kind: "outer"; path: string }
+  | { kind: "root"; path: string }
+  | { kind: "concat"; parts: QueryOperand[] }
   | { kind: "element"; path: string }
   | { kind: "value"; value: unknown }
 

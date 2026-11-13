@@ -17,7 +17,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 46;
+pub const FORMAT: u32 = 47;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -56,7 +56,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 46))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 47))",
     ),
     (
         "settings_documents",
@@ -121,6 +121,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "timeline_events_by_id",
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
+    ),
+    (
+        "timeline_events_branch_interrupts",
+        "CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'",
     ),
     (
         "timeline_events_requests",
@@ -271,7 +275,7 @@ const V45_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 32] = [
+const UPGRADES: [(u32, &[&str]); 33] = [
     (
         13,
         &[
@@ -378,8 +382,6 @@ const UPGRADES: [(u32, &[&str]); 32] = [
         ],
     ),
     (40, &[]),
-    // #1421: `automation` joins the creation origins; the rebuild's own
-    // statements are in `V42_AGENT_SESSIONS`.
     (41, &[]),
     // #1413: checked withdrawal candidates, unreadable by v42.
     (42, &[]),
@@ -399,6 +401,7 @@ const UPGRADES: [(u32, &[&str]); 32] = [
     // `model/usage` it decodes; the marker makes it refuse the store at open
     // instead.
     (45, &[]),
+    (46, &["timeline_events_branch_interrupts"]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -466,6 +469,26 @@ fn main_schema(version: u32) -> Vec<(&'static str, String)> {
                     .expect("owner schema")
                     .1
                     .to_owned(),
+                _ => sql,
+            };
+            (name, sql)
+        })
+        .collect()
+}
+
+fn resume_schema(version: u32) -> Vec<(&'static str, String)> {
+    schema_of(44)
+        .into_iter()
+        .chain(
+            SCHEMA
+                .iter()
+                .filter(|(name, _)| *name == "timeline_events_branch_interrupts")
+                .map(|(name, sql)| (*name, (*sql).to_owned())),
+        )
+        .map(|(name, sql)| {
+            let sql = match name {
+                "agent_store_format" => format_table(version),
+                "agent_sessions" if version == 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
                 _ => sql,
             };
             (name, sql)
@@ -550,6 +573,11 @@ fn known_format(actual: &[(String, String)], marker: Option<i64>) -> Option<u32>
     std::iter::once(FORMAT)
         .chain(UPGRADES.iter().map(|(from, _)| *from))
         .find(|version| matches(*version))
+        .or_else(|| {
+            [42, 43, 44]
+                .into_iter()
+                .find(|version| same_schema(actual, resume_schema(*version)))
+        })
         .or_else(|| {
             [37, 38]
                 .into_iter()
@@ -1100,6 +1128,8 @@ impl SqliteStorage {
                         .map_err(storage)?;
                     progress.report(true);
                 }
+                let resume =
+                    matches!(version, 42..=44) && same_schema(&actual, resume_schema(version));
                 let upgrade_from = if version >= 37
                     && !actual
                         .iter()
@@ -1161,6 +1191,9 @@ impl SqliteStorage {
                         .chain(super::arrays::SCHEMA)
                         .chain(super::identities::SCHEMA)
                         .filter(|(name, _)| added.contains(name))
+                        .filter(|(name, _)| {
+                            !(resume && *name == "timeline_events_branch_interrupts")
+                        })
                     {
                         connection.execute_batch(sql).map_err(storage)?;
                     }
@@ -1203,10 +1236,16 @@ impl SqliteStorage {
                             super::members::backfill_v40(&connection)?;
                         }
                     }
+                    if *from == 46 && !resume {
+                        for (_, sql) in DERIVED_INDEXES {
+                            connection.execute_batch(sql).map_err(storage)?;
+                        }
+                        super::members::backfill_v42(&connection)?;
+                    }
                     if *from == 38 {
                         super::arrays::backfill(&connection)?;
                     }
-                    if *from == 41 {
+                    if *from == 41 || *from == 42 && version == 42 && resume {
                         connection
                             .execute_batch(V42_AGENT_SESSIONS)
                             .map_err(storage)?;

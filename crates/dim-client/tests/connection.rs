@@ -144,11 +144,19 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
     };
     let event = |at| json!({"id":format!("event-{at}"),"sequence":at,"create_at":at,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"message"}]}}});
     let mut window = Window::default();
+    let params = window.params_with_display("session", "main", true, true);
+    assert_eq!(params["limit"], 32);
+    assert_eq!(params["transcript"], true);
+    assert!(params.get("latestTurn").is_none());
     let empty: HistoryWindow = serde_json::from_value(
         json!({"events":[],"through":302,"nextAfter":302,"nextBefore":302,"done":false}),
     )
     .unwrap();
     assert!(!window.push(empty).unwrap());
+    assert_eq!(
+        window.params_with_display("session", "main", true, true)["limit"],
+        64
+    );
     let page: HistoryWindow = serde_json::from_value(json!({"events":(1..=301).map(event).collect::<Vec<_>>(),"through":302,"nextAfter":301,"nextBefore":1,"done":true})).unwrap();
     assert!(window.push(page).unwrap());
     assert_eq!(
@@ -157,7 +165,7 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
         "one oversized atomic page stays complete"
     );
     assert!(window.before.is_none());
-    let mut window = Window::default();
+    let mut window = Window::earlier(450, 449);
     let newest: HistoryWindow = serde_json::from_value(json!({"events":(351..=449).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":449,"nextBefore":301,"done":false})).unwrap();
     assert!(!window.push(newest).unwrap());
     let older: HistoryWindow = serde_json::from_value(json!({"events":(1..=300).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":300,"nextBefore":1,"done":true})).unwrap();
@@ -182,11 +190,25 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
     }))
     .unwrap();
     let mut display = Window::default();
+    assert_eq!(display.params("session", "main")["limit"], 64);
     assert!(display.push(page.into()).unwrap());
     let items = display.take();
     assert_eq!(items.len(), 2);
+    assert_eq!(display.params("session", "main")["limit"], 256);
     assert!(
         matches!(&items[1].content, EventContent::CompactionSummary(summary) if summary.strategy=="summary")
     );
     assert_eq!(items[1].id, "compaction-2");
+    let page: DisplayPage = serde_json::from_value(json!({
+        "items":[{"id":"summary","sequence":50,"create_at":2,
+            "type":"display","name":"compaction","data":{"strategy":"summary"}}],
+        "through":50,"nextAfter":50,"nextBefore":50,"done":false
+    }))
+    .unwrap();
+    let mut summary = Window::default();
+    assert!(
+        summary.push(page.into()).unwrap(),
+        "a visible compaction must not trigger earlier history reads"
+    );
+    assert_eq!(summary.take().len(), 1);
 }

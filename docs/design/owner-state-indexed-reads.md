@@ -87,7 +87,7 @@ Usage : 最新数字+处理位置缓存 -> 仅未处理内容源 -> 发布当前
 | 同值配置或同值提示刷新 | 原采用比较返回 unchanged，0 | 全部0 |
 | 空输出失败并结束 turn，没有新的有效内容 | 原失败 output-end、turn/end；Goal 正在执行则原 paused 业务输出 | Usage 数字结果0；若存在尚未保存的无效果内容源，处理位置缓存1；Queue/Prompt 恢复事件0 |
 | 正常已结算分支重载 | 无新业务事实 | 全部0；动态配置采用有真实变化时另按配置流程计数 |
-| 硬退出后重载 | 不能补写退出前事实；资源 owner 按原合同补缺失终态 | Goal 内存 paused、Goal/Queue/Prompt 恢复快照0；Usage 仅为新结算内容或最后未完成统计工作保存 |
+| 硬退出后重载 | 不能补写退出前事实；资源 owner 按原合同补缺失终态 | Goal 内存 paused、Goal/Queue/Prompt 恢复快照0；Usage 只处理重载后真正发生的新结算内容；启动读头以前的缺口不补算、不写统计 |
 
 Usage 每个真正改变累计值或基准的来源保存一份数字；同源多条消息合并，最后一份即当前结果。不同来源保留各自边界，不等待未来 usage。普通轮输出若确实没有 model/usage，原事件数减1，统计只保存输入与输出2份。
 
@@ -95,12 +95,12 @@ Usage 每个真正改变累计值或基准的来源保存一份数字；同源�
 
 | owner | 正常冷读对象和逻辑 query 数（单分支） | 解码与计算 |
 | --- | --- | --- |
-| Goal | 最新业务状态1；兼容及删除修复另按其设计 | 一份目标；不计算旧进度 |
+| Goal | 本地 opening 位置和最新 goal/state；不读旧文本、不做输入删除回滚 | 一份目标；不计算旧进度 |
 | Queue，当前为空 | 两个当前成员组+start/end 各Last，共4 | 至多2个 turn 标量；无输入正文、无 entries 序列化 |
 | Queue，当前有输入 | 两个成员组的页数+2次 turn 边界；每个非空成员页增加1次批量 applied/withdraw 查询；有 released 驱动且无 turn 时加1次 interrupt；仅未 applied 且 mode 缺失的旧输入另查 user 存在性 | 只解码当前控制字段；不解码 user/blocks；必要释放/删除按原状态机 |
-| Prompt | 引用1、配置1、未保存提示变更检查1；引用所在 G 个原 changed 事件为G；每个引用涉及的 turn/task scope 两次状态边界，另查相关 branch/start 重置边界 | K个有效 PromptEntry；只处理本次发生变化的键/结束 scope；不重放聊天轮次 |
+| Prompt | 引用1、配置1、未保存提示变更检查1；引用所在 G 个原 changed 事件为G；每个引用涉及的 turn/task scope 只核对结束边界，另查相关 branch/start 重置边界；有效 Set 已证明采用时 scope 活动 | K个有效 PromptEntry；只处理本次发生变化的键/结束 scope；不重放聊天轮次 |
 | Usage，无未完成内容源 | 数字1、位置缓存1、counter 配置字段1、六类源的合并后缀查询1，共4；未显式配置 tools 时首次取得当前集合另点读配置 system 1次 | 一份数字状态和配置控制字段；无后缀时0旧消息、0消息计数；动态工具首次或身份变化时计算固定贡献，后续复用 |
-| Usage，有 U 个未处理内容源 | 上行定位后只读 source_through 之后的对应源；按源的实际字段/正文点查 | 计算真实尚未完成的 U 个来源；不重算已保存前缀 |
+| Usage，启动读头以前有未覆盖来源 | 上行的类型/位置索引探测即止；不读取来源正文 | 标为未就绪，等待实际请求已取得的最终投影；加载时0补算、0统计写入 |
 
 这些是逻辑 query 数，不是 SQLite statement 数；一个类型 IN 可拆多个索引范围，一次元素查询也可能访问 locator 与内容表。Query 的范围、索引缺口和 SQL 验证由[索引设计](appserver/timeline-state-read-indexes.md)规定。输入当前成员仍须读完当前集合，不能把它称为整段历史读取。
 
@@ -112,4 +112,4 @@ Usage 每个真正改变累计值或基准的来源保存一份数字；同源�
 
 Native branches reads only configuration and branch metadata; no full-history admission scan or validation cache remains. Export reads and decodes its output once and omits end on failure; see [restore boundary](appserver/restore-validation.md).
 
-Usage reuses v1–v3 saved aggregates and v4 numeric results; v5 explicitly preserves unavailable legacy message counts instead of recounting history to fill auxiliary metadata. No legacy-prefix backfill occurs at upgrade. If no statistics ever existed, initialize one current total with the existing paged projection. Missing pre-initialization numbers are calculated only for an actual compaction that needs them, never for normal resume; see [Usage §6](plugins/ContextUsage.md#6-恢复切点和查询范围).
+Usage reuses v1–v3 saved aggregates and v4 numeric results; v5 explicitly preserves unavailable legacy message counts instead of recounting history to fill auxiliary metadata. No legacy-prefix backfill occurs at upgrade. If no statistics ever existed, resume reports usage as not yet initialized. The first actual model request supplies its already acquired projection; Usage counts those entries once and saves one current total, without another history read. Uncovered cold sources invalidate the saved number without replay. An absent predecessor at an old compaction cut also invalidates it; no history recount is permitted. A new compaction after the captured request cutoff leaves Usage uninitialized until a subsequent real request includes that compaction; see [Usage §6](plugins/ContextUsage.md#6-恢复切点和查询范围).

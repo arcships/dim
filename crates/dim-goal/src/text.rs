@@ -152,13 +152,6 @@ impl State {
             _ => None,
         }
     }
-    /// The result summary, when the state is completed or blocked.
-    pub fn summary(&self) -> Option<&str> {
-        match self {
-            Self::Completed(summary) | Self::Blocked(summary) => Some(summary),
-            _ => None,
-        }
-    }
 }
 
 /// Which of Goal's keys the inherited prefix left live (§3.4). A state record

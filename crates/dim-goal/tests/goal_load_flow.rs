@@ -1,105 +1,13 @@
 mod support;
 
-use dim_agent_capabilities::history::{HistoryRenderer, context_messages, summary_message};
 use dim_agent_runtime::{BranchOptions, TimelineQueryDirection};
-use dim_agent_types::{
-    BranchCreateAt, BranchCreateData, BranchSource, ContextCompactionData, ContextCompactionResult,
-};
+use dim_agent_types::{BranchCreateAt, BranchCreateData, BranchSource};
 use dim_agent_types::{EventKind, ExtensionEvent, InputConsumedData, InputMode};
 use serde_json::json;
 use std::time::Duration;
 use support::parts::*;
 use support::texts;
 use tokio_util::sync::CancellationToken;
-
-fn seed_evaluation(seed: &mut Seed, evaluator: &str) -> (u64, u64) {
-    let (objective, status) = texts::legacy_evaluator_set_blocks("main", "ship it");
-    let set = seed.append(
-        "main",
-        message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::TurnStart(dim_agent_types::TurnStartData {
-            turn_id: "work".into(),
-        }),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: set.id.clone(),
-        }),
-    );
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::legacy_report("main", "completed", "all tests pass"),
-                Some("goal:status"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-    let end = seed.append(
-        "main",
-        dim_agent_types::EventKind::TurnEnd(dim_agent_types::TurnEndData {
-            turn_id: "work".into(),
-            outcome: dim_agent_types::TurnOutcome::Completed {
-                reason: "stop".into(),
-            },
-        }),
-    );
-    let evaluation = end.sequence;
-    let create = seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchCreate(BranchCreateData {
-            at: BranchCreateAt::Sequence {
-                sequence: evaluation,
-            },
-            source: BranchSource::Host {
-                operation_id: format!("goal:evaluate:{evaluation}"),
-            },
-            branch: evaluator.into(),
-            prompt: texts::evaluator_prompt("main", evaluation, "ship it", "all tests pass"),
-        }),
-    );
-    seed.append(
-        evaluator,
-        dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-            parent: Some("main".into()),
-            create_event: Some(create.sequence),
-        }),
-    );
-    // The prompt input the tree writes on a new line: a restore tells a line
-    // whose creation completed by its opening and this first Queue input.
-    seed.append(
-        evaluator,
-        message(vec![raw("line work", None, false)], InputMode::Queue),
-    );
-    (evaluation, create.sequence)
-}
-
-fn pause(seed: &mut Seed) {
-    seed.append(
-        "main",
-        message(
-            vec![raw(
-                &texts::legacy_pause("main"),
-                Some("goal:status"),
-                false,
-            )],
-            InputMode::Append,
-        ),
-    );
-}
-
 async fn states(env: &Env) -> Vec<serde_json::Value> {
     env.all_events("main")
         .await
@@ -330,38 +238,6 @@ async fn obsolete_execution_snapshots_do_not_override_the_business_state() {
 }
 
 #[tokio::test]
-async fn e2_an_evaluation_whose_creation_failed_has_no_evaluator_to_end() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-failed").await;
-    let (evaluation, create_sequence) = seed_evaluation(&mut seed, "eval");
-    let create = seed.append(
-        "main",
-        dim_agent_types::EventKind::BranchCreateFailed(
-            dim_agent_types::BranchCreateFailedData::Failed {
-                branch: "eval".into(),
-                create_event: create_sequence,
-                error: "branch creation failed".into(),
-            },
-        ),
-    );
-    let _ = create;
-    pause(&mut seed);
-    seed.finish().await;
-    let env = env.restore_seeded("load-failed").await;
-    assert!(
-        env.ended("main").await.is_empty(),
-        "a failed creation leaves no line to end"
-    );
-    assert_eq!(
-        env.settled("main").await.len(),
-        3,
-        "the load writes no evaluation_failed pause"
-    );
-    let _ = evaluation;
-    env.close().await;
-}
-
-#[tokio::test]
 async fn e2_an_inherited_check_skips_unrelated_inputs() {
     let env = Env::start_refusing().await;
     let mut seed = env.seed_new("load-inherited").await;
@@ -443,152 +319,6 @@ async fn e2_an_inherited_check_skips_unrelated_inputs() {
     env.close().await;
 }
 
-/// D3: a change trigger the previous generation never answered is answered
-/// once at load, naming the trigger; the next load writes nothing more.
-
-#[tokio::test]
-async fn e2_the_first_state_record_retires_the_old_keys() {
-    let env = Env::start().await;
-    let mut seed = env.seed_new("load-retire").await;
-    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
-    let set = seed.append(
-        "main",
-        message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
-            InputMode::Queue,
-        ),
-    );
-    seed.append(
-        "main",
-        dim_agent_types::EventKind::InputConsumed(dim_agent_types::InputConsumedData {
-            input_id: set.id.clone(),
-        }),
-    );
-    seed.finish().await;
-    let env = env.restore_seeded("load-retire").await;
-
-    // The user pauses; the record that answers states the branch, and the old
-    // keys still live ride in the same input as retires.
-    env.goal("pause", serde_json::json!({}))
-        .await
-        .expect("pause writes");
-    let trigger = env.wait_for("main", r#"op="pause""#).await;
-    let record = env
-        .wait_for(
-            "main",
-            &format!(
-                r#"kind="state" status="paused" reason="user" trigger="{}""#,
-                trigger.submission_id.as_deref().unwrap()
-            ),
-        )
-        .await;
-    let input = env
-        .written_input("main", r#"kind="state" status="paused""#)
-        .await;
-    let keys: Vec<_> = input
-        .blocks
-        .iter()
-        .map(|block| {
-            let dim_agent_types::InputBlock::Raw { key, retire, .. } = block;
-            (key.as_deref(), *retire)
-        })
-        .collect();
-    assert_eq!(
-        keys,
-        [
-            (Some("goal:state"), false),
-            (Some("goal:objective"), true),
-            (Some("goal:status"), true),
-        ],
-        "the record retires the old keys in its own input"
-    );
-
-    // A turn consumes the change and the record: the delivered keyed state
-    // from here on is what `session.keys` lists and a compaction copies.
-    let end = env.turn("main", &[&trigger, &record]);
-    let renderer = HistoryRenderer::default();
-    let timeline = env.timeline("main");
-    let (_, history) = renderer
-        .rendered_context(&timeline, timeline.sequence())
-        .await
-        .expect("the branch renders");
-    let baseline = history.last().expect("the record's entry").baseline.clone();
-    assert_eq!(
-        baseline
-            .iter()
-            .map(|entry| entry.key.as_str())
-            .collect::<Vec<_>>(),
-        ["goal:state"],
-        "no old key stays live: {baseline:#?}"
-    );
-    let stated = match &baseline[0].message.content {
-        dim_agent_types::MessageContent::Text(text) => text.clone(),
-        other => panic!("a state record is one text: {other:?}"),
-    };
-    assert!(
-        stated.contains(r#"kind="state" status="paused""#),
-        "{stated}"
-    );
-
-    // A compaction after the consume copies that baseline; the next request
-    // carries the paused record and no old block.
-    env.emit(
-        "main",
-        dim_agent_types::EventKind::ContextCompaction(ContextCompactionData {
-            turn_id: None,
-            request_id: None,
-            command: None,
-            start: None,
-            through: end.sequence,
-            outcome: ContextCompactionResult::Completed {
-                retain_from: end.id.clone(),
-                replacement: vec![summary_message("compacted")],
-                strategy: "test".into(),
-                diagnostics: Box::new(
-                    serde_json::from_value(serde_json::json!({
-                        "reason":"auto", "trigger":"threshold", "estimatedInputTokens":1,
-                        "entriesReplaced":1, "modelCallCount":1, "durationMs":1,
-                        "strategy":{"kind":"test"}
-                    }))
-                    .unwrap(),
-                ),
-                context_baseline: baseline.to_vec(),
-                replacement_parts: None,
-                pinned_inputs: None,
-                digest_entries: None,
-            },
-        }),
-    );
-    let (context, history) = renderer
-        .rendered_context(&timeline, timeline.sequence())
-        .await
-        .expect("the compacted branch renders");
-    let request = context_messages(&context, &history)
-        .iter()
-        .filter_map(|message| match &message.content {
-            dim_agent_types::MessageContent::Text(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        request.contains(r#"kind="state" status="paused""#),
-        "the paused state is carried: {request}"
-    );
-    assert!(
-        !request.contains(r#"kind="goal" op="set""#),
-        "no old objective block: {request}"
-    );
-    assert!(
-        !request.contains(r#"kind="status" status="active""#),
-        "no old status block: {request}"
-    );
-    env.close().await;
-}
-
 /// D4: a branch whose own segment carries no Goal block rebuilds without the
 /// full fold: the probes read the opening and the inputs, and none of the 13
 /// kinds is read.
@@ -628,9 +358,10 @@ async fn e2_a_branch_without_a_goal_skips_the_full_fold() {
         .collect();
     let probes: Vec<&Read> = reads.iter().filter(|read| read.kinds == scan).collect();
     assert!(
-        !probes.is_empty(),
-        "the rebuild probes for a goal: {reads:?}"
+        probes.is_empty(),
+        "Goal does not probe input history: {reads:?}"
     );
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
     assert!(
         probes.iter().all(|read| read.branch == "main"),
         "the probes read the branch itself: {probes:?}"
@@ -692,16 +423,12 @@ async fn e2_a_start_clear_with_old_key_retires_skips_the_full_fold() {
         .collect();
     let probes: Vec<&Read> = reads.iter().filter(|read| read.kinds == scan).collect();
     assert!(
-        !probes.is_empty(),
-        "the rebuild probes the newest Goal block: {reads:?}"
+        probes.is_empty(),
+        "old model blocks are not Goal state: {reads:?}"
     );
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
     env.close().await;
 }
-
-/// R5, R3: the newest Goal block is a `clear` trigger whose record sits
-/// immediately before it in the same atomic batch. The scan classifies the
-/// pair by the record, so the branch's own history still reads as no goal and
-/// the rebuild keeps the cheap path.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn e3_a_change_waits_for_the_branch_rebuild() {
@@ -797,82 +524,48 @@ async fn e3_a_change_waits_for_the_branch_rebuild() {
 }
 
 #[tokio::test]
-async fn records_pair_with_the_original_next_input_across_candidate_pages() {
-    for (gap, candidate) in [(false, false), (false, true), (true, false)] {
-        let env = Env::start().await;
-        let mut seed = env.seed_new("pair-position").await;
-        seed.append(
-            "main",
-            dim_agent_types::EventKind::BranchStart(dim_agent_types::BranchStartData {
-                parent: None,
-                create_event: None,
-            }),
-        );
-        for _ in 0..255 {
-            seed.append(
-                "main",
-                message(
-                    vec![raw("<dim-goal invalid>", None, false)],
-                    InputMode::Append,
-                ),
-            );
-        }
-        let state = texts::set_state(
-            "main",
-            "paired objective",
-            &texts::Answer::Trigger("pair".into()),
-            false,
-        );
-        seed.append(
-            "main",
-            message(
-                vec![raw(&state, Some("goal:state"), false)],
-                InputMode::Append,
-            ),
-        );
-        if gap {
-            seed.append(
-                "main",
-                dim_agent_types::EventKind::Text(dim_agent_types::DeltaData {
-                    turn_id: "t".into(),
-                    request_id: "r".into(),
-                    delta: "not a Goal input".into(),
-                }),
-            );
-        }
-        let mut trigger = input_message(
-            if candidate {
-                vec![raw("<dim-goal invalid>", None, false)]
-            } else {
-                vec![]
-            },
+async fn old_goal_text_does_not_restore_a_target_or_write_a_migration() {
+    let env = Env::start_refusing().await;
+    let mut seed = env.seed_new("old-goal-only").await;
+    let (objective, status) = texts::legacy_set_blocks("main", "old objective");
+    seed.append(
+        "main",
+        message(
+            vec![
+                raw(&objective, Some("goal:objective"), false),
+                raw(&status, Some("goal:status"), false),
+            ],
+            InputMode::Queue,
+        ),
+    );
+    seed.append(
+        "main",
+        message(
+            vec![raw(
+                &texts::set_state("main", "old state text", &texts::Answer::After(1), false),
+                Some("goal:state"),
+                false,
+            )],
             InputMode::Append,
-        );
-        trigger.submission_id = Some("pair".into());
-        seed.append("main", dim_agent_types::EventKind::InputMessage(trigger));
-        seed.finish().await;
-        let env = env.restore_seeded("pair-position").await;
-        env.goal("edit", serde_json::json!({"objective": "edited objective"}))
-            .await
-            .unwrap();
-        let writes = env.settled("main").await;
-        let record = writes
+        ),
+    );
+    seed.finish().await;
+    let before = env.reads().len();
+    let env = env.restore_seeded("old-goal-only").await;
+    assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
+    assert!(states(&env).await.is_empty());
+    assert!(
+        env.reads()[before..]
             .iter()
-            .rev()
-            .find(|block| block.marker.contains(r#"kind="state""#))
-            .unwrap();
-        if gap {
-            assert!(
-                record.marker.contains(r#"status="none""#),
-                "a filtered-out event breaks the pair: {record:?}"
-            );
-        } else {
-            assert!(
-                record.marker.contains(r#"status="paused""#),
-                "the adjacent non-candidate input pairs: {record:?}"
-            );
-            assert!(record.text.contains("edited objective"));
-        }
-        env.close().await;
-    }
+            .all(|read| read.kinds != ["input/message"])
+    );
+    env.goal("set", json!({"objective":"new objective"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        env.goal("get", json!({})).await.unwrap()["goal"]["objective"],
+        "new objective"
+    );
+    assert_eq!(states(&env).await.len(), 1);
+    env.close().await;
 }
