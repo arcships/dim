@@ -644,7 +644,7 @@ fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
 #[test]
 fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
         let attach = wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({}));
@@ -684,7 +684,7 @@ fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
 #[test]
 fn acp_stdio_cancelling_one_load_waiter_does_not_cancel_the_shared_preparation() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let (waiting, ready) = std::sync::mpsc::sync_channel(0);
     let (release, delayed) = std::sync::mpsc::sync_channel(0);
     let daemon = home.daemon(move |wire| {
@@ -2781,7 +2781,7 @@ fn acp_stdio_correlates_the_consumed_input_and_deduplicates_unicode_progress() {
 fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
     for display in [false, true] {
         let home = Home::new();
-        let cwd = fs::canonicalize(&home.0).unwrap();
+        let cwd = home.0.clone();
         let daemon = home.daemon(move |wire| {
         let mut methods = METHODS.to_vec();
         if display { methods.extend(["session.history.display", "session.history.detail", "session.history.display.tail", "session.history.display.transcript"]); }
@@ -3118,7 +3118,7 @@ fn acp_stdio_reports_a_blocked_prompt_as_refusal_with_the_reason() {
 #[test]
 fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
         let attach = wire.read("session.attach");
@@ -3168,7 +3168,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
 #[test]
 fn acp_load_keeps_an_orphan_result_without_reading_original_arguments() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon=home.daemon(move |wire| {
         let mut methods=METHODS.to_vec(); methods.push("session.methods"); wire.hello(&methods);
         let attach=wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({"sequence":1000}));

@@ -507,6 +507,9 @@ async fn drive(
     {
         return Driven::failed(format!("session.attach failed: {error}"));
     }
+    // The Session serves its window only once a model request has counted the context;
+    // a run that cannot read it here reads it again before it closes the Session.
+    let mut window_deferred = false;
     match client
         .rpc(
             "session.context.usage",
@@ -521,6 +524,9 @@ async fn drive(
                     usage["contextWindow"], scenario.budget.window
                 ));
             }
+        }
+        Err(error) if dim_client::app_error(&error) == Some("context_model_failed") => {
+            window_deferred = true;
         }
         Err(error) => {
             return Driven::failed(format!(
@@ -734,16 +740,40 @@ async fn drive(
             )
             .await;
     }
+    let window = if window_deferred {
+        client
+            .rpc(
+                "session.context.usage",
+                json!({"sessionId": session, "branchId": "main"}),
+            )
+            .await
+            .ok()
+            .and_then(|usage| usage["contextWindow"].as_f64())
+    } else {
+        Some(scenario.budget.window as f64)
+    };
     let _ = client
         .rpc("session.close", json!({"sessionId": session}))
         .await;
-    let error = (stop == "turns" || stop == "seconds").then(|| {
-        format!(
-            "the run ended on its budget ({stop}) after {} of {} scripted turns",
-            turns,
-            script.len()
-        )
-    });
+    let windows_differ = window != Some(scenario.budget.window as f64);
+    let stop = if windows_differ { "error" } else { stop };
+    let error = windows_differ
+        .then(|| {
+            format!(
+                "the Session declares a context window of {}, and the scenario declares {}",
+                window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
+                scenario.budget.window
+            )
+        })
+        .or_else(|| {
+            (stop == "turns" || stop == "seconds").then(|| {
+                format!(
+                    "the run ended on its budget ({stop}) after {} of {} scripted turns",
+                    turns,
+                    script.len()
+                )
+            })
+        });
     Driven {
         session,
         stop,
