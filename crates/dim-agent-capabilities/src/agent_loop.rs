@@ -44,6 +44,11 @@ struct Request {
     /// A steer was consumed while this Loop still owned the request, before
     /// its `context/prepare`: it ends Cancelled instead of being handed over.
     replaced: bool,
+    /// The failed request this one continues, when it is the turn's one
+    /// continuation: its `context/prepare` carries the attempts and the wait
+    /// already spent, so both requests share one retry budget
+    /// (model-retry-recovery §6.2).
+    chain: Option<FailureChain>,
 }
 struct Turn {
     id: String,
@@ -302,6 +307,7 @@ impl AgentLoop {
         self: &Arc<Self>,
         turn: &mut Turn,
         source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
         at: u64,
     ) -> Result<()> {
         if let Some(error) = turn.failed.clone() {
@@ -327,7 +333,7 @@ impl AgentLoop {
                 return Ok(());
             }
         }
-        self.start_request(turn, source)
+        self.start_request(turn, source, chain)
     }
     /// Starts the waiting step in a tracked task; its result resumes the Loop.
     fn start_step(
@@ -457,7 +463,12 @@ impl AgentLoop {
         Ok(())
     }
     /// Writes the inputs the next request consumes, then its `step/model-start`.
-    fn start_request(&self, turn: &mut Turn, source: Option<ContextPrepareData>) -> Result<()> {
+    fn start_request(
+        &self,
+        turn: &mut Turn,
+        source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
+    ) -> Result<()> {
         let chosen: Vec<String> = match source {
             Some(_) => Vec::new(),
             None => {
@@ -501,6 +512,7 @@ impl AgentLoop {
             preparation: None,
             started: Vec::new(),
             replaced: false,
+            chain,
         });
         Ok(())
     }
@@ -968,6 +980,7 @@ impl AgentLoop {
                             preparation: None,
                             started: Vec::new(),
                             replaced: false,
+                            chain: None,
                         });
                         handed_over = false;
                         completed.clear();
@@ -1086,6 +1099,7 @@ impl AgentLoop {
         turn_id: String,
         request_id: String,
         recovery: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
     ) -> CancellationToken {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
@@ -1163,7 +1177,7 @@ impl AgentLoop {
                     }),
                     prompt,
                     recovery: None,
-                    failure_chain: None,
+                    failure_chain: chain,
                 })
             }).catch_unwind();
             let result = tokio::select! {
@@ -1320,7 +1334,7 @@ impl AgentLoop {
                     })
                     .ok_or_else(|| AgentError::fault("Loop", "invalid turn/start"))?;
                 turn.open = true;
-                let result = self.next_model(turn, None, event.sequence);
+                let result = self.next_model(turn, None, None, event.sequence);
                 self.publish(&slot);
                 return result;
             }
@@ -1413,7 +1427,7 @@ impl AgentLoop {
                 }
                 return match slot.as_mut() {
                     Some(turn) if turn.open && !turn.ending => {
-                        self.next_model(turn, None, event.sequence)
+                        self.next_model(turn, None, None, event.sequence)
                     }
                     Some(_) => Ok(()),
                     None => self.try_start(&mut slot),
@@ -1481,6 +1495,7 @@ impl AgentLoop {
                     turn.id.clone(),
                     request.id.clone(),
                     request.source.clone(),
+                    request.chain.clone(),
                 ));
             }
             EventKind::ToolUseStart(data) if request.stage == Stage::Model => {
@@ -1514,6 +1529,11 @@ impl AgentLoop {
                         let continues = failure.as_deref().is_some_and(|failure| {
                             !failure.retry_forbidden && a_new_request_can_help(failure.kind)
                         });
+                        let chain = failure.as_deref().map(|failure| FailureChain {
+                            from_request_id: request.id.clone(),
+                            attempts: failure.attempts,
+                            waited_ms: failure.waited_ms,
+                        });
                         if self.policy.is_some()
                             && budget.is_some()
                             && request
@@ -1523,7 +1543,7 @@ impl AgentLoop {
                         {
                             let mut source = request.source.clone().expect("checked source");
                             source.recovery = budget.clone();
-                            self.next_model(turn, Some(source), event.sequence)?;
+                            self.next_model(turn, Some(source), None, event.sequence)?;
                         } else if continues
                             && !request.started.is_empty()
                             && !turn.continued
@@ -1532,7 +1552,7 @@ impl AgentLoop {
                         {
                             turn.continued = true;
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, chain, event.sequence)?;
                         } else if limit && turn.interrupted.is_none() {
                             self.end(
                                 turn,
@@ -1555,7 +1575,7 @@ impl AgentLoop {
                             && self.driven()
                         {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             if reason == CAPABILITY_RELOADING {
                                 turn.failed = Some(CAPABILITY_RELOADING.into());
@@ -1582,7 +1602,7 @@ impl AgentLoop {
                             request.call_event_id = Some(event.id.clone());
                         } else if self.driven() {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             let reason = match finish_reason {
                                 FinishReason::EndTurn => "end_turn",
@@ -1618,7 +1638,7 @@ impl AgentLoop {
                     turn.failed = Some(CAPABILITY_RELOADING.into());
                 }
                 self.binding.release(&request.id);
-                self.next_model(turn, None, event.sequence)?;
+                self.next_model(turn, None, None, event.sequence)?;
             }
             _ => {
                 return Err(AgentError::fault(

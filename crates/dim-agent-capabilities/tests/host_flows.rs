@@ -691,6 +691,164 @@ async fn a_failure_a_new_request_can_settle_continues_the_turn() {
     }
 }
 
+/// A model whose first request spends three attempts with no output and then
+/// announces a call and fails, so that request ends with part of the chain
+/// spent. Every later request fails with no output at all, so a continuation
+/// carrying the remainder stops sooner than one with a fresh budget.
+#[derive(Clone)]
+struct QuietThenAnnounced {
+    announced: Arc<AtomicBool>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl QuietThenAnnounced {
+    fn failure() -> HostError {
+        HostError::Failed {
+            message: "fixture rejection".into(),
+            budget: None,
+            kind: HostErrorKind::Http {
+                status: Some(503),
+                code: None,
+            },
+            model: Some(Box::new(ModelFailureFacts {
+                kind: ModelFailureKind::ServerError,
+                reason: Some("fixture rejection".into()),
+                status: Some(503),
+                provider_code: None,
+                request_id: None,
+                cause: Vec::new(),
+                retry_after: None,
+                attempts: 1,
+                waited: Duration::ZERO,
+                retry_after_stop: None,
+                retry_forbidden: false,
+            })),
+            presentation: None,
+        }
+    }
+}
+impl ModelDriver for QuietThenAnnounced {
+    fn invoke(
+        &self,
+        _: Arc<ModelRequest>,
+        _: ModelConnection,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let announce = call == 3 && !self.announced.swap(true, Ordering::SeqCst);
+        if !announce {
+            return Box::pin(async { Err(Self::failure()) });
+        }
+        let error = Self::failure();
+        Box::pin(async move {
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                Ok(ModelChunk::MessageStart {
+                    message_id: "announced".into(),
+                }),
+                Ok(ModelChunk::ToolStart {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                }),
+                Ok(ModelChunk::ToolArguments {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                    delta: "{\"text\":\"hel".into(),
+                }),
+                Err(error),
+            ])) as ModelStream)
+        })
+    }
+}
+impl ResolveModelConnection for QuietThenAnnounced {
+    fn resolve(
+        &self,
+        _: Arc<ModelRequest>,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection> {
+        Box::pin(async move {
+            Ok(ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: None,
+                recovery: None,
+            })
+        })
+    }
+}
+struct QuietThenAnnouncedHosts(QuietThenAnnounced);
+impl Plugin for QuietThenAnnouncedHosts {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.quiet-then-announced"
+    }
+    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
+        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
+        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(
+            dim_agent_capabilities::history::HistoryRenderer::default(),
+        ))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install_with_process_model(&mut builder);
+    let hosts = QuietThenAnnounced {
+        announced: Arc::new(AtomicBool::new(false)),
+        calls: calls.clone(),
+    };
+    builder.plugin(move |_| Ok(Box::new(QuietThenAnnouncedHosts(hosts.clone()))));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("announced".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert_eq!(starts(&events), 2, "the turn continues once");
+    // 4 calls ended the failed request: three quiet ones and the announced
+    // one. The continuation carries those four attempts, so it has four of
+    // the eight left; a fresh chain would have given it eight.
+    assert_eq!(calls.load(Ordering::SeqCst), 8, "one shared chain");
+    let ends: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends.len(), 2, "{ends:?}");
+    assert_eq!(ends[0].attempts, 4, "{:?}", ends[0]);
+    assert_eq!(ends[1].attempts, 8, "{:?}", ends[1]);
+    assert!(
+        ends[1].waited_ms > ends[0].waited_ms,
+        "the continuation reports the chain's total wait: {:?}",
+        ends[1]
+    );
+    agent.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_second_truncated_call_settles_the_turn() {
     for (cut, expected) in [
