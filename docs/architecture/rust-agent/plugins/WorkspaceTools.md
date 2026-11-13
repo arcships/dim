@@ -162,6 +162,8 @@ Exec retains its `cwd` argument resolution, POSIX `&` refusal, heavy-search
 refusal, timeouts and background ownership. Its existing `exec_shell_unavailable`
 tool-result code is preserved, with instructions to fix the file and retry.
 
+Exec's schema requires a `title` string for newly generated calls: a short task-specific label for the background task list, independent of the shell `command`. Runtime admission still accepts omission for existing callers. The external tool boundary rejects a supplied title that is not a string, is blank after checking whitespace, or contains CR, LF, NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR, with `exec_invalid_request` before starting a process. An accepted title is passed verbatim to BackgroundExec on either immediate or automatic handoff; consumers do not normalize it. The command-derived `description` retains its existing meaning. Omitting the title keeps existing callers working and creates no inferred title. The title schema and its description are protocol under [model-facing prompts §4](../../../design/model-prompts.md#4-protocol-and-policy); execution policy is unchanged.
+
 Exec takes no input that selects a boundary. The user's `Process isolation` control in
 `/permissions` or `/settings` selects the existing `sandbox` and `network` settings
 ([process isolation](../../../design/host-platform-isolation.md#process-isolation));
@@ -493,6 +495,8 @@ a filesystem lock, permission grant or cross-process compare-and-swap.
 Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/background.rs).
 Owns commands transferred from foreground execution, their terminal records and
 bounded completion notices on the calling branch.
+
+`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable, without a persistence format bump; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
 
 ### Dependencies
 

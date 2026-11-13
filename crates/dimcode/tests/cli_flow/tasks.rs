@@ -610,8 +610,10 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
         event(wire, "child", fact("child-end",5,9000,"exec","ended",json!({
             "task_id":"child-command","status":"failed","result":{"content":"real child terminal","structuredContent":{"exitCode":7}},
         })));
+        let mut restored = pending_command("child-command", 1, 1000, "restored child command");
+        restored["title"] = json!("Restore child build");
         wire.reply(&child, json!({"branchId":"child","through":4,
-            "tasks":[pending_command("child-command",1,1000,"restored child command")],"next":"second"}));
+            "tasks":[restored],"next":"second"}));
         let second = owner_request(wire, "session.exec.pending", "child");
         assert_eq!(second["params"]["after"], "second");
         wire.send(json!({"jsonrpc":"2.0","id":second["id"],"error":{"code":-32000,"message":"owner page unavailable"}}));
@@ -624,7 +626,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
         ready.send(()).unwrap();
         control.recv_timeout(Duration::from_secs(10)).unwrap();
         wire.reply(&retry, json!({"branchId":"child","through":4,
-            "tasks":[pending_command("child-command",1,1000,"restored child command")],"next":null}));
+            "tasks":[restored],"next":null}));
         let turn = owner_request(wire, "session.turn.get", "child");
         wire.empty_state(&turn);
         control.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -650,7 +652,7 @@ fn tui_task_inventory_restores_branch_pages_and_retries_only_on_reopen() {
     proceed.send(()).unwrap();
     terminal.until("Failed");
     terminal.until("created while history failed");
-    terminal.write(b"restored child\r");
+    terminal.write(b"Restore child build\r");
     terminal.until("real child terminal");
     assert!(
         !terminal
@@ -837,6 +839,8 @@ fn tui_task_stop_all_keeps_its_finite_targets_and_waits_only_for_replies() {
             fact("finished-end",8,8000,"exec","ended",json!({"task_id":"finished-command","status":"completed","result":{"content":"already complete"}})),
         ],"through":8,"nextAfter":8,"done":true}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let observe = wire.read("session.attach");
         assert_eq!(observe["params"], json!({"sessionId":"member"}));
         let providers = wire.read("account.providers");
@@ -1238,6 +1242,8 @@ fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
         assert_eq!(submit["params"]["text"], "start leader");
         wire.reply(&submit, json!({"event":{}}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let attach = wire.read("session.attach");
         assert_eq!(attach["params"], json!({"sessionId":"member"}));
         wire.reply(&attach, attach_record(&attach));
@@ -1345,6 +1351,8 @@ fn tui_member_conversation_settles_old_attach_or_page_before_observing_a_replace
                 ended("result-b",5,"request-b"),ended("result-a",6,"request-a"),
             ],"through":6,"nextAfter":6,"done":true}));
             wire.no_context();
+            let names = wire.read("agent.list");
+            wire.reply(&names, json!([]));
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             let first_attach = wire.read("session.attach");
@@ -1409,6 +1417,8 @@ fn tui_member_conversation_keeps_errors_local_and_reopens_from_a_fresh_history()
             let history = wire.read("session.history");
             wire.reply(&history, json!({"events":[delegation("request",1,"member detail"),delivery("delivered",2,"request"),ended("result",3,"request")],"through":3,"nextAfter":3,"done":true}));
             wire.no_context();
+            let names = wire.read("agent.list");
+            wire.reply(&names, json!([]));
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
             let attach = wire.read("session.attach");
@@ -1505,6 +1515,8 @@ fn tui_member_conversation_yields_to_a_leader_approval_and_cleans_up_its_held_pa
         let history = wire.read("session.history");
         wire.reply(&history, json!({"events":[delegation("request",1,"member approval detail"),delivery("delivered",2,"request"),ended("result",3,"request")],"through":3,"nextAfter":3,"done":true}));
         wire.no_context();
+        let names = wire.read("agent.list");
+        wire.reply(&names, json!([]));
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
         let attach = wire.read("session.attach");
@@ -2000,7 +2012,9 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");
         let mut events = Vec::new();
-        events.extend(agent_request(1, "r1", "call-1", json!({"kind":"agent","agent_id":"reviewer"}), "Check crate dependencies"));
+        let mut titled = agent_request(1, "r1", "call-1", json!({"kind":"agent","agent_id":"reviewer"}), "Working directory: /workspace/runtime (read-only)\nCheck crate dependencies");
+        titled[1]["data"]["title"] = json!("Review dependency boundaries");
+        events.extend(titled);
         events.push(delivered(4, "req-1", "reviewer", "member-a"));
         events.extend(agent_request(5, "r2", "call-1", json!({"kind":"temporary","profile":{"name":"inspect tests","description":"","systemPrompt":""}}), "Review the integration coverage"));
         events.push(delivered(8, "req-5", "temporary-agent", "member-b"));
@@ -2060,6 +2074,7 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
     terminal.until("test / model");
     terminal.write(b"/tools\r");
     terminal.until("Agent: Code Reviewer");
+    assert!(terminal.transcript.contains("Review dependency boundaries"));
     terminal.write(b"/tools\r");
     terminal.write(b"\x1b[5~");
     terminal.until("member-provider / member-model-2");

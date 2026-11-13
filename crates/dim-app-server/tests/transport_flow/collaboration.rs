@@ -1443,12 +1443,21 @@ async fn leader_delegates_and_team_members_communicate() {
     say(
         &mut client,
         &lead,
-        tool(json!({"action": "request", "agentId": default_agent, "prompt": "hello"})),
+        tool(json!({"action": "request", "agentId": default_agent, "prompt": "hello", "title": "Review greeting"})),
         "queue",
     )
     .await;
     returned(&mut client, &lead, &lead_session, 1).await;
     let timeline = events(&lead_session).await;
+    let request = timeline
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::CollaborationRequest(data) => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(request.title.as_deref(), Some("Review greeting"));
+    assert_eq!(request.prompt, "hello");
     let (_, first) = results(&timeline)[0].clone();
     let first: Value = serde_json::from_str(&first).unwrap();
     assert_eq!(first["status"], "running");
@@ -1535,11 +1544,27 @@ async fn leader_delegates_and_team_members_communicate() {
         &lead,
         tool(
             json!({"action": "request", "agentId": default_agent, "sessionId": member,
-            "prompt": "tool:wait {\"millis\":60000}"}),
+            "prompt": "tool:wait {\"millis\":60000}", "title": "Wait for review"}),
         ),
         "queue",
     )
     .await;
+    idle(&mut client, &lead).await;
+    let pending = client
+        .rpc(
+            "session.collaboration.pending",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    assert_eq!(
+        pending["result"]["requests"][0]["request"]["title"],
+        "Wait for review"
+    );
+    assert_eq!(
+        pending["result"]["requests"][0]["request"]["prompt"],
+        "tool:wait {\"millis\":60000}"
+    );
     say(
         &mut client,
         &lead,
@@ -1848,7 +1873,7 @@ async fn leader_delegates_and_team_members_communicate() {
     )
     .unwrap();
     for (action, required) in [
-        ("request", json!(["action", "prompt", "agentId"])),
+        ("request", json!(["action", "prompt", "title", "agentId"])),
         ("cancel", json!(["action", "agentId", "sessionId"])),
         ("close", json!(["action", "agentId", "sessionId"])),
         (
@@ -1879,14 +1904,14 @@ async fn leader_delegates_and_team_members_communicate() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|variant| variant["required"] == json!(["action", "prompt", "profile"]))
+            .any(|variant| variant["required"] == json!(["action", "prompt", "title", "profile"]))
     );
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(!validator.is_valid(&json!({"action":"cancel","agentId":"exec-unknown"})));
     assert!(!validator.is_valid(&json!({"action":"list","agentId":"unexpected"})));
     assert!(!validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent,"profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
     assert!(validator.is_valid(
-        &json!({"action":"request","prompt":"work","agentId":default_agent,"sessionId":member})
+        &json!({"action":"request","prompt":"work","title":"Review change","agentId":default_agent,"sessionId":member})
     ));
     assert!(validator.is_valid(
         &json!({"action":"read","agentId":default_agent,"sessionId":member,"after":1,"limit":2})
@@ -1894,7 +1919,35 @@ async fn leader_delegates_and_team_members_communicate() {
     assert!(
         validator.is_valid(&json!({"action":"cancel","agentId":default_agent,"sessionId":member}))
     );
-    assert!(validator.is_valid(&json!({"action":"request","prompt":"work","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    assert!(validator.is_valid(&json!({"action":"request","prompt":"work","title":"Review change","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    assert!(
+        !validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent}))
+    );
+    for title in [
+        json!(""),
+        json!("  "),
+        json!("two\nlines"),
+        json!("trailing\n"),
+        json!("two\rlines"),
+        json!("two\u{0085}lines"),
+        json!("two\u{2028}lines"),
+        json!("two\u{2029}lines"),
+        json!(null),
+        json!(7),
+    ] {
+        let input =
+            json!({"action":"request","prompt":"work","title":title,"agentId":default_agent});
+        assert!(!validator.is_valid(&input), "{input}");
+        let before = facts(&lead_session).await;
+        say(&mut client, &lead, tool(input), "queue").await;
+        idle(&mut client, &lead).await;
+        assert!(last_error(&events(&lead_session).await).starts_with("invalid_input"));
+        assert_eq!(
+            facts(&lead_session).await,
+            before,
+            "invalid title must not create a request"
+        );
+    }
     let before = facts(&lead_session).await;
     say(
         &mut client,
@@ -3501,6 +3554,7 @@ async fn a_client_cancel_from_another_branch_leaves_the_owning_branch_turn_runni
                         session_id: member.clone(),
                     },
                     prompt: "later".into(),
+                    title: None,
                 })
                 .into(),
                 EventKind::Extension(
@@ -6319,6 +6373,7 @@ async fn an_operation_of_a_turn_interrupted_before_a_reload_is_refused() {
                 call_id: "late".into(),
                 target: dim_agent_types::CollaborationTarget::Agent { agent_id },
                 prompt: "hello".into(),
+                title: None,
             })
             .into(),
         )
@@ -8087,6 +8142,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
         let request = timeline.append(EventKind::CollaborationRequest(dim_agent_types::CollaborationRequestData {
             turn_id: "sampling-failure".into(), request_id: "sampling-failure".into(), call_id: "sampling-failure".into(),
             target: dim_agent_types::CollaborationTarget::Agent { agent_id }, prompt: "hello".into(),
+            title: None,
         }).into()).unwrap();
         let plugins = ctx.diagnostics().plugins;
         let parent = plugins.iter().find(|plugin| plugin.instance == ctx.instance()).unwrap().parent;

@@ -1066,6 +1066,20 @@ async fn exec_results_declare_the_command_they_started() {
         )
         .await;
     let events = until(&session, "effects", |events| tool_results(events) == 1).await;
+    let schema = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(data) => data
+                .request
+                .tools
+                .as_ref()?
+                .iter()
+                .find(|tool| tool.name == "exec")
+                .map(|tool| serde_json::to_value(&tool.input_schema).unwrap()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(schema["required"], json!(["command", "title"]));
     let declared = results(&events);
     assert_eq!(
         declared[0].effects,
@@ -1102,6 +1116,31 @@ async fn exec_results_declare_the_command_they_started() {
         refused.effects, None,
         "a command that never started declares nothing"
     );
+    for title in [
+        json!(""),
+        json!("  "),
+        json!("two\nlines"),
+        json!("trailing\n"),
+        json!("two\rlines"),
+        json!("two\u{0085}lines"),
+        json!("two\u{2028}lines"),
+        json!("two\u{2029}lines"),
+        json!(null),
+        json!(7),
+    ] {
+        harness.run(&session, &[("exec", json!({"command":"touch invalid-title-started", "title":title, "runInBackground":true}))]).await;
+        session.idle("main").await.unwrap();
+        let events = local_events(&session).await;
+        let returned = results(&events);
+        let refused = returned.last().unwrap();
+        assert_eq!(
+            refused.structured_content.as_ref().unwrap()["code"],
+            "exec_invalid_request"
+        );
+        assert_eq!(refused.effects, None);
+        assert!(!harness.cwd.join("invalid-title-started").exists());
+        assert_eq!(count(&events, "exec/started"), 0);
+    }
     session.close().await.unwrap();
     harness.shutdown().await;
 }
@@ -1117,7 +1156,7 @@ async fn background_completion_is_recorded_once_and_wakes_with_a_bounded_notice(
             &session,
             &[(
                 "exec",
-                json!({ "command": command, "runInBackground": true }),
+                json!({ "command": command, "title": "Generate output", "runInBackground": true }),
             )],
         )
         .await;
@@ -1131,6 +1170,8 @@ async fn background_completion_is_recorded_once_and_wakes_with_a_bounded_notice(
         .collect();
     assert_eq!(started.len(), 1);
     let (started_at, data) = &started[0];
+    assert_eq!(data.title.as_deref(), Some("Generate output"));
+    assert_eq!(data.description, command);
     let result_at = events
         .iter()
         .find(|event| event.kind.key() == "step/tool-result")
@@ -1613,6 +1654,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
             call_id: "c".into(),
             task_id: task_id.into(),
             description: task_id.into(),
+            title: None,
             output_path: output_path.into(),
         })
     };
@@ -1946,6 +1988,7 @@ async fn an_end_after_the_branch_close_interrupt_does_not_wake() {
                 call_id: "c".into(),
                 task_id: "exec-late".into(),
                 description: "exec-late".into(),
+                title: None,
                 output_path: "/tmp/exec-late.log".into(),
             }),
             EventKind::StopInterrupt(StopInterruptData {

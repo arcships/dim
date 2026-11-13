@@ -36,6 +36,7 @@ pub struct StartRequest {
     /// Proposed id; a `before` hook may rewrite it, the final one is returned.
     pub task_id: String,
     pub description: String,
+    pub title: Option<String>,
     pub output_path: String,
 }
 
@@ -170,6 +171,7 @@ impl BackgroundExec {
                 call_id: request.call_id,
                 task_id: request.task_id,
                 description: request.description,
+                title: request.title,
                 output_path: request.output_path,
             })
             .into(),

@@ -1030,10 +1030,20 @@ impl CollaborationSession {
             }
             Input::Request {
                 prompt,
+                title,
                 agent_id,
                 session_id,
                 profile,
             } => {
+                if title.as_ref().is_some_and(|title| {
+                    title.trim().is_empty()
+                        || title.contains(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+                }) {
+                    return Ok(refusal(
+                        Refusal::InvalidInput,
+                        "request title must be a nonblank single-line string",
+                    ));
+                }
                 let target = match (agent_id, session_id, profile) {
                     (Some(agent_id), None, None) => CollaborationTarget::Agent { agent_id },
                     (Some(agent_id), Some(session_id), None) => CollaborationTarget::Member {
@@ -1063,6 +1073,7 @@ impl CollaborationSession {
                         call_id,
                         target,
                         prompt,
+                        title,
                     }),
                     "request",
                 )
@@ -3059,6 +3070,8 @@ enum Input {
     },
     Request {
         prompt: String,
+        #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
+        title: Option<String>,
         agent_id: Option<String>,
         session_id: Option<String>,
         profile: Option<AgentProfile>,
@@ -3143,6 +3156,9 @@ fn agent_definition(
         CollaborationRole::Leader => {
             properties["resultId"] = json!({"type": "string"});
             properties["prompt"] = json!({"type": "string"});
+            properties["title"] = json!({"type": "string", "minLength": 1,
+                "pattern": "^(?!\\s*$)[^\\r\\n\u{0085}\u{2028}\u{2029}]+$",
+                "description": "Short, nonblank single-line title for this task in the background task list; separate from prompt and the Agent profile name."});
             properties["profile"] = json!({
                 "type": "object",
                 "required": ["name", "description", "systemPrompt", "tools"],
@@ -3186,8 +3202,8 @@ fn agent_definition(
     for action in &actions {
         let choices = match *action {
             "request" => vec![
-                vec!["action", "prompt", "agentId"],
-                vec!["action", "prompt", "profile"],
+                vec!["action", "prompt", "title", "agentId"],
+                vec!["action", "prompt", "title", "profile"],
             ],
             "cancel" | "close" | "read" => vec![vec!["action", "agentId", "sessionId"]],
             "message" => vec![vec!["action", "agentId", "sessionId", "content"]],

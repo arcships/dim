@@ -607,6 +607,7 @@ async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
             call_id: "c".into(),
             task_id: "task-1".into(),
             description: "background work".into(),
+            title: None,
             output_path: "/dev/null".into(),
         }),
     );

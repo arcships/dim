@@ -1566,6 +1566,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
         call_id: "c3".into(),
         task_id: "task-9".into(),
         description: "run the tests".into(),
+        title: None,
         output_path: "out.txt".into(),
     }));
     recorded.push(results(
@@ -1600,6 +1601,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
             agent_id: "reviewer".into(),
         },
         prompt: "review it".into(),
+        title: None,
     }));
     recorded.push(results(
         "t1",
@@ -1674,6 +1676,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
             agent_id: "reviewer".into(),
         },
         prompt: "review it again".into(),
+        title: None,
     }));
     recorded.push(results(
         "t1",

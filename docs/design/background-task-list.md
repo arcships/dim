@@ -172,6 +172,23 @@ Proposed first-release presentation:
   corresponding terminal outcome. A stop reply, read error, idle member or
   vanished live capture cannot fabricate it.
 
+### Task titles and composer rows
+
+A task title identifies this command or delegation, not an Agent's profile
+description, its detailed instructions or its member conversation title. The
+title is supplied by the owner fact and retained by the pending inventory:
+[Collaboration](plugins/Collaboration.md) owns delegation titles, and
+[WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md) owns
+command titles. The CLI uses the title when present. For historical tasks without
+one, retain the existing command/description or first prompt line as the label;
+do not invent or persist a replacement title.
+
+Member tasks carry their Agent name independently of the title. A temporary
+profile supplies its name immediately; an existing Agent uses its id until
+`agent.list` supplies its name. The task list, member card and composer rows
+use the same projected task title and Agent identity, including after resume
+and when the originating branch is not the displayed line.
+
 ```text
 +-- Background tasks --------------------------------------------+
 | > cargo build                 command   running    12s         |

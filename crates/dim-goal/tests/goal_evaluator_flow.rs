@@ -926,6 +926,7 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
             call_id: "call-1".into(),
             task_id: "task-1".into(),
             description: "background work".into(),
+            title: None,
             output_path: "/dev/null".into(),
         }),
     );

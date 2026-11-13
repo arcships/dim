@@ -828,17 +828,18 @@ impl Projection {
             return;
         }
 
-        let label = self
-            .rows
-            .iter()
-            .find(|row| {
-                row.call_id.as_deref() == Some(data.call_id.as_str())
-                    && row.batch.as_deref() == Some(data.request_id.as_str())
-            })
-            .and_then(|row| row.tool_input.as_ref()?.get("command")?.as_str())
-            .filter(|command| !command.is_empty())
-            .unwrap_or(data.description.as_str())
-            .to_owned();
+        let label = data.title.clone().unwrap_or_else(|| {
+            self.rows
+                .iter()
+                .find(|row| {
+                    row.call_id.as_deref() == Some(data.call_id.as_str())
+                        && row.batch.as_deref() == Some(data.request_id.as_str())
+                })
+                .and_then(|row| row.tool_input.as_ref()?.get("command")?.as_str())
+                .filter(|command| !command.is_empty())
+                .unwrap_or(data.description.as_str())
+                .to_owned()
+        });
         let target = TaskTarget {
             branch_id: branch_id.to_owned(),
             task_id: data.task_id.clone(),
@@ -848,6 +849,8 @@ impl Projection {
             branch_id: branch_id.to_owned(),
             kind: TaskKind::Command(target.clone()),
             label,
+            agent: None,
+            agent_id: None,
             started_at,
             finished: None,
         });
@@ -869,11 +872,24 @@ impl Projection {
             return;
         }
 
+        let (agent, agent_id) = match &data.target {
+            CollaborationTarget::Agent { agent_id }
+            | CollaborationTarget::Member { agent_id, .. } => (
+                self.agent_names.get(agent_id).unwrap_or(agent_id).clone(),
+                (!agent_id.contains(':')).then(|| agent_id.clone()),
+            ),
+            CollaborationTarget::Temporary { profile } => (profile.name.clone(), None),
+        };
         let task = TaskView {
             id: event_id.to_owned(),
             branch_id: branch_id.to_owned(),
             kind: TaskKind::Member(MemberTarget::Starting),
-            label: data.prompt.lines().next().unwrap_or("").to_owned(),
+            label: data
+                .title
+                .clone()
+                .unwrap_or_else(|| data.prompt.lines().next().unwrap_or("").to_owned()),
+            agent: Some(agent),
+            agent_id,
             started_at,
             finished: None,
         };
@@ -885,21 +901,8 @@ impl Projection {
             && self.rows[index].batch.as_deref() == Some(data.request_id.as_str())
             && self.rows[index].member.is_none()
         {
-            let (agent, agent_id) = match &data.target {
-                CollaborationTarget::Agent { agent_id }
-                | CollaborationTarget::Member { agent_id, .. } => {
-                    let name = self.agent_names.get(agent_id).unwrap_or(agent_id);
-                    (
-                        name.clone(),
-                        (!agent_id.contains(':')).then(|| agent_id.clone()),
-                    )
-                }
-                CollaborationTarget::Temporary { profile } => (profile.name.clone(), None),
-            };
             self.row(index).member = Some(Box::new(MemberCard {
                 task: task.clone(),
-                agent,
-                agent_id,
                 prompt: data.prompt.clone(),
                 model: None,
                 activity: None,
@@ -922,6 +925,12 @@ impl Projection {
                 && task.finished.is_none()
                 && task.kind == TaskKind::Member(MemberTarget::Starting)
         };
+        let delivered_name = match &data.delivery {
+            CollaborationDelivery::Ok { agent_id, .. } => {
+                Some(self.agent_names.get(agent_id).unwrap_or(agent_id).clone())
+            }
+            CollaborationDelivery::Error { .. } => None,
+        };
         let update = |task: &mut TaskView| match &data.delivery {
             CollaborationDelivery::Ok {
                 agent_id,
@@ -933,8 +942,13 @@ impl Projection {
                 } else {
                     MemberTarget::Session(session_id.clone())
                 });
+                if task.agent_id.is_some() {
+                    task.agent = delivered_name.clone();
+                    task.agent_id = (!agent_id.contains(':')).then(|| agent_id.clone());
+                }
             }
             CollaborationDelivery::Error { error } => {
+                task.agent_id = None;
                 task.finished = Some(TaskFinish {
                     at: started_at,
                     status: "Failed",
@@ -952,25 +966,10 @@ impl Projection {
         if let Some(task) = self.tasks.iter_mut().find(|task| starting(task)) {
             update(task);
         }
-        let delivered = match &data.delivery {
-            CollaborationDelivery::Ok { agent_id, .. } => Some((
-                self.agent_names.get(agent_id).unwrap_or(agent_id).clone(),
-                (!agent_id.contains(':')).then(|| agent_id.clone()),
-            )),
-            CollaborationDelivery::Error { .. } => None,
-        };
         if let Some(card) = self.card(branch_id, &data.op_event_id)
             && starting(&card.task)
         {
             update(&mut card.task);
-            match delivered {
-                Some((name, agent_id)) if card.agent_id.is_some() => {
-                    card.agent = name;
-                    card.agent_id = agent_id;
-                }
-                Some(_) => {}
-                None => card.agent_id = None,
-            }
         }
     }
 
@@ -990,7 +989,9 @@ impl Projection {
             id: task.event_id.clone(),
             branch_id: branch.into(),
             kind: TaskKind::Command(target.clone()),
-            label: task.description.clone(),
+            label: task.title.as_ref().unwrap_or(&task.description).clone(),
+            agent: None,
+            agent_id: None,
             started_at: task.started_at,
             finished: None,
         });
@@ -1270,6 +1271,8 @@ impl Projection {
             id: run.run_id.clone(),
             branch_id: branch_id.to_owned(),
             label: run.name.clone(),
+            agent: None,
+            agent_id: None,
             started_at: run.created_at,
             finished,
             kind: TaskKind::Workflow(Box::new(WorkflowView {
@@ -1388,36 +1391,38 @@ impl Projection {
         }
     }
 
-    /// Names native Agents on their cards, from one shared `agent.list`
+    /// Names native Agents on tasks and cards, from one shared `agent.list`
     /// that was asked to name `asked`.
     pub fn name_agents(&mut self, names: HashMap<String, String>, asked: Vec<String>) {
         self.agents_read.extend(asked);
+        let update = |task: &mut TaskView| {
+            if let Some(name) = task.agent_id.as_ref().and_then(|id| names.get(id))
+                && !name.is_empty()
+            {
+                task.agent = Some(name.clone());
+            }
+        };
+        self.tasks.iter_mut().for_each(update);
         let indexes: Vec<usize> = self.cards.values().copied().collect();
         for index in indexes {
-            let Some(name) = self.rows[index]
-                .member
-                .as_ref()
-                .and_then(|card| names.get(card.agent_id.as_ref()?))
-                .filter(|name| !name.is_empty())
-                .cloned()
-            else {
-                continue;
-            };
-            self.row(index)
-                .member
-                .as_deref_mut()
-                .expect("card row")
-                .agent = name;
+            update(
+                &mut self
+                    .row(index)
+                    .member
+                    .as_deref_mut()
+                    .expect("card row")
+                    .task,
+            );
         }
         self.agent_names = names;
     }
 
-    /// Native Agents the cards name that no `agent.list` read covered yet.
+    /// Native Agents the tasks name that no `agent.list` read covered yet.
     pub fn unnamed_agents(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
-            .cards
-            .values()
-            .filter_map(|index| self.rows[*index].member.as_ref()?.agent_id.clone())
+            .tasks
+            .iter()
+            .filter_map(|task| task.agent_id.clone())
             .filter(|id| !self.agent_names.contains_key(id) && !self.agents_read.contains(id))
             .collect();
         ids.sort();

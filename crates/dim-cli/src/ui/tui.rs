@@ -9736,6 +9736,8 @@ mod tests {
                 task_id: id.into(),
             }),
             label: label.into(),
+            agent: None,
+            agent_id: None,
             started_at: 0,
             finished: None,
         }

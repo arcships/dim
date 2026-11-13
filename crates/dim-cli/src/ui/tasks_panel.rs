@@ -185,10 +185,14 @@ impl TasksPanel {
                 .as_ref()
                 .and_then(|finish| finish.exit_code)
                 .map_or(String::new(), |code| format!(" · exit {code}"));
+            let agent = task
+                .agent
+                .as_deref()
+                .map_or(String::new(), |name| format!(" · {}", safe(name)));
             Item::new(
                 task.id.clone(),
                 safe(&task.label),
-                format!("{kind} · {status} · {elapsed}s{exit}"),
+                format!("{kind}{agent} · {status} · {elapsed}s{exit}"),
             )
         }));
         self.list.set_items(Ok(items), selected.as_deref());
@@ -523,6 +527,9 @@ impl TasksPanel {
         let mut lines = Vec::new();
         let mut hint = "Esc back";
         let mut title = safe(&detail.task.label);
+        if let Some(agent) = &detail.task.agent {
+            title.push_str(&format!(" · {}", safe(agent)));
+        }
         match &detail.body {
             DetailBody::Command { text, state } => {
                 let (status, color) = match state {

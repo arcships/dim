@@ -118,6 +118,7 @@ fn origin(family: usize, sequence: u64, other_group: bool) -> EventKind {
             call_id: "call".into(),
             task_id: format!("task-{sequence}"),
             description: "task".into(),
+            title: None,
             output_path: "output".into(),
         }),
         2 => {
@@ -140,6 +141,7 @@ fn origin(family: usize, sequence: u64, other_group: bool) -> EventKind {
                 agent_id: "member".into(),
             },
             prompt: "work".into(),
+            title: None,
         }),
         _ => unreachable!(),
     }
