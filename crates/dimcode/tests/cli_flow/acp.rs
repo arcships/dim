@@ -2532,7 +2532,9 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
         ])
         .output()
         .unwrap();
-    assert_eq!(limited.status.code(), Some(2));
+    // An output-limit stop ends its turn Completed, so the run succeeded even
+    // though the failure line still reports the limit and what to do about it.
+    assert_eq!(limited.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&limited.stderr);
     assert!(
         stderr.contains("local/fixture-model stopped at max_tokens"),
@@ -2575,7 +2577,7 @@ fn acp_stdio_recognizes_max_tokens_before_a_late_submit_reply() {
         notice(wire, event(10,"start","turn","start",json!({"turn_id":"limited"})));
         notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"limited-input"})));
         notice(wire, event(12,"model-end","step","model-output-end",json!({"turn_id":"limited","request_id":"model","status":"failed","error":"opaque internal detail","presentation":{"source":"fixture","reason":"max_tokens","action":"Increase the output token limit and retry."}})));
-        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"failed","error":"opaque internal detail"})));
+        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"completed","reason":"output_limit"})));
         wire.reply(&submit, json!({"event":input}));
         detached_eof(wire);
     });
@@ -2610,7 +2612,7 @@ fn acp_stdio_reads_the_output_limit_from_the_failure_kind() {
         notice(wire, event(10,"start","turn","start",json!({"turn_id":"limited"})));
         notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"limited-input"})));
         notice(wire, event(12,"model-end","step","model-output-end",json!({"turn_id":"limited","request_id":"model","status":"failed","error":"opaque internal detail","failure":{"kind":"output_limit","attempts":1,"waitedMs":0}})));
-        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"failed","error":"opaque internal detail"})));
+        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"completed","reason":"output_limit"})));
         wire.reply(&submit, json!({"event":input}));
         detached_eof(wire);
     });
@@ -2625,6 +2627,42 @@ fn acp_stdio_reads_the_output_limit_from_the_failure_kind() {
     );
     let limited = peer.response(3);
     assert_eq!(limited["result"]["stopReason"], "max_tokens", "{limited}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_answers_end_turn_after_a_recovered_output_limit() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(METHODS);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        let submit = wire.read("session.submit");
+        let input = event(9, "recovered-input", "input", "message", json!({"submission_id":submit["params"]["submissionId"],"user":{"content":[{"type":"text","text":"Hello"}]},"mode":"queue"}));
+        let notice = |wire: &mut Wire, value: Value| wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":value}));
+        notice(wire, event(10,"start","turn","start",json!({"turn_id":"recovered"})));
+        notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"recovered-input"})));
+        notice(wire, event(12,"limited","step","model-output-end",json!({"turn_id":"recovered","request_id":"first","status":"failed","error":"opaque internal detail","failure":{"kind":"output_limit","attempts":1,"waitedMs":0}})));
+        notice(wire, event(13,"continued","step","model-output-end",json!({"turn_id":"recovered","request_id":"second","status":"completed","finish_reason":"end_turn"})));
+        notice(wire, event(14,"end","turn","end",json!({"turn_id":"recovered","status":"completed","reason":"end_turn"})));
+        wire.reply(&submit, json!({"event":input}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert_eq!(peer.response(2)["result"]["sessionId"], "session");
+    peer.send(
+        3,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"Hello"}]}),
+    );
+    let recovered = peer.response(3);
+    assert_eq!(recovered["result"]["stopReason"], "end_turn", "{recovered}");
     peer.close();
     daemon.join().unwrap();
 }

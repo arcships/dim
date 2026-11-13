@@ -3086,8 +3086,17 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             assert!(!events.iter().any(|event| matches!(event.kind, EventKind::ToolUse(_))), "{kind}: {prompt}");
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(data.outcome, ModelOutputOutcome::Failed { .. }))), "{kind}: {prompt}");
             assert!(!events.iter().any(|event| matches!(&event.kind, EventKind::ModelContent(_) | EventKind::ToolCall(_) | EventKind::ModelUsage(_)) || matches!(&event.kind, EventKind::ToolResult(data) if data.call_event_id.is_some())), "{kind}: {prompt}");
-            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { .. }, .. })), "{kind}: {prompt}");
-            assert_eq!(server.endpoint.requests.lock().unwrap().len(), 1);
+            // The failed reply announced a call and ran none of it, so the
+            // turn takes its one continuation. The fixture cuts every request
+            // that carries the prompt, so that request fails the same way and
+            // the turn ends on its outcome; what the case pins is the extra
+            // request and that neither one dispatched the announced call.
+            assert_eq!(server.endpoint.requests.lock().unwrap().len(), 2, "{kind}: {prompt}: the cut request and its continuation");
+            let terminals: Vec<_> = events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect();
+            assert_eq!(terminals.len(), 2, "{kind}: {prompt}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { ref error }, .. }) if matches!(&terminals[1], ModelOutputOutcome::Failed { error: last, .. } if last == error)),
+                "{kind}: {prompt}");
             agent.close().await.unwrap();
             server.close().await;
         }
