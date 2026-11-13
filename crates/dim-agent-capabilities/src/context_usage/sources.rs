@@ -601,9 +601,7 @@ impl ContextUsage {
             saved_through: through,
             relevant_through: through,
             model: None,
-            unavailable: configured.then(|| {
-                HostError::failed("Usage statistics are not available until the next model request")
-            }),
+            unavailable: None,
             needs_history: configured,
             empty: Default::default(),
             numeric: Numeric::new(self.timeline.clone(), through, epoch, None, initialized),
@@ -628,9 +626,7 @@ impl ContextUsage {
         let configuration = self.configure(&mut machine, id, value).await?;
         if matches!(configuration, Configuration::Ready { .. }) {
             machine.needs_history = true;
-            machine.unavailable = Some(HostError::failed(
-                "Usage statistics are not available until the next model request",
-            ));
+            machine.unavailable = None;
         }
         machine.state.current = Some(NumericResult {
             at: machine.state.at(through),
@@ -766,9 +762,7 @@ impl ContextUsage {
                     },
                 });
                 machine.needs_history = true;
-                machine.unavailable = Some(HostError::failed(
-                    "Usage statistics are not available until the next model request",
-                ));
+                machine.unavailable = None;
                 return Ok(());
             }
             if match (&previous, &next) {
@@ -952,9 +946,7 @@ impl ContextUsage {
                 else {
                     machine.numeric.take_pending();
                     machine.needs_history = true;
-                    machine.unavailable = Some(HostError::failed(
-                        "Usage statistics are not available until the next model request",
-                    ));
+                    machine.unavailable = None;
                     return Ok(());
                 };
                 let [replacement, baseline] = <[_; 2]>::try_from(

@@ -35,10 +35,6 @@ or unknown input returns null and does not fall back to the currently running tu
 three indexed position/identity reads, with no input/output body or historical paging.
 The first read selects consumed/deleted by the same input identity; a deleted input returns
 `inputDeleted=true`, null turn and null output. Other replies may omit `inputDeleted` (false).
-For an explicitly selected failed turn, one further indexed lookup returns optional
-`turn.modelOutcome`, the latest `ModelOutputOutcome` recorded for that turn. This preserves
-the actual model failure classification when the terminal model event is outside the window;
-absence means no such model terminal exists, not an inferred failure reason.
 Null means no matching boundary, not an inferred idle state
 from a short transcript. Fork requires a matching ended turn. The reply contains no event or output body.
 Current uncommitted output remains ModelProvider's public progress, including the original block

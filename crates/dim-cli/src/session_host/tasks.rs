@@ -537,6 +537,7 @@ impl Worker {
             history.window.push(page).map_err(|error| error.to_string())
         });
         let window_ready = matches!(result, Ok(true));
+        let earlier = history.earlier;
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
@@ -583,7 +584,7 @@ impl Worker {
         }
         self.changed();
         if window_ready {
-            if self.task_history[&request.branch_id].ended {
+            if !earlier && self.task_history[&request.branch_id].ended {
                 self.finish_window(&request.branch_id);
             }
             self.publish();

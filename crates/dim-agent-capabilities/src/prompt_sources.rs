@@ -383,13 +383,31 @@ impl SessionLanguage {
     pub async fn gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.gate.lock().await
     }
-    pub fn get(&self) -> Option<ReplyLanguage> {
-        *self.language.lock().expect("session language")
-    }
     /// Replaces the value with `language`.
     pub fn replace(&self, language: Option<ReplyLanguage>) -> Option<ReplyLanguage> {
         *self.language.lock().expect("session language") = language;
         language
+    }
+}
+
+/// The `get` reply: the Session's reply language when the operator selected
+/// one, `null` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionLanguageReply {
+    pub language: Option<ReplyLanguage>,
+}
+
+#[rutis::service]
+impl SessionLanguage {
+    /// The reply language the operator selected, as data. The App Server's
+    /// `session.language.get` answers the same value; its update also writes
+    /// the Session record and has Prompt adopt the source, so changing the
+    /// value is not this face's operation.
+    pub fn get(&self) -> SessionLanguageReply {
+        SessionLanguageReply {
+            language: *self.language.lock().expect("session language"),
+        }
     }
 }
 
@@ -465,7 +483,7 @@ impl LoadPrompt for Sources {
                     210,
                 ),
                 LANGUAGE => (
-                    self.language.get().map(language_body),
+                    self.language.get().language.map(language_body),
                     PromptDelivery::State,
                     220,
                 ),

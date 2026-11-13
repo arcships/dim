@@ -1010,6 +1010,34 @@ async fn a_fork_waits_for_background_work_and_keeps_preset_and_model() {
         "the fork can read {forked_output}"
     );
 
+    let task_id = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) => Some(data.task_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let output = client
+        .rpc(
+            "session.exec.output.page",
+            json!({"sessionId":fid,"branchId":"main","taskId":task_id,"cursor":0,"limit":4096}),
+        )
+        .await;
+    assert_ok(&output);
+    assert!(
+        output["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("finished"),
+        "{output}"
+    );
+    let stopped = client
+        .rpc(
+            "session.exec.stop",
+            json!({"sessionId":fid,"branchId":"main","taskId":task_id}),
+        )
+        .await;
+    assert_ok(&stopped);
     assert_ok(&client.rpc("session.delete", json!({"sessionId":fid})).await);
     assert!(
         !store.output(&sid).exists(),

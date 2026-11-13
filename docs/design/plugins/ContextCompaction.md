@@ -1202,6 +1202,7 @@ ran with their exit status, and nothing else.
 | `session_invalid_input` | both | Unknown branch | No |
 | `session_closed` | both | Session or branch closing | No |
 | `context_not_configured` | usage | No `context/configured` in the branch's history | After a model is adopted |
+| `context_usage_unavailable` | usage | Current statistics have not been established; the model is configured | After the next actual model request; do not reselect the model |
 | `context_model_failed` | usage | `resolve` failed (no capability snapshot) | After selecting the model again |
 | `compaction_failed` | compact | Fact `failed`: strategy error after the shared failure policy, a reply with no text, a `retain_from` that fails validation, a compaction that reaches its summarizer retry limit, no reduction, no `context/configured`, or no snapshot | User's choice |
 | `compaction_cancelled` | compact | Fact `cancelled`: `stop/interrupt` or reload | User's choice |

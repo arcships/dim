@@ -6,10 +6,10 @@ main 的 v44 已用于 Prompt 投递输入，v45 增加 worktree 最后使用时
 
 - 保留 main v44/v45/v46 的事件字段和 `worktree_directories.last_used_at_ms`，同时保留本分支的恢复成员索引；不新增业务事件、恢复快照或额外缓存。
 - 用完整 SQL 结构及单个版本标记区分 main v44 与 resume v44。继续接受已支持的两套 v42/v43、main v37/v38 及原升级链。
-- main v44–v46 升级时只补缺少的恢复索引和对应成员关系；resume v44 只补 worktree 时间列，旧行保留 NULL，不重建已有恢复关系。
+- main v42–v46 补缺少的恢复索引和对应成员关系；main v42–v44 同时补 worktree 时间列。resume v42–v44 补 worktree 时间列，resume v42 另升级 agent_sessions 以接受 automation 来源。旧 worktree 行保留 NULL，已有时间和恢复关系不重建。
 - 全部升级及 marker 改为 v47 在同一事务内完成；任一步失败回滚，保留原库。未知结构或不匹配的 marker 拒绝打开，不根据字段猜测业务事实。
 - v47 的正常打开不回扫历史；首次升级建立关系的成本单列。旧程序拒读 v47。
-- 在一次性数据库中覆盖 main v44/v45/v46、resume v44、旧两套 v42/v43 的成功升级，以及建索引失败时的完整回滚；验证原事件和已存在的成员关系不丢失，worktree 时间不被覆盖。
+- 在一次性数据库中覆盖 main v44/v45/v46、resume v44、旧两套 v42/v43 的成功升级，以及索引已创建、关系回填失败时的完整回滚；验证原事件和已存在的成员关系不丢失，worktree 时间不被覆盖。
 
 ## v46：`model/usage` 携带推理 token 数
 
@@ -103,7 +103,7 @@ a model limit that only a declaration writes, a delegation's Agent owner and
 member leader, a Session's creation origin, Session file grants, command output
 ownership and the two context reading switches on timeline events. Startup
 requires the exact v47 SQL schema and a single
-format marker of 47 before writable PRAGMAs, or the exact main v46, v45, v44, resume v44, v43, v42, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
+format marker of 47 before writable PRAGMAs, or the exact main v42–v46 and resume v42–v44 families, v41, v40, v39, v38, v37, v36, v35, v34, v33, v32, v31, v30, v29, v28, v27, v26, v25, v24, v23,
 v22, v21, v20, v19, v18, v17, v16, v15 or v13 schema with its own marker,
 which the same startup transaction upgrades in place to v47 one step after
 another ([#1477 v46 reasoning count](#v46modelusage-携带推理-token-数), [#1451 v45 last-used time](#v45worktree-目录的最后使用时间), [v44 prompt changes](#v44提示变更携带其投递输入), [v43 conditional Steer](#v43-conditional-queued-input-steer), [v41 merged child tool-call and Timeline indexes](#v41合并-child-tool-call-与-timeline-索引格式), [#1421 v42 decision](#v42agent_sessions-接受-automation-来源), [v36 text candidates](#v36-property-text-candidates), [v35 submission index](#v35-submission-identity-index), [#1099 v34 decision](#1099-v34-格式决定), [#911 v33 decision](#911-v33-格式决定), [#605 v32 decision](#605-v32-格式决定), [#708 v31 decision](#708-v31-格式决定), [#557 v30 decision](#557-v30-格式决定), [ADR 013 v29 decision](#adr-013-v29-格式决定), [#717 v28 decision](#717-v28-格式决定), [#593 v27 decision](#593-v27-格式决定),

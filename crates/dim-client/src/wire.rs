@@ -463,8 +463,6 @@ pub struct TurnBoundary {
     pub ended: bool,
     #[serde(default)]
     pub outcome: Option<dim_agent_types::TurnOutcome>,
-    #[serde(default)]
-    pub model_outcome: Option<dim_agent_types::ModelOutputOutcome>,
 }
 
 #[derive(Deserialize)]

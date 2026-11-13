@@ -28,6 +28,15 @@ async fn checked_attach_rejects_a_different_cwd_before_restoring_the_session() {
     client_session(&mut client, &agent, host_policy()).await;
     let id = launch(&sessions).await;
     loads.released(&id).await;
+    let alias = store.0.join("legacy-cwd");
+    std::os::unix::fs::symlink(std::env::temp_dir(), &alias).unwrap();
+    rusqlite::Connection::open(store.database())
+        .unwrap()
+        .execute(
+            "UPDATE agent_sessions SET config=json_set(config,'$.cwd',?2) WHERE session_id=?1",
+            rusqlite::params![id, alias.to_str().unwrap()],
+        )
+        .unwrap();
     let before = loads.of(&id);
     let rejected = client
         .rpc(
@@ -53,6 +62,20 @@ async fn checked_attach_rejects_a_different_cwd_before_restoring_the_session() {
         .await;
     assert_ok(&accepted);
     assert_eq!(loads.of(&id), (before.0 + 1, true));
+    assert_ok(
+        &client
+            .rpc(
+                "session.attach",
+                json!({"sessionId":id,"expectedCwd":std::env::temp_dir()}),
+            )
+            .await,
+    );
+    assert_eq!(
+        loads.of(&id),
+        (before.0 + 1, true),
+        "a checked attach to the loaded legacy cwd reuses its Session"
+    );
+
     server.shutdown();
     server.join().await.unwrap();
 }

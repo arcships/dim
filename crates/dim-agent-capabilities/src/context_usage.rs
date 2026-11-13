@@ -644,7 +644,10 @@ impl ContextUsage {
             }
         }
         match self.at(through, cancel).await {
-            Ok(_) | Err(ContextOpError::NotConfigured | ContextOpError::Model(_)) => Ok(true),
+            Ok(_)
+            | Err(
+                ContextOpError::NotConfigured | ContextOpError::NotReady | ContextOpError::Model(_),
+            ) => Ok(true),
             Err(ContextOpError::Read(error)) => Err(HostError::failed(error.to_string())),
         }
     }
@@ -793,7 +796,9 @@ impl ContextUsage {
 
         let view = match self.at(through, cancel.clone()).await {
             Ok(view) => view,
-            Err(ContextOpError::Model(_) | ContextOpError::NotConfigured) => return Ok(None),
+            Err(
+                ContextOpError::Model(_) | ContextOpError::NotConfigured | ContextOpError::NotReady,
+            ) => return Ok(None),
             Err(ContextOpError::Read(error)) => return Err(HostError::failed(error.to_string())),
         };
         let state = view.state.expect("ready usage state");
@@ -1149,6 +1154,9 @@ impl ContextUsage {
             {
                 if let Some(error) = &view.unavailable {
                     return Err(ContextOpError::Model(error.clone()));
+                }
+                if view.needs_history {
+                    return Err(ContextOpError::NotReady);
                 }
                 return Ok(view);
             }

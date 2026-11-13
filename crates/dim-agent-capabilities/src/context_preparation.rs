@@ -406,6 +406,9 @@ pub enum ContextOpError {
     /// No `context/configured` in the branch's history.
     #[error("Context is not configured; adopt a model first")]
     NotConfigured,
+    /// A real model request has not established statistics for the current context.
+    #[error("Context usage will be available after the next model request")]
+    NotReady,
     /// The window facts could not be resolved, or no policy is bound.
     #[error("{0}")]
     Model(HostError),

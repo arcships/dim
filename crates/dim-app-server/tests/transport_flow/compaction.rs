@@ -223,8 +223,8 @@ async fn product_compaction_runs_automatically_on_request_and_settles_after_a_cr
         let unavailable = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
-        assert_eq!(unavailable["error"]["data"]["appError"], "context_model_failed");
-        assert_eq!(unavailable["error"]["message"], "Usage statistics are not available until the next model request");
+        assert_eq!(unavailable["error"]["data"]["appError"], "context_usage_unavailable");
+        assert_eq!(unavailable["error"]["message"], "Context usage will be available after the next model request");
         assert!(provider.requests.lock().unwrap().is_empty());
         turn(&mut client, &sid, "initialize usage").await;
         let usage = client

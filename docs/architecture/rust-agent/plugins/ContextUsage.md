@@ -30,7 +30,7 @@ Recovery reads the latest numeric result, matching covered position and counter
 controls only when a kind/position probe proves there is no uncovered source matching the live render/control filter. An uncovered source invalidates the derived numbers; cold recovery never consumes its body. Old v1-v3 aggregates are read directly; old prefix numbers are read by their
 existing node identities only when requested. v4 numbers remain readable. Unknown
 schemas or algorithms fail. Without saved statistics, usage
-reports that it is not yet initialized. A real model preparation passes its existing projection and resolved counter to
+reports `context_usage_unavailable`; it does not report a model failure. A real model preparation passes its existing projection and resolved counter to
 Usage, which returns initial contributions and the budget estimate from one
 message count. It saves those contributions only after the final request is
 confirmed to retain that projection. A compaction adopted after that projection cutoff defers initialization until the next actual request. Resume reads no historical messages to initialize a counter.

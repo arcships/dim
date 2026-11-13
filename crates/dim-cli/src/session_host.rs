@@ -4170,6 +4170,9 @@ impl Worker {
                         "Context usage is known once a model has answered in this session"
                             .to_owned()
                     }
+                    Some("context_usage_unavailable") => {
+                        "Context usage will be available after the next model request".into()
+                    }
                     Some("context_model_failed") => {
                         "Context usage needs the model's capabilities; select the model again"
                             .to_owned()

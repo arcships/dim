@@ -902,8 +902,11 @@ impl AgentIndex {
         }
         let (session, _gate, activity) = match host.agent.get_session(id) {
             Some(session) => {
-                if expected_cwd
-                    .is_some_and(|expected| std::path::Path::new(&session.config().cwd) != expected)
+                if let Some(expected) = expected_cwd
+                    && std::path::Path::new(&session.config().cwd) != expected
+                    && !tokio::fs::canonicalize(&session.config().cwd)
+                        .await
+                        .is_ok_and(|actual| actual == expected)
                 {
                     return Err(AgentError::InvalidInput(
                         "Session cwd does not match expectedCwd".into(),
@@ -921,8 +924,11 @@ impl AgentIndex {
                         .session_config(id)
                         .await?
                         .ok_or_else(|| AgentError::Storage(format!("unknown session {id}")))?;
-                    if expected_cwd
-                        .is_some_and(|expected| std::path::Path::new(&config.cwd) != expected)
+                    if let Some(expected) = expected_cwd
+                        && std::path::Path::new(&config.cwd) != expected
+                        && !tokio::fs::canonicalize(&config.cwd)
+                            .await
+                            .is_ok_and(|actual| actual == expected)
                     {
                         return Err(AgentError::InvalidInput(
                             "Session cwd does not match expectedCwd".into(),

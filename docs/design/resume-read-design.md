@@ -143,7 +143,7 @@ Goal 的 Session 身份隔离、RPC 边界的既有正确性修复保留为独�
 
 v39 保留已确定的 changes 元素定位编码，不附加数组查询语言。v40 采用已确认的[输出逻辑身份和恢复成员方案](appserver/native-storage-format.md#提案v40-补齐逻辑事件身份与恢复成员)：输出locator和五种恢复描述保留；本次补齐handover存在组与turn/scope/epoch及源位置三个定位键，同事务升级、失败回滚。
 
-不向 v39 静默写入 v40 结构；旧程序拒读新格式。当前 native 格式为已确认的 v44，合并 main 的 conditional Steer 与 Timeline 未完成对象索引，按完整结构兼容两套 v43 和两套 v42；升级方案见 [native v44](appserver/native-storage-format.md#v44-merge-conditional-steer-and-resume-indexes)。不增加业务快照表。owner 的 ExtensionEvent/schema 与 native 格式分开：Queue不再写恢复事件；Prompt新引用为prompt-state/v2，Usage数字为context-usage/v4，小位置缓存为context-usage-covered/v1；Goal业务事件为goal-state/v1，不沿用旧 goal/v1 或提议 goal/v2 的运行快照。旧布局按各 owner 的兼容合同处理，Goal 不初始化运行快照；Store 不执行业务初始化。普通调用继续使用现有 query；旧 QuerySpec 的 Rust 字面量与线上请求不增加可选字段。
+不向 v39 静默写入 v40 结构；旧程序拒读新格式。当前 native 格式为已确认的 v47，合并 main v46 与 resume v44，按完整结构兼容 main v42–v46 和 resume v42–v44；升级方案见 [native v47](appserver/native-storage-format.md#v47合并-main-v46-与-resume-v44)。不增加业务快照表。owner 的 ExtensionEvent/schema 与 native 格式分开：Queue不再写恢复事件；Prompt新引用为prompt-state/v2，Usage数字为context-usage/v5，小位置缓存为context-usage-covered/v1；Goal业务事件为goal-state/v1，不沿用旧 goal/v1 或提议 goal/v2 的运行快照。旧布局按各 owner 的兼容合同处理，Goal 不初始化运行快照；Store 不执行业务初始化。普通调用继续使用现有 query；旧 QuerySpec 的 Rust 字面量与线上请求不增加可选字段。
 
 v42 为审批、协作交付、未通知后台结果补成员索引，保留 exec 任务身份定位。只索引原事实，不增加状态事件；兼容 v41 和两套旧格式家族，失败回滚。首次升级单独测量，不计为已经建好索引的正常加载；具体结构与通知关闭边界只在[原生格式 v42](appserver/native-storage-format.md#v42-indexes-for-unfinished-external-work)规定。
 

@@ -146,6 +146,11 @@ impl Connection {
         if transcript && !tail {
             return Err(RpcError::invalid("transcript requires tail"));
         }
+        if transcript && params.limit.is_some_and(|limit| limit > HISTORY_PAGE_LIMIT) {
+            return Err(RpcError::invalid(format!(
+                "transcript limit must be between 1 and {HISTORY_PAGE_LIMIT}"
+            )));
+        }
         if tail && (params.latest_turn || params.after.is_some()) {
             return Err(RpcError::invalid(
                 "tail cannot be combined with latestTurn or after",
@@ -169,7 +174,9 @@ impl Connection {
                 "latestTurn limit must be between 1 and {HISTORY_TURN_LIMIT}"
             )));
         }
-        let limit = if params.latest_turn || tail {
+        let limit = if transcript {
+            params.limit.unwrap_or(HISTORY_PAGE_LIMIT)
+        } else if params.latest_turn || tail {
             params.limit.unwrap_or(HISTORY_TURN_LIMIT)
         } else {
             params.limit.unwrap_or(HISTORY_PAGE_LIMIT)
@@ -742,12 +749,17 @@ async fn turn_window(
         branch_id: branch.into(),
         sequence: turn_start + 1,
     });
-    let step = tree
-        .query(branch.to_owned(), first_model)
-        .await
-        .map_err(history_error)?;
-    let QueryOutput::Rows { rows } = step.result else {
-        unreachable!("field selection returns rows")
+    let rows = if turn_start < through {
+        let step = tree
+            .query(branch.to_owned(), first_model)
+            .await
+            .map_err(history_error)?;
+        let QueryOutput::Rows { rows } = step.result else {
+            unreachable!("field selection returns rows")
+        };
+        rows
+    } else {
+        Vec::new()
     };
     let mut window_start = turn_start;
     let mut consumed = false;
@@ -774,7 +786,7 @@ async fn turn_window(
             fields: vec!["data.input_id".into()],
         };
         adopted.page.as_mut().unwrap().limit = std::num::NonZeroU64::new(128).unwrap();
-        loop {
+        while adopted.from.as_ref().unwrap().sequence <= adopted.through.unwrap() {
             let reply = tree
                 .query(branch.to_owned(), adopted.clone())
                 .await
@@ -1112,7 +1124,6 @@ async fn display_transcript(
     through: u64,
 ) -> Result<wire::HistoryResult, RpcError> {
     let top = before.saturating_sub(1).min(through);
-    let limit = limit.min(256);
     if top == 0 {
         return Ok(wire::HistoryResult {
             events: Vec::new(),
@@ -1156,6 +1167,7 @@ async fn display_transcript(
                 "branch/create",
                 "branch/create-failed",
                 "branch/ended",
+                "branch/end",
                 "context/compaction-start",
             ]),
         ),

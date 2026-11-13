@@ -540,6 +540,7 @@ impl BackgroundExec {
                 ],
             },
         );
+        query.from = None;
         query.query.pick = Some(QueryPick::First);
         query.page = Some(QueryPage {
             limit: std::num::NonZeroU64::MIN,

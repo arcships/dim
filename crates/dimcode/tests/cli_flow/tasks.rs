@@ -2752,3 +2752,90 @@ fn tui_page_up_at_the_top_draws_the_branch_from_its_first_message() {
     terminal.wait();
     daemon.join().unwrap();
 }
+
+#[test]
+fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
+    let home = Home::new();
+    let (ready, readiness) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods", "session.branch.get"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[{"name":"session.turn.get","mutating":false},{"name":"session.input.pending","mutating":false},{"name":"session.exec.pending","mutating":false}]}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[fact("child",1,1000,"branch","create",json!({
+            "branch":"child","at":{"kind":"create"},"source":{"kind":"host","operation_id":"child"},"prompt":"ended history"
+        }))],"through":2,"nextAfter":2,"done":true}));
+        let mut inventories = 0;
+        let mut context = false;
+        let mut accounts = false;
+        while inventories < 2 || !context || !accounts {
+            let request = wire.read_any();
+            match request["method"].as_str().unwrap() {
+                "session.context.usage" => {
+                    context = true;
+                    wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}}));
+                }
+                "account.providers" => { accounts = true; wire.reply(&request, json!([])); }
+                "session.input.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"inputs":[],"next":null})),
+                "session.exec.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"tasks":[],"next":null})),
+                "session.turn.get" => {
+                    inventories += usize::from(request["params"]["through"].is_number());
+                    wire.reply(&request, json!({"branchId":request["params"]["branchId"],"through":2,"turn":null,"output":null}));
+                }
+                method => panic!("Unexpected {method}"),
+            }
+        }
+        event(wire,"main",fact("child-ended",3,3000,"branch","ended",json!({"branch":"child","endEvent":640,"source":{"kind":"host","operation_id":"stop"}})));
+        wire.2 = true;
+        ready.send(()).unwrap();
+        let detail = wire.read("session.branch.get");
+        wire.reply(&detail,json!({"branchId":"child","parentBranchId":"main","branchPoint":1,"state":"ended","head":640,"purpose":"ended history","cutMessages":0,"end":null}));
+        let page = |start: u64, end: u64| -> Vec<Value> {
+            (start..=end).flat_map(|n| [
+                fact(&format!("m{n}"),n*2-1,n,"input","message",json!({"mode":"append","user":{"content":[{"type":"text","text":format!("ended-message-{n:03}")}]}})),
+                fact(&format!("a{n}"),n*2,n,"input","applied",json!({"input_id":format!("m{n}"),"mode":"append"})),
+            ]).collect()
+        };
+        let history = wire.read("session.history");
+        wire.reply(&history,json!({"events":page(289,320),"through":640,"nextAfter":640,"nextBefore":577,"done":false}));
+        for (start, end) in [(161,288),(33,160),(1,32)] {
+            let earlier = wire.read("session.history");
+            assert_eq!(earlier["params"]["before"],end*2+1);
+            assert_eq!(earlier["params"]["limit"],256);
+            wire.reply(&earlier,json!({"events":page(start,end),"through":640,"nextAfter":end*2,"nextBefore":start*2-1,"done":start==1}));
+        }
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.args(["--resume", "session", "--fullscreen"]);
+    let mut terminal = Terminal::launch_tui(command);
+    terminal.until("test / model");
+    readiness
+        .recv_timeout(PATIENCE)
+        .unwrap_or_else(|e| panic!("{e}: {}", terminal.transcript));
+    terminal.write(b"/lines\r");
+    terminal.until("the session itself");
+    terminal.write(b"\x1b[B\r");
+    terminal.until("ended-message-320");
+    terminal.write(b"/earlier\r");
+    for _ in 0..32 {
+        terminal.write(b"\x1b[H");
+        probe_1476_drain(&mut terminal, Duration::from_millis(100));
+        terminal.write(b"\x1b[5~");
+        probe_1476_drain(&mut terminal, Duration::from_millis(200));
+        if strip_ansi(&terminal.transcript).contains("ended-message-001") {
+            break;
+        }
+    }
+    let restored = strip_ansi(&terminal.transcript).contains("ended-message-001");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    assert!(
+        restored,
+        "earlier content was not retained: {}",
+        strip_ansi(&terminal.transcript)
+    );
+}

@@ -4576,8 +4576,6 @@ async fn drive(
         driven.error = Some(format!("session.attach failed: {error}"));
         return driven;
     }
-    // The Session serves its window only once a model request has counted the context.
-    // A run that cannot read it here reads it again when it settles, if a request ran.
     let mut window_deferred = false;
     match client
         .rpc(
@@ -4595,7 +4593,7 @@ async fn drive(
                 return driven;
             }
         }
-        Err(error) if dim_client::app_error(&error) == Some("context_model_failed") => {
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
             window_deferred = true;
         }
         Err(error) => {
@@ -4859,20 +4857,23 @@ async fn drive(
                 .await;
         }
     }
-    if window_deferred
-        && driven.error.is_none()
-        && let Ok(usage) = client
+    if window_deferred && driven.error.is_none() {
+        match client
             .rpc(
                 "session.context.usage",
-                json!({"sessionId": session, "branchId": "main"}),
+                json!({"sessionId":session,"branchId":"main"}),
             )
             .await
-    {
-        let window = usage["contextWindow"].as_f64();
-        driven.window = window;
-        if let Some(error) = window_mismatch(window, scenario.budget.window) {
+        {
+            Ok(usage) => {
+                driven.window = usage["contextWindow"].as_f64();
+                driven.error = window_mismatch(driven.window, scenario.budget.window);
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {}
+            Err(error) => driven.error = Some(format!("Context window check failed: {error}")),
+        }
+        if driven.error.is_some() {
             driven.stop = "error";
-            driven.error = Some(error);
         }
     }
     driven

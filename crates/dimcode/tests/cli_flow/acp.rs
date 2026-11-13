@@ -403,7 +403,6 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
             let mut boundary = json!({"turnId":"owned","sequence":13,"ended":true,"outcome":{"status":if restarted {"cancelled"} else {"completed"},"reason":if restarted {"server_restarted"} else {"end_turn"}}});
             if limited {
                 boundary["outcome"] = json!({"status":"completed","reason":"output_limit"});
-                boundary["modelOutcome"] = json!({"status":"failed","error":"Provider output limit","presentation":{"source":"fixture","reason":"max_tokens"}});
             }
             wire.reply(
                 &turn,

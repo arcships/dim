@@ -308,10 +308,9 @@ the key submits nothing and opens nothing.
 
 ### Queued messages
 
-`/queue` requires an attached Session and opens the shown line's unconsumed
-messages in both terminal modes. Applied-but-unconsumed messages are labelled
-`Incorporating` while running and `Unread · waiting for your next message` while
-idle; unapplied messages are labelled `Held`. Up/Down selects a row,
+`/queue` requires an attached Session and opens only the shown line's held
+messages in both terminal modes, labelled `Held`. Applied messages remain in
+the transcript, not the queue panel or strip. Up/Down selects a row,
 Enter steers it and `x` deletes it through the existing withdrawal operation.
 Only held messages can change; `notHeld` is a notice, not a failed run. Esc
 closes the panel without interrupting. Committed events refresh the panel,
@@ -326,10 +325,11 @@ nothing. A failed request leaves the held input available for retry.
 With an empty draft and no held messages, Enter retains the task-line shortcut
 defined in [Run keys and queue](#run-keys-and-queue).
 
-The panel advertises steer and delete only when the selected message is held.
-An applied-only strip offers `/queue` to view the messages, not held-only edit
-or steer shortcuts. While idle it explains that the next message will carry the
-unread input; it neither discards the input nor starts a run automatically.
+The panel advertises steer and delete only when a message is selected.
+When no held messages remain, the strip disappears. Applied-but-unconsumed
+messages keep only their existing transcript style, including after a stop;
+there is no additional unread hint. This presentation neither discards input nor
+starts a run.
 
 Shift+Left only withdraws a message with one text block. Images and multi-block
 messages remain held with a notice directing the user to `/queue`; no partial
@@ -346,9 +346,9 @@ Steering always uses the owner's full held input.
 
 ### Queue strip
 
-The strip and `/queue` read the same unconsumed input projection: incorporating
-messages in transcript order, then held messages oldest first. Each strip row
-names its state. During a run, `Shift+Left` on an empty draft recalls the newest
+The strip and `/queue` show only held messages from the existing unconsumed
+input projection, oldest first; the strip count excludes applied messages.
+During a run, `Shift+Left` on an empty draft recalls the newest
 held message subject to the attachment rule above. The strip shows the shortcut
 that steers the oldest held message from an empty draft for the selected mode.
 With nothing held, the empty-composer Enter opens `/tasks` while the task line
@@ -356,8 +356,8 @@ shows, as the [run keys](#run-keys-and-queue) state. Up/Down remain input
 history outside the panel.
 
 ```text
-┌─ Queue (2) ───────────────────────────────────────────────────────┐
-│ › Incorporating · fix the failing test                            │
+  › fix the failing test
+┌─ Queue (1) ───────────────────────────────────────────────────────┐
 │ › Held · then update the design note                              │
 │ /queue manage · Shift+← edit last · empty draft: Ctrl+S steer     │
 └───────────────────────────────────────────────────────────────────┘
@@ -365,14 +365,12 @@ history outside the panel.
 
 A queued message the strip does not show adds its count to the hint. The strip shows at most five messages and keeps the height it reached while the queue drains.
 
-After a stop, an applied-only queue remains visible without held-input actions:
+After a stop, an unread applied message remains in the transcript without a
+queue strip when nothing is held:
 
 ```text
+  › fix the failing test
   stopped
-┌─ Queue (1) ──────────────────────────────────────────────┐
-│ › Unread · fix the failing test                          │
-│ /queue view · waiting for your next message              │
-└──────────────────────────────────────────────────────────┘
 ```
 
 ## Usage report

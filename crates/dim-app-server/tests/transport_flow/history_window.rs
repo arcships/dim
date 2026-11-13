@@ -331,6 +331,14 @@ async fn display_tail_pages_inside_a_batch() {
         .await;
     assert_ok(&selected);
     assert_eq!(selected["result"]["items"], expected["result"]["items"]);
+    let oversized = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":257}),
+        )
+        .await;
+    assert_eq!(oversized["error"]["code"], -32602);
+
     let invalid = client
         .rpc(
             "session.history.display",
@@ -742,6 +750,28 @@ async fn the_latest_turn_window_carries_the_prompt_and_folds_like_forward_paging
         .await;
     assert_ok(&forward);
     assert_eq!(sequences(&page), sequences(&forward));
+    for method in ["session.history", "session.history.display"] {
+        let pinned = client
+            .rpc(
+                method,
+                json!({"sessionId":id,"branchId":"main","latestTurn":true,"through":turn_start}),
+            )
+            .await;
+        assert_ok(&pinned);
+        assert_eq!(pinned["result"]["turnStart"], turn_start);
+        assert!(
+            pinned["result"][if method == "session.history" {
+                "events"
+            } else {
+                "items"
+            }]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| text_of(event) == Some("hello window")),
+            "{pinned}"
+        );
+    }
 
     server.shutdown();
     server.join().await.unwrap();
@@ -873,6 +903,22 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
             .iter()
             .any(|event| event["type"] == "branch" && event["name"] == "end"),
         "{ended}"
+    );
+
+    let transcript = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":branch,"tail":true,"transcript":true}),
+        )
+        .await;
+    assert_ok(&transcript);
+    assert!(
+        transcript["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "branch" && event["name"] == "end"),
+        "{transcript}"
     );
     let mut pinned = params;
     pinned["through"] = open["result"]["through"].clone();

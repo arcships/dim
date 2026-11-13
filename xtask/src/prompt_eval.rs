@@ -507,8 +507,6 @@ async fn drive(
     {
         return Driven::failed(format!("session.attach failed: {error}"));
     }
-    // The Session serves its window only once a model request has counted the context;
-    // a run that cannot read it here reads it again before it closes the Session.
     let mut window_deferred = false;
     match client
         .rpc(
@@ -525,7 +523,7 @@ async fn drive(
                 ));
             }
         }
-        Err(error) if dim_client::app_error(&error) == Some("context_model_failed") => {
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
             window_deferred = true;
         }
         Err(error) => {
@@ -740,30 +738,51 @@ async fn drive(
             )
             .await;
     }
+    let mut window_error = None;
     let window = if window_deferred {
-        client
+        match client
             .rpc(
                 "session.context.usage",
-                json!({"sessionId": session, "branchId": "main"}),
+                json!({"sessionId":session,"branchId":"main"}),
             )
             .await
-            .ok()
-            .and_then(|usage| usage["contextWindow"].as_f64())
+        {
+            Ok(usage) => {
+                let window = usage["contextWindow"].as_f64();
+                if window.is_none() {
+                    window_error = Some("The Session returned no context window".to_owned());
+                }
+                window
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+                None
+            }
+            Err(error) => {
+                window_error = Some(format!("Context window check failed: {error}"));
+                None
+            }
+        }
     } else {
         Some(scenario.budget.window as f64)
     };
     let _ = client
         .rpc("session.close", json!({"sessionId": session}))
         .await;
-    let windows_differ = window != Some(scenario.budget.window as f64);
-    let stop = if windows_differ { "error" } else { stop };
-    let error = windows_differ
-        .then(|| {
-            format!(
-                "the Session declares a context window of {}, and the scenario declares {}",
-                window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
-                scenario.budget.window
-            )
+    let windows_differ = window.is_some_and(|window| window != scenario.budget.window as f64);
+    let stop = if windows_differ || window_error.is_some() {
+        "error"
+    } else {
+        stop
+    };
+    let error = window_error
+        .or_else(|| {
+            windows_differ.then(|| {
+                format!(
+                    "the Session declares a context window of {}, and the scenario declares {}",
+                    window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
+                    scenario.budget.window
+                )
+            })
         })
         .or_else(|| {
             (stop == "turns" || stop == "seconds").then(|| {

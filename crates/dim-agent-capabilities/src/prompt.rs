@@ -623,7 +623,7 @@ impl Prompt {
             })
             .await
         {
-            Ok(Some(_)) => {}
+            Ok(Some(_)) => self.finish(id, Ok(ConfigureOutcome::Adopted)),
             Ok(None) => self.finish(id, Ok(ConfigureOutcome::Unchanged)),
             Err(AgentError::Cancelled(_)) => self.finish(id, Ok(ConfigureOutcome::Superseded)),
             Err(error) => {
@@ -658,25 +658,6 @@ impl Prompt {
             self.advance(sequence).await?;
         }
         Ok(sequence)
-    }
-
-    fn settle_consumed(&self, sequence: u64) {
-        let ids: Vec<String> = self
-            .state
-            .lock()
-            .unwrap()
-            .pending
-            .iter()
-            .filter(|(_, pending)| {
-                pending
-                    .waiting_through
-                    .is_some_and(|through| sequence >= through)
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            self.finish(&id, Ok(ConfigureOutcome::Adopted));
-        }
     }
 
     /// Adopts frozen source values and an optional model through the existing

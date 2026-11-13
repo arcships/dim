@@ -5,14 +5,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter steer · x delete held · Esc close" => "Enter steer · x 删除暂存消息 · Esc 关闭",
         "No queued messages." => "队列中没有消息。",
         "Held · awaiting application" => "暂存中 · 等待应用",
-        "Incorporating · awaiting model consumption" => "纳入中 · 等待模型读取",
-        "Unread · waiting for your next message" => "未读取 · 等待你的下一条消息",
         "Unread" => "未读取",
-        "/queue view · awaiting model consumption" => "/queue 查看 · 等待模型读取",
-        "/queue view · waiting for your next message" => "/queue 查看 · 等待你的下一条消息",
         "+{count} more · {hint}" => "还有 {count} 条 · {hint}",
         "Held" => "暂存中",
-        "Incorporating" => "纳入中",
         "Enter export · Esc cancel" => "Enter 导出 · Esc 取消",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "带附件的消息会留在队列中；使用 /queue 对其执行 steer 或删除"

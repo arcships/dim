@@ -24,6 +24,8 @@ ACP 协议版本固定为 1，不能把 SDK 包版本当成协议版本。[v2](h
 
 下表“可接”表示已实现的现有接口映射；“条件可接”表示只有公开能力存在时提供；“不支持”表示首版不声明、不调用，收到已知但不支持的控制参数时在写入前报错。实际客户端验收不能从方法覆盖推定，见验收记录。
 
+ACP load/resume 要求 daemon 声明 `session.attach.expectedCwd` 和 `session.history.latestTurn`；断线后关联输入的完成判定要求 `session.turn.get.inputId`。缺少能力时返回明确的 unavailable 错误，不能退回枚举所有 Session 或读取全部历史。ACP 与 daemon 应随同一发行版本升级；正在工作的旧 daemon 不被自动终止，需在其工作结束后重启升级。显示 kind 筛选仍按独立能力协商，可回退到有界原始窗口。
+
 ## 3. 模块、宿主与接线
 
 ```text

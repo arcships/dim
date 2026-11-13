@@ -534,7 +534,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
             .unwrap()
             .usage(CancellationToken::new())
             .await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     session
         .submit("x".repeat(1_200), InputMode::Queue, "main")
@@ -547,7 +547,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
             .unwrap()
             .usage(CancellationToken::new())
             .await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     let first = chain_events(&session, "main", ..).await.unwrap();
     assert_eq!(
@@ -1000,7 +1000,7 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
             .await;
         assert!(matches!(
             usage,
-            Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+            Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
         ));
         assert!(
             store.context_pages.lock().unwrap().is_empty(),
@@ -3372,7 +3372,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     let preparation = session.service::<ContextPreparation>("main").unwrap();
     assert!(matches!(
         preparation.usage(CancellationToken::new()).await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     session
         .submit("bootstrap request".into(), InputMode::Queue, "main")
@@ -3571,7 +3571,7 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
             .unwrap()
             .usage(CancellationToken::new())
             .await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
@@ -3818,7 +3818,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             );
             assert!(matches!(
                 value,
-                Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+                Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
             ));
             assert_eq!(
                 counter.messages.load(Ordering::SeqCst),
@@ -3989,7 +3989,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                     .unwrap()
                     .usage(CancellationToken::new())
                     .await,
-                Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+                Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
             ));
             session
                 .submit("after offline compaction".into(), InputMode::Queue, "main")
@@ -4182,7 +4182,7 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
             .unwrap()
             .usage(CancellationToken::new())
             .await,
-        Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(_))
+        Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     session
         .submit("after offline compaction".into(), InputMode::Queue, "main")

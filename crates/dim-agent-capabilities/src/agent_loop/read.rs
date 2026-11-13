@@ -110,7 +110,7 @@ impl DynPlugin for LoopMethodsPlugin {
                         result = tree.query(p.branch_id.clone(), query) => result?,
                     };
                     let QueryOutput::Rows { rows } = result.result else { unreachable!("turn fields") };
-                    let mut turn = rows.into_iter().next().map(|row| {
+                    let turn = rows.into_iter().next().map(|row| {
                         let [QueryValue::Value { value: kind }, QueryValue::Value { value: sequence }, QueryValue::Value { value: data }] = <[_;3]>::try_from(row.values).expect("turn boundary fields") else { unreachable!("turn boundary") };
                         if kind == "turn/end" {
                             let ended:dim_agent_types::TurnEndData = serde_json::from_value(data).expect("turn end contract");
@@ -120,28 +120,6 @@ impl DynPlugin for LoopMethodsPlugin {
                             json!({"turnId":started.turn_id,"sequence":sequence,"ended":false})
                         }
                     });
-                    if (p.turn_id.is_some() || p.input_id.is_some()) && let Some(turn) = &mut turn && turn["outcome"]["status"] == "failed" {
-                        let request = TimelineQuery {
-                            scope:TimelineQueryScope::Branch,from:None,through:Some(result.through),include_publishing:false,
-                            query:QuerySpec {
-                                filter:Some(QueryFilter::And {conditions:vec![
-                                    QueryFilter::In {value:QueryOperand::Field {path:"kind".into()},values:vec![json!("step/model-output-end")]},
-                                    QueryFilter::In {value:QueryOperand::Field {path:"data.turn_id".into()},values:vec![turn["turnId"].clone()]},
-                                ]}),
-                                select:QuerySelect::Fields {fields:vec!["data".into()]},group_by:vec![],pick:Some(QueryPick::Last),order_by:vec![],
-                            },page:Some(QueryPage {limit:NonZeroU64::MIN,after:None}),
-                        };
-                        let model = tokio::select! {
-                            _ = cancel.cancelled() => return Err(RpcError::interrupted()),
-                            result = tree.query(p.branch_id.clone(),request) => result?,
-                        };
-                        let QueryOutput::Rows {rows} = model.result else {unreachable!("model terminal outcome")};
-                        if let Some(row) = rows.into_iter().next() {
-                            let [QueryValue::Value {value:data}] = <[_;1]>::try_from(row.values).expect("model terminal fields") else {unreachable!("model terminal data")};
-                            let ended:dim_agent_types::ModelOutputEndData = serde_json::from_value(data).expect("model terminal contract");
-                            turn["modelOutcome"] = serde_json::to_value(ended.outcome).expect("model outcome JSON");
-                        }
-                    }
                     let mut output = None;
                     if let Some(turn) = &turn && turn["ended"] == false && p.turn_id.is_none() && p.input_id.is_none() {
                         let mut request = TimelineQuery {

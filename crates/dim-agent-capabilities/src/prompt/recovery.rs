@@ -792,9 +792,6 @@ impl Projection {
             owner.snapshot.set(self.snapshot.clone());
             self.published_result = sequence;
         }
-        if self.written_result <= self.published_result {
-            owner.settle_consumed(self.source_through);
-        }
     }
 
     fn finish(&mut self, owner: &Prompt, expired: Vec<PromptEntry>, changed: bool) -> Result<()> {
@@ -811,8 +808,6 @@ impl Projection {
                     .map(|entry| context_input(entry, true, None, true))
                     .collect(),
             )?;
-        } else if self.written_result <= self.published_result {
-            owner.settle_consumed(self.source_through);
         }
         Ok(())
     }
@@ -1173,7 +1168,7 @@ impl Projection {
             };
             if rows.first().is_none_or(|row| row.values[0] != latest[0]) {
                 return Err(AgentError::InvalidInput(
-                    "Prompt references require explicit migration".into(),
+                    "Prompt references require explicit migration: stop the daemon, then run cargo run --locked -p xtask -- migrate-prompt-references DB SESSION BRANCH (docs/design/prompt-state-read.md)".into(),
                 ));
             }
         }
@@ -1404,6 +1399,9 @@ impl Prompt {
                 _ = self.lifecycle.cancelled() => return Err(AgentError::Closed("Prompt".into())),
                 _ = self.branch_phase.closing() => return Err(AgentError::Cancelled("prompt adoption".into())),
             }
+        }
+        if let Some(error) = self.dispatcher.failure() {
+            return Err(error);
         }
         let written = self.projection.lock().unwrap().written_result;
         self.publisher.await_published(written).await?;

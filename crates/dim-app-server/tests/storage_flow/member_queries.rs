@@ -776,6 +776,30 @@ async fn notifications_preserve_original_close_boundaries_tails_and_task_identit
                 Box::new(|result| result.unwrap()),
             )
             .unwrap();
+        let records = vec![
+            record(1, origin(4, 1, false)),
+            record(2, terminal(4, 1)),
+            record(3, origin(4, 3, false)),
+            record(4, origin(5, 4, false)),
+            record(5, terminal(5, 4)),
+            record(6, origin(5, 6, false)),
+        ];
+        for owner in [&*store as &dyn TimelineStore, &memory] {
+            owner
+                .create_session("pending-upgrade", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        append(&store, key("pending-upgrade", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("pending-upgrade", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
         store.close().await.unwrap();
         db.close().await.unwrap();
         drop(store);
@@ -919,6 +943,19 @@ async fn notifications_preserve_original_close_boundaries_tails_and_task_identit
                     .map(|id| QueryValue::Value { value: id.into() })
                     .collect::<Vec<_>>()
             );
+        }
+        for family in [4, 5] {
+            for through in 1..=6 {
+                let scope = read_scope("pending-upgrade", through);
+                let query = pending(family);
+                let actual = store.query(&scope, &query, Some(&page)).await.unwrap();
+                let expected = memory.query(&scope, &query, Some(&page)).await.unwrap();
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "source={source} resume={resume} family={family} through={through}"
+                );
+            }
         }
         let mut fallback = query.clone();
         if let Some(QueryFilter::And { conditions }) = &mut fallback.filter

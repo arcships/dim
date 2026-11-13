@@ -11,7 +11,7 @@ Decision: [ADR 023](../../adr/023-context-usage.md)。Issue: [#1320](https://git
 
 ContextUsage 是现有上下文功能内的独立 branch Capability，维护有效上下文的数字。生产者继续写原事实，不调用 Usage 更新、确认、删除或清理统计。Timeline/Store 不做 token 计算。
 
-保留现有 session.context.usage 及错误合同，由 ContextPreparation.usage 委托本 owner。read 固定源截止和当前 tools 身份，等待该目标完成后返回；已就绪读不查历史消息、不重复消息计数、不保存；当前动态工具身份首次出现时按§3取得固定贡献。无配置直接 NotConfigured，不先渲染正文；可组合计数不支持返回 Model/Unsupported，不退回完整历史重建。
+保留现有 session.context.usage 成功回复。尚无当前统计时返回 `context_usage_unavailable`，表示下一次实际模型请求后可用；模型解析失败仍返回 `context_model_failed`，未配置仍返回 `context_not_configured`。ContextPreparation.usage 委托本 owner，不为查询统计构造模型请求。read 固定源截止和当前 tools 身份，等待该目标完成后返回；已就绪读不查历史消息、不重复消息计数、不保存；当前动态工具身份首次出现时按§3取得固定贡献。无配置直接 NotConfigured，不先渲染正文；可组合计数不支持返回 Model/Unsupported，不退回完整历史重建。
 
 保存已经计算出的数字是必要优化：输入/输出已入上下文后，未来显示不应再次读取它们。处理过无关事件、delta、model-start 不构成保存理由。数字结果与单独 boundary 合为一份；不保存逐源数字树或请求正文。
 
