@@ -413,12 +413,12 @@ The two methods are RPC projections of the Session part's own service. That serv
 `mcpSession` ([service faces §3.4](../service-faces.md#34-对象句柄拆成操作加id)); the typed
 `McpSession` serves it and stays the Rust binding.
 
-| Method | Request | Reply |
+| Method | Positional arguments | Reply |
 | --- | --- | --- |
-| `state` | `{}` | `{servers: Record<string, McpSourceState>, catalogError?, closed}` |
-| `refresh` | `{}` | `null` |
-| `widget` | `{published}` | `Widget` (§4.1) |
-| `call` | `{server, tool, arguments}` | `CallResult` (§4.2) |
+| `state` | `()` | `{servers: Record<string, McpSourceState>, catalogError?, closed}` |
+| `refresh` | `()` | `null` |
+| `widget` | `(published)` | `Widget` (§4.1) |
+| `call` | `(server, tool, arguments)` | `CallResult` (§4.2) |
 
 `McpSourceState` is tagged by `state`: `disabled`, `connecting`, `ready` with `version`, `failed` and
 `disconnected` with `message`, and `authRequired` with `expired`. `state` is the snapshot

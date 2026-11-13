@@ -499,20 +499,21 @@ bounded completion notices on the calling branch.
 `backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id));
 the typed `BackgroundExec` serves it and stays the Rust binding.
 
-| Method | Request | Reply | Errors |
+| Method | Positional arguments | Reply | Errors |
 | --- | --- | --- | --- |
-| `output` | `{taskId}` | `string`: the live tail preview | `unknown`, `closed` |
-| `outputPage` | `{taskId, cursor, limit}` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit` |
-| `wait` | `{taskId, timeoutMs}` | the `exec/ended` record `{taskId, status, result}` | `unknown`, `closed`, `timeout` |
-| `stop` | `{taskId}` | the `exec/ended` record | `unknown`, `closed` |
+| `output` | `(taskId)` | `string`: the live tail preview | `unknown`, `closed` |
+| `outputPage` | `(taskId, cursor, limit)` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit` |
+| `wait` | `(taskId, timeoutMs)` | the `exec/ended` record `{task_id, status, result}` | `unknown`, `closed`, `timeout` |
+| `stop` | `(taskId)` | the `exec/ended` record | `unknown`, `closed` |
 
 `taskId` is a task this branch started. `output` reads the live capture; it is
 `unknown` for an ended or replayed task, whose registered file stays readable by
 `outputPage`. `outputPage` reads that file by byte cursor: `limit` rejects 0 and
 clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
 `cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
-ended task at once and otherwise waits for its dispatch, including with
-`timeoutMs: 0`. `stop` is kill: it cancels a running task so it ends `cancelled`
+ended task at once and otherwise waits for its dispatch until `timeoutMs` elapses.
+For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it cancels
+a running task so it ends `cancelled`
 and does not wake, and answers an already ended task's record without changing
 its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
 drops the read and a dropped `wait` releases the watch. `start` needs the live

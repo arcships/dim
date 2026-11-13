@@ -127,11 +127,11 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
 
-`mcpSession` 与 `backgroundExec` 已在本批改成数据面，各自以 id 加操作暴露：
+`mcpSession` 与 `backgroundExec` 的数据面以 id 加操作暴露：
 
 | 名字 | 数据面 | 所有者把什么留在内部 |
 | --- | --- | --- |
-| `mcpSession` | `state()`、`refresh()`、`widget(tool)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
+| `mcpSession` | `state()`、`refresh()`、`widget(published)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
 | `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、活进程、输出采集与唤醒 |
 
 形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
