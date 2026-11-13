@@ -2448,6 +2448,72 @@ fn tui_member_cards_name_a_native_agent_the_hello_does_not_announce() {
     terminal.wait();
 }
 
+#[test]
+fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
+    for cached in [false, true] {
+        let home = Home::new();
+        fs::write(
+            home.0.join("config.json"),
+            json!({"locale":"en","tuiToolDetailsExpanded":true}).to_string(),
+        )
+        .unwrap();
+        let (drawn, wait_drawn) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            let current_agent = if cached { "reviewer" } else { "current" };
+            let mut events = agent_request(10, "current", "current-call", json!({"kind":"agent","agent_id":current_agent}), "Current review").to_vec();
+            events.push(delivered(13, "req-10", current_agent, "current-member"));
+            events.push(fact("current-ended",14,14000,"collaboration","result",json!({"request_event_id":"req-10","agent_id":current_agent,"session_id":"current-member","status":"completed","text":"Current review complete"})));
+            wire.reply(&history, json!({"events":events,"through":14,"nextAfter":14,"nextBefore":10,"done":true}));
+            let earlier = loop {
+                let request = wire.read_any();
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "agent.list" => wire.reply(&request, json!([{"agentId":current_agent,"name":if cached { "History Reviewer" } else { "Current Reviewer" }}])),
+                    "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                    "session.history" => break request,
+                    method => panic!("Unexpected startup read: {method}"),
+                }
+            };
+            assert_eq!(earlier["params"]["before"], 10);
+            let mut events = agent_request(1, "historical", "historical-call", json!({"kind":"agent","agent_id":"reviewer"}), "Historical dependency review").to_vec();
+            events.push(delivered(4, "req-1", "reviewer", "member"));
+            events.push(ended("historical-ended", 5, "req-1"));
+            wire.reply(&earlier, json!({"events":events,"through":14,"nextAfter":5,"nextBefore":1,"done":true}));
+            if !cached {
+                let list = wire.read("agent.list");
+                wire.reply(&list, json!([
+                    {"agentId":"current","name":"Current Reviewer"},
+                    {"agentId":"reviewer","name":"History Reviewer"}
+                ]));
+            }
+            wait_drawn.recv_timeout(PATIENCE).unwrap();
+            wire.quiet(Duration::from_millis(150));
+        });
+        let mut command = home.command();
+        command.arg("--fullscreen");
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        terminal.until_anywhere(if cached {
+            "Agent: History Reviewer"
+        } else {
+            "Agent: Current Reviewer"
+        });
+        terminal.write(b"/earlier\r");
+        probe_1476_drain(&mut terminal, Duration::from_millis(200));
+        terminal.write(b"\x1b[H\x1b[6~");
+        terminal.until_row("Historical dependency review", "· Agent: History Reviewer");
+        terminal.until_anywhere("Task: Historical dependency review");
+        drawn.send(()).unwrap();
+        daemon.join().unwrap();
+        home.kill(&terminal);
+        terminal.wait();
+    }
+}
+
 /// A failed shared read keeps the id on the card it covered, a later card for
 /// the same Agent asks nothing again, and the transcript keeps drawing.
 #[test]

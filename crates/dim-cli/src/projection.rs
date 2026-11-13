@@ -1032,6 +1032,7 @@ impl Projection {
     }
 
     pub fn prepend(&mut self, mut older: Self) {
+        older.name_agents(self.agent_names.clone(), Vec::new());
         older.rows.retain(|row| {
             if let Some(existing) = self
                 .rows
@@ -1406,11 +1407,9 @@ impl Projection {
             }
         };
         self.tasks.iter_mut().for_each(update);
-        let indexes: Vec<usize> = self.cards.values().copied().collect();
-        for index in indexes {
+        for row in self.rows.iter_mut().filter(|row| row.member.is_some()) {
             update(
-                &mut self
-                    .row(index)
+                &mut Arc::make_mut(row)
                     .member
                     .as_deref_mut()
                     .expect("card row")
@@ -1420,11 +1419,16 @@ impl Projection {
         self.agent_names = names;
     }
 
-    /// Native Agents the tasks name that no `agent.list` read covered yet.
+    /// Native Agents the tasks or cards name that no `agent.list` read covered yet.
     pub fn unnamed_agents(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .tasks
             .iter()
+            .chain(
+                self.rows
+                    .iter()
+                    .filter_map(|row| row.member.as_ref().map(|card| &card.task)),
+            )
             .filter_map(|task| task.agent_id.clone())
             .filter(|id| !self.agent_names.contains_key(id) && !self.agents_read.contains(id))
             .collect();
