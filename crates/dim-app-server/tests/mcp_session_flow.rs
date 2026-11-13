@@ -26,7 +26,9 @@ use dim_app_server::{
     settings::{SettingsPlugin, SettingsScope, SettingsService},
 };
 use rutis::Ctx;
-use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
+use rutis::host::diagnostics::RuntimeDiagnostics;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, Value as BridgeValue, decode_value, host_key, settle};
 use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{
@@ -228,6 +230,10 @@ async fn rpc(
             json!({"tools":tools})
         }
         "resources/read" => {
+            if remote.app_hold.load(Ordering::SeqCst) {
+                remote.app_called.notify_waiters();
+                std::future::pending::<()>().await;
+            }
             let uri = body["params"]["uri"].as_str().unwrap();
             let ui = json!({"csp":{"connectDomains":["https://api.example"]},"prefersBorder":true});
             match remote.widgets.load(Ordering::SeqCst) {
@@ -2595,7 +2601,7 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     );
     let mcp = session.session_service::<McpSession>().unwrap();
 
-    let widget = mcp.widget(&chart).await.unwrap();
+    let widget = mcp.widget(chart.clone()).await.unwrap();
     assert_eq!(widget.server, "docs");
     assert_eq!(widget.name, "chart");
     assert_eq!(widget.uri, "ui://widget/counter.html");
@@ -2626,14 +2632,17 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     );
 
     let plain = declared(&tools, "lookup/item").name.clone();
-    assert_eq!(mcp.widget(&plain).await.unwrap_err(), McpAppError::Absent);
     assert_eq!(
-        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        mcp.widget(plain.clone()).await.unwrap_err(),
+        McpAppError::Absent
+    );
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
         McpAppError::Absent
     );
 
     let chart_call = mcp
-        .call("docs", "chart", arguments(json!({"step":2})))
+        .call("docs".into(), "chart".into(), arguments(json!({"step":2})))
         .await
         .unwrap();
     assert_eq!(
@@ -2650,19 +2659,19 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     assert_eq!(chart_call.is_error, None);
 
     assert_eq!(
-        mcp.call("docs", "missing", arguments(json!({})))
+        mcp.call("docs".into(), "missing".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::Absent
     );
     assert_eq!(
-        mcp.call("other", "chart", arguments(json!({})))
+        mcp.call("other".into(), "chart".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::UnknownServer
     );
     assert_eq!(
-        mcp.call("docs", "summary", arguments(json!({})))
+        mcp.call("docs".into(), "summary".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::NotCallable
@@ -2676,7 +2685,7 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
         "a tool the server declares model-only is never sent"
     );
     let failed = mcp
-        .call("docs", "refresh", arguments(json!({})))
+        .call("docs".into(), "refresh".into(), arguments(json!({})))
         .await
         .unwrap();
     assert_eq!(
@@ -2723,33 +2732,33 @@ async fn a_mount_refuses_an_unsupported_document_and_an_unusable_entry() {
 
     env.remote.widgets.store(2, Ordering::SeqCst);
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unsupported
     );
     env.remote.widgets.store(3, Ordering::SeqCst);
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unsupported
     );
     env.remote.widgets.store(1, Ordering::SeqCst);
-    assert!(mcp.widget(&chart).await.is_ok());
+    assert!(mcp.widget(chart.clone()).await.is_ok());
 
     env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
         .await;
     adopted(&session, None).await;
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unavailable,
         "the view learns its entry is disabled, not that its tool name is unknown"
     );
     assert_eq!(
-        mcp.call("docs", "chart", arguments(json!({})))
+        mcp.call("docs".into(), "chart".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::Unavailable
     );
     assert_eq!(
-        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
         McpAppError::Absent,
         "a name the Session never held is absent"
     );
@@ -2769,13 +2778,13 @@ async fn a_replaced_connection_generation_re_reads_the_document() {
     let tools = offered(&env, &session).await;
     let chart = declared(&tools, "chart").name.clone();
     let mcp = session.session_service::<McpSession>().unwrap();
-    assert!(mcp.widget(&chart).await.is_ok());
+    assert!(mcp.widget(chart.clone()).await.is_ok());
 
     env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
         .await;
     adopted(&session, None).await;
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unavailable
     );
 
@@ -2786,7 +2795,7 @@ async fn a_replaced_connection_generation_re_reads_the_document() {
         version, next,
         "a replaced generation is a new discovery for a client's cache"
     );
-    let widget = mcp.widget(&chart).await.unwrap();
+    let widget = mcp.widget(chart.clone()).await.unwrap();
     assert_eq!(widget.server, "docs");
     assert_eq!(widget.name, "chart");
     assert_eq!(widget.text.as_deref(), Some("<p>counter</p>"));
@@ -2804,7 +2813,7 @@ async fn a_view_call_the_connection_took_but_did_not_answer_is_unknown() {
     let worker = tokio::spawn({
         let mcp = mcp.clone();
         async move {
-            mcp.call("docs", "chart", arguments(json!({"step":2})))
+            mcp.call("docs".into(), "chart".into(), arguments(json!({"step":2})))
                 .await
         }
     });
@@ -3778,4 +3787,210 @@ async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
     );
     env.close().await;
     std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A Session part that hands the test its own context, which reads a
+/// service by the instance key the catalog names.
+struct HandsItsContext(Arc<Mutex<Option<Ctx>>>);
+impl DynPlugin for HandsItsContext {
+    fn name(&self) -> &str {
+        "FaceProbe"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Vec::new()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            *self.0.lock().unwrap() = Some(ctx.clone());
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The instance a group's parts run in: the one its scope part runs in.
+fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
+    let scope = diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name == scope)
+        .unwrap_or_else(|| panic!("no {scope} part"));
+    let group = scope.parent.expect("a scope part runs in a group");
+    diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == group)
+        .expect("the scope group")
+        .instance
+}
+
+/// The call another language makes on `name` in `instance`.
+async fn face_call(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> Value {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    decode_value(settle(reply).await.expect("a successful call")).expect("a data reply")
+}
+
+/// The error the call another language makes on `name` returns.
+async fn face_error(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> rutis_bridge::session::Error {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    settle(reply).await.expect_err("the call fails")
+}
+
+/// `mcpSession` answers as the typed service: the same state, document,
+/// call result and error codes for the entry both callers name.
+#[tokio::test]
+async fn mcp_session_face_answers_as_the_typed_service() {
+    let slot = Arc::new(Mutex::new(None));
+    let probe = slot.clone();
+    let env = Env::with(move |builder, _| {
+        builder.require_feature(Feature::new("FaceProbe").session("FaceProbe", move |_| {
+            Ok(Box::new(HandsItsContext(probe.clone())))
+        }));
+    })
+    .await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::ReadOnly).await;
+    ready(&session).await;
+    let tools = offered(&env, &session).await;
+    let chart = declared(&tools, "chart").name.clone();
+    let ctx = slot.lock().unwrap().take().expect("the Session probe");
+    let instance = group_instance(&session.diagnostics().unwrap(), "SessionScope");
+    let mcp = session.session_service::<McpSession>().unwrap();
+
+    let typed = serde_json::to_value(mcp.state()).unwrap();
+    let wire = face_call(&ctx, instance, "mcpSession", "state", Vec::new()).await;
+    assert_eq!(typed, wire, "the face lists the entries the owner holds");
+
+    let typed = mcp.widget(chart.clone()).await.unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "mcpSession",
+        "widget",
+        vec![json!(chart).into()],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+    let widget = wire;
+
+    let typed = mcp
+        .call("docs".into(), "chart".into(), arguments(json!({"step":2})))
+        .await
+        .unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "mcpSession",
+        "call",
+        vec![
+            json!("docs").into(),
+            json!("chart").into(),
+            json!({"step":2}).into(),
+        ],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+
+    let error = face_error(
+        &ctx,
+        instance,
+        "mcpSession",
+        "widget",
+        vec![json!("mcp_nowhere_absent").into()],
+    )
+    .await;
+    assert_eq!(error.code(), Some("Absent"));
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
+        McpAppError::Absent
+    );
+
+    let error = face_error(
+        &ctx,
+        instance,
+        "mcpSession",
+        "call",
+        vec![
+            json!("other").into(),
+            json!("chart").into(),
+            json!({}).into(),
+        ],
+    )
+    .await;
+    assert_eq!(error.code(), Some("UnknownServer"));
+    assert_eq!(
+        mcp.call("other".into(), "chart".into(), arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::UnknownServer
+    );
+
+    for (method, args, expected) in [
+        ("widget", vec![json!(chart).into()], widget),
+        (
+            "call",
+            vec![
+                json!("docs").into(),
+                json!("chart").into(),
+                json!({"step":2}).into(),
+            ],
+            serde_json::to_value(&typed).unwrap(),
+        ),
+    ] {
+        env.remote.app_hold.store(true, Ordering::SeqCst);
+        let called = env.remote.app_called.notified();
+        tokio::pin!(called);
+        called.as_mut().enable();
+        let before = env.remote.cancelled().len();
+        let mut pending = Box::pin(face_call(
+            &ctx,
+            instance,
+            "mcpSession",
+            method,
+            args.clone(),
+        ));
+        tokio::select! {
+            _ = &mut pending => panic!("the server holds the call until it is abandoned"),
+            result = tokio::time::timeout(Duration::from_secs(5), &mut called) => result.unwrap(),
+        }
+        drop(pending);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while env.remote.cancelled().len() == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoning the face call sends MCP cancellation to the server");
+        assert_eq!(env.remote.cancelled().len(), before + 1);
+        env.remote.app_hold.store(false, Ordering::SeqCst);
+        let next = face_call(&ctx, instance, "mcpSession", method, args).await;
+        assert_eq!(next, expected, "{method} works after abandonment");
+    }
+
+    mcp.refresh().unwrap();
+    let wire = face_call(&ctx, instance, "mcpSession", "refresh", Vec::new()).await;
+    assert_eq!(wire, Value::Null);
+
+    env.close().await;
 }

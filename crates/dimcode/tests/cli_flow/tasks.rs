@@ -2234,7 +2234,9 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
         attached["model"] = json!({"providerId":"member-provider","modelId":"member-model"});
         attached["sequence"] = json!(2);
         wire.reply(&attach_a, attached);
-        wire.reply(&attach_b, attach_record(&attach_b));
+        let mut unconfigured = attach_record(&attach_b);
+        unconfigured["model"] = Value::Null;
+        wire.reply(&attach_b, unconfigured);
         for _ in 0..2 {
             let page = wire.read("session.history");
             wire.quiet(Duration::from_millis(150));

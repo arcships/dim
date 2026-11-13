@@ -121,7 +121,7 @@ pub(super) async fn stop(
     let owner = branch
         .service::<BackgroundExec>()
         .map_err(super::host_error)?;
-    match owner.stop(&input.task_id).await {
+    match owner.stop(input.task_id).await {
         Ok(ended) => Ok(ToolResult {
             is_error: (ended.status == ExecStatus::Failed).then_some(true),
             ..ToolResult::text(
