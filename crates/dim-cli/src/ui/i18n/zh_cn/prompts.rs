@@ -60,6 +60,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 选择 · Tab 下一题 · / 命令 · Esc 拒答"
         }
         "Question" => "问题",
+        "↑↓ scroll" => "↑↓ 滚动",
+        "replacements {from}-{to} of {count}" => "替换 {from}-{to}，共 {count} 处",
         "Question on branch {branch}" => "来自分支 {branch} 的问题",
         "Permission on branch {branch}" => "来自分支 {branch} 的授权请求",
         "Sending answer…" => "正在发送回答…",

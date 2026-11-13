@@ -43028,6 +43028,7 @@
         "path Effect::Approval",
         "path ExitConfirm::new",
         "path ExitReason::AgentRunning",
+        "path PermissionPrompt",
         "path PermissionPrompt::grant_for",
         "path PermissionPrompt::new"
       ]

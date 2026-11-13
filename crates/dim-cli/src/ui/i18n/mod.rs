@@ -150,8 +150,9 @@ mod tests {
         set(previous);
     }
 
-    /// The two `edit` preview keys, translated in every locale with the tool
-    /// name literal and both arguments kept.
+    /// The two `edit` preview keys and the two keys the scrolling panel adds,
+    /// translated in every locale with the tool name literal and every
+    /// argument kept.
     #[test]
     fn every_locale_translates_the_edit_preview_strings() {
         let previous = active();
@@ -169,6 +170,16 @@ mod tests {
                 assert!(text.contains("fixture-path"), "{code} drops the path");
                 assert!(text.contains(count), "{code} drops the count");
                 assert!(text.contains("edit"), "{code} translates the tool name");
+            }
+            for key in ["↑↓ scroll", "replacements {from}-{to} of {count}"] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+            }
+            let text = tf(
+                "replacements {from}-{to} of {count}",
+                &[("from", "2"), ("to", "9"), ("count", "30")],
+            );
+            for value in ["2", "9", "30"] {
+                assert!(text.contains(value), "{code} drops {value} from the window");
             }
         }
         set(previous);

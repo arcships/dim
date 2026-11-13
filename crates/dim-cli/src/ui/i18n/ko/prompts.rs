@@ -61,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 선택 · Tab 다음 · / 명령 · Esc 거절"
         }
         "Question" => "질문",
+        "↑↓ scroll" => "↑↓ 스크롤",
+        "replacements {from}-{to} of {count}" => "치환 {count}개 중 {from}-{to}",
         "Question on branch {branch}" => "브랜치 {branch}의 질문",
         "Permission on branch {branch}" => "브랜치 {branch} 권한",
         "Sending answer…" => "답변 전송 중…",

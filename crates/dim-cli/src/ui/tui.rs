@@ -12106,6 +12106,73 @@ mod tests {
         );
     }
 
+    /// The reviewer's case on a real 80x24 frame: thirty replacements keep the
+    /// target line and the choices on screen, and the keys reach the last entry,
+    /// in both renderers.
+    #[test]
+    fn a_long_edit_approval_fits_an_80x24_frame_and_reaches_its_last_entry() {
+        use crate::model::view::ApprovalView;
+
+        let size = (80, 24);
+        let edits: Vec<_> = (1..=30)
+            .map(|n| serde_json::json!({"oldText": format!("old {n}"), "newText": format!("new {n}")}))
+            .collect();
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new(size, None, true);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                approvals: vec![ApprovalView {
+                    member: None,
+                    request_id: "approval-1".into(),
+                    branch_id: "main".into(),
+                    reason: "source: tool_rule".into(),
+                    tool_name: "edit".into(),
+                    tool_input: serde_json::json!({"path": "src/lib.rs", "edits": edits}),
+                    always: None,
+                }],
+                ..ViewSnapshot::default()
+            })));
+            let screen_text = |drawn: &mut Drawn| -> String {
+                if fullscreen {
+                    let frame = drawn.app.frame(size);
+                    let mut full = FullScreen::new(size, true);
+                    let bytes = full.render(&frame, size, &drawn.app.palette, &drawn.app);
+                    let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
+                    emu.feed(&bytes);
+                    emu.rows_text().join("\n")
+                } else {
+                    drawn.draw();
+                    drawn.emu.rows_text().join("\n")
+                }
+            };
+            let first = screen_text(&mut drawn);
+            for shown in [
+                "# source: tool_rule",
+                "$ edit 30 replacements in src/lib.rs",
+                "1 · old 1 → new 1",
+                "Allow once",
+            ] {
+                assert!(first.contains(shown), "{fullscreen}: {shown:?} in {first}");
+            }
+            for _ in 0..30 {
+                let _ = drawn
+                    .app
+                    .handle(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+                        KeyCode::Down,
+                        Modifiers::NONE,
+                    )));
+            }
+            let last = screen_text(&mut drawn);
+            for shown in ["30 · old 30 → new 30", "# source: tool_rule", "Allow once"] {
+                assert!(
+                    last.contains(shown),
+                    "{fullscreen}: after scrolling, {shown:?} in {last}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_window_topic_stays_mains_message_while_a_line_is_shown() {
         let mut drawn = Drawn::new((80, 40), None, true);

@@ -44,6 +44,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "edit {count} replacement in {path}" => "在 {path} 中 edit {count} 處取代",
         "edit {count} replacements in {path}" => "在 {path} 中 edit {count} 處取代",
         "Changing the approvals mode from here is not yet available" => "尚不支援在此變更核准模式",
+        "↑↓ scroll" => "↑↓ 捲動",
+        "replacements {from}-{to} of {count}" => "取代 {from}-{to}，共 {count} 處",
         "y allow · n reject · ←→/Tab move · Enter confirm" => {
             "y 允許 · n 拒絕 · ←→/Tab 移動 · Enter 確認"
         }

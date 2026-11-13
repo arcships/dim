@@ -535,10 +535,151 @@ impl PermissionPrompt {
         self.selected = self.selected.min(self.actions.len() - 1);
     }
 
+    /// The panel drawn within `height` rows. The target lines, the choices and
+    /// the hint always show; only the replacement rows scroll through the room
+    /// left over, so a long batch answers to the same keys wherever it is
+    /// drawn.
     pub fn render_sized(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
-        if self.tool_name != dim_agent_types::MEMBER_APPROVAL_ALLOW {
-            return self.render(width, p);
+        // The target lines and the choices together need five rows: two target
+        // lines and one choice row between two borders. Below that there is no
+        // approval to draw.
+        if height < 5 {
+            return Vec::new();
         }
+        if self.tool_name == dim_agent_types::MEMBER_APPROVAL_ALLOW {
+            return self.member_panel(width, height, p);
+        }
+        let inner = width.saturating_sub(4).max(1);
+        let title = paint(
+            &truncate_cells(t("Permission required"), inner),
+            Paint {
+                fg: Some(&p.warning),
+                bold: true,
+                ..Paint::default()
+            },
+        );
+        let target: Vec<String> = self
+            .target()
+            .into_iter()
+            .map(|line| {
+                let text = truncate_cells(&line, inner);
+                let color = if line.starts_with("# ") {
+                    &p.muted
+                } else {
+                    &p.text
+                };
+                fg(if text.is_empty() { " " } else { &text }, color)
+            })
+            .collect();
+        let branch = (self.branch_id != "main").then(|| {
+            fg(
+                &truncate_cells(
+                    &tf(
+                        "Permission on branch {branch}",
+                        &[("branch", &self.branch_id)],
+                    ),
+                    inner,
+                ),
+                &p.muted,
+            )
+        });
+        let rows = self.details();
+        let labels: Vec<String> = self.actions.iter().map(|a| a.label().to_owned()).collect();
+        let decision = choices(&labels, self.selected, p);
+        let available = height.saturating_sub(2);
+        // What frames the decision: a blank above the target, the branch line,
+        // a blank above the choices and one below them. Each gives way in this
+        // order, so that three replacement rows stay; the target, the choices
+        // and the hint never do.
+        let fixed = target.len() + 1;
+        let mut framing = [true, branch.is_some(), true, true];
+        for drop in [3, 0, 2, 1] {
+            if framing.iter().filter(|keep| **keep).count() + fixed + rows.len().min(3) <= available
+            {
+                break;
+            }
+            framing[drop] = false;
+        }
+        let [top_blank, branch_row, gap_blank, foot_blank] = framing;
+        let room = available
+            .saturating_sub(fixed + framing.iter().filter(|keep| **keep).count())
+            .min(rows.len());
+        let mut content = Vec::new();
+        if top_blank {
+            content.push(String::new());
+        }
+        if branch_row && let Some(line) = branch {
+            content.push(line);
+        }
+        content.extend(target);
+        let scrolls = room > 0 && room < rows.len();
+        if scrolls {
+            // A position line takes one of the spare rows and leaves the rest
+            // for the entries; with a single spare row that row is an entry.
+            let budget = if room > 1 { room - 1 } else { 1 };
+            let offset = window_offset(&self.offset, rows.len(), budget);
+            if room > 1 {
+                content.push(fg(
+                    &truncate_cells(
+                        &tf(
+                            "replacements {from}-{to} of {count}",
+                            &[
+                                ("from", &(offset + 1).to_string()),
+                                ("to", &(offset + budget).to_string()),
+                                ("count", &rows.len().to_string()),
+                            ],
+                        ),
+                        inner,
+                    ),
+                    &p.muted,
+                ));
+            }
+            content.extend(
+                rows[offset..offset + budget]
+                    .iter()
+                    .map(|line| fg(&truncate_cells(line, inner), &p.text)),
+            );
+        } else {
+            content.extend(
+                rows.into_iter()
+                    .take(room)
+                    .map(|line| fg(&truncate_cells(&line, inner), &p.text)),
+            );
+        }
+        if gap_blank {
+            content.push(String::new());
+        }
+        content.push(decision);
+        if foot_blank {
+            content.push(String::new());
+        }
+        bordered(
+            &content,
+            width,
+            None,
+            &p.border,
+            Some(&title),
+            Some(&self.hint(scrolls, p)),
+        )
+    }
+
+    /// The bottom-border hint: the decision keys, and the scroll keys when the
+    /// replacement rows are cut.
+    fn hint(&self, scrolls: bool, p: &Palette) -> String {
+        let keys = if self.always() {
+            t("y allow · a always · n reject · ←→/Tab move · Enter confirm")
+        } else {
+            t("y allow · n reject · ←→/Tab move · Enter confirm")
+        };
+        let hint = if scrolls {
+            format!("{keys} · {}", t("↑↓ scroll"))
+        } else {
+            keys.to_owned()
+        };
+        key_hints(&hint, p)
+    }
+
+    fn member_panel(&self, width: usize, height: usize, p: &Palette) -> Vec<String> {
         let inner = width.saturating_sub(4).max(1);
         let mut lines = vec![
             format!("Leader branch: {}", self.branch_id),
@@ -554,8 +695,7 @@ impl PermissionPrompt {
             .flat_map(|line| wrap_cells(&crate::sanitize::safe(line), inner))
             .collect();
         let budget = height.saturating_sub(5).max(1);
-        let offset = self.offset.get().min(wrapped.len().saturating_sub(budget));
-        self.offset.set(offset);
+        let offset = window_offset(&self.offset, wrapped.len(), budget);
         let mut content: Vec<_> = wrapped
             .iter()
             .skip(offset)
@@ -633,18 +773,22 @@ impl PermissionPrompt {
         format!("{} {}", self.tool_name, self.input)
     }
 
-    fn lines(&self) -> Vec<String> {
+    /// The target of the call: what it runs and where, always on screen.
+    fn target(&self) -> Vec<String> {
         let description = if self.reason.trim().is_empty() {
             tf("Run {tool}", &[("tool", &self.tool_name)])
         } else {
             collapse(&self.reason)
         };
-        let mut lines = vec![
+        vec![
             format!("# {description}"),
             format!("$ {}", self.command_preview()),
-        ];
-        lines.extend(replacement_details(&self.tool_name, &self.input));
-        lines
+        ]
+    }
+
+    /// The rows below the target, which scroll when the panel is short.
+    fn details(&self) -> Vec<String> {
+        replacement_details(&self.tool_name, &self.input)
     }
 
     fn decide(
@@ -669,32 +813,35 @@ impl PermissionPrompt {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        if self.tool_name == dim_agent_types::MEMBER_APPROVAL_ALLOW {
-            match key.code {
-                KeyCode::Down => {
-                    self.offset.set(self.offset.get().saturating_add(1));
-                    return Effect::None;
-                }
-                KeyCode::Up => {
-                    self.offset.set(self.offset.get().saturating_sub(1));
-                    return Effect::None;
-                }
-                KeyCode::PageDown => {
-                    self.offset.set(self.offset.get().saturating_add(8));
-                    return Effect::None;
-                }
-                KeyCode::PageUp => {
-                    self.offset.set(self.offset.get().saturating_sub(8));
-                    return Effect::None;
-                }
-                KeyCode::Char('r') if self.actions.contains(&PermissionAction::Retry) => {
-                    return Effect::RetryApproval {
-                        request_id: self.request_id.clone(),
-                        branch_id: self.branch_id.clone(),
-                    };
-                }
-                _ => {}
+        // Up and Down scroll every approval; an ordinary one offers its
+        // actions on Left, Right and Tab, so they are free there.
+        match key.code {
+            KeyCode::Down => {
+                self.offset.set(self.offset.get().saturating_add(1));
+                return Effect::None;
             }
+            KeyCode::Up => {
+                self.offset.set(self.offset.get().saturating_sub(1));
+                return Effect::None;
+            }
+            KeyCode::PageDown => {
+                self.offset.set(self.offset.get().saturating_add(8));
+                return Effect::None;
+            }
+            KeyCode::PageUp => {
+                self.offset.set(self.offset.get().saturating_sub(8));
+                return Effect::None;
+            }
+            KeyCode::Char('r')
+                if self.tool_name == dim_agent_types::MEMBER_APPROVAL_ALLOW
+                    && self.actions.contains(&PermissionAction::Retry) =>
+            {
+                return Effect::RetryApproval {
+                    request_id: self.request_id.clone(),
+                    branch_id: self.branch_id.clone(),
+                };
+            }
+            _ => {}
         }
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') if plain(key) => self.decide(true, false, None),
@@ -725,58 +872,6 @@ impl PermissionPrompt {
             },
             _ => Effect::None,
         }
-    }
-
-    pub fn render(&self, width: usize, p: &Palette) -> Vec<String> {
-        let inner = width.saturating_sub(4).max(1);
-        let title = paint(
-            &truncate_cells(t("Permission required"), inner),
-            Paint {
-                fg: Some(&p.warning),
-                bold: true,
-                ..Paint::default()
-            },
-        );
-        let mut content = vec![String::new()];
-        if self.branch_id != "main" {
-            content.push(fg(
-                &truncate_cells(
-                    &tf(
-                        "Permission on branch {branch}",
-                        &[("branch", &self.branch_id)],
-                    ),
-                    inner,
-                ),
-                &p.muted,
-            ));
-        }
-        for line in self.lines() {
-            let text = truncate_cells(&line, inner);
-            let text = if text.is_empty() {
-                " ".to_owned()
-            } else {
-                text
-            };
-            let color = if line.starts_with("# ") {
-                &p.muted
-            } else {
-                &p.text
-            };
-            content.push(fg(&text, color));
-        }
-        content.push(String::new());
-        let labels: Vec<String> = self.actions.iter().map(|a| a.label().to_owned()).collect();
-        content.push(choices(&labels, self.selected, p));
-        content.push(String::new());
-        let hint = key_hints(
-            if self.always() {
-                t("y allow · a always · n reject · ←→/Tab move · Enter confirm")
-            } else {
-                t("y allow · n reject · ←→/Tab move · Enter confirm")
-            },
-            p,
-        );
-        bordered(&content, width, None, &p.border, Some(&title), Some(&hint))
     }
 }
 
@@ -1667,6 +1762,16 @@ fn window(rows: &[Row], limit: usize) -> Vec<Line> {
         .collect()
 }
 
+/// The offset a scrolling panel draws from, kept inside the rows it has:
+/// `rows` lines shown `budget` at a time leave at most `rows - budget` of
+/// scroll. A redraw that finds the offset past the end pulls it back, so the
+/// next key that moves it starts from the last row on screen.
+fn window_offset(offset: &Cell<usize>, rows: usize, budget: usize) -> usize {
+    let start = offset.get().min(rows.saturating_sub(budget));
+    offset.set(start);
+    start
+}
+
 fn fit_body(body: &Body, limit: usize) -> Vec<Line> {
     if body_rows(body) <= limit {
         let mut out = body.head.clone();
@@ -1846,7 +1951,7 @@ mod tests {
             false,
         );
         let rows: Vec<String> = p
-            .render(100, &theme.palette)
+            .render_sized(100, 40, &theme.palette)
             .iter()
             .map(|r| strip(r))
             .collect();
@@ -1859,7 +1964,7 @@ mod tests {
         assert!(rows[5].contains("Permissions"));
         assert!(rows[7].ends_with("─ y allow · n reject · ←→/Tab move · Enter confirm ─╯"));
         assert!(
-            !p.render(100, &theme.palette)
+            !p.render_sized(100, 40, &theme.palette)
                 .iter()
                 .any(|row| strip(row).contains("Permission on branch"))
         );
@@ -1872,7 +1977,7 @@ mod tests {
             true,
         );
         let rows: Vec<String> = line
-            .render(100, &theme.palette)
+            .render_sized(100, 40, &theme.palette)
             .iter()
             .map(|row| strip(row))
             .collect();
@@ -1893,7 +1998,7 @@ mod tests {
             true,
         );
         let rows: Vec<String> = p
-            .render(100, &theme.palette)
+            .render_sized(100, 40, &theme.palette)
             .iter()
             .map(|r| strip(r))
             .collect();
@@ -1907,15 +2012,17 @@ mod tests {
     #[test]
     fn edit_prompt_previews_the_replacements_by_count() {
         let preview = |input| {
-            PermissionPrompt::new(
+            let p = PermissionPrompt::new(
                 "r1".into(),
                 "main".into(),
                 "source: tool_rule".into(),
                 "edit".into(),
                 input,
                 false,
-            )
-            .lines()
+            );
+            let mut lines = p.target();
+            lines.extend(p.details());
+            lines
         };
         let two = preview(serde_json::json!({"path": "src/lib.rs", "edits": [
             {"oldText": "one", "newText": "first"},
@@ -1956,15 +2063,17 @@ mod tests {
     #[test]
     fn two_edit_prompts_for_one_file_read_differently() {
         let preview = |input| {
-            PermissionPrompt::new(
+            let p = PermissionPrompt::new(
                 "r1".into(),
                 "main".into(),
                 "source: tool_rule".into(),
                 "edit".into(),
                 input,
                 false,
-            )
-            .lines()
+            );
+            let mut lines = p.target();
+            lines.extend(p.details());
+            lines
         };
         let on = preview(serde_json::json!({"path": "src/lib.rs", "edits": [
             {"oldText": "enabled = false", "newText": "enabled = true", "replaceAll": true},
@@ -1992,7 +2101,7 @@ mod tests {
 
     #[test]
     fn a_long_replacement_is_cut_but_every_entry_still_shows() {
-        let rows = PermissionPrompt::new(
+        let p = PermissionPrompt::new(
             "r1".into(),
             "main".into(),
             "source: tool_rule".into(),
@@ -2002,11 +2111,146 @@ mod tests {
                 {"oldText": "b", "newText": "c"},
             ]}),
             false,
-        )
-        .lines();
+        );
+        let mut rows = p.target();
+        rows.extend(p.details());
         assert_eq!(rows.len(), 4, "{rows:#?}");
         assert!(rows[2].contains('…'), "the long text is cut: {rows:#?}");
         assert!(rows[3].contains("2 · b → c"), "{rows:#?}");
+    }
+
+    /// A thirty-entry batch drawn at every height the panel is offered: the
+    /// target lines and the choices are always there, and the panel never
+    /// outgrows the height it is given.
+    #[test]
+    fn a_sized_approval_keeps_the_target_and_the_choices_at_every_height() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let edits: Vec<_> = (1..=30)
+            .map(|n| serde_json::json!({"oldText": format!("old {n}"), "newText": format!("new {n}")}))
+            .collect();
+        let p = PermissionPrompt::new(
+            "r1".into(),
+            "main".into(),
+            "source: tool_rule".into(),
+            "edit".into(),
+            serde_json::json!({"path": "src/lib.rs", "edits": edits}),
+            true,
+        );
+        for height in 1..40 {
+            let rows: Vec<String> = p
+                .render_sized(80, height, &theme.palette)
+                .iter()
+                .map(|r| strip(r))
+                .collect();
+            assert!(
+                rows.len() <= height,
+                "{height}: the panel is {} rows, {rows:#?}",
+                rows.len()
+            );
+            if height < 5 {
+                assert!(
+                    rows.is_empty(),
+                    "{height}: no room for the target and the choices: {rows:#?}"
+                );
+                continue;
+            }
+            let text = rows.concat();
+            assert!(text.contains("# source: tool_rule"), "{height}: {rows:#?}");
+            assert!(
+                text.contains("$ edit 30 replacements in src/lib.rs"),
+                "{height}: {rows:#?}"
+            );
+            assert!(text.contains("Allow once"), "{height}: {rows:#?}");
+        }
+    }
+
+    /// At 80 columns the window shows where it is, moves with the keys, and
+    /// keeps the target and the choices on screen at both ends.
+    #[test]
+    fn a_short_panel_windows_the_replacements_and_says_where() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let edits: Vec<_> = (1..=30)
+            .map(|n| serde_json::json!({"oldText": format!("old {n}"), "newText": format!("new {n}")}))
+            .collect();
+        let mut p = PermissionPrompt::new(
+            "r1".into(),
+            "main".into(),
+            "source: tool_rule".into(),
+            "edit".into(),
+            serde_json::json!({"path": "src/lib.rs", "edits": edits}),
+            true,
+        );
+        let rows = |p: &PermissionPrompt| -> Vec<String> {
+            p.render_sized(80, 12, &theme.palette)
+                .iter()
+                .map(|r| strip(r))
+                .collect()
+        };
+        let first = rows(&p);
+        let text = first.concat();
+        assert!(text.contains("replacements 1-"), "{first:#?}");
+        assert!(text.contains("of 30"), "{first:#?}");
+        assert!(text.contains("1 · old 1 → new 1"), "{first:#?}");
+        assert!(
+            text.contains("↑↓ scroll"),
+            "the hint names the keys: {first:#?}"
+        );
+        assert!(text.contains("# source: tool_rule"), "{first:#?}");
+        assert!(text.contains("Allow once"), "{first:#?}");
+        for _ in 0..30 {
+            p.handle_key(key(KeyCode::Down));
+        }
+        let last = rows(&p);
+        let text = last.concat();
+        assert!(
+            text.contains("30 · old 30 → new 30"),
+            "the last entry is reachable: {last:#?}"
+        );
+        assert!(text.contains("of 30"), "{last:#?}");
+        assert!(text.contains("# source: tool_rule"), "{last:#?}");
+        assert!(text.contains("Allow once"), "{last:#?}");
+        assert!(
+            !text.contains("1 · old 1 → new 1"),
+            "the first entry scrolled away: {last:#?}"
+        );
+    }
+
+    /// One replacement is a panel that looks as it did: every row, no window
+    /// line, and a hint without the scroll keys.
+    #[test]
+    fn a_single_replacement_needs_no_window() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let p = PermissionPrompt::new(
+            "r1".into(),
+            "main".into(),
+            "source: tool_rule".into(),
+            "edit".into(),
+            serde_json::json!({"path": "src/lib.rs", "edits": [
+                {"oldText": "old", "newText": "new"},
+            ]}),
+            false,
+        );
+        let rows: Vec<String> = p
+            .render_sized(80, 12, &theme.palette)
+            .iter()
+            .map(|r| strip(r))
+            .collect();
+        let text = rows.concat();
+        assert!(text.contains("1 · old → new"), "{rows:#?}");
+        assert!(!text.contains("replacements 1-"), "{rows:#?}");
+        assert!(!text.contains("↑↓ scroll"), "{rows:#?}");
+        assert_eq!(
+            rows.len(),
+            9,
+            "a roomy panel is the one a single replacement drew before: {rows:#?}"
+        );
+        assert!(rows[2].contains("# source: tool_rule"), "{rows:#?}");
+        assert!(
+            rows[3].contains("$ edit 1 replacement in src/lib.rs"),
+            "{rows:#?}"
+        );
+        assert!(rows[4].contains("1 · old → new"), "{rows:#?}");
+        assert!(rows[6].contains("› Allow once"), "{rows:#?}");
     }
 
     #[test]

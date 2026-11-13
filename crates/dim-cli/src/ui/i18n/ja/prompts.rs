@@ -61,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 選択 · Tab 次へ · / コマンド · Esc 断る"
         }
         "Question" => "質問",
+        "↑↓ scroll" => "↑↓ スクロール",
+        "replacements {from}-{to} of {count}" => "{count} 件中 {from}-{to} 件の置換",
         "Question on branch {branch}" => "ブランチ {branch} からの質問",
         "Permission on branch {branch}" => "ブランチ {branch} への許可",
         "Sending answer…" => "回答を送信中…",

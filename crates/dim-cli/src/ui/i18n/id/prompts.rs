@@ -61,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 pilih · Tab lanjut · / perintah · Esc tolak"
         }
         "Question" => "Pertanyaan",
+        "↑↓ scroll" => "↑↓ gulir",
+        "replacements {from}-{to} of {count}" => "penggantian {from}-{to} dari {count}",
         "Question on branch {branch}" => "Pertanyaan dari cabang {branch}",
         "Permission on branch {branch}" => "Izin pada cabang {branch}",
         "Sending answer…" => "Mengirim jawaban…",

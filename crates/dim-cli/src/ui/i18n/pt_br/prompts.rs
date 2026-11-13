@@ -61,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 selecionar · Tab próxima · / comandos · Esc recusar"
         }
         "Question" => "Pergunta",
+        "↑↓ scroll" => "↑↓ rolar",
+        "replacements {from}-{to} of {count}" => "substituições {from}-{to} de {count}",
         "Question on branch {branch}" => "Pergunta no branch {branch}",
         "Permission on branch {branch}" => "Permissão no branch {branch}",
         "Sending answer…" => "Enviando resposta…",
