@@ -414,6 +414,7 @@ const RUN_TOOLS: &[&str] = &[
     "branch",
     "events",
     "goal_update",
+    "loop",
     "member_approval_allow",
     "member_approval_reject",
     "recall",

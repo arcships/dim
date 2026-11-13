@@ -936,6 +936,7 @@ impl ShellSession {
                         call_id: context.call_id.clone(),
                         task_id: task_id.clone(),
                         description: description.clone(),
+                        title: None,
                         output_path: output_path.to_string_lossy().into_owned(),
                     })
                     .into(),
@@ -1040,6 +1041,7 @@ impl ShellSession {
                         call_id: context.call_id.clone(),
                         task_id: task_id.clone(),
                         description: description.clone(),
+                        title: None,
                         output_path: output_path.to_string_lossy().into_owned(),
                     })
                     .into(),

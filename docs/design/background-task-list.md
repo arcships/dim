@@ -172,6 +172,76 @@ Proposed first-release presentation:
   corresponding terminal outcome. A stop reply, read error, idle member or
   vanished live capture cannot fabricate it.
 
+### Task titles and composer rows
+
+A task title identifies this command or delegation, not an Agent's profile
+description, its detailed instructions or its member conversation title. The
+title is supplied by the owner fact and retained by the pending inventory:
+[Collaboration](plugins/Collaboration.md) owns delegation titles, and
+[WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md) owns
+command titles. The CLI uses the title when present. For historical tasks without
+one, retain the existing command/description or first prompt line as the label;
+do not invent or persist a replacement title.
+
+Command details retain the original command independently of the title and show
+it before the output in the scrollable body, including silent, finished and
+restored commands from another branch. Use the matching tool input when available,
+otherwise the owner fact or pending inventory's description.
+
+```text
++-- Wait for build ---------------------------------------------+
+| Tail preview - last 2,000 lines / 50 KiB                        |
+| sleep 60                                                      |
+|                                                               |
+| No output yet                                                 |
++----------------------------- x stop command · Esc back --------+
+```
+
+Member tasks carry their Agent name independently of the title. A temporary
+profile supplies its name immediately; an existing Agent uses its id until
+`agent.list` supplies its name. The task list, member card and composer rows
+use the same projected task title and Agent identity, including after resume
+and when the originating branch is not the displayed line.
+
+Above the composer, each task occupies its own row; never concatenate several
+task labels horizontally. Show the task's status mark, title, member Agent name
+where applicable, and elapsed time. Truncate the title and then the Agent name
+to fit a narrow terminal, preserving the elapsed time when it fits. Running
+rows use an activity mark; terminal rows retain their actual outcome mark for
+five seconds and then disappear. With no visible task there is no task strip.
+
+Render every visible task as its own row, without a fixed row cap or a
+hidden-task count replacing task rows. The existing terminal viewport still
+preserves the composer when the rows exceed the available screen height.
+The existing empty-composer Enter shortcut opens `/tasks` while the strip
+shows, subject to the earlier shell/queue actions in
+[CLI run keys](cli-commands.md#run-keys-and-queue).
+
+In fullscreen mode, clicking a task row opens that task's existing detail
+directly; Esc returns to the composer with its draft preserved. Command rows
+open command output, and member rows use the existing
+[member conversation contract](member-conversation.md). A click requires press
+and release on the same cell with the same task identity still at that row.
+Dragging, resizing or replacing the task at that row cancels the click;
+resize cancellation is immediate even while transcript reflow is debounced.
+Elapsed-time updates do not cancel a click. Rows clipped out of the viewport
+are not clickable, and an open prompt or overlay blocks task-row clicks.
+Scrollback mode retains its keyboard-only entry points.
+
+```text
+  ◐ Fix esbuild bundling · Builder                         27m57s
+  ◐ Review the runtime · Reviewer                          25m27s
+  ◐ Extend integration coverage · Test Explorer             13m01s
+  ◐ Check generated types · Type Checker                     8m42s
+  ◐ Audit cancellation · Safety Reviewer                     3m18s
+
+  ╭────────────────────────────────────────────────────────────╮
+  │ › Ask anything...                                          │
+  ╰────────────────────────────────────────────────────────────╯
+
+  Fullscreen: task row --click--> task detail --Esc--> kept draft
+```
+
 ```text
 +-- Background tasks --------------------------------------------+
 | > cargo build                 command   running    12s         |
