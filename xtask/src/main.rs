@@ -2,7 +2,6 @@ mod allocation;
 mod app_server;
 mod catalog;
 mod modules;
-mod npm;
 mod plugins;
 mod prompt_eval;
 mod rule;
@@ -66,7 +65,6 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             boundaries(false)?;
             catalog::check(&root()).await?;
             types::check(&root())?;
-            npm::check(&root())?;
         }
         Some("types") => types::write(&root())?,
         _ => {
