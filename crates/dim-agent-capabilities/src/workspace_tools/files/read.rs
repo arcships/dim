@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Maximum lines per read request (policy limit).
 const READ_LIMIT_MAX: u64 = 10_000;
+/// Lines returned when the caller gives no `limit`.
+const DEFAULT_READ_LIMIT: u64 = 2000;
 /// Maximum UTF-16 units in a single read result content.
 const READ_RESULT_MAX_CHARS: usize = 256 * 1024;
 /// Maximum UTF-16 units kept inline before the result is written to a file.
@@ -50,7 +52,7 @@ pub(super) fn definition() -> Value {
             "properties": {
                 "path": { "type": "string", "description": "File path to read." },
                 "offset": { "type": "number", "description": "Starting line number (1-indexed). Default: 1." },
-                "limit": { "type": "number", "description": "Maximum number of lines to return. Default: 2000." },
+                "limit": { "type": "number", "description": format!("Maximum number of lines to return. Default: {DEFAULT_READ_LIMIT}.") },
                 "encoding": { "type": "string" },
             },
             "required": ["path"],
@@ -65,7 +67,11 @@ struct Input {
     offset: u64,
     limit: u64,
     encoding: Option<String>,
-    /// Whether the caller gave `offset` or `limit`, which images ignore.
+    /// The caller's `limit`, or `None` when the default window applied.
+    requested_limit: Option<u64>,
+    /// Whether the caller gave `offset` or `limit`, which the image result
+    /// says do not apply. `requested_limit` covers a limit alone, so this
+    /// carries the offset-only case.
     window_given: bool,
 }
 
@@ -79,16 +85,19 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         Some(value) => positive_integer(value)
             .ok_or_else(|| invalid_input("read offset must be a positive integer (>= 1)."))?,
     };
-    let limit = match field(input, "limit") {
-        None => 2000,
-        Some(value) => positive_integer(value)
-            .ok_or_else(|| invalid_input("read limit must be a positive integer (>= 1)."))?,
+    let requested_limit = match field(input, "limit") {
+        None => None,
+        Some(value) => Some(
+            positive_integer(value)
+                .ok_or_else(|| invalid_input("read limit must be a positive integer (>= 1)."))?,
+        ),
     };
-    if limit > READ_LIMIT_MAX {
+    if requested_limit.is_some_and(|limit| limit > READ_LIMIT_MAX) {
         return Err(invalid_input(format!(
             "read limit must not exceed {READ_LIMIT_MAX}."
         )));
     }
+    let limit = requested_limit.unwrap_or(DEFAULT_READ_LIMIT);
     let encoding = match field(input, "encoding") {
         None => None,
         Some(Value::String(name)) if !name.trim().is_empty() => Some(name.clone()),
@@ -103,6 +112,7 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         offset,
         limit,
         encoding,
+        requested_limit,
         window_given: field(input, "offset").is_some() || field(input, "limit").is_some(),
     })
 }
@@ -523,16 +533,31 @@ fn render_window(window: &[String], input: &Input, total_lines: u64) -> String {
             break;
         }
     }
-    let truncated = (shown as u64) < end - start + 1;
+    let budget_cut = (shown as u64) < end - start + 1;
     let mut content = records[..shown].join("\n");
-    if end < total_lines || truncated {
-        let actual_end = if truncated {
+    if end < total_lines || budget_cut {
+        let actual_end = if budget_cut {
             start + shown as u64 - 1
         } else {
             end
         };
+        let cause = if budget_cut {
+            "File is larger than the safe read budget for one response.".to_owned()
+        } else {
+            match input.requested_limit {
+                None => format!(
+                    "The {DEFAULT_READ_LIMIT}-line default window was reached; a larger limit returns more."
+                ),
+                Some(READ_LIMIT_MAX) => {
+                    format!("The maximum limit of {READ_LIMIT_MAX} lines was reached.")
+                }
+                Some(_) => {
+                    "The requested limit was reached; a larger limit returns more.".to_owned()
+                }
+            }
+        };
         content.push_str(&format!(
-            "\n\nFile is larger than the safe read budget for one response. Showing lines {start}-{actual_end} of {total_lines}. Continue with read({{ path: \"{}\", offset: {} }}).",
+            "\n\n{cause} Showing lines {start}-{actual_end} of {total_lines}. Continue with read({{ path: \"{}\", offset: {} }}).",
             input.path,
             actual_end + 1
         ));
