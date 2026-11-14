@@ -349,9 +349,13 @@ impl ProviderService {
             ));
         }
         let endpoint = edit.as_mut().and_then(|edit| edit.endpoint.take());
-        let descriptor = edit.as_ref().is_some_and(|edit| {
-            endpoint.is_none()
-                || edit.display_name.is_some()
+        // An alias is the provider's statement about its ids, so it is written
+        // to the record's map rather than to a descriptor override: an edit
+        // that names one writes no override, which the reset path could
+        // otherwise not remove.
+        let alias = edit.as_mut().and_then(|edit| edit.alias.take());
+        let named = edit.as_ref().is_some_and(|edit| {
+            edit.display_name.is_some()
                 || edit.context_window.is_some()
                 || edit.max_output_tokens.is_some()
                 || edit.tool_calling.is_some()
@@ -359,6 +363,9 @@ impl ProviderService {
                 || edit.reasoning.is_some()
                 || edit.modality_capabilities.is_some()
         });
+        // An edit that names only an endpoint or an alias writes no descriptor,
+        // which is the difference between an edit and a reset of one.
+        let descriptor = edit.is_some() && (named || (endpoint.is_none() && alias.is_none()));
         if !self.oauth.contains(&provider_id, cancel).await? {
             let available = self.account_available(&provider_id, cancel).await?;
             let bundled = self.bundled.clone();
@@ -397,6 +404,23 @@ impl ProviderService {
                                 }
                                 FieldUpdate::Clear => {
                                     record.endpoint_overrides.remove(&model_id);
+                                }
+                            }
+                        }
+                        if let Some(alias) = alias {
+                            match alias {
+                                FieldUpdate::Set { value } => {
+                                    if value.trim().is_empty() {
+                                        return Err(ProviderError::InvalidConfig(
+                                            "Model alias must not be empty".into(),
+                                        ));
+                                    }
+                                    record
+                                        .model_aliases
+                                        .insert(model_id.clone(), value.trim().to_owned());
+                                }
+                                FieldUpdate::Clear => {
+                                    record.model_aliases.remove(&model_id);
                                 }
                             }
                         }
@@ -470,8 +494,25 @@ impl ProviderService {
                                 .iter()
                                 .find(|entry| entry.entry.model_id == model_id)
                                 .ok_or(ProviderError::NotFound)?;
+                            if let Some(alias) = alias {
+                                match alias {
+                                    FieldUpdate::Set { value } => {
+                                        if value.trim().is_empty() {
+                                            return Err(ProviderError::InvalidConfig(
+                                                "Model alias must not be empty".into(),
+                                            ));
+                                        }
+                                        record
+                                            .model_aliases
+                                            .insert(model_id.clone(), value.trim().to_owned());
+                                    }
+                                    FieldUpdate::Clear => {
+                                        record.model_aliases.remove(&model_id);
+                                    }
+                                }
+                            }
                             match edit {
-                                Some(edit) => {
+                                Some(edit) if descriptor => {
                                     let next = bundled.merge_visible_edit(
                                         index
                                             .map(|index| &record.model_config_overrides[index])
@@ -484,6 +525,9 @@ impl ProviderService {
                                         record.model_config_overrides.push(next);
                                     }
                                 }
+                                // An alias-only edit writes no descriptor, the
+                                // same as on a static record.
+                                Some(_) => {}
                                 None => {
                                     record
                                         .model_config_overrides

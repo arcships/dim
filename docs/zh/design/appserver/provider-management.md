@@ -59,8 +59,8 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 
 | 方法 | 请求 | 回复 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
-| `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令 | false | `Drain` |
+| `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}`；每个连接新增 `gluedPrefix`，即其记录声明的前缀，每个模型新增 `alias`，即所列 id 所指的 catalog id；未设置时省略 | false | `Drain` |
+| `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令，以及 `gluedPrefix`，即其记录声明的前缀，未设置时省略 | false | `Drain` |
 | `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立。带 `cwd` 时只读该作用域的行，该文件夹没有行时返回 `null`；工作区优先于全局是一条 `configuration` 规则，不属于此读取 | false | `Drain` |
 | `provider.catalog` | `{providerId}` | 既有 `{catalog}` 和 `ProviderModel`，**不修改** | false | `Drain` |
 
@@ -115,7 +115,7 @@ actions 只说明当前可用性，
 
 | 方法 | 请求 | 回复与语义 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突 | true | `Drain` |
+| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled,gluedPrefix?}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突；`gluedPrefix` 按 patch 的规则：去空白，空值即未声明 | true | `Drain` |
 | `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
 | `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry}` | 既有 catalog；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
@@ -159,6 +159,7 @@ bundled catalog（bundled 未定义该 Provider，或 `remoteModels` 已为真�
 | `headers` | `{name,action:"set",value}` / `{name,action:"remove"}` 数组；未提及名称保留 | 静态 authority 的 builtin/custom |
 | `network.proxy` | `{action:"set",value:URL}` / `{action:"clear"}` | 本地 builtin/custom，沿用 authority 校验 |
 | `network.timeoutMs` | `{action:"set",value:正整数}` / `{action:"clear"}` | 本地 builtin/custom |
+| `gluedPrefix` | 字符串设置该 Provider 列出 id 携带的前缀；`null` 清除它 | 静态 authority 的 builtin/custom |
 
 空的 `provider.update` patch 返回 `provider_invalid_config`，不修改记录或版本。
 
@@ -179,6 +180,8 @@ driver、auth、默认模型只读。custom 的 driverKind/auth 创建后同样�
 override 优先，clear 回到发现结果，不删除 metadata；未知上游字符串仅作描述。
 仅设置或清除 endpoint 的编辑只写 endpointOverrides，不创建或修改 descriptor 覆盖。
 models.reset 只移除 descriptor 覆盖，保留端点覆盖；endpoint: clear 只移除路由覆盖。
+models.edit 另增 `alias:{action:"set",value:string}|{action:"clear"}`，写入记录的别名映射而不是
+descriptor 覆盖：别名是 Provider 对其 id 的声明，只设置别名的编辑不留覆盖给 reset 处理。
 models.reset 恢复仍存在的默认项，用户项用 delete。refresh 保留用户模型、覆盖、偏好和
 显式禁用，沿用 admitted 配置冲突检查。托管目录换账号 refresh 时，偏好随 descriptor 覆盖
 和禁用项一起清空；同账号 refresh 则保留它们。托管账号目录不通过这些方法新增用户模型/路由。
@@ -293,9 +296,27 @@ Provider 自有清单按精确 id；然后是整个限定 id，当它携带的�
 Provider 时，聚合方自有的 house model 因此不会被其末段 token 偶然指名的无关行作答；然后是自有
 token 是 id 头部、尾部至多为日期、`latest`、tag 后缀或方括号上下文修饰的厂商条目；接着把厂商的
 上游规范 id 与显示名合看，显示名将多个规范命中收窄为一个，仍有分歧即歧义而非猜测；然后按同样
-两条规则读取 `custom-provider` 行；最后，对既没有厂商条目也没有 `custom-provider` 行指名的模型，
-合并自有 id 为同名同 tag 的聚合行，且只取安全方向：最小窗口、最小输出上限与 effort 选项的交集。
-Provider 默认值不是声明，携带其 Provider 在大量行上写出的那一对数值的行在该处不声明任何上限。
+两条规则读取 `custom-provider` 行；然后是 Provider 声明该 id 所指的模型，即别名；最后，对既没有
+厂商条目、也没有 `custom-provider` 行、也没有别名指名的模型，合并自有 id 为同名同 tag 的聚合行，
+且只取安全方向：最小窗口、最小输出上限与 effort 选项的交集。Provider 默认值不是声明，携带其
+Provider 在大量行上写出的那一对数值的行在该处不声明任何上限。
+
+Provider 记录声明其列出 id 携带的前缀。该前缀在 id 头部、不区分大小写地只去除一次，早于 id 被
+拆成各 token 与名称步骤所比的 token。第一步与限定 id 步骤读取整个 id，因此精确行与限定 id 不受该
+声明影响；限定 id 步骤在去前缀之前作答，因为它读的是整个 id，会让它不剩 token 的前缀因此夺不走
+它。名称步骤看到的是去前缀后的 id，因为中转方给 id 加了前缀，而不是给模型加了前缀。前缀是
+token 头部，因此 `auto` 与 `auto-` 是同一份声明；把整个 id 消耗掉的前缀不留下任何名称，于是识别
+不出任何模型，而不是匹配一个空名称。发现流程写入 Provider 上报的 id，并在不带前缀的情况下读取
+捆绑目录：前缀是用户对其所见 id 的声明，不是列举可以推断的东西。`provider.create` 按与
+`provider.update` 相同的规则声明前缀：去空白，空值与未声明是同一份声明。
+
+Provider 记录还把列出的 id 映射到它所指的模型 id。该别名是规则读不出的 id 的退路，因此在所有
+规则之后、合并之前读取：它从不覆盖规则能读出的 id。它的目标按同一套步骤解析，只是排除别名步骤
+本身，因此别名作答的是目标行自己的 rule、score 与数值，而不是另一套词；也正因如此，别名不会
+再链到另一个别名。目标本身存在歧义时仍然歧义，并带着目标自己的候选行，因为别名指名一个模型，
+不得替分歧选边；目标什么都指不出时，id 保留没有该别名时的拒绝或合并结果，因此过时的声明绝不会
+让 id 比原来更差。别名以 Provider 自己拼写的精确 id 为键，区分大小写，因为那个拼写属于 Provider
+自身；目标则经过各步骤，大小写折叠已经在那里。
 
 限定 id 的命名空间是身份，不是提示。当它指名某个捆绑 Provider 时，token、规范 id 或显示名步骤
 若只找到其他 Provider 的行，则该步骤不作答，并以这些行作为候选拒绝该 id：仅凭末段 token 不得把
@@ -313,6 +334,14 @@ Provider 默认值不是声明，携带其 Provider 在大量行上写出的那�
 `metadataSource` 与 `matchedProviderId` 指出投影条目复制自哪一行，对合并即第一行加入的行：
 条目的显示名、价格、能力，以及该行自身声明的上限都来自它。它们不指出合并后某项上限的卖方；
 `filled` 逐项指出。
+
+识别结果是可用性旁边的事实，不是其理由的一部分。没有任何 reason 值用来指出它：识别成功的模型、
+多行仍分歧的模型与什么都没识别出的模型，在未声明上限时都保持 `limits_undeclared`，而结果说的
+是三者中的哪一种。列举模型的客户端从它本就取得的回复中读取该结果。终端的模型列表把结果附在行
+的 effort 之后，而为 Provider 未声明模型指明写入命令的提示行也一并指出候选行。Web 客户端的读取
+器在条目上保留 `identification`，其模型列表把结果作为后缀渲染在行本就写出的理由或上限之后，因此
+行原有的内容不会被替换。两端都说明 id 被认作哪个模型、数值来自多行、仍然分歧的行，或什么都没
+指名该 id。不读取该字段的客户端照常工作，只是不显示新增内容。
 
 缺失是类型上的值，不是数字。目录侧使用 `CatalogCapabilities`：两项上限都是可选的，没有来源
 声明时缺省；存储描述、其覆盖、用户模型、投影结果和托管目录的模型都用它。面向 Session 的
@@ -368,9 +397,17 @@ Session 保留已采用的能力快照。模型变为未声明的 Session 仍可
 解析器处失败，错误指出缺失的上限，且发生在凭据或网络 I/O 之前。两项都声明后再选择该模型
 即采用新值；在此之前 `/usage` 报告已采用快照，与其他描述修改相同（§6）。
 
-托管账号目录遵循同一规则：中继与捆绑目录都未声明上限的模型按缺失投影，并保留其
-`unavailableReason`（托管目录投影）；其自有家族规则仍然声明窗口。宿主只在模型带原因时接受
-缺失的上限。[模型文件配置](../../../../crates/dim-cli/README.md#api-key-configuration)
+托管账号目录遵循同一规则，并像任何 Provider 一样识别其模型：记录的自身前缀与别名就是识别所读的
+投影，因此目录叫不出名字的账号模型由别名所指行提供上限，只设置别名的编辑也不是描述覆盖。账号
+模型条目带上与其他 Provider 条目相同的记录：`metadata.identification` 指出命名其行的规则、被拒时
+的候选行，或没有任何步骤指名该 id 时为空；匹配的 Provider、模型、策略与分数；以及 `filled` 指出为
+条目未自行声明的每项上限提供取值的行。该记录在每次读取时重新得出，因此清空别名或刷新清单都会
+重算它，指名不了的声明既不留规则也不留过期的行。账号清单与任何覆盖自身声明的值仍然归它们：在
+`capabilityOverrideFields` 中标记的上限永不被填也不被列出，模态、推理、价格与 `metadataSource`
+保留账号自己的描述。中继
+清单在记录存在之前就已投影，因此它只用捆绑目录能说的内容。中继与捆绑目录都未声明上限的模型按
+缺失投影，并保留其 `unavailableReason`（托管目录投影）；其自有家族规则仍然声明窗口。宿主只在
+模型带原因时接受缺失的上限。[模型文件配置](../../../../crates/dim-cli/README.md#api-key-configuration)
 不变：它仍在加载时拒绝缺少任一项的条目并指出该条目
 （[#517](https://github.com/arcships/dim/issues/517)）。
 

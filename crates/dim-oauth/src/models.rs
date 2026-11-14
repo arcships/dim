@@ -4,7 +4,7 @@ use crate::http::{Body, MAX_SAFE_INTEGER, text};
 use dim_agent_capabilities::host::ModelProtocol;
 use dim_app_server::{
     managed_provider::{ManagedError, ManagedModel},
-    model_catalog::BundledCatalog,
+    model_catalog::{BundledCatalog, ProviderProjection},
 };
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -345,8 +345,11 @@ fn project(
     let declared = object(input.get("capabilities"));
     let limit = object(input.get("limit"));
     let raw_metadata = object(input.get("raw"));
+    // The relay list is read before the account's record exists, so nothing
+    // here states a prefix or an alias: the record's own statements apply
+    // when it serves the models, through the provider's one derivation.
     let found = bundled
-        .fallback(id)
+        .fallback(&ProviderProjection::default(), id)
         .map(|entry| serde_json::to_value(entry).expect("model entries serialize"));
     let found_metadata = object(found.as_ref().and_then(|f| f.get("metadata")));
     let mut r = reasoning(

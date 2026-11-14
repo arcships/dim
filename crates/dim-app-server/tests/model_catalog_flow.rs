@@ -2,6 +2,7 @@ use dim_app_server::model_catalog::{
     BundledCatalog, ModelEdit, ModelEntry, ModelSource, ProviderProjection, ProviderRole,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 
 #[test]
 fn bundled_lookup_preserves_explicit_asymmetric_limits_and_hidden_metadata() {
@@ -49,7 +50,7 @@ fn a_bundled_match_declares_both_limits_and_an_unmatched_descriptor_has_none() {
     assert_eq!(matched.capabilities.max_output_tokens, Some(128_000));
     assert!(matched.capabilities.missing_limits().is_empty());
     let id = "zzzz-private-descriptor";
-    assert!(catalog.fallback(id).is_none());
+    assert!(catalog.fallback(&Default::default(), id).is_none());
     let unmatched = catalog.project(&provider, &json!({ "id": id })).unwrap();
     assert_eq!(
         unmatched.capabilities.missing_limits(),
@@ -415,9 +416,15 @@ fn a_plan_provider_is_marked_and_its_api_entry_is_not() {
 /// Projects one id as a relay outside the catalog, which is the projection a
 /// gateway that ships no bundled list has.
 fn relay(catalog: &BundledCatalog, id: &str) -> ModelEntry {
+    prefixed_relay(catalog, id, None)
+}
+
+/// The same projection, with the prefix the provider states its ids carry.
+fn prefixed_relay(catalog: &BundledCatalog, id: &str, prefix: Option<&str>) -> ModelEntry {
     let provider = ProviderProjection {
         provider_id: "my-gateway".into(),
         source: Some(ModelSource::Custom),
+        glued_prefix: prefix.map(str::to_owned),
         ..Default::default()
     };
     catalog.project(&provider, &json!({ "id": id })).unwrap()
@@ -850,6 +857,35 @@ fn a_qualified_house_model_keeps_its_own_identity() {
             "{id}: the relay answers with the row itself"
         );
     }
+}
+
+/// The prefix states what a relay glued onto every id it lists, so it may not
+/// take a qualified id away from the step that reads it whole: `openrouter/auto`
+/// is OpenRouter's router even on a relay whose prefix is `auto`, and the same
+/// statement that names `auto-kimi-k3` leaves this id its own numbers.
+#[test]
+fn a_qualified_house_model_survives_the_relays_prefix() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = prefixed_relay(&catalog, "openrouter/auto", Some("auto"));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .expect("the qualified step reads the id the prefix would consume");
+    assert_eq!(
+        (
+            matched(&entry),
+            numbers(&entry),
+            identification.rule.as_str()
+        ),
+        (
+            ("openrouter", "openrouter/auto"),
+            (Some(8_192), Some(8_192)),
+            "qualified"
+        )
+    );
 }
 
 /// A namespace that names a known provider binds the id to that provider: when
@@ -1399,5 +1435,236 @@ fn the_identification_reaches_the_entry_and_names_an_ambiguity() {
             .identification
             .is_none(),
         "nothing named the model, so there is no identification"
+    );
+}
+
+/// A relay whose ids carry its own prefix resolves the model under the
+/// stripped id: the strip happens once, at the head, so the numbers are the
+/// bare id's own and the step that named them is the token step.
+#[test]
+fn a_providers_glued_prefix_is_stripped_before_matching() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = prefixed_relay(&catalog, "auto-kimi-k3", Some("auto"));
+    assert_eq!(matched(&entry), ("moonshot", "kimi-k3"));
+    assert_eq!(numbers(&entry), (Some(1_048_576), Some(1_048_576)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    // The strategy reports against the id the provider listed, not the
+    // stripped one, so the entry says how its own id was read.
+    assert_eq!(
+        entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+        Some("moonshot-token")
+    );
+}
+
+/// The same provider without the statement is unidentified, so the field is
+/// what identifies rather than a guess about the id shape.
+#[test]
+fn a_prefixed_id_without_the_statement_is_unidentified() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "auto-kimi-k3");
+    assert_eq!(matched(&entry), ("provider-default", "-"));
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    assert!(
+        entry.metadata.as_ref().unwrap().identification.is_none(),
+        "nothing named the model, so there is no identification"
+    );
+}
+
+/// Step 1 reads the whole id, so an exact row still wins with the prefix set,
+/// and an id the prefix does not head is left as it is.
+#[test]
+fn an_exact_row_still_wins_with_the_prefix_set() {
+    let catalog = BundledCatalog::load().unwrap();
+    // A stored list that carries the prefixed id itself, which is what step 1
+    // reads before any step breaks the id into tokens.
+    let provider = ProviderProjection {
+        provider_id: "moonshot".into(),
+        source: Some(ModelSource::Builtin),
+        models: vec![
+            catalog
+                .project(
+                    &ProviderProjection {
+                        provider_id: "moonshot".into(),
+                        source: Some(ModelSource::Custom),
+                        ..Default::default()
+                    },
+                    &json!({ "id": "auto-kimi-k3" }),
+                )
+                .unwrap(),
+        ],
+        glued_prefix: Some("auto".into()),
+        ..Default::default()
+    };
+    let entry = catalog
+        .project(&provider, &json!({ "id": "auto-kimi-k3" }))
+        .unwrap();
+    assert_eq!(
+        matched(&entry),
+        ("moonshot", "auto-kimi-k3"),
+        "the provider's own row answers before any step reads the prefix"
+    );
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "provider-exact");
+}
+
+/// The prefix is a token head, so `auto` and `auto-` are one statement, and a
+/// prefix that consumes the whole id leaves nothing to identify.
+#[test]
+fn the_prefix_is_normalised_and_must_leave_a_name() {
+    let catalog = BundledCatalog::load().unwrap();
+    for prefix in ["auto", "auto-", " AUTO "] {
+        let entry = prefixed_relay(&catalog, "auto-kimi-k3", Some(prefix));
+        assert_eq!(
+            matched(&entry),
+            ("moonshot", "kimi-k3"),
+            "the prefix {prefix:?} is the same statement"
+        );
+    }
+    let empty = prefixed_relay(&catalog, "auto-", Some("auto"));
+    assert_eq!(matched(&empty), ("provider-default", "-"));
+    assert!(
+        empty.metadata.as_ref().unwrap().identification.is_none(),
+        "a prefix that leaves no name identifies nothing"
+    );
+}
+
+/// The relay projection with the provider's own statement that a listed id
+/// stands for another model.
+fn aliased_relay(catalog: &BundledCatalog, id: &str, target: &str) -> ModelEntry {
+    let provider = ProviderProjection {
+        provider_id: "my-gateway".into(),
+        source: Some(ModelSource::Custom),
+        model_aliases: BTreeMap::from([(id.to_owned(), target.to_owned())]),
+        ..Default::default()
+    };
+    catalog.project(&provider, &json!({ "id": id })).unwrap()
+}
+
+/// A provider's own statement that a listed id stands for another model is
+/// what that id resolves through: the target goes through the same steps, so
+/// the answer carries the target row's numbers and rule, and no second
+/// vocabulary is introduced for the fact that an alias was used.
+///
+/// A `provider/model` target answers through the token step on a relay, not
+/// through the qualified one: the qualified index keys a row by the id the row
+/// carries itself, so a target that no row spells whole is read by its tokens,
+/// with its namespace binding those tokens to that provider. The rule word is
+/// therefore `token`, and the strategy keeps the target's own provider.
+#[test]
+fn a_provider_alias_resolves_an_id_through_the_pipeline() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "ark-code-latest", "ark-code/ark-code-latest");
+    assert_eq!(matched(&entry), ("ark-code", "ark-code-latest"));
+    assert_eq!(numbers(&entry), (Some(204_800), Some(60_000)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    assert_eq!(
+        entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+        Some("ark-code-token")
+    );
+}
+
+/// An alias on an id no rule can read answers with the target's own rule, not
+/// a rule of its own.
+#[test]
+fn an_alias_on_an_unreadable_id_takes_the_targets_rule() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "my-deployment-gpt-4o", "gpt-5.5");
+    assert_eq!(matched(&entry), ("openai", "gpt-5.5"));
+    assert_eq!(numbers(&entry), (Some(1_050_000), Some(128_000)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+}
+
+/// An alias whose target is itself ambiguous returns the target's candidates:
+/// an alias names one model, and it may not choose a side of a disagreement.
+#[test]
+fn an_alias_onto_an_ambiguous_target_stays_ambiguous() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "my-deployment-ark", "ark-code-latest");
+    assert_eq!(matched(&entry), ("provider-default", "-"));
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    let mut named: Vec<_> = identification
+        .candidates
+        .iter()
+        .map(|candidate| candidate.provider_id.as_str())
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        ["ark-agent-plan", "ark-code", "byteplus-coding-plan"]
+    );
+}
+
+/// Without the statement `ark-code-latest` keeps today's ambiguity and its
+/// three candidates, so the alias is the only change to the id, and an alias
+/// that names nothing leaves the id exactly as it was without one.
+#[test]
+fn an_unaliased_ambiguous_id_keeps_its_candidates_and_a_stale_alias_adds_nothing() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "ark-code-latest");
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    assert_eq!(identification.candidates.len(), 3);
+    let stale = aliased_relay(&catalog, "ark-code-latest", "zzzz-nothing-names-this");
+    let stale_identification = stale
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (
+            stale_identification.rule.as_str(),
+            stale_identification.candidates.len()
+        ),
+        ("ambiguous", 3),
+        "a target that names nothing falls through to the merge as if there were no alias"
     );
 }

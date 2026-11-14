@@ -23,7 +23,7 @@ use crate::client::{self, Client, Message};
 use crate::model::session::{
     ACCOUNT_NAMESPACE, Account, AccountDescriptor, Command, CompactReply, ContextReading,
     DIM_OAUTH_ID, DeleteOutcome, DeleteReply, DraftPart, EmptyProvider, EmptyReason,
-    ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelPolicyUpdate,
+    ExecutionSnapshot, ManagementReply, ModelItem, ModelList, ModelOutcome, ModelPolicyUpdate,
     NeedsLimitsProvider, OauthEvent, OauthStart, PluginItem, PluginReply, PromptField,
     PromptSetting, ProviderAction, ProviderEntry, RuntimeAction, RuntimeItem, RuntimesError,
     SandboxBackend, SessionItem, SessionPort, SessionsScope, SubagentModelPolicy,
@@ -69,6 +69,7 @@ struct ProviderSummary {
     auth: serde_json::Value,
     base_url: String,
     credential_configured: bool,
+    glued_prefix: Option<String>,
     enabled: bool,
     version: u32,
     account: Option<AccountDescriptor>,
@@ -112,6 +113,8 @@ struct ManagementConnection {
     auth: serde_json::Value,
     base_url: String,
     credential_configured: bool,
+    #[serde(default)]
+    glued_prefix: Option<String>,
 }
 #[derive(Deserialize)]
 struct ProviderManagement {
@@ -3259,6 +3262,7 @@ impl Worker {
                 custom: summary.source == "custom",
                 base_url: Some(summary.base_url).filter(|url| !url.is_empty()),
                 api_key_preview: summary.credential_configured.then(|| "••••••••".into()),
+                glued_prefix: summary.glued_prefix,
                 id: summary.provider_id,
                 version: summary.version,
                 name: summary.display_name,
@@ -3293,6 +3297,7 @@ impl Worker {
                         auth: connection.auth,
                         base_url: connection.base_url,
                         credential_configured: connection.credential_configured,
+                        glued_prefix: connection.glued_prefix,
                         enabled: entry
                             .enabled
                             .ok_or("Static Provider enable flag is missing")?,
@@ -3353,6 +3358,7 @@ impl Worker {
                 api_key,
                 base_url,
                 enabled,
+                glued_prefix,
             } => {
                 let probe = api_key.is_some() || base_url.is_some();
                 let mut patch = json!({});
@@ -3364,6 +3370,14 @@ impl Worker {
                 }
                 if let Some(enabled) = enabled {
                     patch["enabled"] = json!(enabled);
+                }
+                if let Some(prefix) = glued_prefix {
+                    // The patch's own "clear it" is a null, and its "leave it
+                    // alone" is the omitted field.
+                    patch["gluedPrefix"] = match prefix {
+                        Some(prefix) => json!(prefix),
+                        None => json!(null),
+                    };
                 }
                 let notice = if probe {
                     "Connected"
@@ -3534,6 +3548,11 @@ impl Worker {
             };
             let preferences = self.saved_preferences(&provider_id).await;
             let total = catalog.models.len();
+            let ambiguous: Vec<crate::wire::CatalogPreferences> = catalog
+                .models
+                .iter()
+                .filter_map(|model| model.metadata.clone())
+                .collect();
             let undeclared = catalog
                 .models
                 .iter()
@@ -3592,14 +3611,37 @@ impl Worker {
                             efforts,
                             default_effort,
                             saved_effort,
+                            outcome: model_outcome(model.metadata.as_ref(), &provider_id),
                         }
                     }),
             );
             if undeclared > 0 {
+                let mut candidates: Vec<String> = ambiguous
+                    .iter()
+                    .flat_map(|metadata| {
+                        metadata
+                            .identification
+                            .as_ref()
+                            .filter(|identification| identification.rule == "ambiguous")
+                            .map(|identification| {
+                                identification
+                                    .candidates
+                                    .iter()
+                                    .map(|candidate| {
+                                        format!("{}/{}", candidate.provider_id, candidate.model_id)
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                candidates.sort();
+                candidates.dedup();
                 limits.push(NeedsLimitsProvider {
                     provider_id: provider_id.clone(),
                     provider_name: provider_name.clone(),
                     count: undeclared,
+                    candidates,
                 });
             }
             if models.len() == before {
@@ -4794,6 +4836,42 @@ fn group(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// What identification made of one entry's id, in the words its row shows.
+///
+/// A merge is the one rule whose numbers come from several rows rather than
+/// from one declaration, so it reads as inferred from them; every other rule
+/// named one row, and the entry's `matchedProviderId` and `matchedModelId` say
+/// which.
+fn model_outcome(
+    metadata: Option<&crate::wire::CatalogPreferences>,
+    listed_by: &str,
+) -> ModelOutcome {
+    let Some(metadata) = metadata else {
+        return ModelOutcome::Unidentified;
+    };
+    let Some(identification) = metadata.identification.as_ref() else {
+        return ModelOutcome::Unidentified;
+    };
+    if identification.rule == "ambiguous" {
+        return ModelOutcome::Ambiguous {
+            candidates: identification
+                .candidates
+                .iter()
+                .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+                .collect(),
+        };
+    }
+    ModelOutcome::Identified {
+        provider_id: metadata
+            .matched_provider_id
+            .as_deref()
+            .unwrap_or(listed_by)
+            .to_owned(),
+        model_id: metadata.matched_model_id.clone().unwrap_or_default(),
+        inferred: identification.rule == "merge",
+    }
 }
 
 fn effort_choices(

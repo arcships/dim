@@ -2,7 +2,7 @@
 
 mod id;
 
-use self::id::variants;
+use self::id::{Lookup, variants};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -65,6 +65,11 @@ pub struct ModelEdit {
     pub modality_capabilities: Option<Vec<String>>,
     #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
     pub endpoint: Option<FieldUpdate<NewApiEndpoint>>,
+    /// The catalog model this entry's id stands for. The record holds it
+    /// beside the provider's other statements about its ids, not as a
+    /// descriptor override.
+    #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
+    pub alias: Option<FieldUpdate<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -185,6 +190,12 @@ pub struct ProviderProjection {
     pub source: Option<ModelSource>,
     pub models: Vec<ModelEntry>,
     pub context_window_override: Option<u64>,
+    /// The prefix this provider's listed ids carry, stripped once before an id
+    /// is broken into the tokens the steps compare.
+    pub glued_prefix: Option<String>,
+    /// The provider's own statement that a listed id stands for another one,
+    /// keyed by the exact id the provider spells.
+    pub model_aliases: std::collections::BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -470,34 +481,22 @@ impl BundledCatalog {
         }
     }
 
-    /// A limit the row does not declare, supplied by the entry the id
-    /// identifies and recorded in `identification.filled` so it never reads as
-    /// the row's own declaration.
-    fn fill_undeclared(&self, model: &mut ModelEntry, provider_id: &str) {
-        // The row's own provider writes a default pair rather than declaring a
-        // limit, so such a row counts as undeclared here.
-        let placeholder = id::is_placeholder(provider_id, model);
-        let needs_window = model.capabilities.context_window.is_none() || placeholder;
-        let needs_output = model.capabilities.max_output_tokens.is_none() || placeholder;
-        if !needs_window && !needs_output {
-            return;
-        }
-        // The identified entry supplies the pair. The row itself answers step 1
-        // on its own provider, so the entry is looked up outside that list.
-        let Some(found) = self.lookup(&ProviderProjection::default(), &model.model_id) else {
-            return;
-        };
+    /// The limits `found` supplies `model` and the row that supplied each, so
+    /// a value the entry never stated never reads as one. `needs` selects the
+    /// limits the entry does not state, which are the only ones written and
+    /// listed.
+    fn fill_from(found: &Lookup, model: &mut ModelEntry, needs: [bool; 2]) -> Vec<FilledLimit> {
         let mut filled = Vec::new();
         for (field, needs, value, own) in [
             (
                 "contextWindow",
-                needs_window,
+                needs[0],
                 found.entry.capabilities.context_window,
                 &mut model.capabilities.context_window,
             ),
             (
                 "maxOutputTokens",
-                needs_output,
+                needs[1],
                 found.entry.capabilities.max_output_tokens,
                 &mut model.capabilities.max_output_tokens,
             ),
@@ -523,6 +522,12 @@ impl BundledCatalog {
                 },
             });
         }
+        filled
+    }
+
+    /// Records the limits something else supplied in `model`'s identification,
+    /// so a value the entry never stated never reads as one.
+    fn record_filled(model: &mut ModelEntry, filled: Vec<FilledLimit>) {
         if filled.is_empty() {
             return;
         }
@@ -538,6 +543,76 @@ impl BundledCatalog {
                 })
             }
         }
+    }
+
+    /// A limit the row does not declare, supplied by the entry the id
+    /// identifies and recorded in `identification.filled` so it never reads as
+    /// the row's own declaration.
+    fn fill_undeclared(&self, model: &mut ModelEntry, provider_id: &str) {
+        // The row's own provider writes a default pair rather than declaring a
+        // limit, so such a row counts as undeclared here.
+        let placeholder = id::is_placeholder(provider_id, model);
+        let needs = [
+            model.capabilities.context_window.is_none() || placeholder,
+            model.capabilities.max_output_tokens.is_none() || placeholder,
+        ];
+        if !needs[0] && !needs[1] {
+            return;
+        }
+        // The identified entry supplies the pair. The row itself answers step 1
+        // on its own provider, so the entry is looked up outside that list.
+        let Some(found) = self.lookup(&ProviderProjection::default(), &model.model_id) else {
+            return;
+        };
+        let filled = Self::fill_from(&found, model, needs);
+        Self::record_filled(model, filled);
+    }
+
+    /// What a listing states about one of its own ids, read with the
+    /// projection the record serves: the identification the id earns, the row
+    /// it named, and each limit the entry does not state taken from that row.
+    ///
+    /// A limit the entry marks in `capabilityOverrideFields` is its own
+    /// statement, so neither the listing's own fill nor an override's value is
+    /// rewritten; the limits a listing fills by itself are unmarked and become
+    /// the identified row's.
+    ///
+    /// The entry's descriptor stays what its author wrote — its name,
+    /// modalities, reasoning, pricing and `metadataSource` — so this writes
+    /// only the facts identification owns. The identification is set on every
+    /// read, so a statement that no longer names anything leaves the entry
+    /// unnamed instead of keeping what an earlier read found.
+    pub(crate) fn identify_entry(&self, provider: &ProviderProjection, entry: &mut ModelEntry) {
+        let marked = entry
+            .metadata
+            .as_ref()
+            .map(|metadata| metadata.capability_override_fields.clone())
+            .unwrap_or_default();
+        entry.metadata.get_or_insert_default().identification =
+            self.identify_record(provider, &entry.model_id, &marked);
+        let needs = [
+            !marked.iter().any(|name| name == "contextWindow"),
+            !marked.iter().any(|name| name == "maxOutputTokens"),
+        ];
+        let filled = match self.lookup(provider, &entry.model_id) {
+            Some(found) => {
+                let metadata = entry.metadata.get_or_insert_default();
+                metadata.matched_provider_id = Some(found.provider_id.clone());
+                metadata.matched_model_id = Some(found.entry.model_id.clone());
+                metadata.match_strategy = Some(found.strategy.clone());
+                metadata.match_score = Some(found.score);
+                Self::fill_from(&found, entry, needs)
+            }
+            None => {
+                let metadata = entry.metadata.get_or_insert_default();
+                metadata.matched_provider_id = None;
+                metadata.matched_model_id = None;
+                metadata.match_strategy = None;
+                metadata.match_score = None;
+                Vec::new()
+            }
+        };
+        Self::record_filled(entry, filled);
     }
 
     pub fn effective_models(
@@ -685,10 +760,10 @@ impl BundledCatalog {
         model
     }
 
-    /// Bundled metadata for a model served by a relay outside the catalog.
-    pub fn fallback(&self, id: &str) -> Option<ModelEntry> {
-        self.lookup(&ProviderProjection::default(), id)
-            .map(|found| found.entry)
+    /// Bundled metadata for a model served by a relay outside the catalog,
+    /// read with the projection of the record that serves it.
+    pub fn fallback(&self, provider: &ProviderProjection, id: &str) -> Option<ModelEntry> {
+        self.lookup(provider, id).map(|found| found.entry)
     }
 
     fn apply_provider_rules(&self, provider: &ProviderProjection, entry: &mut ModelEntry) {

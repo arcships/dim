@@ -582,6 +582,10 @@ pub fn convert_legacy_provider(
         endpoint_overrides: BTreeMap::new(),
         disabled_model_ids: disabled,
         enabled: enabled == 1,
+        // The legacy source states an endpoint and its credential, not a
+        // statement about the ids it lists.
+        glued_prefix: None,
+        model_aliases: BTreeMap::new(),
         definition_fingerprint: previous
             .as_ref()
             .and_then(|p| p.definition_fingerprint.clone()),

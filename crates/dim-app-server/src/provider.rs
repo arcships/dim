@@ -276,6 +276,12 @@ struct ProviderRecord {
     disabled_model_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_preferences: BTreeMap<String, ModelPreferences>,
+    /// The prefix this account's listed ids carry, as the user states it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glued_prefix: Option<String>,
+    /// The listed ids this account states stand for another model.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_aliases: BTreeMap<String, String>,
     version: u32,
 }
 
@@ -358,6 +364,14 @@ pub struct StaticProviderRecord {
     #[serde(default)]
     disabled_model_ids: Vec<String>,
     enabled: bool,
+    /// The prefix this Provider's listed ids carry, as the user states it,
+    /// stripped once before an id is matched. Absent means the ids carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glued_prefix: Option<String>,
+    /// The listed ids this Provider states stand for another model, keyed by
+    /// the id the Provider spells.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_aliases: BTreeMap<String, String>,
     #[serde(default)]
     definition_fingerprint: Option<String>,
     version: u32,
@@ -462,6 +476,10 @@ pub struct ProviderSummary {
     pub credential_configured: bool,
     /// Whether `provider.refresh` can list this provider's models.
     pub remote_model_list: bool,
+    /// The prefix this provider's listed ids carry, absent when they carry
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glued_prefix: Option<String>,
     pub enabled: bool,
     pub version: u32,
 }
@@ -515,6 +533,12 @@ impl ProviderRecord {
     /// management view and the whole-set write all read this one derivation,
     /// so the toggle a view offers is the toggle the write governs.
     ///
+    /// The record's own statements about its ids are what identification reads:
+    /// its prefix and its aliases, on the same projection a static record
+    /// serves, so an account model is identified by the same steps, publishes
+    /// the same record of that answer and gains the limits of the row it stands
+    /// for exactly as a listed id on any other provider does.
+    ///
     /// The stored reason records the base entry: `limits_undeclared` is
     /// derived from the effective limits, so a supplied limit makes the
     /// model available again, while the stored value stays for the reset
@@ -525,6 +549,11 @@ impl ProviderRecord {
     /// stored reason (or the generic every-use one when the status alone is
     /// the cause) for both uses and neither selection lists it.
     pub(crate) fn effective_models(&self, bundled: &BundledCatalog) -> Vec<EffectiveModel<'_>> {
+        let projection = ProviderProjection {
+            glued_prefix: self.glued_prefix.clone(),
+            model_aliases: self.model_aliases.clone(),
+            ..Default::default()
+        };
         self.models
             .iter()
             .map(|source| {
@@ -536,7 +565,7 @@ impl ProviderRecord {
                     Some(replacement) => inherit_limits(replacement.clone(), &source.entry),
                     None => source.entry.clone(),
                 };
-                fill_bundled_limits(bundled, &mut entry);
+                bundled.identify_entry(&projection, &mut entry);
                 let missing_limits = entry.capabilities.missing_limits();
                 let unavailable = if source.excluded_from_every_use() {
                     // A stored limits reason is the weaker derived fact and
@@ -1041,6 +1070,8 @@ fn static_entries(
                     ModelSource::Custom
                 }),
                 models: models.clone(),
+                glued_prefix: record.glued_prefix.clone(),
+                model_aliases: record.model_aliases.clone(),
                 ..Default::default()
             },
             &models,
@@ -1189,6 +1220,7 @@ fn static_summary(
         remote_model_list,
         proxy_configured: record.network.proxy.is_some(),
         timeout_ms: record.network.timeout_ms,
+        glued_prefix: record.glued_prefix,
         enabled: record.enabled,
         version: record.version,
     }
@@ -1308,6 +1340,8 @@ fn bundled_seed(provider: &CatalogProvider) -> Result<StaticProviderRecord, Host
         endpoint_overrides: BTreeMap::new(),
         disabled_model_ids: Vec::new(),
         enabled: authority != CredentialAuthority::Static,
+        glued_prefix: None,
+        model_aliases: BTreeMap::new(),
         definition_fingerprint: Some(format!("{:x}", Sha256::digest(fingerprint))),
         version: 1,
     })
@@ -1509,21 +1543,6 @@ pub(crate) fn rewrite_stored_limits(
         }
     }
     Ok(())
-}
-
-/// The limits a model does not declare come from the bundled catalog, which
-/// owns the descriptors both the catalog and the management view publish.
-pub(crate) fn fill_bundled_limits(bundled: &BundledCatalog, model: &mut ModelEntry) {
-    if let Some(found) = bundled.fallback(&model.model_id) {
-        model.capabilities.context_window = model
-            .capabilities
-            .context_window
-            .or(found.capabilities.context_window);
-        model.capabilities.max_output_tokens = model
-            .capabilities
-            .max_output_tokens
-            .or(found.capabilities.max_output_tokens);
-    }
 }
 
 /// A stored reason other than the limit-derived one stands; otherwise an
@@ -2066,17 +2085,35 @@ impl ProviderService {
                                 .ok_or(ProviderError::Failed)?;
                             let old = old
                                 .filter(|record| same_account(&record.account, &catalog.account));
-                            let (disabled_model_ids, model_config_overrides, model_preferences) =
-                                old.map_or_else(
-                                    || (Vec::new(), Vec::new(), BTreeMap::new()),
-                                    |record| {
-                                        (
-                                            record.disabled_model_ids,
-                                            record.model_config_overrides,
-                                            record.model_preferences,
-                                        )
-                                    },
-                                );
+                            let (
+                                disabled_model_ids,
+                                model_config_overrides,
+                                model_preferences,
+                                glued_prefix,
+                                model_aliases,
+                            ) = old.map_or_else(
+                                || {
+                                    (
+                                        Vec::new(),
+                                        Vec::new(),
+                                        BTreeMap::new(),
+                                        None,
+                                        BTreeMap::new(),
+                                    )
+                                },
+                                |record| {
+                                    (
+                                        record.disabled_model_ids,
+                                        record.model_config_overrides,
+                                        record.model_preferences,
+                                        // A refresh rewrites the account's
+                                        // listings, not the user's own
+                                        // statements about their ids.
+                                        record.glued_prefix,
+                                        record.model_aliases,
+                                    )
+                                },
+                            );
                             let record = ProviderRecord {
                                 kind: ManagedRecordKind::Managed,
                                 account: catalog.account,
@@ -2084,6 +2121,8 @@ impl ProviderService {
                                 disabled_model_ids,
                                 model_config_overrides,
                                 model_preferences,
+                                glued_prefix,
+                                model_aliases,
                                 version,
                             };
                             save_catalog(&tx, &provider_id, &record)?;

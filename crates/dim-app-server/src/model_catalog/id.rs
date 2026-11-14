@@ -343,29 +343,69 @@ impl BundledCatalog {
     }
 
     fn identify_steps(&self, provider: &ProviderProjection, id: &str) -> Outcome {
+        self.identify_with_alias(provider, id, true)
+    }
+
+    /// The step list, with the alias step present or excluded. A target the
+    /// provider's alias names is resolved by the same list without the alias,
+    /// so an alias never chains to another one.
+    ///
+    /// A step that names one model answers at once. A step that refuses the id
+    /// leaves the refusal open to the alias step and then stands: the rules can
+    /// read the id to a disagreement, which is the case an alias exists for,
+    /// but no later step may answer over a refusal the first one made.
+    fn identify_with_alias(&self, provider: &ProviderProjection, id: &str, alias: bool) -> Outcome {
         if let Some((provider_id, entry)) = self.own_row(provider, id) {
             let strategy = Rule::ProviderExact.strategy(&provider_id, &entry.model_id, id);
             return self.one(provider_id, entry, strategy, Rule::ProviderExact);
         }
-        let Some(query) = Query::parse(id) else {
-            return Outcome::None;
+        // The qualified step reads the whole id, so it answers before the
+        // prefix can leave no query behind: on a relay whose prefix consumes
+        // the id, the stripped query is empty while the id still names a row.
+        let query = Query::parse(id, provider.glued_prefix.as_deref());
+        let found = match self.identify_qualified(id, namespace_of(id)) {
+            Outcome::None => match &query {
+                Some(query) => self.identify_after_qualified(provider, query, id),
+                None => Outcome::None,
+            },
+            found => found,
         };
+        if let Outcome::One(_) = found {
+            return found;
+        }
+        if alias {
+            match self.identify_alias(provider, id) {
+                Outcome::None => {}
+                found => return found,
+            }
+        }
+        match (found, query) {
+            (Outcome::Ambiguous(candidates), _) => Outcome::Ambiguous(candidates),
+            (_, Some(query)) => self.merge_rows(id, &query),
+            (_, None) => Outcome::None,
+        }
+    }
+
+    /// Steps 3 to 6 over one stripped id's tokens: the vendor rows by token
+    /// and by name, and the `custom-provider` rows by token and by name.
+    fn identify_after_qualified(
+        &self,
+        provider: &ProviderProjection,
+        query: &Query,
+        id: &str,
+    ) -> Outcome {
         let namespace = namespace_of(id);
-        match self.identify_qualified(id, namespace) {
+        match self.identify_by_tokens(Index::Vendor, query, provider, namespace, Rule::Token, id) {
             Outcome::None => {}
             found => return found,
         }
-        match self.identify_by_tokens(Index::Vendor, &query, provider, namespace, Rule::Token, id) {
-            Outcome::None => {}
-            found => return found,
-        }
-        match self.identify_by_names(&query, provider, namespace, id) {
+        match self.identify_by_names(query, provider, namespace, id) {
             Outcome::None => {}
             found => return found,
         }
         match self.identify_by_tokens(
             Index::CustomProvider,
-            &query,
+            query,
             provider,
             namespace,
             Rule::CustomProvider,
@@ -374,11 +414,24 @@ impl BundledCatalog {
             Outcome::None => {}
             found => return found,
         }
-        match self.identify_by_names_in(Index::CustomProvider, &query, provider, namespace, id) {
-            Outcome::None => {}
-            found => return found,
-        }
-        self.merge_rows(id, &query)
+        self.identify_by_names_in(Index::CustomProvider, query, provider, namespace, id)
+    }
+
+    /// The second half of step 6: the provider's own statement that this id
+    /// stands for another one.
+    ///
+    /// The alias is keyed by the exact id the provider lists, because that id
+    /// is the provider's own spelling. Its target is resolved by the step list
+    /// without the alias step, so the answer carries the target row's rule,
+    /// score and numbers; an ambiguous target stays ambiguous rather than
+    /// letting the alias choose a side; and a target that names nothing falls
+    /// through to the refusal or the merge the id had without the alias, so a
+    /// stale alias never makes an id worse than it is.
+    fn identify_alias(&self, provider: &ProviderProjection, id: &str) -> Outcome {
+        let Some(target) = provider.model_aliases.get(id.trim()) else {
+            return Outcome::None;
+        };
+        self.identify_with_alias(provider, target, false)
     }
 
     /// Step 2: the whole qualified id, before any step drops its namespace
@@ -715,9 +768,15 @@ struct Query {
 }
 
 impl Query {
-    /// The id without its namespace segments, tag and bracket modifier,
-    /// lowercased and split on the separators a model name uses.
-    fn parse(id: &str) -> Option<Self> {
+    /// The id without its namespace segments, tag, bracket modifier and the
+    /// provider's glued prefix, lowercased and split on the separators a model
+    /// name uses.
+    ///
+    /// The prefix is the provider's statement about the ids it lists, so it is
+    /// stripped once, at the head of the name, and only when the name keeps a
+    /// token. A prefix that consumes the id leaves nothing to identify, and an
+    /// empty result tells the steps that no name is left.
+    fn parse(id: &str, glued_prefix: Option<&str>) -> Option<Self> {
         let lower = id.trim().to_lowercase();
         let mut name = lower.rsplit('/').next()?.to_owned();
         if let Some((head, _)) = name.rsplit_once(':') {
@@ -728,11 +787,20 @@ impl Query {
         {
             name.truncate(start);
         }
-        let tokens: Vec<_> = name
+        let mut tokens: Vec<_> = name
             .split(['-', '_', '.', ' '])
             .filter(|token| !token.is_empty())
             .map(str::to_owned)
             .collect();
+        if let Some(glued_prefix) = glued_prefix {
+            let prefix = split_tokens(&glued_prefix.to_lowercase());
+            // A prefix that consumes the whole name leaves none, so the strip
+            // keeps a statement about the ids a provider lists from turning
+            // one of them into no name at all.
+            if !prefix.is_empty() && tokens.starts_with(&prefix) {
+                tokens.drain(..prefix.len());
+            }
+        }
         (!tokens.is_empty()).then_some(Self { tokens })
     }
 }

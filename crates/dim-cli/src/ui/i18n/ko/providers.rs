@@ -79,6 +79,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ 이동 · enter 실행 · esc 뒤로",
         "↑↓ move · enter activate · esc close" => "↑↓ 이동 · enter 실행 · esc 닫기",
+        "Model id prefix" => "모델 ID 접두사",
+        "(none)" => "(없음)",
+        "identified: {model} at {provider}" => "식별됨: {provider}의 {model}",
+        "inferred from several rows: {model} at {provider}" => {
+            "여러 행에서 추론됨: {provider}의 {model}"
+        }
+        "ambiguous: {candidates}" => "모호함: {candidates}",
+        "unidentified" => "식별되지 않음",
+        "Identified {rule}" => "식별됨 {rule}",
+        "from the Provider's own list" => "제공자 자체 목록에서",
+        "from the whole qualified id" => "전체 정규화 ID에서",
+        "by its tokens" => "토큰으로",
+        "by its canonical id or display name" => "정규 ID 또는 표시 이름으로",
+        "from the custom-provider list" => "custom-provider 목록에서",
+        "by merging the rows that name it" => "이를 지칭하는 행을 병합하여",
+        "ambiguous" => "모호함",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} 제공: {provider}/{model}"
+        }
         "(paste here)" => "(붙여넣기)",
         _ => return None,
     })

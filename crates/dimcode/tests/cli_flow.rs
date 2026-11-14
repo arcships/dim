@@ -9213,7 +9213,9 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
         .get("result")
         .is_some()
     );
-    terminal.write(b"second-key\r\r");
+    // From the API key: Enter moves to the model id prefix, the next to Test +
+    // apply, and the third presses it.
+    terminal.write(b"second-key\r\r\r");
     terminal.until("Provider changed");
     terminal.write(b"\r");
     terminal.until("Connected Provider flow");
@@ -9324,7 +9326,9 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.until("disabled");
     terminal.write(b"Provider flow\r");
     terminal.until("Connect ");
-    terminal.write(b"\r\r");
+    // From the API key: Enter moves to the model id prefix, the next to
+    // Disconnect, and the third presses it.
+    terminal.write(b"\r\r\r");
     terminal.until("Disconnected Provider flow");
     home.kill(&terminal);
     terminal.wait();
@@ -9395,8 +9399,11 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.until("disabled");
     terminal.write(b"Kimi For Coding\r");
     terminal.until("Connect kimi-for-coding");
+    // Up from the API key reaches the Base URL to replace it; from there the
+    // URL's Enter moves to the API key, the key's to the model id prefix, the
+    // next to Test + apply, and the last presses it.
     terminal.write(b"\x1b[A\x15");
-    terminal.write(format!("http://{address}/v1\rfirst-key\r\r").as_bytes());
+    terminal.write(format!("http://{address}/v1\rfirst-key\r\r\r").as_bytes());
     terminal.until("Connected Kimi For Coding");
     assert_eq!(
         events.recv_timeout(Duration::from_secs(8)).unwrap(),

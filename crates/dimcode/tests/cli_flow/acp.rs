@@ -2563,7 +2563,55 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
         default_mode,
         "Startup mode must not change the shared default"
     );
+    let mut manager = Peer::spawn(&mut command);
+    manager.initialize();
+    manager.send(2, "session/delete", json!({"sessionId":id}));
+    let active = manager.response(2);
+    assert_eq!(
+        active["error"]["data"]["nativeAppError"], "session_active",
+        "another connection must not delete an attached Session: {active}"
+    );
+    manager.close();
     peer.close();
+    let mut manager = Peer::spawn(&mut command);
+    manager.send(
+        1,
+        "initialize",
+        json!({"protocolVersion":1,"clientCapabilities":{}}),
+    );
+    let initialized = manager.response(1);
+    assert!(
+        initialized["result"]["agentCapabilities"]["sessionCapabilities"]
+            .get("delete")
+            .is_some(),
+        "{initialized}"
+    );
+    manager.send(2, "session/list", json!({}));
+    let listed = manager.response(2);
+    assert!(
+        listed["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| session["sessionId"] == id),
+        "{listed}"
+    );
+    manager.send(3, "session/delete", json!({"sessionId":id}));
+    let deleted = manager.response(3);
+    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    manager.send(4, "session/list", json!({}));
+    let listed = manager.response(4);
+    let sessions = listed["result"]["sessions"].as_array().unwrap();
+    assert!(sessions.iter().all(|session| session["sessionId"] != id));
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session["sessionId"] == other_id)
+    );
+    manager.send(5, "session/delete", json!({"sessionId":id}));
+    let missing = manager.response(5);
+    assert_eq!(missing["error"]["code"], -32002, "{missing}");
+    manager.close();
     let limited = home
         .command()
         .env_remove("RUST_LOG")
