@@ -63,6 +63,11 @@ pub trait ToolHandler: Send + Sync + 'static {
     /// ToolBinding holds the claim with the request's tool snapshot, so a path
     /// that never dispatches releases it by drop. [`ToolClaim::dispatch`]
     /// receives the call as resolved and approved.
+    ///
+    /// A call is claimed once: Loop claims each call of a batch once, before it
+    /// appends `step/tool-call`. ToolBinding keeps one guard per call id, so a
+    /// second claim that returns a guard replaces the first rather than adding
+    /// one; a claim that returns `None` leaves the first in place.
     fn claim(&self, _: &ToolCall, _: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
         None
     }
