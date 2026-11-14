@@ -2,7 +2,8 @@
 //! the result document and the typed failure line.
 use dim_ocr::{
     Document, DocumentText, HelperArguments, HelperErrorCode, MAX_ARTIFACT_BYTES, MAX_INPUT_BYTES,
-    MAX_PAGE_PIXELS, MAX_PDF_PAGES, OutputMode, Page, PageText, Region, helper_main, read_pages,
+    MAX_PAGE_PIXELS, MAX_PDF_PAGES, OutputMode, Page, PageText, Region, helper_main,
+    page_image_name, read_pages,
 };
 use std::ffi::OsString;
 
@@ -68,6 +69,13 @@ fn arguments_refuse_anything_outside_the_contract() {
             Err(error) => assert_eq!(error.code, HelperErrorCode::InvalidInput, "{case}"),
         }
     }
+}
+
+#[test]
+fn page_images_are_flat_and_numbered_from_one() {
+    assert_eq!(page_image_name(1), "page-0001.png");
+    assert_eq!(page_image_name(42), "page-0042.png");
+    assert_eq!(page_image_name(500), "page-0500.png");
 }
 
 #[test]
