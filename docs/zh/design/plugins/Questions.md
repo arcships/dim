@@ -68,13 +68,23 @@ flowchart LR
 
 ```mermaid
 stateDiagram-v2
-  [*] --> waiting: ask_user 处理函数登记 (branchId, requestId, callId)
+  [*] --> claimed: Loop 调用 claim，在追加 step/tool-call 之前
+  claimed --> waiting: dispatch 保留登记
+  claimed --> [*]: claim 释放（追加被拒、派发前中断、Loop 出错、重载）
   waiting --> [*]: respond（发送回答；删除条目）
   waiting --> [*]: 批次取消令牌触发（删除条目；Cancelled）
   waiting --> [*]: 部分卸载（丢弃发送端；Cancelled capability reloading）
 ```
 
 该部分在互斥锁下维护一张表 `(branchId, requestId, callId) → {questions, sender}`（不用 `StateCell`）。`requestId` 是提出该调用的模型请求：`ToolExecutionContext.requestId`，与其 `step/tool-call` 的 `request_id` 是同一个值。调用 id 会跨请求重复，所以键需要它（§4.3）。只有等待中的调用有条目；谁在锁内删除条目，谁就决定该调用的输出，因此 `respond` 和取消不会同时成功。这张表从不跨代携带，也不重建：条目是对人的 I/O 等待，重载或重启留下的等待中调用由 ToolExecutor 结算（[设计规则](../../../architecture/rust-agent/principles.md) §4 第 9 条；AGENTS.md 第 4 条）。
+
+### 2.1 事实之前的 claim
+
+登记不得晚于展示它的那条 `step/tool-call`。这条事实由 Loop 写入，ToolExecutor 之后才消费它；在处理函数里登记就留下一个窗口：客户端拿着已发布的问题，`respond` 却以 `question_not_pending` 拒绝。因此 `ask_user` 在事实之前 claim：`ToolHandler::claim` 返回一个带 `Drop` 的守卫，`Drop` 删除表条目；Loop 在追加批次前立即创建 claims，ToolBinding 随该请求的工具快照持有它们。
+
+凡是到不了该调用派发的路径，都由守卫覆盖，不需要单独的释放步骤：追加被拒、派发前的 `stop/interrupt`、准入被拒、任务被取消、Loop 出错、能力重载，都随快照的 claims 一起释放。到达派发的 claim 由 ToolExecutor 取出，交给 `ToolClaim::dispatch` 消费；它收到的是解析并准入后的调用，并在回答或取消令牌结束等待前保持登记。没有 claim 的 `execute`——重载后的重建批次——自行 claim，所以处理函数在两种情况下只有一条登记路径。
+
+在 claim 与拒绝之间被接受的回答会先投递、再随 claim 一起丢弃：该调用的结果是拒绝，问题不保持打开。
 
 Timeline 已经有什么，以及为什么不再写别的：
 
@@ -102,9 +112,9 @@ sequenceDiagram
   participant Q as Questions（Session）
   participant C as 客户端
   M->>TE: step/tool-call [ask_user {questions}]
+  Note over Q: 追加之前 claim：加锁，插入 (branchId, requestId, callId) 等待中
   Note over C: session.event step/tool-call：显示提示
-  TE->>Q: execute(call, {branchId, requestId}, cancel)
-  Q->>Q: 校验；加锁：插入 (branchId, requestId, callId) 等待中
+  TE->>Q: dispatch(call, caller, cancel)
   C->>Q: session.question.respond {sessionId, branchId, requestId, callId, answers}
   Q->>Q: 加锁：校验，删除条目，发送回答
   Q-->>C: {}（回答就是该调用的输出）
@@ -114,7 +124,7 @@ sequenceDiagram
   Note over C: session.event step/tool-result：关闭提示
 ```
 
-`{}` 表示回答已交给等待中的调用，除非批次被重载结算（§4.2），它就是该调用的结果。
+登记发生在追加 `step/tool-call` 之前，而不是在调用被派发时（[§2.1](#21-事实之前的-claim)）。因此客户端仅凭已发布批次里画出的问题就能作答。`{}` 表示回答已交给等待中的调用，除非批次被重载结算（§4.2），它就是该调用的结果。
 
 ### 3.2 客户端、挂接与多个客户端
 
@@ -379,7 +389,7 @@ User answered:
 
 | `appError` | 条件 |
 | --- | --- |
-| `question_not_pending` | `(branchId, requestId, callId)` 下没有等待中的条目：处理函数尚未登记、另一个 `respond` 已被接受、调用已被取消，或批次已结算。也包括对已结算调用的迟到回答或拒绝，而后一个调用重用了其调用 id；后一个调用的条目不受影响 |
+| `question_not_pending` | `(branchId, requestId, callId)` 下没有等待中的条目：从未 claim（批次被拒或从未派发）、另一个 `respond` 已被接受、调用已被取消，或批次已结算。也包括对已结算调用的迟到回答或拒绝，而后一个调用重用了其调用 id；后一个调用的条目不受影响 |
 | `invalid_params` `<reason>` | 缺少 `branchId`、`requestId` 或 `callId`；未知或缺少的问题 id、未提供的标签、未设 `multiSelect` 却选了多个标签、未设 `allowCustom` 却带 `custom`、既没选择也没 `custom`、`answers` 与 `declined` 同时出现。条目继续等待 |
 | `service_reloading` | 该部分正在启动或重载 |
 | `unknown_method` | 该 Session 未启用 Questions |
@@ -391,7 +401,9 @@ User answered:
 
 | 步骤 | 机制 |
 | --- | --- |
-| 工具调用 | 校验输入。`SessionConfig.interactive` 为 false 时返回非交互结果。取消令牌已触发或该部分已关闭时返回 Cancelled。加锁：键 `(branchId, requestId, callId)` 已存在则返回重复错误；否则插入带一次性发送端的条目。等待：`select! biased { answer, cancel }` |
+| Claim | Loop 在追加批次之前立即向处理函数要 claim。校验输入。`SessionConfig.interactive` 为 false 时不 claim：该调用返回非交互结果。该部分已关闭时不 claim：该调用返回 Cancelled。加锁：键 `(branchId, requestId, callId)` 已存在则不 claim（该调用返回重复错误）；否则插入带一次性发送端的条目。该条目归 claim 所有 |
+| Dispatch | 从该请求的快照中取出 claim，它收到的是解析并准入后的调用。取消令牌已触发则删除条目并返回 Cancelled。否则等待：`select! biased { answer, cancel }` |
+| Claim 释放 | 删除条目，`respond` 已删除时无操作。凡是到不了 dispatch 的路径都止于这里 |
 | 取消触发 | 加锁。条目还在：删除，返回带中断文本的 Cancelled。条目不在：`respond` 已胜出；取出通道中已有的回答并返回 |
 | Respond | 加锁。params 的 `(branchId, requestId, callId)` 下没有条目 → `question_not_pending`，不触碰其他条目；按条目校验 → `invalid_params`（条目保留）；删除条目，发送回答，回复 `{}` |
 | 卸载 | 置为关闭，清空表并丢弃所有发送端；每个处理函数返回 Cancelled `capability reloading` |

@@ -3151,7 +3151,9 @@
       "crate": "dim_app_server",
       "parent": "dim_app_server::provider",
       "file": "crates/dim-app-server/src/provider/preferences.rs",
-      "unexpandedMacros": []
+      "unexpandedMacros": [
+        "tracing::warn"
+      ]
     },
     {
       "id": "dim_app_server::provider::remote",
@@ -9486,11 +9488,13 @@
         "path ContextModelHost",
         "path HostError::Cancelled",
         "path PrepareModelHost",
+        "path ToolExecutionContext",
         "path crate::host::ModelSettings",
         "use crate::host::CompactionStrategyHost",
         "use crate::host::ContextModelHost",
         "use crate::host::HostError",
-        "use crate::host::PrepareModelHost"
+        "use crate::host::PrepareModelHost",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -12732,7 +12736,6 @@
         "path HookResult::Success",
         "path HookRun",
         "path HooksRuntime",
-        "path Pending::default",
         "path PromptDecision::Context",
         "path approval_point",
         "path contribution_of",
@@ -17146,7 +17149,9 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path ModelSettings",
-        "use crate::host::ModelSettings"
+        "path ToolExecutionContext",
+        "use crate::host::ModelSettings",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -17165,10 +17170,12 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolRegistry",
         "path ToolSourceSet",
         "path crate::tool_registry::is_contributed",
+        "use crate::tool_registry::ToolClaim",
         "use crate::tool_registry::ToolContribution",
         "use crate::tool_registry::ToolRegistry",
         "use crate::tool_registry::ToolSourceSet"
@@ -17271,6 +17278,7 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_types::tool",
       "references": [
+        "path ToolCall",
         "path ToolDefinition",
         "path tool"
       ]
@@ -17857,7 +17865,9 @@
         "mod background",
         "path BackgroundExecPlugin::new",
         "path background::BackgroundExec",
+        "path background::OUTPUT_PAGE_BYTES",
         "path background::OutputPageError::Closed",
+        "path background::OutputPageError::InvalidLimit",
         "path background::OutputPageError::Read",
         "path background::OutputPageError::Unavailable",
         "path background::OutputPageError::Unknown",
@@ -18167,6 +18177,13 @@
       "to": "dim_agent_types::tool",
       "references": [
         "path ToolResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::background::testing",
+      "to": "dim_agent_capabilities::workspace_tools::background",
+      "references": [
+        "path super::BackgroundExec"
       ]
     },
     {
@@ -19238,10 +19255,12 @@
       "from": "dim_agent_questions",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolHandler",
         "path ToolRegistry",
         "path definition",
+        "use dim_agent_capabilities::tool_registry::ToolClaim",
         "use dim_agent_capabilities::tool_registry::ToolContribution",
         "use dim_agent_capabilities::tool_registry::ToolHandler",
         "use dim_agent_capabilities::tool_registry::ToolRegistry",
@@ -29760,6 +29779,7 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure",
+        "path preferences::effective",
         "path preferences::restore_reasoning",
         "path preferences::restore_service_tier"
       ]
@@ -29848,9 +29868,7 @@
       "from": "dim_app_server::provider::auxiliary",
       "to": "dim_agent_types::model",
       "references": [
-        "path ModelPreferences::default",
-        "path model",
-        "use super::ModelPreferences"
+        "path model"
       ]
     },
     {
@@ -30535,6 +30553,8 @@
       "to": "dim_app_server::provider",
       "references": [
         "path ProviderService",
+        "path Saved::Apply",
+        "path Saved::Withhold",
         "path failure",
         "path provider_protocol"
       ]
@@ -30546,13 +30566,6 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::startup",
-      "to": "dim_app_server::provider::view",
-      "references": [
-        "path view"
       ]
     },
     {
@@ -30955,6 +30968,13 @@
     },
     {
       "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::workspace_tools::background",
+      "references": [
+        "path dim_agent_capabilities::workspace_tools::background::BackgroundExec"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path AgentBuilder",
@@ -31015,6 +31035,13 @@
         "path ServerError::Configuration",
         "use crate::Result",
         "use crate::ServerError"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_app_server::mcp::session",
+      "references": [
+        "path crate::mcp::McpSession"
       ]
     },
     {
@@ -34363,8 +34390,7 @@
         "path session_host::LimitTarget::Missing",
         "path session_host::LimitTarget::Model",
         "path session_host::clear_saved_model_preferences",
-        "path session_host::declare_model_limits",
-        "path session_host::saved_model_preferences"
+        "path session_host::declare_model_limits"
       ]
     },
     {
@@ -37671,6 +37697,7 @@
       "from": "dim_cli::plugin_command::tests",
       "to": "dim_cli::plugin_command",
       "references": [
+        "path list_line",
         "path parse",
         "use super::list_line",
         "use super::parse"

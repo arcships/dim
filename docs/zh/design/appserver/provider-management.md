@@ -214,12 +214,16 @@ create/update 相同的 URL/header/network 校验。测试修改后的 base URL 
 
 Provider 持久保存的偏好供客户端读取；[F3 客户端](../../../design/model-configuration.md) 把偏好和其所属的**完整 `{providerId,modelId}`** 一起传给既有
 session.create/session.model.update。指定目标不可用就报错，不去掉目标重试或回退其他模型。
-服务端不自动应用保存偏好；显式目标省略偏好仍从目录默认开始，包括模型声明的默认推理档位、
-服务层级和推理摘要；无目标 F3 只改已采用模型的
+请求没有声明的字段，由服务端按该 `{providerId,modelId}` 已保存的值补齐：
+session.create、session.model.preview 和带目标的 session.model.update 逐个字段取值，
+先是客户端声明的值，再是该模型保存的值，最后是模型声明的默认值。客户端声明的字段优先。
+模型已不再接受的保存值只丢弃该字段，改用声明的默认值，并由服务端记一条警告；
+客户端声明的值被拒仍使采用失败。无目标 F3 只改已采用模型的
 指定参数。哪些目录声明会被应用、其余为何只描述模型，见
 [模型配置规则](../../../design/model-configuration.md#model-parameters)。
-`/fast` 仍只修改当前 Session；保存 serviceTier 是持久 fast/tier 选择，但只有客户端
-显式传入才生效。其他消费模型不自动继承聊天偏好。
+`/fast` 仍只修改当前 Session；保存 serviceTier 与保存推理档位一样由服务端应用。
+sessions.launch——Scheduler、Workflow 及其他插件启动工作的方式——不是客户端 Session：
+它保留目录默认值，不继承聊天偏好；其他消费模型同样不继承。
 
 用量复用已交付的 `account.usage {providerId} -> Usage`：原生 account namespace 转发
 一次调用到可选包既有 usage 方法。[Usage DTO](../../../../crates/dim-app-server/README.md)
@@ -723,7 +727,7 @@ bundled reseed 遇到这种冲突不能导致 seed 或 Provider 激活失败。f
 | 改动 | 对已采用 Session 的影响 |
 | --- | --- |
 | 凭据、base URL、headers、代理、超时 | 下次请求解析当前连接；已发 I/O 保持其准入连接 |
-| 模型 descriptor/capability、持久偏好 | 已采用快照不变，下次显式采用生效；偏好还需客户端显式传入 |
+| 模型 descriptor/capability、持久偏好 | 已采用快照不变，下次显式采用生效；保存的偏好届时由服务端应用，请求声明了则以声明为准 |
 | 禁用/删除 Provider 或模型 | 下次请求/采用返回不可用/不存在，不强制切换或跨写引用 |
 | 声明上限，或移除其来源 | 已采用 Session 保留快照。出现未声明的上限时，下一次请求在凭据或网络 I/O 之前失败并指出缺失项；两项都声明后，重新选择该模型即采用（§3.5） |
 | refresh 或 endpoint override 改变有效路由 | 已采用路由标记不匹配时失败，提示重新选择；无标记 Session 在下次请求使用当前路由，两种修改均可能破坏协议相关历史，或丢失按旧协议映射的 effort/tier 选项 |

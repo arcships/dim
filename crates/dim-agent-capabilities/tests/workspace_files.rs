@@ -681,7 +681,7 @@ async fn read_pages_long_files() {
         .await;
     assert_eq!(
         ok(&page),
-        "2\tb\n3\tc\n\nFile is larger than the safe read budget for one response. Showing lines 2-3 of 4. Continue with read({ path: \"lines.txt\", offset: 4 })."
+        "2\tb\n3\tc\n\nThe requested limit was reached; a larger limit returns more. Showing lines 2-3 of 4. Continue with read({ path: \"lines.txt\", offset: 4 })."
     );
     let beyond = workspace
         .call(&reads, "read", json!({ "path": "lines.txt", "offset": 9 }))
@@ -3022,4 +3022,104 @@ mod toolhost {
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
+}
+
+#[tokio::test]
+async fn read_names_what_ended_the_window() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let body: String = (0..2500).map(|i| format!("line {i}\n")).collect();
+    workspace.put("big.txt", body.as_bytes());
+    let requested = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "big.txt", "offset": 1, "limit": 120 }),
+        )
+        .await;
+    assert!(
+        ok(&requested).ends_with(
+            "120\tline 119\n\nThe requested limit was reached; a larger limit returns more. Showing lines 1-120 of 2500. Continue with read({ path: \"big.txt\", offset: 121 })."
+        ),
+        "{}",
+        ok(&requested)
+    );
+    let defaulted = workspace.read(&reads, "big.txt").await;
+    assert!(
+        ok(&defaulted).ends_with(
+            "2000\tline 1999\n\nThe 2000-line default window was reached; a larger limit returns more. Showing lines 1-2000 of 2500. Continue with read({ path: \"big.txt\", offset: 2001 })."
+        ),
+        "{}",
+        ok(&defaulted)
+    );
+    // Offloaded, so the sentence is read from the output file.
+    let wide: String = (0..2000)
+        .map(|i| format!("line {i} {}\n", "x".repeat(190)))
+        .collect();
+    workspace.put("wide.txt", wide.as_bytes());
+    let budgeted = workspace.read(&reads, "wide.txt").await;
+    assert_eq!(structured(&budgeted)["offloaded"], true);
+    let full = fs::read_to_string(structured(&budgeted)["outputPath"].as_str().unwrap()).unwrap();
+    assert!(
+        full.contains(
+            "\n\nFile is larger than the safe read budget for one response. Showing lines 1-"
+        ),
+        "the budget sentence names the span it showed"
+    );
+    assert!(
+        full.contains("of 2000. Continue with read({ path: \"wide.txt\", offset: "),
+        "the budget case keeps the continuation hint"
+    );
+    let ordered = workspace
+        .call(&reads, "read", json!({ "path": "wide.txt", "limit": 2000 }))
+        .await;
+    let full = fs::read_to_string(structured(&ordered)["outputPath"].as_str().unwrap()).unwrap();
+    assert!(
+        full.contains("\n\nFile is larger than the safe read budget for one response."),
+        "the budget sentence wins over the caller's limit"
+    );
+    assert!(
+        !full.contains("requested limit"),
+        "the budget ended the window, not the limit"
+    );
+    let complete = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "big.txt", "offset": 1, "limit": 2500 }),
+        )
+        .await;
+    assert!(
+        !ok(&complete).contains("Continue with read"),
+        "{}",
+        ok(&complete)
+    );
+    assert!(!ok(&complete).contains("budget"), "{}", ok(&complete));
+}
+
+#[tokio::test]
+async fn read_names_the_maximum_limit() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let body: String = (1..=10_001).map(|i| format!("line {i}\n")).collect();
+    workspace.put("max.txt", body.as_bytes());
+    let result = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "max.txt", "limit": 10_000 }),
+        )
+        .await;
+    assert_eq!(structured(&result)["offloaded"], true);
+    let full = fs::read_to_string(structured(&result)["outputPath"].as_str().unwrap()).unwrap();
+    let tail: String = full
+        .chars()
+        .skip(full.chars().count().saturating_sub(240))
+        .collect();
+    assert!(
+        full.ends_with(
+            "\n\nThe maximum limit of 10000 lines was reached. Showing lines 1-10000 of 10001. Continue with read({ path: \"max.txt\", offset: 10001 })."
+        ),
+        "{tail}"
+    );
 }

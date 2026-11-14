@@ -1089,8 +1089,9 @@ enum Judged {
     /// the run is a failed run, the same event as the scenario runner's
     /// `call_failed`. The evaluation goes on (ContextCompaction §13.4).
     Failed(String),
-    /// The judge answered and its reply holds no verdict list: the run is
-    /// unjudged, and enters none of its arm's probe rates.
+    /// The judge answered and gave no usable verdicts: its reply holds no
+    /// verdict list, or a verdict that does not read. The run is unjudged, and
+    /// enters none of its arm's probe rates.
     Unreadable(String),
 }
 impl Judged {
@@ -1188,7 +1189,7 @@ async fn judge_run(
 enum JudgeError {
     /// A call failed: a window overflow, a transport or an HTTP error.
     Call(String),
-    /// The judge answered, and the reply holds no verdict list.
+    /// The judge answered, and its reply holds no usable verdict list.
     Unreadable(String),
 }
 
@@ -1247,8 +1248,10 @@ async fn judge_probes(
             }
         }
     };
-    let parsed = parse_judgements(&reply).map_err(|_| {
-        JudgeError::Unreadable(format!("the judge answered with no verdict list: {reply}"))
+    let parsed = parse_judgements(&reply).map_err(|error| {
+        JudgeError::Unreadable(format!(
+            "the judge answered with no usable verdicts: {error}\n{reply}"
+        ))
     })?;
     Ok(parsed
         .into_iter()
@@ -1334,19 +1337,21 @@ async fn collected(mut stream: ModelStream) -> std::result::Result<Completion, H
     })
 }
 
-/// The verdicts of a judge reply: the first JSON array that parses as a
-/// verdict list, or else the first run of verdict objects, one per line.
-/// Prose, a fenced block or a bracketed lead-in before the verdicts must not
-/// hide them, and a bracket inside a quoted verdict is part of the JSON, not
-/// a boundary. A reply with neither says why it could not be read.
+/// The verdicts of a judge reply: the first array whose elements are all JSON
+/// objects, else the first run of verdict objects, one per line. An element of
+/// that array that does not read fails the whole reply, naming its own probe;
+/// any other array is skipped, and `[]` is no verdicts.
 pub(crate) fn parse_judgements(text: &str) -> std::result::Result<Vec<Judgement>, String> {
     let mut array_error = None;
     for (start, _) in text.match_indices('[') {
         match serde_json::Deserializer::from_str(&text[start..])
-            .into_iter::<Vec<Judgement>>()
+            .into_iter::<Vec<serde_json::Value>>()
             .next()
         {
-            Some(Ok(judged)) => return Ok(judged),
+            Some(Ok(values)) if values.iter().all(serde_json::Value::is_object) => {
+                return judgements(values);
+            }
+            Some(Ok(_)) => {}
             Some(Err(error)) => {
                 array_error.get_or_insert(error.to_string());
             }
@@ -1357,6 +1362,23 @@ pub(crate) fn parse_judgements(text: &str) -> std::result::Result<Vec<Judgement>
         return Ok(judged);
     }
     Err(array_error.unwrap_or_else(|| "the reply holds no verdict object".to_owned()))
+}
+
+/// One verdict per parsed object, each naming its own probe and the value that
+/// failed.
+fn judgements(values: Vec<serde_json::Value>) -> std::result::Result<Vec<Judgement>, String> {
+    values
+        .into_iter()
+        .map(|value| {
+            let id = value
+                .get("id")
+                .and_then(|id| id.as_str())
+                .unwrap_or("<no id>")
+                .to_owned();
+            serde_json::from_value::<Judgement>(value)
+                .map_err(|error| format!("probe `{id}` carries no readable verdict: {error}"))
+        })
+        .collect()
 }
 
 /// The first run of verdict objects in a reply, one per line: the objects
@@ -1990,6 +2012,20 @@ mod tests {
         assert_eq!(judged[0].verdict, Verdict::Present);
     }
 
+    #[test]
+    fn a_bracketed_lead_in_does_not_hide_the_verdicts() {
+        for reply in [
+            "See [1] below.\n[{\"id\": \"ran\", \"verdict\": \"present\", \"quote\": \"turn/end\"}]",
+            "See [\"draft\"] below.\n\
+             [{\"id\": \"ran\", \"verdict\": \"present\", \"quote\": \"turn/end\"}]",
+        ] {
+            let judged = parse_judgements(reply).unwrap();
+            assert_eq!(judged.len(), 1, "{reply}");
+            assert_eq!(judged[0].id, "ran");
+        }
+        assert!(parse_judgements("[]").unwrap().is_empty());
+    }
+
     /// The verdicts are read from one object per line, with prose around the
     /// run and a brace in the prose before it.
     #[test]
@@ -2017,9 +2053,15 @@ mod tests {
             .err()
             .expect("a reply with no verdict object");
         assert_eq!(error, "the reply holds no verdict object");
-        let error = parse_judgements(r#"[{"id": "ran", "verdict": "maybe"}]"#)
-            .err()
-            .expect("an array of no verdict object");
+        let error = parse_judgements(
+            r#"[{"id": "ran", "verdict": "present"}, {"id": "floods", "verdict": "maybe"}]"#,
+        )
+        .err()
+        .expect("an array of no verdict object");
+        assert!(
+            error.contains("probe `floods` carries no readable verdict"),
+            "{error}"
+        );
         assert!(error.contains("unknown variant `maybe`"), "{error}");
     }
 
@@ -2287,6 +2329,63 @@ mod tests {
         assert_eq!(metrics.judged.get("case").copied().unwrap_or(0), 0);
     }
 
+    /// A malformed verdict array leaves the run unjudged, and the error the
+    /// report writes under `judgeError` is the parser's own: it names the
+    /// probe that did not read (model-prompts §8.1).
+    #[tokio::test]
+    async fn a_malformed_verdict_array_reaches_the_report_with_its_parse_error() {
+        const MALFORMED: &str =
+            r#"[{"id": "ran", "verdict": "present"}, {"id": "floods", "verdict": "maybe"}]"#;
+        struct Malformed;
+        impl ModelDriver for Malformed {
+            fn invoke(
+                &self,
+                _: Arc<ModelRequest>,
+                _: ModelConnection,
+                _: CancellationToken,
+            ) -> HostFuture<'_, ModelStream> {
+                Box::pin(async move {
+                    Ok(Box::pin(futures_util::stream::iter(vec![
+                        Ok(ModelChunk::MessageStart {
+                            message_id: "reply".into(),
+                        }),
+                        Ok(ModelChunk::Text(MALFORMED.into())),
+                        Ok(ModelChunk::MessageStop {
+                            message_id: "reply".into(),
+                            reason: ModelStopReason::EndTurn,
+                        }),
+                    ])) as ModelStream)
+                })
+            }
+        }
+        let case = prepared("case", vec![probe("floods", ProbeKind::Fact)]);
+        let mut no_temperature = false;
+        let judged = judge_run(
+            &Arc::new(ModelHost(Arc::new(Malformed))),
+            &Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            &fake_selection(),
+            &case,
+            &completed(),
+            &CancellationToken::new(),
+            &mut no_temperature,
+        )
+        .await;
+        assert!(
+            !judged.failed_call(),
+            "an answer that does not read is unjudged, not a failed call"
+        );
+        let error = judged
+            .error()
+            .expect("an unjudged run carries the error the report writes");
+        let parse_error = parse_judgements(MALFORMED)
+            .err()
+            .expect("the verdict array does not read");
+        assert!(
+            error.contains(&parse_error),
+            "the report carries the parser's own error:\n{error}"
+        );
+    }
+
     /// A reply that answers some probes only leaves the run unjudged too: the
     /// probes it did answer stay out of the arm's rates, because the run's
     /// evidence is that one reply (model-prompts §8.1).
@@ -2471,7 +2570,7 @@ mod tests {
     /// p-value under the same test (ContextCompaction §13.4).
     #[test]
     fn the_multi_arm_table_reads_the_decisions_against_the_baseline() {
-        let reasoning = |id: &str, reasoning: SummaryReasoning| {
+        let reasoning = |id: &str, reasoning: SummaryReasoning, metrics: Metrics| {
             (
                 Arm {
                     id: id.into(),
@@ -2480,22 +2579,29 @@ mod tests {
                     prompt: None,
                     length_sentence: None,
                 },
-                level(20),
+                metrics,
             )
         };
         let results = vec![
-            reasoning("reasoning-inherit", SummaryReasoning::Inherit),
-            reasoning("reasoning-off", SummaryReasoning::Off),
-            reasoning("reasoning-low", SummaryReasoning::Low),
+            reasoning("reasoning-inherit", SummaryReasoning::Inherit, level(20)),
+            reasoning(
+                "reasoning-off",
+                SummaryReasoning::Off,
+                Metrics {
+                    facts: Counts::new(10, 20),
+                    ..level(20)
+                },
+            ),
+            reasoning("reasoning-low", SummaryReasoning::Low, level(20)),
         ];
         let text = against_baseline(&results, 20, &kinds());
         assert!(text.contains("against `reasoning-inherit`"), "{text}");
         assert!(
-            text.contains("| fact recall | 20/20 (1.000) | 20/20 (1.000) |"),
-            "{text}"
+            text.contains("| fact recall | 20/20 (1.000) | 10/20 (0.500) | 0.500 |"),
+            "the row carries the arm's own counts and loss: {text}"
         );
         assert!(
-            text.contains("`reasoning-off` against `reasoning-inherit` passes"),
+            text.contains("`reasoning-off` against `reasoning-inherit` fails: fact recall falls"),
             "{text}"
         );
         assert!(
@@ -2507,29 +2613,27 @@ mod tests {
     /// The report states the candidate texts' own token cost beside the
     /// scores, counted as the product counts the request each text travels in
     /// (model-prompts §8.1): the prompt, and the length sentence too when one
-    /// is given.
+    /// is given. The expectation is a literal: the counter reads the
+    /// serialized request at four bytes per token, and 394 ASCII characters
+    /// plus the two quotes of the JSON string and the four bytes of the absent
+    /// tool list are exactly 400 bytes, so 100 tokens. The 27-character length
+    /// sentence serializes to 29 bytes, `{target}` and all, which is 7.25
+    /// tokens and so 8.
     #[test]
     fn the_report_states_the_candidate_texts_token_cost() {
         let model = ModelId {
             provider_id: "provider".into(),
             model_id: "model".into(),
         };
-        let prompt = "You write summaries of coding sessions.";
+        let prompt = "y".repeat(394);
+        assert_eq!(
+            candidate_cost_line(&model, Some(&prompt), None),
+            "\ncandidate tokens: prompt 100\n"
+        );
         let sentence = LengthSentence::new("Keep it to {target} tokens.").unwrap();
         assert_eq!(
-            candidate_cost_line(&model, Some(prompt), Some(&sentence)),
-            format!(
-                "\ncandidate tokens: prompt {:.0}, length sentence {:.0}\n",
-                text_tokens(&model, prompt),
-                text_tokens(&model, sentence.as_str())
-            )
-        );
-        assert_eq!(
-            candidate_cost_line(&model, Some(prompt), None),
-            format!(
-                "\ncandidate tokens: prompt {:.0}\n",
-                text_tokens(&model, prompt)
-            )
+            candidate_cost_line(&model, Some(&prompt), Some(&sentence)),
+            "\ncandidate tokens: prompt 100, length sentence 8\n"
         );
         assert_eq!(candidate_cost_line(&model, None, None), "");
     }

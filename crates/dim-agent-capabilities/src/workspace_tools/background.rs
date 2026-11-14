@@ -50,29 +50,64 @@ pub enum StartError {
     Termination(Box<ToolResult>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TaskError {
     /// Required task facts could not be read.
-    Read(AgentError),
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
     /// No matching task or live output on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
 }
 
 /// Why one paged read of a task's registered output file answered nothing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum OutputPageError {
     /// Required task facts could not be read.
-    Read(AgentError),
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
     /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// The registered output file is gone or unreadable: it was cleaned, or
     /// the task's Session was deleted.
+    #[error("the task's output file is no longer available")]
     Unavailable,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
+    /// The page budget was zero.
+    #[error("limit must be at least 1")]
+    InvalidLimit,
 }
+
+/// Why waiting for a task's end answered nothing.
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitError {
+    /// Required task facts could not be read.
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
+    /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
+    Unknown,
+    /// This instance was unloaded, or the task's record was released.
+    #[error("BackgroundExec is closed")]
+    Closed,
+    /// The wait's own timeout elapsed first.
+    #[error("the task did not end before the timeout")]
+    Timeout,
+}
+
+/// Default page and largest page the paged read serves; a caller's `limit`
+/// clamps to the latter.
+pub const OUTPUT_PAGE_BYTES: u64 = 1024 * 1024;
+pub const OUTPUT_PAGE_BYTES_MAX: u64 = 4 * 1024 * 1024;
 
 /// One page of a task's registered output file, as
 /// `session.exec.output.page` answers it.
@@ -146,9 +181,14 @@ pub struct BackgroundExec {
     state: Mutex<State>,
 }
 
+#[rutis::service]
 impl BackgroundExec {
     /// Records the task with `exec/started` and supervises `process`; on
     /// failure the process is terminated and reaped before returning.
+    ///
+    /// Starting needs the live process, so it is the exec tool's own
+    /// operation; the `backgroundExec` face serves the task id afterwards.
+    #[service(skip)]
     pub async fn start(
         self: &Arc<Self>,
         request: StartRequest,
@@ -263,8 +303,9 @@ impl BackgroundExec {
         Ok(task_id)
     }
 
-    /// Reads the live capture without reconstructing a resource from history.
-    pub async fn output(&self, task_id: &str) -> Result<String, TaskError> {
+    /// Reads the live capture without reconstructing a resource from history:
+    /// what `backgroundExec.output` answers.
+    pub async fn output(&self, task_id: String) -> Result<String, TaskError> {
         let output = {
             let state = self.state.lock().unwrap();
             if state.closed {
@@ -272,19 +313,36 @@ impl BackgroundExec {
             }
             state
                 .tasks
-                .get(task_id)
+                .get(&task_id)
                 .and_then(|task| task.output.clone())
                 .ok_or(TaskError::Unknown)?
         };
         Ok(output.preview().await)
     }
 
-    /// Reads one page of the task's registered output file, by byte offset.
+    /// Reads one page of the task's registered output file, by byte offset:
+    /// what `backgroundExec.outputPage` answers. `limit` rejects 0 and clamps
+    /// to [`OUTPUT_PAGE_BYTES_MAX`]; a dropped call drops the read.
+    pub async fn output_page(
+        &self,
+        task_id: String,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<OutputPage, OutputPageError> {
+        if limit == 0 {
+            return Err(OutputPageError::InvalidLimit);
+        }
+        let limit = limit.min(OUTPUT_PAGE_BYTES_MAX) as usize;
+        self.page(&task_id, cursor, limit).await
+    }
+
+    /// The paged read behind [`Self::output_page`].
+    ///
     /// The file is the read's only source, so a running task, an ended task
     /// and a task rebuilt after an unload answer alike; the live capture and
     /// the result preview are not consulted. The file is append-only, so a
     /// cursor the method handed out always names a byte that never changes.
-    pub async fn output_page(
+    async fn page(
         &self,
         task_id: &str,
         cursor: u64,
@@ -402,16 +460,66 @@ impl BackgroundExec {
         })
     }
 
+    /// Waits until the task ends, or `timeout_ms` elapses: what
+    /// `backgroundExec.wait` answers. An ended task answers its record at
+    /// once; a dropped call releases the wait.
+    pub async fn wait(&self, task_id: String, timeout_ms: u64) -> Result<ExecEndedData, WaitError> {
+        let current = {
+            let state = self.state.lock().unwrap();
+            if state.closed {
+                return Err(WaitError::Closed);
+            }
+            state.tasks.get(&task_id).map(|task| task.ended.subscribe())
+        };
+        let Some(mut ended) = current else {
+            let through = self.timeline.committed();
+            if self
+                .started(&task_id, through)
+                .await
+                .map_err(WaitError::Read)?
+                .is_none()
+            {
+                return Err(WaitError::Unknown);
+            }
+            let ended = self
+                .terminal(&task_id, through)
+                .await
+                .map_err(WaitError::Read)?;
+            if self.state.lock().unwrap().closed {
+                return Err(WaitError::Closed);
+            }
+            return ended.ok_or_else(|| {
+                WaitError::Read(AgentError::fault(
+                    "BackgroundExec",
+                    "owned task has no terminal or live resource",
+                ))
+            });
+        };
+        if let Some(done) = ended.borrow().clone() {
+            return Ok(done);
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            ended.wait_for(Option::is_some),
+        )
+        .await
+        {
+            Ok(Ok(done)) => Ok(done.clone().expect("waited for Some")),
+            Ok(Err(_)) => Err(WaitError::Closed),
+            Err(_) => Err(WaitError::Timeout),
+        }
+    }
+
     /// Stops a task: cancels it while running, so it ends `cancelled` and
     /// does not wake. Returns once its `exec/ended` is dispatched; a task that
     /// already ended keeps its result and its wake.
-    pub async fn stop(&self, task_id: &str) -> Result<ExecEndedData, TaskError> {
+    pub async fn stop(&self, task_id: String) -> Result<ExecEndedData, TaskError> {
         let current = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
                 return Err(TaskError::Closed);
             }
-            state.tasks.get_mut(task_id).map(|task| {
+            state.tasks.get_mut(&task_id).map(|task| {
                 if task.ended.borrow().is_none() {
                     task.cancel.cancel();
                 }
@@ -420,7 +528,7 @@ impl BackgroundExec {
         };
         let Some(mut ended) = current else {
             if self
-                .started(task_id, self.timeline.committed())
+                .started(&task_id, self.timeline.committed())
                 .await
                 .map_err(TaskError::Read)?
                 .is_none()
@@ -428,7 +536,7 @@ impl BackgroundExec {
                 return Err(TaskError::Unknown);
             }
             let ended = self
-                .terminal(task_id, self.timeline.committed())
+                .terminal(&task_id, self.timeline.committed())
                 .await
                 .map_err(TaskError::Read)?;
             if self.state.lock().unwrap().closed {
@@ -990,6 +1098,13 @@ pub mod testing {
         sync::Mutex,
     };
     use tokio::sync::oneshot;
+
+    /// Counts active completion watches for an existing task.
+    pub fn completion_watches(background: &super::BackgroundExec, task_id: &str) -> usize {
+        background.state.lock().unwrap().tasks[task_id]
+            .ended
+            .receiver_count()
+    }
 
     type Hold = (PathBuf, oneshot::Sender<()>, oneshot::Receiver<()>);
     static HOLDS: Mutex<Vec<Hold>> = Mutex::new(Vec::new());

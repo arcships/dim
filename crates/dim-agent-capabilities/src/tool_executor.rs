@@ -593,6 +593,7 @@ async fn execute(
         Ok(tool) => tool,
         Err(message) => return Ok(ToolResult::error(message)),
     };
+    let claim = binding.take_claim(&context.request_id, &call.id);
     let risk = tool.handler.risk(&call).or(tool.definition.risk.as_deref());
     let call = if risk == Some("write_filesystem") {
         tool.handler.resolve_write(call, cancel.clone()).await?
@@ -616,7 +617,10 @@ async fn execute(
             cancel.clone(),
         )
         .await?;
-    tool.handler.execute(call, context, cancel).await
+    match claim {
+        Some(claim) => claim.dispatch(call, context, cancel).await,
+        None => tool.handler.execute(call, context, cancel).await,
+    }
 }
 
 struct OpenBatch {

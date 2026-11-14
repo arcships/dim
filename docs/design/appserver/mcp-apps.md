@@ -407,6 +407,33 @@ No code is borrowed from admission: the daemon never refuses a view's call becau
 or an approval, so it has nothing to report about one. `mcp_app_refused` and `mcp_app_unknown` replace
 `operation_interrupted` for these methods (D12).
 
+### 4.4 The `mcpSession` data face
+
+These four methods expose the Session part's own service. That service is the data face
+`mcpSession` ([service faces §3.4](../service-faces.md#34-对象句柄拆成操作加-id)); the typed
+`McpSession` serves it and stays the Rust binding.
+
+| Method | Positional arguments | Reply |
+| --- | --- | --- |
+| `state` | `()` | `{servers: Record<string, McpSourceState>, catalogError?, closed}` |
+| `refresh` | `()` | `null` |
+| `widget` | `(published)` | `Widget` (§4.1) |
+| `call` | `(server, tool, arguments)` | `CallResult` (§4.2) |
+
+`McpSourceState` is tagged by `state`: `disabled`, `connecting`, `ready` with `version`, `failed` and
+`disconnected` with `message`, and `authRequired` with `expired`. `state` is the snapshot
+`session.mcp` projects, and `refresh` is `session.mcp.refresh`'s rediscovery request; both are owned
+with the MCP OAuth flow ([MCP OAuth](mcp-oauth.md#92-additions-to-existing-replies)). `widget` and
+`call` are the two methods above, unchanged. `subscribe` returns a watch and stays Rust-only.
+
+Errors are the owner's own variants as `{code, message}`: `Absent`, `Unsupported`, `NotCallable`,
+`UnknownServer`, `Unavailable`, `Refused` and `Unknown` for `widget` and `call`, and `McpError`'s
+variants for `refresh`. The RPC boundary maps `widget` and `call` errors to the `appError` codes
+in §4.3; `refresh` uses the MCP management error mapping. The face adds no
+second authorization, and the admission rules above stay at the RPC boundary. Cancellation is the
+caller dropping the call: a dropped `widget` cancels the document read and a dropped `call` cancels
+the server request the connection already holds.
+
 ## 5. Security boundary
 
 A view is third-party HTML running in a sandbox the daemon does not control. Everything it may reach
@@ -487,8 +514,9 @@ through this contract is fixed by one binding, and nothing else is reachable.
   the tool name a Session publishes is unchanged, so no client's naming breaks.
 - No Timeline event is added or changed. In particular the `tool/call` and `tool/result` facts, and the
   shape of a tool result, stay as they are: the tool result's `_meta` is not persisted.
-- No new plugin, part, service, port or notification; the MCP Session part, its connections and the
-  assembly are untouched.
+- No new plugin, part, port or notification; the MCP Session part serves its own data face
+  `mcpSession` (§4.4), which these two methods project, and its connections and the assembly are
+  untouched.
 
 ## 8. Events and state
 
@@ -524,10 +552,15 @@ Flow level, in `crates/dim-app-server/tests`, reusing the Node MCP fixtures unde
 
 | File | What it protects |
 | --- | --- |
-| `mcp_session_flow.rs` | A widget tool's document is mounted from its published tool name and names its entry and the server's tool; a tool that declares no resource is `mcp_app_absent`; a document that is not a `ui://` `text/html;profile=mcp-app` or is larger than the limit is `mcp_app_unsupported`; a tool whose visibility is `["app"]` is absent from the Session's tool list but answers `session.mcp.app.call`, and one whose visibility is `["model"]` answers `mcp_app_not_callable`; a call naming an entry the Session does not hold answers `mcp_unknown_server`; a mount read and a call on a disabled entry both answer `mcp_unavailable`, while a name the Session never held is `mcp_app_absent`; a call the fixture received answers `mcp_app_unknown` when the Session closes before the answer arrives; neither reply carries a header value, a bearer token, an OAuth token or an endpoint URL; a replaced connection generation changes the entry's `version`, so the mounted document is re-read |
+| `mcp_session_flow.rs` | A widget tool's document is mounted from its published tool name and names its entry and the server's tool; a tool that declares no resource is `mcp_app_absent`; a document that is not a `ui://` `text/html;profile=mcp-app` or is larger than the limit is `mcp_app_unsupported`; a tool whose visibility is `["app"]` is absent from the Session's tool list but answers `session.mcp.app.call`, and one whose visibility is `["model"]` answers `mcp_app_not_callable`; a call naming an entry the Session does not hold answers `mcp_unknown_server`; a mount read and a call on a disabled entry both answer `mcp_unavailable`, while a name the Session never held is `mcp_app_absent`; a call the fixture received answers `mcp_app_unknown` when the Session closes before the answer arrives; neither reply carries a header value, a bearer token, an OAuth token or an endpoint URL; a replaced connection generation changes the entry's `version`, so the mounted document is re-read; abandoning either data-face `widget` or `call` sends MCP cancellation and permits a subsequent request |
+| `transport_flow/shell_input.rs` | `node_object_faces_use_session_and_branch_owners_across_the_bridge` resolves both data faces through the real Node loader and verifies owner operations and Session isolation |
 | `transport_flow/product_protocol.rs` | The wire contract: both methods are advertised in `hello.features`, refused with `local_transport_required` on a bare WebSocket, and answer the error codes of §4.3; a Session namespace equal to `session.mcp.app.widget`, `session.mcp.app.call`, or containing or lying inside either, is refused at registration because both are exact built-ins; a view's call leaves no `tool/call`, `tool/start` or `tool/result` fact and does not enter the next turn's context; a `read-only` Session's view call is not refused by the daemon |
 | `transport_flow/web_entry.rs` | The authenticated loopback web entry is served both names, so a view's request reaches its refusal instead of `local_transport_required` |
 | `mcp_http_flow.rs` (Node, ignored) | The official SDK's tool `_meta.ui`, its `ui://` document with `_meta.ui`, and a result's `_meta` reach the daemon, so the descriptor and the document a mount read resolves are the specification's own |
+
+`mcp_session_flow.rs` also calls the `mcpSession` face against the typed service:
+`mcp_session_face_answers_as_the_typed_service` compares state, the mounted document, the call
+result and the error codes.
 
 Two branches have no flow test. `mcp_app_refused` fires only when the connection fails between the
 availability check and the hand-off — `peer()` or the send fails while the entry still reads as usable —

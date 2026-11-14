@@ -1237,7 +1237,7 @@ fn native_tui_question_answer_reaches_the_next_model_request() {
     let address = listener.local_addr().unwrap();
     let model = thread::spawn(move || {
         for phase in 0..2 {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + HANG_GUARD;
             let stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,

@@ -5,6 +5,8 @@
 mod compaction_support;
 #[path = "local_support/process.rs"]
 mod process_support;
+#[path = "local_support/task_store.rs"]
+mod task_store;
 use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
@@ -30,8 +32,10 @@ use dim_agent_runtime::testing::{branch_events, timeline_events};
 use dim_agent_runtime::*;
 use dim_agent_types::*;
 use process_support::{alive, gone, pid_in};
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
+use rutis::host::diagnostics::RuntimeDiagnostics;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{HostDispatch, Value as BridgeValue, decode_value, host_key, settle};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -217,6 +221,17 @@ impl Seen {
     fn tree(&self) -> Arc<TreeCommands> {
         self.tree.lock().unwrap().clone().expect("probed tree")
     }
+    /// The probed branch's own context, which reads the services of its
+    /// instance by key.
+    fn ctx(&self, branch: &str) -> Ctx {
+        self.timelines
+            .lock()
+            .unwrap()
+            .iter()
+            .rfind(|(id, ..)| id == branch)
+            .map(|(.., ctx)| ctx.clone())
+            .expect("probed branch")
+    }
 }
 struct Probe {
     hook: Hook,
@@ -274,7 +289,7 @@ impl DynPlugin for Probe {
 
 struct Harness {
     root: Ctx,
-    store: Arc<MemoryTimelineStore>,
+    store: Arc<task_store::TaskStore>,
     agent: MinimalHost,
     model: Arc<Script>,
     cwd: PathBuf,
@@ -334,7 +349,7 @@ impl Harness {
         cwd: PathBuf,
         compacting: bool,
     ) -> Self {
-        let store = Arc::new(MemoryTimelineStore::default());
+        let store = Arc::new(task_store::TaskStore::default());
         let output_root = scratch("output");
         let model = Arc::new(Script::default());
         let seen = Seen::default();
@@ -870,6 +885,157 @@ async fn find_scans_only_its_starting_points() {
     assert_eq!(code(&results[2]), Some("exec_high_cost_target_refused"));
     session.close().await.unwrap();
     harness.shutdown().await;
+}
+
+/// Runs `commands` through `exec` in one turn and reports, for each, whether
+/// the high-cost scan guard refused it. A command the guard accepts runs, so
+/// a missing binary or a non-zero exit still counts as accepted.
+async fn refusals(commands: &[&str]) -> Vec<bool> {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    for directory in ["src", "src/build", "src/node_modules", "build", "target"] {
+        std::fs::create_dir_all(harness.cwd.join(directory)).unwrap();
+    }
+    std::fs::write(harness.cwd.join("src/a.rs"), "fn main() {}\n").unwrap();
+    let calls: Vec<(&str, Value)> = commands
+        .iter()
+        .map(|command| ("exec", json!({ "command": command })))
+        .collect();
+    harness.run(&session, &calls).await;
+    let events = until(&session, "scan verdicts", |events| {
+        results(events).len() >= commands.len()
+    })
+    .await;
+    let results = results(&events);
+    assert_eq!(results.len(), commands.len(), "one result per command");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+    results
+        .iter()
+        .map(|result| code(result) == Some("exec_high_cost_target_refused"))
+        .collect()
+}
+
+/// Each row is a command and whether the scan guard refuses it. A row the
+/// command scans nothing high-cost in must not be refused, whatever names the
+/// option values, the pattern or a redirect target.
+async fn assert_verdicts(rows: &[(&str, bool)]) {
+    let commands: Vec<&str> = rows.iter().map(|(command, _)| *command).collect();
+    let refused = refusals(&commands).await;
+    for ((command, expected), refused) in rows.iter().zip(refused) {
+        match (expected, refused) {
+            (false, true) => panic!("refused a command that scans nothing high-cost: {command}"),
+            (true, false) => panic!("accepted a command that scans a high-cost path: {command}"),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn grep_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("grep -rn build src", false),
+        ("grep -m 5 build src", false),
+        ("grep -m5 build src", false),
+        ("grep --max-count=5 build src", false),
+        ("grep -rn --max-count 5 build src", false),
+        ("grep -rn -e build src", false),
+        ("grep -rn --regexp=build src", false),
+        ("grep -rn --regexp build src", false),
+        ("grep -rn -A 3 build src", false),
+        ("grep -rn --exclude-dir=node_modules build src", false),
+        ("grep -rn foo src > build/out.txt", false),
+        ("grep -rn foo src >> build/out.txt", false),
+        ("grep -rn foo src >build/out.txt", false),
+        ("grep -rn foo src 2> target/err.log", false),
+        ("grep -rn foo src 2>target/err.log", false),
+        ("grep -rn foo < build/input.txt", false),
+        ("grep -rn foo src 2>&1", false),
+        ("grep -rn foo -m 5 build src", true),
+        ("grep -rn foo build", true),
+        ("grep -rn -e foo build src", true),
+        ("grep -rn foo build > out.txt", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rg_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("rg -t py dist src", false),
+        ("rg --type py dist src", false),
+        ("rg -g '!build' foo src", false),
+        ("rg --glob build foo src", false),
+        ("rg -T build foo src", false),
+        ("rg -j 2 foo src", false),
+        ("rg -m 5 foo src", false),
+        ("rg -e build src", false),
+        ("rg --files src", false),
+        ("rg --files -g '!build' src", false),
+        ("rg -t py dist build src", true),
+        ("rg foo build", true),
+        ("rg --files src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fd_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("fd -E target foo src", false),
+        ("fd --exclude build foo src", false),
+        ("fd -e rs -t f foo src", false),
+        ("fd --max-depth 2 foo src", false),
+        ("fd -d 2 foo src", false),
+        ("fd foo src", false),
+        ("fd build src", false),
+        ("fd foo build", true),
+        ("fd foo src/build", true),
+        ("fd -E target foo build src", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tree_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("tree -I node_modules src", false),
+        ("tree --ignore-case -L 2 src", false),
+        ("tree -L 2 -P '*.rs' src", false),
+        ("tree src", false),
+        ("tree src/node_modules", true),
+        ("tree -I node_modules src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn du_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("du -d 1 src", false),
+        ("du --max-depth 1 src", false),
+        ("du -B 512 src", false),
+        ("du --exclude build src", false),
+        ("du -I node_modules src", false),
+        ("du src", false),
+        ("du src/node_modules", true),
+        ("du -d 1 src/build", true),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ag_refuses_only_the_directories_its_words_scan() {
+    assert_verdicts(&[
+        ("ag -G '\\.rs$' foo src", false),
+        ("ag --ignore build foo src", false),
+        ("ag -m 5 foo src", false),
+        ("ag -m 5 build src", false),
+        ("ag foo src", false),
+        ("ag foo src/build", true),
+        ("ag -G build foo node_modules src", true),
+    ])
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1408,14 +1574,15 @@ async fn stop_and_completion_settle_once_in_dispatch_order() {
     let task = task_of(&results(&events)[0]);
     let pid = pid_in(&pid_file).await;
     let background = session.service::<BackgroundExec>("main").unwrap();
-    let (first, second) = tokio::join!(background.stop(&task), background.stop(&task));
+    let (first, second) =
+        tokio::join!(background.stop(task.clone()), background.stop(task.clone()));
     let (first, second) = (first.unwrap(), second.unwrap());
     assert_eq!(first, second);
     assert_eq!(first.status, ExecStatus::Cancelled);
     assert!(text(&first.result).contains("Command cancelled by user."));
     assert!(gone(&pid).await);
     assert!(matches!(
-        background.stop("exec-unknown").await,
+        background.stop("exec-unknown".into()).await,
         Err(workspace_tools::background::TaskError::Unknown)
     ));
 
@@ -1434,7 +1601,7 @@ async fn stop_and_completion_settle_once_in_dispatch_order() {
         notifications(events).iter().any(|(task, _)| *task == quick)
     })
     .await;
-    let adopted = background.stop(&quick).await.unwrap();
+    let adopted = background.stop(quick.clone()).await.unwrap();
     assert_eq!(adopted.status, ExecStatus::Completed);
     let events = events_after_idle(&session).await;
     assert_eq!(ended(&events).len(), 2);
@@ -1666,7 +1833,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
         session
             .service::<BackgroundExec>("main")
             .unwrap()
-            .output(task)
+            .output(task.to_owned())
             .await
             .unwrap(),
         ""
@@ -1727,7 +1894,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
             restored
                 .service::<BackgroundExec>("main")
                 .unwrap()
-                .output(task)
+                .output(task.to_owned())
                 .await,
             Err(workspace_tools::background::TaskError::Unknown)
         ));
@@ -1750,7 +1917,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     let page = restored
         .service::<BackgroundExec>("main")
         .unwrap()
-        .output_page("exec-orphan", 0, 64)
+        .output_page("exec-orphan".into(), 0, 64)
         .await
         .unwrap();
     assert_eq!(page.text, "partial\n");
@@ -1764,7 +1931,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     let partial = restored
         .service::<BackgroundExec>("main")
         .unwrap()
-        .output_page("exec-orphan", 0, 64)
+        .output_page("exec-orphan".into(), 0, 64)
         .await
         .unwrap();
     assert_eq!(partial.text, "");
@@ -1775,7 +1942,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
         restored
             .service::<BackgroundExec>("main")
             .unwrap()
-            .output_page("exec-lost", 0, 64)
+            .output_page("exec-lost".into(), 0, 64)
             .await,
         Err(workspace_tools::background::OutputPageError::Unavailable)
     ));
@@ -1791,7 +1958,7 @@ async fn idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_en
     let settled = restored
         .service::<BackgroundExec>("main")
         .unwrap()
-        .stop("exec-orphan")
+        .stop("exec-orphan".into())
         .await
         .unwrap();
     assert_eq!(settled.status, ExecStatus::Failed);
@@ -1838,7 +2005,10 @@ async fn output_page_advances_by_served_bytes_past_a_partial_character() {
     std::fs::write(harness.cwd.join("go"), b"go").unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let page = background.output_page(&task_id, 0, 64).await.unwrap();
+            let page = background
+                .output_page(task_id.clone(), 0, 64)
+                .await
+                .unwrap();
             if page.text == "alpha\n" {
                 break;
             }
@@ -1855,11 +2025,14 @@ async fn output_page_advances_by_served_bytes_past_a_partial_character() {
         .unwrap();
     file.write_all(&[0xc3]).unwrap();
     drop(file);
-    let partial = background.output_page(&task_id, 0, 64).await.unwrap();
+    let partial = background
+        .output_page(task_id.clone(), 0, 64)
+        .await
+        .unwrap();
     assert_eq!(partial.text, "alpha\n");
     assert_eq!(partial.bytes, 6);
     assert_eq!(partial.next_cursor, None);
-    let full = background.output_page(&task_id, 0, 4).await.unwrap();
+    let full = background.output_page(task_id.clone(), 0, 4).await.unwrap();
     assert_eq!(full.text, "alph");
     assert_eq!(full.bytes, 4);
     assert_eq!(full.next_cursor, Some(4));
@@ -1872,26 +2045,26 @@ async fn output_page_advances_by_served_bytes_past_a_partial_character() {
         .unwrap();
     file.write_all(&[0xa9]).unwrap();
     drop(file);
-    let split = background.output_page(&task_id, 0, 7).await.unwrap();
+    let split = background.output_page(task_id.clone(), 0, 7).await.unwrap();
     assert_eq!(split.text, "alpha\n");
     assert_eq!(split.bytes, 6);
     assert_eq!(split.next_cursor, Some(split.bytes));
     let completed = background
-        .output_page(&task_id, split.bytes, 64)
+        .output_page(task_id.clone(), split.bytes, 64)
         .await
         .unwrap();
     assert_eq!(completed.text, "é");
     assert_eq!(completed.bytes, 2);
     assert_eq!(completed.next_cursor, None);
     let end = background
-        .output_page(&task_id, split.bytes + completed.bytes, 64)
+        .output_page(task_id.clone(), split.bytes + completed.bytes, 64)
         .await
         .unwrap();
     assert_eq!(end.text, "");
     assert_eq!(end.bytes, 0);
     assert_eq!(end.next_cursor, None);
     assert_eq!(
-        background.stop(&task_id).await.unwrap().status,
+        background.stop(task_id.clone()).await.unwrap().status,
         ExecStatus::Cancelled
     );
     session.close().await.unwrap();
@@ -1928,7 +2101,7 @@ async fn running_tasks_hold_the_session_until_the_last_one_ends() {
     assert!(!session.unload_if_idle().await.unwrap());
     let background = session.service::<BackgroundExec>("main").unwrap();
     assert_eq!(
-        background.stop(&stopped).await.unwrap().status,
+        background.stop(stopped.clone()).await.unwrap().status,
         ExecStatus::Cancelled
     );
     session.idle("main").await.unwrap();
@@ -2080,7 +2253,7 @@ async fn a_new_generation_can_start_its_first_background_task_after_an_old_close
         restored
             .service::<BackgroundExec>("main")
             .unwrap()
-            .stop(&task)
+            .stop(task.clone())
             .await
             .unwrap()
             .status,
@@ -2102,7 +2275,7 @@ async fn a_before_hook_owns_the_task_identity() {
     let stopped = session
         .service::<BackgroundExec>("main")
         .unwrap()
-        .stop(&task)
+        .stop(task.clone())
         .await
         .unwrap();
     assert_eq!(stopped.task_id, task);
@@ -2324,5 +2497,325 @@ async fn wait_ends_on_a_steer_or_a_stop_and_refuses_a_second_wait() {
         ]
     );
     session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// The instance a group's parts run in: the one its scope part runs in.
+fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
+    let scope = diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name == scope)
+        .unwrap_or_else(|| panic!("no {scope} part"));
+    let group = scope.parent.expect("a scope part runs in a group");
+    diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == group)
+        .expect("the scope group")
+        .instance
+}
+
+/// The call another language makes on `name` in `instance`.
+async fn face_call(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> Value {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    decode_value(settle(reply).await.expect("a successful call")).expect("a data reply")
+}
+
+/// The error the call another language makes on `name` returns.
+async fn face_error(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> rutis_bridge::session::Error {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    settle(reply).await.expect_err("the call fails")
+}
+
+/// `backgroundExec` answers as the typed service: the same tail, page, end
+/// and errors for the task both callers name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn background_exec_face_answers_as_the_typed_service() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "exec",
+                json!({"command": "printf 'face-output'; sleep 30", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "start", |events| count(events, "turn/end") == 1).await;
+    let task = task_of(&results(&events)[0]);
+    session.idle("main").await.unwrap();
+
+    let background = session.service::<BackgroundExec>("main").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                background.output(task.clone()).await.as_deref(),
+                Ok("face-output")
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let ctx = harness.seen.ctx("main");
+    let instance = group_instance(&session.branch_diagnostics("main").unwrap(), "BranchScope");
+
+    let typed = background.output(task.clone()).await.unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "output",
+        vec![json!(task).into()],
+    )
+    .await;
+    assert_eq!(
+        wire,
+        json!(typed),
+        "the face reads the tail the owner reads"
+    );
+
+    let typed = background.output_page(task.clone(), 0, 64).await.unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "outputPage",
+        vec![json!(task).into(), json!(0).into(), json!(64).into()],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+
+    assert!(matches!(
+        background.output_page(task.clone(), 0, 0).await,
+        Err(workspace_tools::background::OutputPageError::InvalidLimit)
+    ));
+    let error = face_error(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "outputPage",
+        vec![json!(task).into(), json!(0).into(), json!(0).into()],
+    )
+    .await;
+    assert_eq!(error.code(), Some("invalidLimit"));
+
+    assert!(matches!(
+        background.wait(task.clone(), 0).await,
+        Err(workspace_tools::background::WaitError::Timeout)
+    ));
+    let error = face_error(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "wait",
+        vec![json!(task).into(), json!(0).into()],
+    )
+    .await;
+    assert_eq!(error.code(), Some("timeout"));
+
+    let watches = workspace_tools::background::testing::completion_watches(&background, &task);
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key("backgroundExec").instance(instance))
+        .unwrap();
+    let reply = dispatch
+        .invoke(
+            "wait",
+            BridgeValue::List(vec![json!(task).into(), json!(60_000).into()]),
+        )
+        .unwrap();
+    let mut waiting = Box::pin(settle(reply));
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while workspace_tools::background::testing::completion_watches(&background, &task)
+            != watches + 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the admitted face call owns a completion watch");
+    drop(waiting);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while workspace_tools::background::testing::completion_watches(&background, &task)
+            != watches
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("abandoning the face call releases its completion watch");
+    assert_eq!(
+        background.output(task.clone()).await.unwrap(),
+        "face-output"
+    );
+
+    let wire = face_call(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "stop",
+        vec![json!(task).into()],
+    )
+    .await;
+    let typed = background.stop(task.clone()).await.unwrap();
+    assert_eq!(wire, serde_json::to_value(&typed).unwrap());
+    assert_eq!(typed.status, ExecStatus::Cancelled);
+
+    let typed = background.output_page(task.clone(), 0, 64).await.unwrap();
+    assert_eq!(typed.text, "face-output");
+    let wire = face_call(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "outputPage",
+        vec![json!(task).into(), json!(0).into(), json!(64).into()],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+
+    let typed = background.wait(task.clone(), 0).await.unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "wait",
+        vec![json!(task).into(), json!(0).into()],
+    )
+    .await;
+    assert_eq!(wire, serde_json::to_value(&typed).unwrap());
+
+    assert!(matches!(
+        background.output_page("no-such-task".into(), 0, 64).await,
+        Err(workspace_tools::background::OutputPageError::Unknown)
+    ));
+    let error = face_error(
+        &ctx,
+        instance,
+        "backgroundExec",
+        "outputPage",
+        vec![
+            json!("no-such-task").into(),
+            json!(0).into(),
+            json!(64).into(),
+        ],
+    )
+    .await;
+    assert_eq!(error.code(), Some("unknown"));
+
+    let id = session.id().to_owned();
+    session.close().await.unwrap();
+    let restored = harness.agent.restore_session(id).await.unwrap();
+    restored.idle("main").await.unwrap();
+    let background = restored.service::<BackgroundExec>("main").unwrap();
+    let ctx = harness.seen.ctx("main");
+    let instance = group_instance(&restored.branch_diagnostics("main").unwrap(), "BranchScope");
+    let terminal = serde_json::to_value(&typed).unwrap();
+    assert_eq!(
+        serde_json::to_value(background.wait(task.clone(), 0).await.unwrap()).unwrap(),
+        terminal
+    );
+    assert_eq!(
+        serde_json::to_value(background.stop(task.clone()).await.unwrap()).unwrap(),
+        terminal
+    );
+    assert_eq!(
+        background
+            .output_page(task.clone(), 0, 64)
+            .await
+            .unwrap()
+            .text,
+        "face-output"
+    );
+
+    for (method, args, expected) in [
+        (
+            "wait",
+            vec![json!(task).into(), json!(0).into()],
+            terminal.clone(),
+        ),
+        ("stop", vec![json!(task).into()], terminal),
+        (
+            "outputPage",
+            vec![json!(task).into(), json!(0).into(), json!(64).into()],
+            serde_json::to_value(background.output_page(task.clone(), 0, 64).await.unwrap())
+                .unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            face_call(&ctx, instance, "backgroundExec", method, args.clone()).await,
+            expected
+        );
+        harness
+            .store
+            .hold_next_query()
+            .send(Err(AgentError::Storage("task history unavailable".into())))
+            .unwrap();
+        let error = face_error(&ctx, instance, "backgroundExec", method, args.clone()).await;
+        harness.store.entered.notified().await;
+        assert_eq!(error.code(), Some("read"), "{method}: {error}");
+        assert!(
+            error.to_string().contains("task history unavailable"),
+            "{error}"
+        );
+
+        let mut release = harness.store.hold_next_query();
+        let dispatch = ctx
+            .get_at::<dyn HostDispatch>(&host_key("backgroundExec").instance(instance))
+            .unwrap();
+        let mut reading = Box::pin(settle(
+            dispatch
+                .invoke(method, BridgeValue::List(args.clone()))
+                .unwrap(),
+        ));
+        tokio::select! {
+            result = &mut reading => panic!("{method} completed before the held query: {result:?}"),
+            _ = harness.store.entered.notified() => {},
+        }
+        drop(reading);
+        tokio::time::timeout(Duration::from_secs(5), release.closed())
+            .await
+            .expect("abandoning the face releases the historical query");
+        assert_eq!(
+            face_call(&ctx, instance, "backgroundExec", method, args).await,
+            expected
+        );
+    }
+    assert!(matches!(
+        background.wait("no-such-task".into(), 0).await,
+        Err(workspace_tools::background::WaitError::Unknown)
+    ));
+    assert!(matches!(
+        background.stop("no-such-task".into()).await,
+        Err(workspace_tools::background::TaskError::Unknown)
+    ));
+    restored.close().await.unwrap();
     harness.shutdown().await;
 }
