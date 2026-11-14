@@ -7885,10 +7885,111 @@ async fn a_bundled_entry_without_limits_takes_the_identified_numbers_or_reports_
         .await
     {
         Err(ProviderError::InvalidConfig(message)) => assert_eq!(
-            message, "Model has no declared contextWindow or maxOutputTokens",
+            message,
+            "Model openai/whisper-1 declares no contextWindow or maxOutputTokens; declare the missing limits with provider.models.edit",
             "whisper-1"
         ),
         other => panic!("whisper-1: {other:?}"),
+    }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An id several rows still disagree on is refused, and the refusal names the
+/// rows rather than leaving the client to find them. A relay's own list names
+/// nothing, so the catalog's own ambiguous id reaches the refusal.
+#[tokio::test]
+async fn a_refused_ambiguity_names_the_rows_that_disagree() {
+    let home = std::env::temp_dir().join(format!("provider-ambiguous-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const RELAY: &str = "00000000-0000-4000-8000-000000000041";
+    const AMBIGUOUS: &str = "ark-code-latest";
+    let mut relay = input(
+        RELAY,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "ambiguous",
+        1,
+    );
+    // The relay lists the id and declares nothing for it, which is the entry a
+    // gateway that ships no list of its own gives the catalog to identify.
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":AMBIGUOUS, "displayName":AMBIGUOUS, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    let catalog = provider
+        .catalog_for(RELAY.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == AMBIGUOUS)
+        .expect("the relay lists the id it did not declare");
+    let identification = model
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.identification.as_ref())
+        .expect("the entry carries what identification found");
+    assert_eq!(identification.rule, "ambiguous", "{identification:?}");
+    let candidates: Vec<String> = identification
+        .candidates
+        .iter()
+        .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+        .collect();
+    assert!(candidates.len() > 1, "{identification:?}");
+    match provider
+        .select(
+            None,
+            ModelId {
+                provider_id: RELAY.into(),
+                model_id: AMBIGUOUS.into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+    {
+        Err(ProviderError::InvalidConfig(message)) => {
+            assert!(
+                message.starts_with(&format!("Model {RELAY}/{AMBIGUOUS} declares no ")),
+                "{message}"
+            );
+            for candidate in &candidates {
+                assert!(
+                    message.contains(candidate.as_str()),
+                    "{message} does not name {candidate}"
+                );
+            }
+        }
+        other => panic!("{AMBIGUOUS}: {other:?}"),
     }
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
