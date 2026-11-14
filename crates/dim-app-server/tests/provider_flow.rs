@@ -5081,7 +5081,19 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         )
         .await
         .unwrap();
-    assert_eq!(implicit.config.unwrap().reasoning, None);
+    assert_eq!(
+        implicit
+            .config
+            .as_ref()
+            .unwrap()
+            .reasoning
+            .as_ref()
+            .unwrap()
+            .effort
+            .as_deref(),
+        Some("high"),
+        "a client that states nothing applies the saved effort: {implicit:?}"
+    );
     let adopted = provider
         .configuration(
             Some(preference_target),
@@ -7712,11 +7724,14 @@ async fn legacy_import_keeps_the_builtin_seed_through_a_restart() {
 }
 
 /// #522: the bundle is a listing, so an entry declares a limit only where its
-/// `metadata.raw` does. The 128000/16384 pair earlier formats assumed for the
-/// entries that declare nothing is not a declaration: the model is listed with
-/// both limits missing and cannot be selected.
+/// `metadata.raw` does, and the 128000/16384 pair earlier formats assumed for
+/// the entries that declare nothing is not a declaration. Such an entry takes
+/// the numbers of the row its id identifies; an entry whose identified row
+/// declares nothing keeps both limits missing and cannot be selected.
 #[tokio::test]
-async fn a_bundled_entry_that_declares_no_limit_reports_it_missing() {
+async fn a_bundled_entry_without_limits_takes_the_identified_numbers_or_reports_them_missing() {
+    const QWEN: &str = "Qwen/Qwen3-VL-235B-A22B-Instruct";
+    const SUPPLIER: (&str, &str) = ("openrouter", "qwen/qwen3-vl-235b-a22b-instruct");
     let home = std::env::temp_dir().join(format!("provider-bundle-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();
     let home = home.canonicalize().unwrap();
@@ -7755,54 +7770,226 @@ async fn a_bundled_entry_that_declares_no_limit_reports_it_missing() {
         )
         .await
         .unwrap();
-    for (provider_id, model_id, reason) in [
-        ("openai", "whisper-1", "provider_unavailable"),
+
+    // The row declares nothing and the catalog does know the model, so the
+    // numbers are the identified entry's own declaration rather than the pair
+    // the earlier format assumed for it.
+    let catalog = provider
+        .catalog_for("siliconflow".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == QWEN)
+        .expect("siliconflow lists the Qwen row");
+    let bundled = BundledCatalog::load().unwrap();
+    let supplier = bundled
+        .bundled_models(SUPPLIER.0)
+        .unwrap()
+        .iter()
+        .find(|row| row.model_id == SUPPLIER.1)
+        .expect("the catalog holds the entry that identifies it");
+    let numbers = (
+        model.capabilities.context_window,
+        model.capabilities.max_output_tokens,
+    );
+    assert_eq!(
+        numbers,
         (
-            "siliconflow",
-            "Qwen/Qwen3-VL-235B-A22B-Instruct",
-            "limits_undeclared",
+            supplier.capabilities.context_window,
+            supplier.capabilities.max_output_tokens
         ),
+        "{QWEN}: the numbers are {}'s {} row",
+        SUPPLIER.0,
+        SUPPLIER.1
+    );
+    assert_ne!(numbers.0, Some(128_000), "{QWEN}: the assumed window");
+    assert_ne!(numbers.1, Some(16_384), "{QWEN}: the assumed output cap");
+    assert!(model.missing_limits.is_empty(), "{QWEN}");
+    assert_eq!(model.unavailable_reason, None, "{QWEN}");
+    let identification = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "provider-exact", "{QWEN}");
+    assert_eq!(identification.filled.len(), 2, "{identification:?}");
+    for (limit, field, value) in [
+        (&identification.filled[0], "contextWindow", numbers.0),
+        (&identification.filled[1], "maxOutputTokens", numbers.1),
     ] {
-        let catalog = provider
-            .catalog_for(provider_id.into(), &cancel)
-            .await
-            .unwrap()
-            .unwrap();
-        let model = catalog
-            .models
-            .iter()
-            .find(|model| model.id == model_id)
-            .unwrap();
-        assert_eq!(model.capabilities.context_window, None, "{model_id}");
-        assert_eq!(model.capabilities.max_output_tokens, None, "{model_id}");
+        assert_eq!(limit.field, field, "{QWEN}: {identification:?}");
+        assert_eq!(Some(limit.value), value, "{QWEN}: {field}");
         assert_eq!(
-            model.missing_limits,
-            ["contextWindow", "maxOutputTokens"],
-            "{model_id}"
-        );
-        assert_eq!(
-            model.unavailable_reason.as_deref(),
-            Some(reason),
-            "{model_id}"
-        );
-        match provider
-            .select(
-                None,
-                ModelId {
-                    provider_id: provider_id.into(),
-                    model_id: model_id.into(),
-                },
-                None,
-                &cancel,
-            )
-            .await
-        {
-            Err(ProviderError::InvalidConfig(message)) => assert_eq!(
-                message, "Model has no declared contextWindow or maxOutputTokens",
-                "{model_id}"
+            (
+                limit.provider_id.as_str(),
+                limit.model_id.as_str(),
+                limit.rule.as_str()
             ),
-            other => panic!("{model_id}: {other:?}"),
+            (SUPPLIER.0, SUPPLIER.1, "merge"),
+            "{QWEN}: {field} came from this entry by this rule"
+        );
+    }
+    provider
+        .select(
+            None,
+            ModelId {
+                provider_id: "siliconflow".into(),
+                model_id: QWEN.into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+        .expect("a filled entry is selectable");
+
+    // #522's other half: a listed row that declares nothing and whose
+    // identified entry, its own row, declares nothing either keeps both limits
+    // missing, so it cannot be selected.
+    let catalog = provider
+        .catalog_for("openai".into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == "whisper-1")
+        .unwrap();
+    assert_eq!(model.capabilities.context_window, None, "whisper-1");
+    assert_eq!(model.capabilities.max_output_tokens, None, "whisper-1");
+    assert_eq!(
+        model.missing_limits,
+        ["contextWindow", "maxOutputTokens"],
+        "whisper-1"
+    );
+    assert_eq!(
+        model.unavailable_reason.as_deref(),
+        Some("provider_unavailable"),
+        "whisper-1"
+    );
+    match provider
+        .select(
+            None,
+            ModelId {
+                provider_id: "openai".into(),
+                model_id: "whisper-1".into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+    {
+        Err(ProviderError::InvalidConfig(message)) => assert_eq!(
+            message,
+            "Model openai/whisper-1 declares no contextWindow or maxOutputTokens; declare the missing limits with provider.models.edit",
+            "whisper-1"
+        ),
+        other => panic!("whisper-1: {other:?}"),
+    }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An id several rows still disagree on is refused, and the refusal names the
+/// rows rather than leaving the client to find them. A relay's own list names
+/// nothing, so the catalog's own ambiguous id reaches the refusal.
+#[tokio::test]
+async fn a_refused_ambiguity_names_the_rows_that_disagree() {
+    let home = std::env::temp_dir().join(format!("provider-ambiguous-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const RELAY: &str = "00000000-0000-4000-8000-000000000041";
+    const AMBIGUOUS: &str = "ark-code-latest";
+    let mut relay = input(
+        RELAY,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "ambiguous",
+        1,
+    );
+    // The relay lists the id and declares nothing for it, which is the entry a
+    // gateway that ships no list of its own gives the catalog to identify.
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":AMBIGUOUS, "displayName":AMBIGUOUS, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    let catalog = provider
+        .catalog_for(RELAY.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == AMBIGUOUS)
+        .expect("the relay lists the id it did not declare");
+    let identification = model
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.identification.as_ref())
+        .expect("the entry carries what identification found");
+    assert_eq!(identification.rule, "ambiguous", "{identification:?}");
+    let candidates: Vec<String> = identification
+        .candidates
+        .iter()
+        .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+        .collect();
+    assert!(candidates.len() > 1, "{identification:?}");
+    match provider
+        .select(
+            None,
+            ModelId {
+                provider_id: RELAY.into(),
+                model_id: AMBIGUOUS.into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+    {
+        Err(ProviderError::InvalidConfig(message)) => {
+            assert!(
+                message.starts_with(&format!("Model {RELAY}/{AMBIGUOUS} declares no ")),
+                "{message}"
+            );
+            for candidate in &candidates {
+                assert!(
+                    message.contains(candidate.as_str()),
+                    "{message} does not name {candidate}"
+                );
+            }
         }
+        other => panic!("{AMBIGUOUS}: {other:?}"),
     }
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
@@ -8037,6 +8224,164 @@ async fn an_unreadable_recorded_protocol_rejects_a_preference_update() {
         .apply_preferences(&current, &preference_update(effort), &cancel)
         .await
         .unwrap();
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A merged row is editable: the merge supplies numbers the row declares
+/// nowhere, and an edit declares one of them, so the edited value answers the
+/// catalog and a selection while the other limit keeps the merged value. The
+/// edit drops the record of the limit it declares, and the other limit still
+/// names the seller the merge adopted it from.
+#[tokio::test]
+async fn an_edited_merged_limit_stays_edited() {
+    const ID: &str = "openai/gpt-oss-20b";
+    const RELAY: &str = "00000000-0000-4000-8000-000000000051";
+    let home = std::env::temp_dir().join(format!("provider-merged-edit-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    let mut relay = input(
+        RELAY,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "merged",
+        1,
+    );
+    // The relay lists the id and declares no limit for it, so its numbers are
+    // the merge an aggregator-only id gets.
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":ID, "displayName":ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    // What a relay outside the catalog projects for the same id: the merge,
+    // read from the catalog rather than restated here.
+    let merged = BundledCatalog::load().unwrap().fallback(ID).unwrap();
+    let merged = (
+        merged.capabilities.context_window,
+        merged.capabilities.max_output_tokens,
+    );
+    assert!(
+        merged.0.is_some() && merged.1.is_some(),
+        "{ID}: the merge supplied both limits, got {merged:?}"
+    );
+    let numbers = |catalog: &dim_app_server::provider::ProviderCatalog| {
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| model.id == ID)
+            .expect("the relay lists the id");
+        (
+            model.capabilities.context_window,
+            model.capabilities.max_output_tokens,
+        )
+    };
+    let catalog = provider
+        .catalog_for(RELAY.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(numbers(&catalog), merged, "{ID}: the merged numbers");
+    let identification = catalog
+        .models
+        .iter()
+        .find(|model| model.id == ID)
+        .unwrap()
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .clone()
+        .unwrap();
+    assert_eq!(identification.rule, "merge", "{ID}");
+    let suppliers: Vec<_> = identification
+        .filled
+        .iter()
+        .map(|limit| (limit.field.as_str(), limit.provider_id.as_str()))
+        .collect();
+    assert_eq!(
+        suppliers,
+        [("contextWindow", "aihubmix"), ("maxOutputTokens", "qiniu")],
+        "{ID}: the merge names the seller of each limit"
+    );
+
+    // A window the merge never supplied, so the assertion separates an edit
+    // from the merged value.
+    let edited = merged.0.unwrap() + 1_000;
+    let catalog = provider
+        .update_model_config(
+            RELAY.into(),
+            catalog.version,
+            ID.into(),
+            serde_json::from_value(json!({ "contextWindow": edited })).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(numbers(&catalog), (Some(edited), merged.1), "{ID}: edited");
+    let model = catalog.models.iter().find(|model| model.id == ID).unwrap();
+    assert!(model.missing_limits.is_empty(), "{ID}");
+    assert_eq!(model.unavailable_reason, None, "{ID}");
+    let suppliers: Vec<_> = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap()
+        .filled
+        .iter()
+        .map(|limit| (limit.field.as_str(), limit.provider_id.as_str()))
+        .collect();
+    assert_eq!(
+        suppliers,
+        [("maxOutputTokens", "qiniu")],
+        "{ID}: the edit dropped the window's record and kept the other's"
+    );
+
+    let selection = provider
+        .configuration(
+            Some(ModelId {
+                provider_id: RELAY.into(),
+                model_id: ID.into(),
+            }),
+            None,
+            ModelPreferences::default(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let snapshot = selection.capability_snapshot.unwrap();
+    assert_eq!(snapshot.capabilities.context_window, edited, "{ID}");
+    assert_eq!(
+        snapshot.capabilities.max_output_tokens,
+        merged.1.unwrap(),
+        "{ID}: the other limit keeps its merged value"
+    );
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }

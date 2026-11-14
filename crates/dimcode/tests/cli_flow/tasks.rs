@@ -2461,7 +2461,8 @@ fn tui_member_cards_name_a_native_agent_the_hello_does_not_announce() {
 
 #[test]
 fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
-    for cached in [false, true] {
+    for outcome in ["cached", "resolved", "missing", "failed"] {
+        let cached = outcome == "cached";
         let home = Home::new();
         fs::write(
             home.0.join("config.json"),
@@ -2496,16 +2497,30 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
             wire.reply(&earlier, json!({"events":events,"through":14,"nextAfter":5,"nextBefore":1,"done":true}));
             if !cached {
                 let list = wire.read("agent.list");
-                wire.reply(&list, json!([
-                    {"agentId":"current","name":"Current Reviewer"},
-                    {"agentId":"reviewer","name":"History Reviewer"}
-                ]));
+                wait_drawn.recv_timeout(PATIENCE).unwrap_or_else(|error| panic!("{outcome}: {error}"));
+                event(wire, "main", fact("while-naming", 15, 15000, "input", "message", json!({
+                    "user":{"content":[{"type":"text","text":"message while resolving the historical Agent"}]},"mode":"append"
+                })));
+                wait_drawn.recv_timeout(PATIENCE).unwrap_or_else(|error| panic!("{outcome}: {error}"));
+                match outcome {
+                    "resolved" => wire.reply(&list, json!([
+                        {"agentId":"current","name":"Current Reviewer"},
+                        {"agentId":"reviewer","name":"History Reviewer"}
+                    ])),
+                    "missing" => wire.reply(&list, json!([{"agentId":"current","name":"Current Reviewer"}])),
+                    "failed" => wire.send(json!({"jsonrpc":"2.0","id":list["id"],"error":{"code":-32000,"message":"agent list unavailable"}})),
+                    _ => unreachable!(),
+                }
+                event(wire, "main", fact("after-naming", 16, 16000, "input", "message", json!({
+                    "user":{"content":[{"type":"text","text":"historical Agent lookup settled"}]},"mode":"append"
+                })));
             }
-            wait_drawn.recv_timeout(PATIENCE).unwrap();
+            wait_drawn.recv_timeout(PATIENCE).unwrap_or_else(|error| panic!("{outcome}: {error}"));
             wire.quiet(Duration::from_millis(150));
         });
         let mut command = home.command();
         command.arg("--fullscreen");
+        sized(&mut command, 80, 48);
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.until_anywhere(if cached {
@@ -2514,9 +2529,26 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
             "Agent: Current Reviewer"
         });
         terminal.write(b"/earlier\r");
-        probe_1476_drain(&mut terminal, Duration::from_millis(200));
-        terminal.write(b"\x1b[H\x1b[6~");
-        terminal.until_row("Historical dependency review", "· Agent: History Reviewer");
+        terminal.write(b"\x1b[H");
+        if !cached {
+            terminal.until_row("Historical dependency review", "· Agent: reviewer");
+            drawn.send(()).unwrap();
+            terminal.write(b"\x1b[F");
+            terminal.until("message while resolving the historical Agent");
+            let before_reply = terminal.consumed;
+            drawn.send(()).unwrap();
+            terminal.until("historical Agent lookup settled");
+            terminal.consumed = before_reply;
+            terminal.write(b"\x1b[H");
+        }
+        terminal.until_row(
+            "Historical dependency review",
+            if cached || outcome == "resolved" {
+                "· Agent: History Reviewer"
+            } else {
+                "· Agent: reviewer"
+            },
+        );
         terminal.until_anywhere("Task: Historical dependency review");
         drawn.send(()).unwrap();
         daemon.join().unwrap();

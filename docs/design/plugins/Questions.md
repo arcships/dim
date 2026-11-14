@@ -68,13 +68,34 @@ Contracts defined here: the `ask_user` tool (declaration, input schema, result t
 
 ```mermaid
 stateDiagram-v2
-  [*] --> waiting: ask_user handler registers (branchId, requestId, callId)
+  [*] --> claimed: Loop calls claim, before step/tool-call is appended
+  claimed --> waiting: dispatch keeps the registration
+  claimed --> [*]: the claim drops (append refused, interrupt before dispatch, Loop error, reload)
   waiting --> [*]: respond (answer sent; entry removed)
   waiting --> [*]: batch cancel token fires (entry removed; Cancelled)
   waiting --> [*]: part unloads (senders dropped; Cancelled capability reloading)
 ```
 
 The part keeps one table, `(branchId, requestId, callId) → {questions, sender}`, under a mutex (no `StateCell`). `requestId` is the model request that proposed the call: `ToolExecutionContext.requestId`, the same value as the `request_id` of its `step/tool-call`. The key needs it because call ids repeat across requests (§4.3). Only waiting calls have entries; whoever removes the entry under the lock decides the call's output, so `respond` and cancellation never both win. The table is never carried across generations and is not rebuilt: an entry is an I/O wait on a human, and a call left waiting by a reload or restart is settled by ToolExecutor ([design rules](../../architecture/rust-agent/principles.md) §4 rule 9; AGENTS.md rule 4).
+
+### 2.1 The claim before the fact
+
+The registration must exist no later than the `step/tool-call` that shows it. Loop writes that fact
+and ToolExecutor only consumes it afterwards, so a registration made in the handler leaves a window in
+which a client holds a published question that `respond` refuses as `question_not_pending`. `ask_user`
+therefore claims before the fact: `ToolHandler::claim` returns an owned guard whose `Drop` removes the
+table entry, Loop creates the claims immediately before appending the batch, and ToolBinding holds them
+with the request's tool snapshot.
+
+The guard covers every path that does not reach the call's dispatch, without a separate release step:
+a refused append, `stop/interrupt` before dispatch, a refused admission, a cancelled task, a Loop error
+and a capability reload all drop the snapshot's claims. A claim that reaches dispatch is taken by
+ToolExecutor and consumed by `ToolClaim::dispatch`, which receives the call as resolved and approved
+and keeps the registration until the answer or the cancel token ends the wait. `execute` called without a claim — the rebuilt batch after a reload —
+claims for itself, so the handler has one registration path in both cases.
+
+An answer accepted between the claim and a refusal is delivered and then dropped with the claim: the
+call's result is the refusal, and the question does not stay open.
 
 What the Timeline already holds, and why nothing else is written:
 
@@ -102,9 +123,9 @@ sequenceDiagram
   participant Q as Questions (Session)
   participant C as Client
   M->>TE: step/tool-call [ask_user {questions}]
+  Note over Q: claim before the append: lock, insert (branchId, requestId, callId) waiting
   Note over C: session.event step/tool-call: show prompt
-  TE->>Q: execute(call, {branchId, requestId}, cancel)
-  Q->>Q: validate; lock: insert (branchId, requestId, callId) waiting
+  TE->>Q: dispatch(call, caller, cancel)
   C->>Q: session.question.respond {sessionId, branchId, requestId, callId, answers}
   Q->>Q: lock: validate, remove entry, send answer
   Q-->>C: {} (the answer is the call's output)
@@ -114,7 +135,10 @@ sequenceDiagram
   Note over C: session.event step/tool-result: prompt closed
 ```
 
-`{}` means the answer was handed to the waiting call and will be its result unless the batch is reload-settled (§4.2).
+The registration happens before the `step/tool-call` is appended, not when the call is dispatched
+([Questions §2.1](#21-the-claim-before-the-fact)). A client may therefore answer a question it drew
+from the published batch alone. `{}` means the answer was handed to the waiting call and will be its
+result unless the batch is reload-settled (§4.2).
 
 ### 3.2 Clients, attach and several clients
 
@@ -407,7 +431,7 @@ Namespace `session.question`, registered with the Session's `sessionMethods`. De
 
 | `appError` | Condition |
 | --- | --- |
-| `question_not_pending` | No waiting entry under `(branchId, requestId, callId)`: the handler has not registered yet, another `respond` was accepted, the call was cancelled, or the batch already settled. This includes a late answer or decline to a settled call whose call id a later call reuses; the later call's entry is not touched |
+| `question_not_pending` | No waiting entry under `(branchId, requestId, callId)`: the claim was never made (the batch was refused or never dispatched), another `respond` was accepted, the call was cancelled, or the batch already settled. This includes a late answer or decline to a settled call whose call id a later call reuses; the later call's entry is not touched |
 | `invalid_params` `<reason>` | Missing `branchId`, `requestId` or `callId`; unknown or missing question id, label not offered, several labels without `multiSelect`, `custom` without `allowCustom`, nothing selected and no `custom`, `answers` together with `declined`. The entry keeps waiting |
 | `service_reloading` | The part is starting or reloading |
 | `unknown_method` | Questions not enabled in the Session |
@@ -419,7 +443,9 @@ A client tells "not yet" from "settled" for `question_not_pending` by whether th
 
 | Step | Mechanics |
 | --- | --- |
-| Tool call | Validate input. If `SessionConfig.interactive` is false, return the non-interactive result. If the cancel token has fired or the part is closed, return Cancelled. Lock: if the key `(branchId, requestId, callId)` exists, return the duplicate error; else insert the entry with a one-shot sender. Wait: `select! biased { answer, cancel }` |
+| Claim | Loop asks the handler for a claim immediately before appending the batch. Validate input. If `SessionConfig.interactive` is false, take no claim: the call reports the non-interactive result. If the part is closed, take no claim: the call returns Cancelled. Lock: if the key `(branchId, requestId, callId)` exists, take no claim (the call reports the duplicate error); else insert the entry with a one-shot sender. The claim owns that entry |
+| Dispatch | The claim was taken from the request's snapshot and receives the call as resolved and approved. If the cancel token has fired, the entry is removed and the call returns Cancelled. Else wait: `select! biased { answer, cancel }` |
+| Claim dropped | The entry is removed unless `respond` already removed it. Every path that does not reach dispatch ends here |
 | Cancel fires | Lock. Entry present: remove it, return Cancelled with the interrupt text. Entry absent: `respond` won; take the answer already in the channel and return it |
 | Respond | Lock. No entry under the params' `(branchId, requestId, callId)` → `question_not_pending`, and no other entry is touched; validate against the entry → `invalid_params` (entry kept); remove the entry, send the answer, reply `{}` |
 | Unload | Set closed, drain the table and drop every sender; each handler returns Cancelled with `capability reloading` |

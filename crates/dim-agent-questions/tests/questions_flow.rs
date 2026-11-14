@@ -9,6 +9,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     methods::{RpcError, SessionMethods},
+    session_broadcast::{SessionBroadcast, SessionBroadcastEvent, session_channel},
     tool_registry::{ToolContribution, ToolRegistry},
 };
 use dim_agent_runtime::testing::branch_events;
@@ -89,6 +90,65 @@ impl ModelDriver for Script {
     }
 }
 
+/// One `step/tool-call` of a Session channel, as a client reads it.
+#[derive(Clone)]
+struct ChannelCall {
+    branch_id: String,
+    request_id: String,
+    call_id: String,
+}
+
+/// What a client sees: the Session channel an Rpc attachment listens on.
+struct Channel {
+    calls: Arc<Mutex<Vec<ChannelCall>>>,
+    _disposer: rutis::Disposer,
+}
+impl Channel {
+    /// Listens on `session`'s channel from `root`, as an attachment does.
+    fn attach(root: &Ctx, session: &str) -> Self {
+        let calls = Arc::new(Mutex::new(Vec::<ChannelCall>::new()));
+        let recorded = calls.clone();
+        let disposer = root
+            .listen::<SessionBroadcast>()
+            .name(session_channel(session))
+            .on(move |record, _| {
+                if let SessionBroadcastEvent::Event { branch_id, event } = &record.record
+                    && let EventKind::ToolCall(data) = &event.kind
+                {
+                    for call in data.calls.iter().filter(|call| call.name == "ask_user") {
+                        recorded.lock().unwrap().push(ChannelCall {
+                            branch_id: branch_id.clone(),
+                            request_id: data.request_id.clone(),
+                            call_id: call.id.clone(),
+                        });
+                    }
+                }
+                Box::pin(async { Ok(None) })
+            })
+            .unwrap();
+        Self {
+            calls,
+            _disposer: disposer,
+        }
+    }
+    /// Waits until the channel delivered an `ask_user` call `call`.
+    async fn call(&self, call: &str) -> ChannelCall {
+        for _ in 0..2000 {
+            if let Some(found) = self
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|seen| seen.call_id == call)
+            {
+                return found.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("{call} was never published");
+    }
+}
+
 /// Reaches the `ask_user` registration of the latest Session, to call the
 /// tool contract directly where no model output can (a duplicate call id).
 #[derive(Clone, Default)]
@@ -120,6 +180,73 @@ impl DynPlugin for ProbePlugin {
     }
 }
 
+/// Holds the first dispatch of its event key, then releases it.
+struct Gate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    once: std::sync::atomic::AtomicBool,
+    timeline: Mutex<Option<dim_agent_runtime::Timeline>>,
+}
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            once: std::sync::atomic::AtomicBool::new(false),
+            timeline: Mutex::new(None),
+        }
+    }
+}
+/// A branch part that loads after the Dispatcher and holds its first `event`
+/// dispatch until released, so a fact can be committed without being consumed.
+struct Hold {
+    gate: Arc<Gate>,
+    event: &'static str,
+    timeline: Key<dim_agent_runtime::Timeline>,
+    dispatcher: Key<dim_agent_runtime::Dispatcher>,
+}
+impl Hold {
+    fn part(
+        names: &Names<'_>,
+        gate: Arc<Gate>,
+        event: &'static str,
+    ) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(Hold {
+            gate,
+            event,
+            timeline: names.key()?,
+            dispatcher: names.key()?,
+        }))
+    }
+}
+impl DynPlugin for Hold {
+    fn name(&self) -> &str {
+        "test.questions-hold"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.timeline.erase(), self.dispatcher.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let timeline = ctx.require_at(&self.timeline)?;
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
+            *self.gate.timeline.lock().unwrap() = Some((*timeline).clone());
+            let gate = self.gate.clone();
+            dispatcher.subscribe(ctx, "test.questions-hold", &[self.event], move |_| {
+                let gate = gate.clone();
+                Box::pin(async move {
+                    if !gate.once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        gate.entered.notify_one();
+                        gate.release.notified().await;
+                    }
+                    Ok(())
+                })
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
 struct Fixture {
     agent: MinimalHost,
     model: Arc<Script>,
@@ -127,6 +254,15 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::build(None).await
+    }
+    /// A fixture whose Dispatcher holds the first `held` dispatch, so a fact is
+    /// committed without being consumed.
+    async fn holding(held: &'static str) -> (Self, Arc<Gate>) {
+        let gate = Arc::new(Gate::default());
+        (Self::build(Some((held, gate.clone()))).await, gate)
+    }
+    async fn build(held: Option<(&'static str, Arc<Gate>)>) -> Self {
         let model = Arc::new(Script::default());
         let probe = Probe::default();
         let mut builder = AgentBuilder::new(AgentConfig::default());
@@ -142,6 +278,13 @@ impl Fixture {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
                 }),
             );
+        if let Some((event, gate)) = held {
+            builder.require_feature(
+                Feature::new("test.questions-hold").branch("test.questions-hold", move |names| {
+                    Hold::part(names, gate.clone(), event)
+                }),
+            );
+        }
         defaults::install(&mut builder);
         defaults::tool_host(&mut builder, Arc::new(MockTools));
         dim_agent_questions::install(&mut builder);
@@ -1007,5 +1150,255 @@ async fn a_late_answer_never_reaches_a_later_call_that_reuses_its_id() {
             ToolContent::Text(expected.into()),
         ]
     );
+    fixture.shutdown().await;
+}
+
+/// A client that draws a question from the published `step/tool-call` must be
+/// able to answer it: the answer arrives on the Session channel alone, with no
+/// read of the Timeline and no retry, and reaches the next model request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_answer_from_the_published_call_alone_reaches_the_next_request() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session(true).await;
+    let channel = Channel::attach(fixture.agent.root(), session.id());
+    fixture
+        .model
+        .push(&[("ask_user", "c1", json!({"questions":[today()]}))]);
+    session
+        .submit("ask".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    let asked = channel.call("c1").await;
+    let reply = respond(
+        &session,
+        params(
+            &session,
+            &(
+                asked.branch_id.clone(),
+                asked.request_id.clone(),
+                asked.call_id.clone(),
+            ),
+            json!([{"questionId":"ship","selected":["Yes"]}]),
+        ),
+    )
+    .await;
+    assert_eq!(
+        reply.unwrap(),
+        json!({}),
+        "the published call accepts its answer"
+    );
+    let events = turn(&session, "main").await;
+    let answered = result(&events, "c1");
+    assert_eq!(text(&answered), "User answered:\n1. Ship today?\n   -> Yes");
+    assert_eq!(answered.is_error, None);
+    let read: Vec<_> = fixture
+        .model
+        .last_request()
+        .messages
+        .iter()
+        .flat_map(|message| match &message.content {
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } if tool_use_id == "c1" => Some(content.clone()),
+                    _ => None,
+                })
+                .collect(),
+            MessageContent::Text(_) => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [ToolContent::Text(
+            "User answered:\n1. Ship today?\n   -> Yes".into()
+        )]
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dropped_claim_unregisters_the_call() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session(true).await;
+    let tool = fixture.probe.tool();
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "ask_user".into(),
+        input: json!({"questions":[today()]}).as_object().unwrap().clone(),
+    };
+    let context = ToolExecutionContext {
+        turn_id: "t".into(),
+        request_id: "r".into(),
+        branch_id: "main".into(),
+    };
+    let asked: Asked = ("main".into(), "r".into(), "c1".into());
+    let claim = tool
+        .handler
+        .claim(&call, &context)
+        .expect("ask_user claims a call it can wait for");
+    assert!(
+        waits(&session, &asked).await,
+        "the claim registers the call before it is dispatched"
+    );
+    drop(claim);
+    assert!(
+        !waits(&session, &asked).await,
+        "dropping the claim unregisters the call"
+    );
+    assert_eq!(
+        code(
+            &respond(
+                &session,
+                params(
+                    &session,
+                    &asked,
+                    json!([{"questionId":"ship","selected":["Yes"]}])
+                )
+            )
+            .await
+            .unwrap_err()
+        ),
+        "question_not_pending"
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_execute_without_a_claim_waits_for_its_answer() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session(true).await;
+    let tool = fixture.probe.tool();
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "ask_user".into(),
+        input: json!({"questions":[today()]}).as_object().unwrap().clone(),
+    };
+    let context = ToolExecutionContext {
+        turn_id: "t".into(),
+        request_id: "r".into(),
+        branch_id: "main".into(),
+    };
+    let asked: Asked = ("main".into(), "r".into(), "c1".into());
+    let handler = tool.handler.clone();
+    let (executed_call, executed_context) = (call.clone(), context.clone());
+    let executed = tokio::spawn(async move {
+        handler
+            .execute(executed_call, executed_context, CancellationToken::new())
+            .await
+    });
+    let mut registered = false;
+    for _ in 0..2000 {
+        registered = waits(&session, &asked).await;
+        if registered {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(registered, "execute registered the call without a claim");
+    respond(
+        &session,
+        params(
+            &session,
+            &asked,
+            json!([{"questionId":"ship","selected":["Yes"]}]),
+        ),
+    )
+    .await
+    .unwrap();
+    let answered = tokio::time::timeout(Duration::from_secs(10), executed)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(text(&answered), "User answered:\n1. Ship today?\n   -> Yes");
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_published_question_is_answerable_before_its_batch_is_dispatched() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session(true).await;
+    let channel = Channel::attach(fixture.agent.root(), session.id());
+    fixture
+        .model
+        .push(&[("ask_user", "c1", json!({"questions":[today()]}))]);
+    session
+        .submit("ask".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    let asked = channel.call("c1").await;
+    let reply = respond(
+        &session,
+        params(
+            &session,
+            &(
+                asked.branch_id.clone(),
+                asked.request_id.clone(),
+                asked.call_id.clone(),
+            ),
+            json!([{"questionId":"ship","selected":["Yes"]}]),
+        ),
+    )
+    .await;
+    assert_eq!(
+        reply.unwrap(),
+        json!({}),
+        "the claim registered the call before its batch was published"
+    );
+    let events = turn(&session, "main").await;
+    let answered = result(&events, "c1");
+    assert_eq!(text(&answered), "User answered:\n1. Ship today?\n   -> Yes");
+    assert_eq!(answered.is_error, None);
+    fixture.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_before_dispatch_releases_the_batch_claims() {
+    let (fixture, gate) = Fixture::holding("step/tool-call").await;
+    let session = fixture.session(true).await;
+    fixture
+        .model
+        .push(&[("ask_user", "c1", json!({"questions":[today()]}))]);
+    session
+        .submit("ask".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+        .await
+        .expect("the batch reached the Dispatcher");
+    let asked = waiting(&session, "main", "c1").await;
+    assert!(
+        waits(&session, &asked).await,
+        "the claim registered the call before dispatch"
+    );
+    let timeline = gate.timeline.lock().unwrap().clone().unwrap();
+    timeline
+        .append(
+            EventKind::StopInterrupt(StopInterruptData {
+                reason: "user stopped".into(),
+                scope: InterruptScope::Turn,
+            })
+            .into(),
+        )
+        .unwrap();
+    gate.release.notify_one();
+    let events = turn(&session, "main").await;
+    let settled = result(&events, "c1");
+    assert_eq!(settled.is_error, Some(true), "the call did not run");
+    let late = respond(
+        &session,
+        params(
+            &session,
+            &asked,
+            json!([{"questionId":"ship","selected":["Yes"]}]),
+        ),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(&late), "question_not_pending");
     fixture.shutdown().await;
 }

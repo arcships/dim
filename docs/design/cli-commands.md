@@ -2867,8 +2867,12 @@ Workspace write is purple and Full access is yellow; the shortcut hint is muted.
 use darker shades for contrast, and limited-color terminals use their cyan, magenta and yellow
 slots. The permission label takes priority over the hint and other status content on narrow
 terminals. Fullscreen retains run, goal, context and notice information in the composer border.
-In scrollback, when the permission prefix and model fit together, the right-aligned model
-reserves its space before optional goal, context, notice and background text is clipped.
+In scrollback the hint ranks last: the permission label is drawn first and the hint only when
+the whole line still fits with it, so the hint's cells go to the rest when they are needed. A
+slot that asks the user something or reports a problem, which is a notice, the disconnected
+text, `answer required` and `permission required`, outranks the right-aligned model: the model
+gives up its effort first, then its place while that slot shows. `esc interrupt`, goal, context
+and background text still yield to the model, which keeps its space before they are clipped.
 
 With the composer owning the keys, Shift+Tab cycles Read only → Workspace write → Full access
 → Read only without submitting or changing the draft, including during a running turn. It

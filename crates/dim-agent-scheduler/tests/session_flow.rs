@@ -206,11 +206,10 @@ async fn a_session_job_writes_one_input_to_its_branch_and_no_report() {
         other_inputs.is_empty(),
         "nothing is written to another Session: {other_inputs:?}"
     );
-    let texts = model.texts();
-    assert!(
-        texts.contains("Work on queued."),
-        "the saved prompt reaches the branch"
-    );
+    wait_for("the saved prompt to reach the model", || {
+        model.texts().contains("Work on queued.")
+    })
+    .await;
 
     drop(client);
     server.shutdown();

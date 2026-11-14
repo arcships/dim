@@ -274,8 +274,10 @@ impl ProviderService {
                 Some(model) => model.capability_snapshot.clone().ok_or_else(|| failure("Model capabilities are not adopted"))?,
                 None => ModelCapabilitySnapshot {
                 target: ModelId { provider_id: source.id.clone(), model_id: model_id.clone() },
+                // A temporary connection has no Provider record to edit, so the
+                // declare path is the one this admission itself reads.
                 capabilities: entry.capabilities.declared()
-                    .ok_or_else(|| failure(format!("{}; supply DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS or configure the model descriptor", undeclared_limits(&entry.capabilities))))?,
+                    .ok_or_else(|| failure(format!("Model {model_id} declares no {}; supply DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS or configure the model descriptor", entry.capabilities.missing_limits().join(" or "))))?,
                 reasoning: entry.metadata.as_ref().and_then(|metadata| metadata.reasoning.clone()),
                 service_tier: entry.metadata.as_ref().and_then(|metadata| metadata.service_tier.clone()),
                 },
@@ -348,49 +350,15 @@ impl ProviderService {
                 (None, None) => None,
                 _ => unreachable!("target validated"),
             };
-            let selected = self
-                .configuration_with_limits(
-                    explicit,
-                    Some(cwd),
-                    ModelPreferences::default(),
-                    (input.context_window, input.max_output_tokens),
-                    cancel,
-                )
-                .await?;
-            let view = self
-                .management(Some(selected.provider_id.clone()), cancel)
-                .await
-                .map_err(failure)?;
-            let saved = view
-                .providers
-                .iter()
-                .find(|provider| provider.provider_id == selected.provider_id)
-                .and_then(|provider| provider.preferences.get(&selected.model_id))
-                .cloned()
-                .unwrap_or_default();
-            let prefs = ModelPreferences {
-                reasoning_effort: preferences.reasoning_effort.or(saved.reasoning_effort),
-                service_tier: preferences.service_tier.or(saved.service_tier),
-            };
-            let protocol = provider_protocol(selected.metadata.as_ref())
-                .ok_or_else(|| failure("Missing adopted model protocol"))?;
-            let config = preferences::configure(
-                &prefs,
-                selected
-                    .capability_snapshot
-                    .as_ref()
-                    .expect("Provider adopts capabilities"),
-                protocol,
-                selected
-                    .config
-                    .as_ref()
-                    .expect("Provider adopts configuration"),
+            self.configuration_with_limits(
+                explicit,
+                Some(cwd),
+                preferences,
+                Saved::Apply,
+                (input.context_window, input.max_output_tokens),
+                cancel,
             )
-            .map_err(failure)?;
-            ModelSelection {
-                config: Some(config),
-                ..selected
-            }
+            .await?
         };
         let snapshot = model
             .capability_snapshot
@@ -475,7 +443,14 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ModelId, HostError> {
         let effective = self
-            .configuration_with_limits(None, Some(cwd), ModelPreferences::default(), limits, cancel)
+            .configuration_with_limits(
+                None,
+                Some(cwd),
+                ModelPreferences::default(),
+                Saved::Withhold,
+                limits,
+                cancel,
+            )
             .await;
         self.check(cancel)?;
         let mut catalog_error = None;

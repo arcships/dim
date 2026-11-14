@@ -8,9 +8,9 @@
 //! the implementation of the version its request declared.
 use crate::{
     context_preparation::ToolSetAdoption,
-    host::ModelSettings,
+    host::{ModelSettings, ToolExecutionContext},
     prompt::{Prompt, ToolAdoptOutcome},
-    tool_registry::{ToolContribution, ToolRegistry, ToolSourceSet},
+    tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet},
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchOpening, Dispatcher, Names, QueryFilter, QueryOperand,
@@ -32,6 +32,9 @@ struct Snapshot {
     tools: HashMap<String, Arc<ToolContribution>>,
     /// Keeps the versions this request declared alive until it is released.
     _sets: Vec<Arc<ToolSourceSet>>,
+    /// What the request's handlers claimed before their batch was published,
+    /// by call id, released with this snapshot.
+    claims: HashMap<String, Box<dyn ToolClaim>>,
 }
 
 #[derive(Default)]
@@ -228,6 +231,40 @@ impl ToolBinding {
             .retain(|id, _| Some(id.as_str()) == request_id);
     }
 
+    /// Has each call's handler take what a client needs before the batch is
+    /// published, and holds the claims with the request's snapshot: every
+    /// release of that snapshot drops them.
+    ///
+    /// A call whose handler takes nothing, or whose handler is not in the
+    /// request's snapshot, takes nothing here; `execute` then claims for
+    /// itself, as it does for a batch rebuilt after a reload.
+    pub fn claim(&self, request_id: &str, calls: &[ToolCall], context: &ToolExecutionContext) {
+        let mut state = self.state.lock().unwrap();
+        let Some(snapshot) = state.snapshots.get_mut(request_id) else {
+            return;
+        };
+        let claims: Vec<_> = calls
+            .iter()
+            .filter_map(|call| {
+                let tool = snapshot.tools.get(&call.name)?;
+                Some((call.id.clone(), tool.handler.claim(call, context)?))
+            })
+            .collect();
+        snapshot.claims.extend(claims);
+    }
+
+    /// The claim a handler made for `call`, if the request holds one. It is
+    /// removed: the claim keeps the registration until it settles.
+    pub fn take_claim(&self, request_id: &str, call_id: &str) -> Option<Box<dyn ToolClaim>> {
+        self.state
+            .lock()
+            .unwrap()
+            .snapshots
+            .get_mut(request_id)?
+            .claims
+            .remove(call_id)
+    }
+
     /// Matches the adopted configuration's tool part with the registry once a
     /// model configuration exists. Without one the branch prepares requests
     /// through PrepareModelHost and binds them with `bind_current`.
@@ -350,9 +387,14 @@ fn register(
     if state.snapshots.contains_key(request_id) {
         return Err(format!("request {request_id} is already bound"));
     }
-    state
-        .snapshots
-        .insert(request_id.to_owned(), Snapshot { tools, _sets: sets });
+    state.snapshots.insert(
+        request_id.to_owned(),
+        Snapshot {
+            tools,
+            _sets: sets,
+            claims: HashMap::new(),
+        },
+    );
     Ok(())
 }
 

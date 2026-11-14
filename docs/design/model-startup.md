@@ -21,7 +21,7 @@ contracts; this document does not introduce a second model backend.
 | Input | Contract |
 | --- | --- |
 | `--model MODEL` / `DIM_MODEL` | Select the model; the explicit flag wins. A configured Provider can still be named with `--provider`. Without one, use the effective Provider if it offers the exact ID, otherwise require a unique available match. Never pick an arbitrary duplicate. |
-| `--effort LEVEL` / `DIM_EFFORT_LEVEL` | Set reasoning effort; the explicit flag wins, then the environment, then the exact model's saved preference, then its declared configuration. Values are validated by the model owner, not a CLI list tied to one vendor. |
+| `--effort LEVEL` / `DIM_EFFORT_LEVEL` | Set reasoning effort; the explicit flag wins, then the environment, then the exact model's saved preference, then its declared configuration. The server applies the saved value and the declared default; the client states only what a flag or the environment gives it. Values are validated by the model owner, not a CLI list tied to one vendor. |
 | `DIM_BASE_URL` | API base URL, including a gateway path prefix, not a completed request URL. |
 | `DIM_API_FORMAT` | Explicit protocol for a direct connection: `anthropic`, `openai-chat`, `openai-responses`, `openai-compatible`, `gemini`, `xai` or `xai-responses`. Do not infer it from a model name or URL. |
 | `DIM_API_KEY` | Key sent through the selected protocol's existing default authentication mapping. |
@@ -58,8 +58,9 @@ protocol alone cannot supply. AWS-signed Bedrock startup is not part of the
 simple HTTP credential contract; existing Provider configuration remains usable.
 
 `--effort` without direct startup uses the existing `session.create`
-`modelPreferences.reasoningEffort`. An explicit value replaces the saved effort
-but preserves saved service tier and other independent preferences. It does not
+`modelPreferences.reasoningEffort`, the one preference the client still states.
+It replaces the saved effort in that field while the server keeps the saved
+service tier and every other field the request leaves unstated. It does not
 write `provider.preferences.update` or `provider.select`. Resume reconfiguration
 follows the explicit adoption contract below; startup options must not be
 silently ignored.

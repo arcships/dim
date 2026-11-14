@@ -755,6 +755,7 @@ impl Projection {
             questions: self.questions.calls().cloned().collect(),
             queued,
             tasks: self.tasks.clone(),
+            pending_agent_names: self.unnamed_agents(),
             ended: self.ended,
             goal: self.goal.clone(),
             retry: self.retry.clone(),

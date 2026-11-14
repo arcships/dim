@@ -119,7 +119,9 @@ fn ctrl_c_ends_the_interface_when_the_terminal_stops_reading_after_the_goodbye_p
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     assert_eq!(
         terminal.local_mode() & (libc::ICANON | libc::ECHO),
@@ -263,7 +265,7 @@ fn an_incompatible_store_reports_the_startup_note() {
 fn a_server_that_exits_without_a_note_keeps_the_requirement() {
     let home = Home::new();
     let server = home.0.join("failing-server");
-    fs::write(&server, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::write(&server, "#!/bin/sh\nexit 7\n").unwrap();
     fs::set_permissions(&server, fs::Permissions::from_mode(0o700)).unwrap();
     let output = home
         .command()
@@ -276,6 +278,7 @@ fn a_server_that_exits_without_a_note_keeps_the_requirement() {
         stderr.contains("--server must name a standalone dim-app-server binary"),
         "{stderr}"
     );
+    assert!(stderr.contains("exit status: 7"), "{stderr}");
     assert!(stderr.contains("it exited before serving"), "{stderr}");
     assert!(stderr.contains("daemon.log"), "{stderr}");
     assert!(!stderr.contains("Cannot open native store"), "{stderr}");
@@ -305,6 +308,35 @@ fn note_script(note: &std::path::Path, pid: &str, body: &str) -> String {
     )
 }
 
+/// The server's copy of the note it wrote, kept where the client's delete of
+/// the note itself cannot reach it: a test that rejects a note the client
+/// only ever removes has to name what was written.
+fn seen_note(note: &std::path::Path) -> PathBuf {
+    let mut seen = note.as_os_str().to_owned();
+    seen.push(".seen");
+    PathBuf::from(seen)
+}
+
+/// The script step that keeps `seen_note(note)`, run after the note is
+/// written and its mode set.
+fn keep_note(note: &std::path::Path) -> String {
+    format!(
+        "cp -p '{note}' '{seen}'",
+        note = note.display(),
+        seen = seen_note(note).display()
+    )
+}
+
+/// The note's header line, which names the pid that wrote it.
+fn first_line(path: &std::path::Path) -> String {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
 #[test]
 fn a_startup_note_for_another_pid_is_not_printed() {
     let home = Home::new();
@@ -312,7 +344,11 @@ fn a_startup_note_for_another_pid_is_not_printed() {
     let mut server = script_server(
         &home,
         "wrong-pid-server",
-        &note_script(&note, "1", "Cannot open native store /elsewhere."),
+        &format!(
+            "{}\n{}",
+            note_script(&note, "1", "Cannot open native store /elsewhere."),
+            keep_note(&note)
+        ),
     );
     let output = server.output().unwrap();
     assert!(!output.status.success());
@@ -322,7 +358,13 @@ fn a_startup_note_for_another_pid_is_not_printed() {
         "{stderr}"
     );
     assert!(!stderr.contains("Cannot open native store"), "{stderr}");
+    assert!(stderr.contains("it exited before serving"), "{stderr}");
     assert!(!note.exists(), "the client removes the note it rejects");
+    assert_eq!(
+        first_line(&seen_note(&note)),
+        "dimcode-startup-failure v1 pid=1",
+        "the note the client rejected named another pid"
+    );
 }
 
 #[test]
@@ -330,9 +372,10 @@ fn a_startup_note_other_users_can_read_is_not_printed() {
     let home = Home::new();
     let note = startup_note(&home);
     let script = format!(
-        "{}\nchmod 0644 '{}'",
+        "{}\nchmod 0644 '{}'\n{}",
         note_script(&note, "$$", "Cannot open native store /elsewhere."),
-        note.display()
+        note.display(),
+        keep_note(&note)
     );
     let mut server = script_server(&home, "shared-note-server", &script);
     let output = server.output().unwrap();
@@ -343,7 +386,18 @@ fn a_startup_note_other_users_can_read_is_not_printed() {
         "{stderr}"
     );
     assert!(!stderr.contains("Cannot open native store"), "{stderr}");
+    assert!(stderr.contains("it exited before serving"), "{stderr}");
     assert!(!note.exists(), "the client removes the note it rejects");
+    let seen = seen_note(&note);
+    assert_eq!(
+        fs::metadata(&seen).unwrap().permissions().mode() & 0o777,
+        0o644,
+        "the note the client rejected was world-readable"
+    );
+    assert!(
+        first_line(&seen).starts_with("dimcode-startup-failure v1 pid="),
+        "the note the client rejected named this child"
+    );
 }
 
 #[test]
@@ -366,5 +420,9 @@ fn a_startup_note_body_loses_control_characters() {
     assert!(stderr.contains("native store"), "{stderr}");
     assert!(stderr.contains("Store format: v30"), "{stderr}");
     assert!(stderr.contains("Details:"), "{stderr}");
+    assert!(
+        stderr.contains("Cannot open [31mnative store[0m."),
+        "the surviving text is not the body: {stderr}"
+    );
     assert!(!stderr.contains('\u{1b}'), "{stderr}");
 }

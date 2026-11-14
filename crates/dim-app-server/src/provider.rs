@@ -195,11 +195,35 @@ pub struct ProviderModel {
     pub metadata: Option<ModelMetadata>,
 }
 
-/// The error text for a model no source declares limits for.
-fn undeclared_limits(capabilities: &CatalogCapabilities) -> String {
+/// The error text for a model no source declares limits for: the entry, the
+/// limits it lacks and, when a step refused it, the rows that still disagree.
+/// Every provider kind declares a limit through `provider.models.edit`, which
+/// `ProviderService::update_model_config` serves by calling
+/// `BundledCatalog::merge_visible_edit` and storing the result in the record's
+/// `model_config_overrides`.
+fn undeclared_limits(provider_id: &str, model: &ProviderModel) -> String {
+    let missing = model.capabilities.missing_limits().join(" or ");
+    let candidates = model
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.identification.as_ref())
+        .filter(|identification| identification.rule == "ambiguous")
+        .map(|identification| {
+            identification
+                .candidates
+                .iter()
+                .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|candidates| !candidates.is_empty());
+    let disagreement = match candidates {
+        Some(candidates) => format!(", and the rows that name it disagree ({candidates})"),
+        None => String::new(),
+    };
     format!(
-        "Model has no declared {}",
-        capabilities.missing_limits().join(" or ")
+        "Model {provider_id}/{} declares no {missing}{disagreement}; declare the missing limits with provider.models.edit",
+        model.id
     )
 }
 
@@ -210,10 +234,9 @@ fn capability_snapshot(
     model: &ProviderModel,
     target: ModelId,
 ) -> Result<ModelCapabilitySnapshot, ProviderError> {
-    let capabilities = model
-        .capabilities
-        .declared()
-        .ok_or_else(|| ProviderError::InvalidConfig(undeclared_limits(&model.capabilities)))?;
+    let capabilities = model.capabilities.declared().ok_or_else(|| {
+        ProviderError::InvalidConfig(undeclared_limits(&target.provider_id, model))
+    })?;
     Ok(ModelCapabilitySnapshot {
         target,
         capabilities,
@@ -1535,7 +1558,57 @@ fn selection_scope(cwd: Option<&Path>) -> Result<String, HostError> {
         Some(_) => Err(failure("Workspace path must be absolute")),
     }
 }
+/// Whether one resolution also applies the model's saved preferences.
+///
+/// A closed choice, so every caller of the shared core states which it means:
+/// a client adoption applies them, and every other caller withholds them, since
+/// a consumer model must not inherit what a person picked in `/models`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Saved {
+    /// Apply the saved value for each field the caller left unstated.
+    Apply,
+    /// Resolve at the model's declared defaults alone.
+    Withhold,
+}
+
 impl ProviderService {
+    /// The preferences saved for one model, `{providerId, modelId}`: the
+    /// per-model record `/models` writes, and nothing else.
+    ///
+    /// A static record keeps its own map; a managed one keeps it beside its
+    /// account. A Provider or model this build does not know answers empty, so
+    /// a disappeared record reads as no saved value rather than an error.
+    async fn saved_preferences(
+        self: &Arc<Self>,
+        provider_id: &str,
+        model_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<ModelPreferences, HostError> {
+        let managed = self
+            .oauth
+            .contains(provider_id, cancel)
+            .await
+            .map_err(failure)?;
+        let db = self.db.clone();
+        let (provider_id, model_id) = (provider_id.to_owned(), model_id.to_owned());
+        self.owned(cancel, move |_| {
+            Box::pin(async move {
+                db.run_read(move |connection| {
+                    let preferences = if managed {
+                        read_catalog(connection, &provider_id)?
+                            .and_then(|record| record.model_preferences.get(&model_id).cloned())
+                    } else {
+                        read_static(connection, &provider_id)?
+                            .and_then(|record| record.model_preferences.get(&model_id).cloned())
+                    };
+                    Ok(preferences.unwrap_or_default())
+                })
+                .await
+                .map_err(failure)
+            })
+        })
+        .await
+    }
     async fn account_available(
         self: &Arc<Self>,
         provider_id: &str,
@@ -2088,7 +2161,7 @@ impl ProviderService {
                 if model.missing_limits.is_empty() {
                     "Model is unavailable".into()
                 } else {
-                    undeclared_limits(&model.capabilities)
+                    undeclared_limits(&target.provider_id, model)
                 },
             ));
         }
@@ -2112,8 +2185,39 @@ impl ProviderService {
         preferences: ModelPreferences,
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
-        self.configuration_with_limits(explicit, cwd, preferences, (None, None), cancel)
-            .await
+        self.configuration_with_limits(
+            explicit,
+            cwd,
+            preferences,
+            Saved::Apply,
+            (None, None),
+            cancel,
+        )
+        .await
+    }
+
+    /// The configuration a consumer model runs at: the model's declared
+    /// defaults alone, never the values a person saved in `/models`.
+    ///
+    /// The host port and every part that resolves a model for its own work
+    /// call this rather than [`configuration`], so a consumer never inherits a
+    /// chat preference. `sessions.launch` and Scheduler launches reach it
+    /// through the port.
+    pub(super) async fn configuration_at_defaults(
+        self: &Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<&Path>,
+        cancel: &CancellationToken,
+    ) -> Result<ModelSelection, HostError> {
+        self.configuration_with_limits(
+            explicit,
+            cwd,
+            ModelPreferences::default(),
+            Saved::Withhold,
+            (None, None),
+            cancel,
+        )
+        .await
     }
 
     async fn configuration_with_limits(
@@ -2121,6 +2225,7 @@ impl ProviderService {
         explicit: Option<ModelId>,
         cwd: Option<&Path>,
         preferences: ModelPreferences,
+        saved: Saved,
         limits: (Option<u64>, Option<u64>),
         cancel: &CancellationToken,
     ) -> Result<ModelSelection, HostError> {
@@ -2179,8 +2284,22 @@ impl ProviderService {
             )
             .map_err(|error| failure(error.to_string()))?;
             let base = preferences::catalog_defaults(&model.config, &snapshot, protocol);
-            let config = preferences::configure(&preferences, &snapshot, protocol, &base)
-                .map_err(failure)?;
+            let config = match saved {
+                Saved::Apply => {
+                    let saved = self.saved_preferences(&id, &model.id, cancel).await?;
+                    preferences::effective(
+                        &preferences,
+                        &saved,
+                        &snapshot,
+                        protocol,
+                        &base,
+                        &id,
+                        &model.id,
+                    )
+                }
+                Saved::Withhold => preferences::configure(&preferences, &snapshot, protocol, &base),
+            }
+            .map_err(failure)?;
             return Ok(ModelSelection {
                 provider_id: id.clone(),
                 model_id: model.id.clone(),
@@ -2322,6 +2441,7 @@ impl ConnectionUse<'_> {
     fn select<'a>(
         &self,
         catalog: &'a ProviderCatalog,
+        provider_id: &str,
         model_id: &str,
     ) -> Result<&'a ProviderModel, HostError> {
         match self {
@@ -2331,7 +2451,7 @@ impl ConnectionUse<'_> {
                     .iter()
                     .find(|model| model.id == model_id)
                     .filter(|model| !model.missing_limits.is_empty())
-                    .map(|model| undeclared_limits(&model.capabilities))
+                    .map(|model| undeclared_limits(provider_id, model))
                     .unwrap_or_else(|| "Model is unavailable".into());
                 failure(message)
             }),
@@ -2443,7 +2563,7 @@ impl ProviderService {
             if let Some((window, output)) = use_.startup_limits() {
                 catalog.apply_startup_limits(Some(window), Some(output));
             }
-            let model = use_.select(&catalog, model_id)?;
+            let model = use_.select(&catalog, provider_id, model_id)?;
             let protocol = model
                 .endpoint
                 .ok_or_else(|| failure("Model is unavailable"))?;
@@ -2581,7 +2701,7 @@ impl ProviderService {
         if let Some((window, output)) = use_.startup_limits() {
             catalog.apply_startup_limits(Some(window), Some(output));
         }
-        let model = use_.select(&catalog, model_id)?;
+        let model = use_.select(&catalog, provider_id, model_id)?;
         let realtime = use_.realtime(model)?;
         let lease = self
             .oauth
@@ -2691,12 +2811,7 @@ impl ResolveModelSelection for ProductResolver {
     ) -> HostFuture<'_, ModelSelection> {
         Box::pin(async move {
             self.0
-                .configuration(
-                    explicit,
-                    cwd.as_deref(),
-                    ModelPreferences::default(),
-                    &cancel,
-                )
+                .configuration_at_defaults(explicit, cwd.as_deref(), &cancel)
                 .await
         })
     }

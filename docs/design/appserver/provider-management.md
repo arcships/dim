@@ -323,19 +323,25 @@ cancel it. Owner unload uses the existing cancellation token and drains the call
 
 Provider persists the existing `ModelPreferences` for clients only. The
 [F3 client](../model-configuration.md) sends
-the exact `{providerId, modelId}` with preferences read for that pair to
+the exact `{providerId, modelId}` with preferences for that pair to
 `session.create` or `session.model.update`. An unavailable explicit target fails;
 report it and do not retry without the target or fall back to another model.
-The server never applies saved preferences implicitly. Omitted preferences with
-an explicit target still start at catalog defaults, including a model's declared
-default reasoning effort, service tier and reasoning summary; untargeted F3
-updates still
-change only supplied fields on the current adopted model. Which catalog
-declarations are applied, and why the others only describe the model, is
+The server applies the model's saved preferences when the request states none:
+for each field the client leaves unstated, `session.create`,
+`session.model.preview` and a targeted `session.model.update` take the value saved
+for that `{providerId, modelId}`, then the model's declared default. A stated
+field wins. A saved value the model no longer accepts is dropped for that field,
+the declared default stands, and the server logs one warning; a stated value it
+rejects still fails the adoption. Untargeted F3 updates still change only
+supplied fields on the current adopted model. Which catalog declarations are
+applied, and why the others only describe the model, is
 [the model-configuration rule](../model-configuration.md#model-parameters).
 `/fast` remains
-Session-only; saved `serviceTier` is a persisted fast/tier choice applied only by
-an explicit client request. Consumer-specific models do not inherit chat preferences.
+Session-only; a saved `serviceTier` is a persisted fast/tier choice the server
+applies like a saved effort. `sessions.launch` — how Scheduler, Workflow and
+other plugins start work — is not a client Session: it keeps catalog defaults and
+does not inherit chat preferences, and neither does any other consumer-specific
+model.
 
 Usage reuses implemented `account.usage {providerId} -> Usage` in the `account`
 namespace, forwarding one call to the optional package's existing `usage` method.
@@ -423,6 +429,49 @@ already records:
 | Provider descriptor | `capabilityOverrideFields` on the stored descriptor; a non-positive descriptor value reads as absent | The model that descriptor describes |
 | Bundled catalog | `metadataSource` naming the matched bundled provider: an entry declares a limit only where its `metadata.raw` does, and the bundle drops every other limit when it is loaded; that provider's `contextWindowOverride` and `contextWindowFallback` metadata stay declarations | The models the lookup matches, or every model of the provider |
 | User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps | The model the override names |
+
+The model is identified first, and the numbers are read from the entry that
+identification named. Identification runs over the catalog, and the first step
+that leaves one model wins: the provider's own list by exact id; then the whole
+qualified id, when the namespace it carries names the provider whose row
+carries that id, so an aggregator's own house model is never answered by the
+unrelated row its final token happens to name; then a vendor entry whose own
+tokens are the head of the id, its tail no more than a date, `latest`, a tag
+suffix or a bracketed context modifier; then the vendor's upstream canonical id
+and display name read together, where the display name narrows several
+canonical hits and a remaining disagreement is an ambiguity rather than a
+guess; then the `custom-provider` rows by those same two rules; and last, for a
+model that no vendor entry and no `custom-provider` row names, a merge of the
+aggregator rows whose own id names the same model with the same tag, taken in
+the safe direction: the smallest window, the smallest output cap and the
+intersection of the effort choices. A provider default is not a declaration, so
+a row carrying the pair its provider writes across many of its rows declares no
+limit there.
+
+The namespace of a qualified id is what makes it an identity, not a hint. When
+it names a bundled provider, a token, canonical-id or display-name step that
+finds only rows of other providers answers nothing and refuses the id with
+those rows as the candidates: a final token alone may not hand a qualified id
+to a vendor the id did not name. An id whose namespace names no bundled
+provider is a plain name for a model several sellers list, and those steps read
+it as one.
+
+The projection records the outcome in `metadata.identification`: `rule` is one
+of `provider-exact`, `qualified`, `token`, `canonical`, `custom-provider`,
+`merge` or `ambiguous`; `narrowedByDisplayName` says the display name settled
+several canonical hits; `candidates` names the rows an ambiguity refused; and
+`filled` names the entry, rule and value of each limit the row did not declare.
+A merge adopts one minimum per limit from one joining row each, so its `filled`
+names the row that declared each adopted value, with that merge's own `rule`. A
+limit the row declares itself has no `filled` record, and `provider.models.edit`
+drops the record of each limit it declares. A refusal names the provider and
+the model id, the limits that are missing, the candidates that still disagree,
+and `provider.models.edit` as the write that declares them.
+
+`metadataSource` and `matchedProviderId` name the row the projected entry is
+copied from, which for a merge is the first joining row: the entry's display
+name, pricing, capabilities and any limit that row declares come from it. They
+do not name the supplier of a merged limit; `filled` does, one limit at a time.
 
 Absence is a value of the type, not a number. The catalog carries
 `CatalogCapabilities`, whose two limits are optional and absent when no source
@@ -925,8 +974,9 @@ adopts that model and writes the default the next Session in the launch
 workspace reads: the workspace scope when that folder has one, otherwise the
 global scope, with `expectedVersion` from the same scope. A workspace write's
 notice names that folder, and a global write's notice names no folder. A
-cycled effort is saved as its `reasoningEffort` and sent
-with the model's other saved preferences. Editing a Provider's model list is the
+cycled effort is saved as its `reasoningEffort` and the adoption then sends only
+the target, so the server applies the value just saved together with the model's
+other saved preferences. Editing a Provider's model list is the
 models management area ([CLI commands § The Models area](../cli-commands.md#the-models-area)):
 `Edit models` in `/models` and `dimcode models PROVIDER add|edit|set|remove|inspect`
 read `provider.management` and write through `provider.models.*`; the picker
@@ -1050,7 +1100,7 @@ formats retain their existing rejection and byte-preservation rules.
 | Edit | Effect on already-adopted Sessions |
 | --- | --- |
 | Credential, base URL, headers, proxy, timeout | Current connection is resolved on the next request; already-issued I/O uses its admitted connection |
-| Descriptor/capability edits or saved preferences | Adopted snapshot stays unchanged; changes apply on the next explicit adoption, preferences only when passed |
+| Descriptor/capability edits or saved preferences | Adopted snapshot stays unchanged; changes apply on the next explicit adoption, saved preferences then applied by the server unless the request states them |
 | Disable/delete Provider or model | Next request/adoption fails unavailable/not found; no forced switch or cross-owner reference rewrite |
 | A limit declared, or its source removed | An adopted Session keeps its snapshot. With a limit undeclared, the next request fails before credentials or network I/O and names the missing limits; after both are declared, selecting the model adopts them (§3.5). The request output allowance is re-derived from the kept snapshot at every request, never from a stored value above the rule |
 | Effective route change from refresh or an endpoint override | A different adopted route stamp fails with a diagnostic to select the model again. An unstamped Session uses the current route on its next request; either edit can break protocol-bound history or lose effort/tier options mapped for the old protocol |

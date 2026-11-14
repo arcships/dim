@@ -171,7 +171,9 @@ fn a_draft_keeps_the_interface_from_asking() {
         settled.send(()).unwrap();
         wire.hold();
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"a draft");
     terminal.until("a draft");

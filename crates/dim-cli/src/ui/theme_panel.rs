@@ -118,10 +118,6 @@ mod tests {
         let light = entries(ColorMode::Ansi256, Appearance::Light);
         assert!(light.iter().any(|(id, _)| *id == "dim-light"));
         assert_eq!(entries(ColorMode::Ansi16, Appearance::Dark).len(), 1);
-    }
-
-    #[test]
-    fn a_theme_of_the_other_family_falls_back_to_system() {
         let system = Theme::system(ColorMode::TrueColor, Appearance::Light, None);
         let named = Theme::named("dim-dark", ColorMode::TrueColor, Appearance::Light, None);
         assert_eq!(named.palette, system.palette);

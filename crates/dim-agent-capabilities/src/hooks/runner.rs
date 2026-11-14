@@ -473,6 +473,14 @@ impl HooksRuntime {
             }
         };
         self.report(handler, &result, started.elapsed());
+        // The run's result is taken here, in the same poll that hands it to
+        // `run_ordered`: the select there is biased to a finished run over
+        // the unload, and nothing awaits between this settle and the return.
+        // The early returns above (gate cancelled, spawn failed, wait failed)
+        // settle nothing: they leave the test's watch waiting, which is the
+        // conservative direction.
+        #[cfg(feature = "testing")]
+        super::testing::settle(Path::new(&self.config.cwd), &handler.source, &result);
         result
     }
 
@@ -2699,25 +2707,6 @@ mod tests {
         let both = contribution_of(HookEvent::PostToolUse, &run(object)).expect("a contribution");
         assert!(both.contains("blocking reason"), "{both}");
         assert!(both.contains("start context"), "{both}");
-    }
-
-    /// `fold` registers the run's token before its task starts, so the
-    /// answer that folds first cancels the registered one.
-    #[test]
-    fn a_live_request_registers_its_token_before_its_task_starts() {
-        let pending = Pending::default();
-        let cancel = pending.register("approval-1", &CancellationToken::new());
-        assert!(!cancel.is_cancelled());
-        pending.cancel("approval-1");
-        assert!(
-            cancel.is_cancelled(),
-            "the registered token was not cancelled"
-        );
-        assert!(
-            pending.tokens.lock().unwrap().is_empty(),
-            "the cancelled run stayed registered"
-        );
-        pending.finish("approval-1");
     }
 
     #[cfg(unix)]

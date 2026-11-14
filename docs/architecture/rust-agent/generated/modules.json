@@ -721,6 +721,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::hooks::testing",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::hooks",
+      "file": "crates/dim-agent-capabilities/src/hooks/mod.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::host",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -1152,6 +1161,17 @@
         "matches",
         "tokio::select",
         "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::shell_session::tests",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::shell_session",
+      "file": "crates/dim-agent-capabilities/src/shell_session.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format"
       ]
     },
     {
@@ -2911,13 +2931,21 @@
       "file": "crates/dim-app-server/src/model_catalog.rs",
       "unexpandedMacros": [
         "b",
-        "format",
         "include_str",
         "inherit",
         "inherit_capability",
         "macro_rules",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::model_catalog::id",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::model_catalog",
+      "file": "crates/dim-app-server/src/model_catalog/id.rs",
+      "unexpandedMacros": [
+        "format",
         "matches",
-        "serde_json::json",
         "vec"
       ]
     },
@@ -3151,7 +3179,9 @@
       "crate": "dim_app_server",
       "parent": "dim_app_server::provider",
       "file": "crates/dim-app-server/src/provider/preferences.rs",
-      "unexpandedMacros": []
+      "unexpandedMacros": [
+        "tracing::warn"
+      ]
     },
     {
       "id": "dim_app_server::provider::remote",
@@ -7183,6 +7213,17 @@
       ]
     },
     {
+      "id": "dim_ocr::helper::tests",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr::helper",
+      "file": "crates/dim-ocr/src/helper.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format"
+      ]
+    },
+    {
       "id": "dim_ocr::pdf",
       "crate": "dim_ocr",
       "parent": "dim_ocr",
@@ -9486,11 +9527,13 @@
         "path ContextModelHost",
         "path HostError::Cancelled",
         "path PrepareModelHost",
+        "path ToolExecutionContext",
         "path crate::host::ModelSettings",
         "use crate::host::CompactionStrategyHost",
         "use crate::host::ContextModelHost",
         "use crate::host::HostError",
-        "use crate::host::PrepareModelHost"
+        "use crate::host::PrepareModelHost",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -12363,6 +12406,13 @@
     },
     {
       "from": "dim_agent_capabilities::hooks",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "mod testing"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path dim_agent_runtime::AgentBuilder"
@@ -12457,6 +12507,13 @@
         "use crate::hooks::HookSourceId",
         "use crate::hooks::HookSourcesHost",
         "use crate::hooks::HookSourcesSnapshot"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::runner",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "path super::testing::settle"
       ]
     },
     {
@@ -12732,7 +12789,6 @@
         "path HookResult::Success",
         "path HookRun",
         "path HooksRuntime",
-        "path Pending::default",
         "path PromptDecision::Context",
         "path approval_point",
         "path contribution_of",
@@ -12822,6 +12878,25 @@
         "path HostFuture",
         "use crate::host::HostError",
         "use crate::host::HostFuture"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::runner",
+      "references": [
+        "path HookResult",
+        "path HookResult::Blocked",
+        "path HookResult::Failed",
+        "path HookResult::Success",
+        "use super::runner::HookResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::sources",
+      "references": [
+        "path HookSourceId",
+        "use super::sources::HookSourceId"
       ]
     },
     {
@@ -15827,6 +15902,13 @@
     },
     {
       "from": "dim_agent_capabilities::shell_session",
+      "to": "dim_agent_capabilities::shell_session::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::shell_session",
       "to": "dim_agent_capabilities::workspace_tools::background",
       "references": [
         "path wake_input",
@@ -15912,6 +15994,15 @@
         "path ToolResult::text",
         "use dim_agent_types::ToolEffect",
         "use dim_agent_types::ToolResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::shell_session::tests",
+      "to": "dim_agent_capabilities::shell_session",
+      "references": [
+        "path Capture",
+        "path Capture::new",
+        "path OUTPUT_LIMIT"
       ]
     },
     {
@@ -17146,7 +17237,9 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path ModelSettings",
-        "use crate::host::ModelSettings"
+        "path ToolExecutionContext",
+        "use crate::host::ModelSettings",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -17165,10 +17258,12 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolRegistry",
         "path ToolSourceSet",
         "path crate::tool_registry::is_contributed",
+        "use crate::tool_registry::ToolClaim",
         "use crate::tool_registry::ToolContribution",
         "use crate::tool_registry::ToolRegistry",
         "use crate::tool_registry::ToolSourceSet"
@@ -17271,6 +17366,7 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_types::tool",
       "references": [
+        "path ToolCall",
         "path ToolDefinition",
         "path tool"
       ]
@@ -19270,10 +19366,12 @@
       "from": "dim_agent_questions",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolHandler",
         "path ToolRegistry",
         "path definition",
+        "use dim_agent_capabilities::tool_registry::ToolClaim",
         "use dim_agent_capabilities::tool_registry::ToolContribution",
         "use dim_agent_capabilities::tool_registry::ToolHandler",
         "use dim_agent_capabilities::tool_registry::ToolRegistry",
@@ -28661,6 +28759,39 @@
       ]
     },
     {
+      "from": "dim_app_server::model_catalog",
+      "to": "dim_app_server::model_catalog::id",
+      "references": [
+        "mod id",
+        "path id",
+        "path id::IdIndex",
+        "path id::IdIndex::new",
+        "path id::is_placeholder",
+        "path variants",
+        "use self::id::variants"
+      ]
+    },
+    {
+      "from": "dim_app_server::model_catalog::id",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path CatalogCapabilities"
+      ]
+    },
+    {
+      "from": "dim_app_server::model_catalog::id",
+      "to": "dim_app_server::model_catalog",
+      "references": [
+        "path BundledCatalog",
+        "path CatalogProvider",
+        "path FilledLimit",
+        "path ModelEntry",
+        "path ModelSource::Custom",
+        "path ProviderProjection",
+        "path ProviderRole::Vendor"
+      ]
+    },
+    {
       "from": "dim_app_server::model_log",
       "to": "dim_agent_aimux::recording",
       "references": [
@@ -29814,6 +29945,7 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure",
+        "path preferences::effective",
         "path preferences::restore_reasoning",
         "path preferences::restore_service_tier"
       ]
@@ -29902,9 +30034,7 @@
       "from": "dim_app_server::provider::auxiliary",
       "to": "dim_agent_types::model",
       "references": [
-        "path ModelPreferences::default",
-        "path model",
-        "use super::ModelPreferences"
+        "path model"
       ]
     },
     {
@@ -30589,6 +30719,8 @@
       "to": "dim_app_server::provider",
       "references": [
         "path ProviderService",
+        "path Saved::Apply",
+        "path Saved::Withhold",
         "path failure",
         "path provider_protocol"
       ]
@@ -30600,13 +30732,6 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::startup",
-      "to": "dim_app_server::provider::view",
-      "references": [
-        "path view"
       ]
     },
     {
@@ -34431,8 +34556,7 @@
         "path session_host::LimitTarget::Missing",
         "path session_host::LimitTarget::Model",
         "path session_host::clear_saved_model_preferences",
-        "path session_host::declare_model_limits",
-        "path session_host::saved_model_preferences"
+        "path session_host::declare_model_limits"
       ]
     },
     {
@@ -37739,6 +37863,7 @@
       "from": "dim_cli::plugin_command::tests",
       "to": "dim_cli::plugin_command",
       "references": [
+        "path list_line",
         "path parse",
         "use super::list_line",
         "use super::parse"
@@ -45529,7 +45654,6 @@
       "from": "dim_cli::ui::tasks_panel",
       "to": "dim_cli::ui::transcript::tool_group",
       "references": [
-        "path ToolDetail",
         "path ToolDetail::Expanded",
         "use crate::ui::transcript::tool_group::Detail"
       ]
@@ -47238,6 +47362,7 @@
         "path RowKind::AssistantMessage",
         "path RowKind::Compaction",
         "path RowKind::HookContext",
+        "path RowKind::MemberResult",
         "path RowKind::StreamingAssistant",
         "path RowKind::Thinking",
         "path RowKind::ToolCall",
@@ -51836,6 +51961,7 @@
         "path HelperErrorCode",
         "path MAX_ARTIFACT_BYTES",
         "path MAX_INPUT_BYTES",
+        "path OutputMode",
         "path OutputMode::Layout",
         "path OutputMode::Text",
         "path RESULT_FILE",
@@ -51856,6 +51982,13 @@
     },
     {
       "from": "dim_ocr::helper",
+      "to": "dim_ocr::helper::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
       "to": "dim_ocr::pdf",
       "references": [
         "path crate::pdf::PdfDocument",
@@ -51870,6 +52003,26 @@
         "path crate::vision::recognize_image",
         "path crate::vision::recognize_url",
         "path crate::vision::write_png"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper::tests",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::failed",
+        "path OutputMode::Layout",
+        "path OutputMode::Text",
+        "path Region",
+        "use crate::contract::Region"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper::tests",
+      "to": "dim_ocr::helper",
+      "references": [
+        "path ArtifactWriter::new",
+        "path page_image_artifact"
       ]
     },
     {

@@ -18,7 +18,7 @@ use dim_agent_capabilities::{
     host::{HostError, HostFuture, ToolExecutionContext},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     timeline_tree::TreeCommands,
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
+    tool_registry::{ToolClaim, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{AgentBuilder, CAPABILITY_RELOADING, Names, SessionConfig};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
@@ -274,66 +274,127 @@ struct Waiters {
     table: HashMap<(String, String, String), Waiter>,
 }
 
+/// The waiter `ask_user` registered for one call before its batch was
+/// published. Dropping it unregisters the call.
+struct Claim {
+    /// The branch, the `request_id` of the call's `step/tool-call`, and its
+    /// call id.
+    key: (String, String, String),
+    questions: Arc<[Question]>,
+    answer: Mutex<Option<oneshot::Receiver<Answered>>>,
+    waiters: Arc<Mutex<Waiters>>,
+}
+
+impl ToolClaim for Claim {
+    fn dispatch(
+        self: Box<Self>,
+        call: ToolCall,
+        _: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ToolResult> {
+        Box::pin(async move {
+            let Some(mut answer) = self.answer.lock().unwrap().take() else {
+                return Ok(ToolResult::error(format!(
+                    "Invalid ask_user input: duplicate call id {}",
+                    call.id
+                )));
+            };
+            let answered = tokio::select! {
+                biased;
+                answered = &mut answer => answered,
+                _ = cancel.cancelled() => {
+                    if self.waiters.lock().unwrap().table.remove(&self.key).is_some() {
+                        return Err(HostError::Cancelled(CANCELLED.into()));
+                    }
+                    answer.await
+                }
+            };
+            let answered =
+                answered.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
+            Ok(result(&self.questions, answered))
+        })
+    }
+}
+
+impl Drop for Claim {
+    /// Unregisters the call. `respond` may have removed the entry already, so
+    /// this is a no-op then; every path from the claim that does not reach its
+    /// dispatch ends here.
+    fn drop(&mut self) {
+        self.waiters.lock().unwrap().table.remove(&self.key);
+    }
+}
+
 struct Questions {
     config: Arc<SessionConfig>,
-    waiters: Mutex<Waiters>,
+    waiters: Arc<Mutex<Waiters>>,
 }
 
 impl Questions {
+    /// Registers the waiter of one call, or says why it never waits; the
+    /// reason is the result `ask` reports.
+    fn register(&self, call: &ToolCall, context: &ToolExecutionContext) -> Result<Claim, String> {
+        let questions: Arc<[Question]> = parse(call.input.clone())
+            .map_err(|reason| format!("Invalid ask_user input: {reason}"))?
+            .into();
+        if !self.config.interactive {
+            return Err(NON_INTERACTIVE.to_owned());
+        }
+        let key = (
+            context.branch_id.clone(),
+            context.request_id.clone(),
+            call.id.clone(),
+        );
+        let (sender, answer) = oneshot::channel();
+        let mut waiters = self.waiters.lock().unwrap();
+        if waiters.closed {
+            return Err(CAPABILITY_RELOADING.to_owned());
+        }
+        if waiters.table.contains_key(&key) {
+            return Err(format!(
+                "Invalid ask_user input: duplicate call id {}",
+                key.2
+            ));
+        }
+        waiters.table.insert(
+            key.clone(),
+            Waiter {
+                questions: questions.clone(),
+                sender,
+            },
+        );
+        Ok(Claim {
+            key,
+            questions,
+            answer: Mutex::new(Some(answer)),
+            waiters: self.waiters.clone(),
+        })
+    }
+    /// A claim for a call of a published batch this part did not claim, as a
+    /// batch rebuilt after a reload raises.
+    fn claimed(
+        &self,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+    ) -> Option<Box<dyn ToolClaim>> {
+        Some(Box::new(self.register(call, context).ok()?))
+    }
     async fn ask(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> Result<ToolResult, HostError> {
-        let questions: Arc<[Question]> = match parse(call.input) {
-            Ok(questions) => questions.into(),
-            Err(reason) => {
-                return Ok(ToolResult::error(format!(
-                    "Invalid ask_user input: {reason}"
-                )));
-            }
-        };
-        if !self.config.interactive {
-            return Ok(ToolResult::error(NON_INTERACTIVE));
-        }
-        // A token that has already fired registers nothing (Appendix B).
         if cancel.is_cancelled() {
             return Err(HostError::Cancelled(CANCELLED.into()));
         }
-        let key = (context.branch_id, context.request_id, call.id);
-        let (sender, mut answer) = oneshot::channel();
-        {
-            let mut waiters = self.waiters.lock().unwrap();
-            if waiters.closed {
-                return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
+        match self.register(&call, &context) {
+            Ok(claim) => Box::new(claim).dispatch(call, context, cancel).await,
+            Err(reason) if reason == CAPABILITY_RELOADING => {
+                Err(HostError::Cancelled(CAPABILITY_RELOADING.into()))
             }
-            if waiters.table.contains_key(&key) {
-                return Ok(ToolResult::error(format!(
-                    "Invalid ask_user input: duplicate call id {}",
-                    key.2
-                )));
-            }
-            waiters.table.insert(
-                key.clone(),
-                Waiter {
-                    questions: questions.clone(),
-                    sender,
-                },
-            );
+            Err(reason) => Ok(ToolResult::error(reason)),
         }
-        let answered = tokio::select! {
-            biased;
-            answered = &mut answer => answered,
-            _ = cancel.cancelled() => {
-                if self.waiters.lock().unwrap().table.remove(&key).is_some() {
-                    return Err(HostError::Cancelled(CANCELLED.into()));
-                }
-                answer.await
-            }
-        };
-        let answered = answered.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
-        Ok(result(&questions, answered))
     }
 
     fn respond(&self, value: Value) -> Result<Value, RpcError> {
@@ -386,6 +447,9 @@ impl Questions {
 
 struct AskUser(Arc<Questions>);
 impl ToolHandler for AskUser {
+    fn claim(&self, call: &ToolCall, context: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
+        self.0.claimed(call, context)
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -474,7 +538,7 @@ impl DynPlugin for QuestionsPlugin {
             let tree = ctx.require_at(&self.tree)?;
             let questions = Arc::new(Questions {
                 config,
-                waiters: Mutex::default(),
+                waiters: Arc::new(Mutex::default()),
             });
             let owner = questions.clone();
             ctx.effect(move || async move {
