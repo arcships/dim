@@ -3993,9 +3993,7 @@ async fn a_client_cancel_after_the_member_input_is_applied_stops_the_turn_it_sta
 /// a request to that member decided while the stop is still pending is
 /// refused `busy`, and one sent after it returns is accepted. The store holds
 /// the (S) wait's own read of `input/consumed`, so the member's turn finishes
-/// and the request settles while the stop is still owed. The mark is
-/// Collaboration's process memory, so the cancellation is offered again while
-/// its answer is `busy`: taking it is what says the stop returned.
+/// and the request settles while the stop is still owed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() {
     let (store, _, _) = InputHoldStore::new();
@@ -4110,17 +4108,8 @@ async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() 
         }
     );
 
-    // The stopping mark is Collaboration's process memory: the carry-out task
-    // clears it after its last check of the member's facts returns, and no
-    // Timeline fact records it, so releasing the held read does not clear it
-    // in the same step — that unblocks the check, which the carry-out task
-    // then has to run. A delivery that reaches the busy check first is
-    // answered `busy`, the product's own statement that the stop is still
-    // owed, which is the state this test set up. So the request is offered
-    // again while that is the answer; the member taking it is what says the
-    // stop returned, and any other refusal still fails here. One request is
-    // in flight at a time, and a stop that never returns is caught by the
-    // deadline.
+    // Releasing the read wakes the carry-out task, which drops the stopping
+    // mark only at its next check, so a request can still be answered `busy`.
     release_read.release();
     let asked = async |client: &mut Client| {
         let before = deliveries(&lead_session).await.len();
