@@ -39,6 +39,87 @@ pub(super) fn catalog_defaults(
     config
 }
 
+/// The preferences one adoption sends: the client's stated values, and for
+/// every field the client left unstated the model's saved value.
+///
+/// Per field, so a client that states an effort keeps the saved tier.
+pub(super) fn merge(stated: &ModelPreferences, saved: &ModelPreferences) -> ModelPreferences {
+    ModelPreferences {
+        reasoning_effort: stated
+            .reasoning_effort
+            .clone()
+            .or_else(|| saved.reasoning_effort.clone()),
+        service_tier: stated
+            .service_tier
+            .clone()
+            .or_else(|| saved.service_tier.clone()),
+    }
+}
+
+/// The configuration one adoption sends: `configure` over the client's stated
+/// preferences and, for each field it left unstated, the model's saved value.
+///
+/// A stated value the model refuses fails the adoption, exactly as a stated
+/// value does today. A saved value it no longer accepts is dropped for that
+/// field alone, so a catalog change cannot fail every create that states
+/// nothing, and the declared default stands there instead; one warning names
+/// the Provider, the model and the field. The saved record is never rewritten
+/// here: the write side stays its only writer.
+pub(super) fn effective(
+    stated: &ModelPreferences,
+    saved: &ModelPreferences,
+    snapshot: &ModelCapabilitySnapshot,
+    protocol: ModelProtocol,
+    base: &ModelConfig,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<ModelConfig, &'static str> {
+    let merged = merge(stated, saved);
+    if let Ok(config) = configure(&merged, snapshot, protocol, base) {
+        return Ok(config);
+    }
+    let accepts =
+        |preferences: &ModelPreferences| configure(preferences, snapshot, protocol, base).is_ok();
+    let mut kept = stated.clone();
+    if kept.reasoning_effort.is_none()
+        && let Some(effort) = &saved.reasoning_effort
+    {
+        let single = ModelPreferences {
+            reasoning_effort: Some(effort.clone()),
+            service_tier: None,
+        };
+        if accepts(&single) {
+            kept.reasoning_effort = Some(effort.clone());
+        } else {
+            tracing::warn!(
+                provider_id,
+                model_id,
+                field = "reasoningEffort",
+                "Saved model preference is not accepted by the model; using the declared default"
+            );
+        }
+    }
+    if kept.service_tier.is_none()
+        && let Some(tier) = &saved.service_tier
+    {
+        let single = ModelPreferences {
+            reasoning_effort: None,
+            service_tier: Some(tier.clone()),
+        };
+        if accepts(&single) {
+            kept.service_tier = Some(tier.clone());
+        } else {
+            tracing::warn!(
+                provider_id,
+                model_id,
+                field = "serviceTier",
+                "Saved model preference is not accepted by the model; using the declared default"
+            );
+        }
+    }
+    configure(&kept, snapshot, protocol, base)
+}
+
 /// The model's declared default effort, when the picker would offer it.
 ///
 /// A declaration that states reasoning is off by default (#1376) names only a

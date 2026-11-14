@@ -809,7 +809,6 @@ impl Worker {
             crate::add_creation_worktree(&self.client, &self.options, &mut params)?;
             params
         };
-        let mut preferences = params.get("modelPreferences").cloned();
         let mut target = if initial {
             self.options
                 .provider
@@ -835,19 +834,13 @@ impl Worker {
                         .client
                         .typed("provider.management", json!({}))
                         .await?;
-                    let configured = snapshot
+                    snapshot
                         .providers
                         .into_iter()
                         .find(|entry| entry.provider_id == provider)
                         .ok_or_else(|| format!("{cannot_copy}, or select a configured Provider model before starting a new Session"))?;
-                    preferences = configured.preferences.get(&model).cloned();
-                } else {
-                    preferences = saved_model_preferences(&mut self.client, &provider, &model).await?;
                 }
                 target = Some((provider, model));
-            }
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
             }
             match self.client.typed::<Created>("session.create", params).await {
                 Ok(created) => Ok(created),
@@ -855,9 +848,6 @@ impl Worker {
                     &mut self.client,
                     target.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
                     error,
-                    preferences
-                        .as_ref()
-                        .filter(|_| !initial || self.options.effort.is_none()),
                 )
                 .await),
             }
@@ -3774,8 +3764,8 @@ impl Worker {
 
     /// Switches the session's model, or at home the one the first message
     /// starts a session on, then makes it the default for new ones.
-    /// A cycled `reasoning_effort` is saved first, then sent with the model's
-    /// other saved preferences. `label` is the picker row's text, which the
+    /// A cycled `reasoning_effort` is saved first, so the server reads it when
+    /// it adopts the model. `label` is the picker row's text, which the
     /// default's confirmation names back.
     async fn select_model(
         &mut self,
@@ -3791,14 +3781,6 @@ impl Worker {
         if let Some(effort) = &reasoning_effort {
             self.save_reasoning_effort(&provider_id, &model_id, effort)
                 .await?;
-        }
-        let mut preferences =
-            saved_model_preferences(&mut self.client, &provider_id, &model_id).await?;
-        if let Some(effort) = &reasoning_effort {
-            let value = preferences.get_or_insert_with(|| json!({}));
-            if let Some(object) = value.as_object_mut() {
-                object.insert("reasoningEffort".to_owned(), json!(effort));
-            }
         }
         let model = if self.session_id.is_empty() {
             self.model_session = None;
@@ -3819,10 +3801,7 @@ impl Worker {
             model
         } else {
             let target = (provider_id.clone(), model_id.clone());
-            let mut params = json!({"sessionId":self.session_id,"branchId":"main","providerId":provider_id,"modelId":model_id});
-            if let Some(preferences) = &preferences {
-                params["modelPreferences"] = preferences.clone();
-            }
+            let params = json!({"sessionId":self.session_id,"branchId":"main","providerId":provider_id,"modelId":model_id});
             let updated: Updated = match self.client.typed("session.model.update", params).await {
                 Ok(updated) => updated,
                 Err(error) => {
@@ -3830,7 +3809,6 @@ impl Worker {
                         &mut self.client,
                         Some((target.0.as_str(), target.1.as_str())),
                         error,
-                        preferences.as_ref(),
                     )
                     .await);
                 }
@@ -4845,12 +4823,10 @@ pub(crate) async fn adopt_startup(
     if let Some(model) = &options.model {
         params["modelId"] = json!(model);
     }
-    let mut saved = None;
-    if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
+    if let Some(provider) = &options.provider {
         params["providerId"] = json!(provider);
-        saved = saved_model_preferences(client, provider, model).await?;
     }
-    if let Some(preferences) = options.creation_preferences(saved) {
+    if let Some(preferences) = options.creation_preferences() {
         params["modelPreferences"] = preferences;
     }
     client
@@ -4879,25 +4855,6 @@ fn selection_version(reply: serde_json::Value) -> crate::Result<Option<u32>> {
     let current: Current =
         serde_json::from_value(reply).map_err(|_| "Invalid provider.selection response")?;
     Ok(current.selection.map(|selection| selection.version))
-}
-
-pub(crate) async fn saved_model_preferences(
-    client: &mut Client,
-    provider_id: &str,
-    model_id: &str,
-) -> crate::Result<Option<serde_json::Value>> {
-    if !client.offers("provider.management") {
-        return Ok(None);
-    }
-    let snapshot: ProviderManagement = client
-        .typed("provider.management", json!({"providerId":provider_id}))
-        .await?;
-    let provider = snapshot
-        .providers
-        .into_iter()
-        .next()
-        .ok_or("Provider management entry is missing")?;
-    Ok(provider.preferences.get(model_id).cloned())
 }
 
 pub(crate) async fn clear_model_preferences(

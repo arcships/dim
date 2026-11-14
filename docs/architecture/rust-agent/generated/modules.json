@@ -3151,7 +3151,9 @@
       "crate": "dim_app_server",
       "parent": "dim_app_server::provider",
       "file": "crates/dim-app-server/src/provider/preferences.rs",
-      "unexpandedMacros": []
+      "unexpandedMacros": [
+        "tracing::warn"
+      ]
     },
     {
       "id": "dim_app_server::provider::remote",
@@ -29768,6 +29770,7 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure",
+        "path preferences::effective",
         "path preferences::restore_reasoning",
         "path preferences::restore_service_tier"
       ]
@@ -29856,9 +29859,7 @@
       "from": "dim_app_server::provider::auxiliary",
       "to": "dim_agent_types::model",
       "references": [
-        "path ModelPreferences::default",
-        "path model",
-        "use super::ModelPreferences"
+        "path model"
       ]
     },
     {
@@ -30543,6 +30544,8 @@
       "to": "dim_app_server::provider",
       "references": [
         "path ProviderService",
+        "path Saved::Apply",
+        "path Saved::Withhold",
         "path failure",
         "path provider_protocol"
       ]
@@ -30554,13 +30557,6 @@
         "path preferences",
         "path preferences::catalog_defaults",
         "path preferences::configure"
-      ]
-    },
-    {
-      "from": "dim_app_server::provider::startup",
-      "to": "dim_app_server::provider::view",
-      "references": [
-        "path view"
       ]
     },
     {
@@ -34385,8 +34381,7 @@
         "path session_host::LimitTarget::Missing",
         "path session_host::LimitTarget::Model",
         "path session_host::clear_saved_model_preferences",
-        "path session_host::declare_model_limits",
-        "path session_host::saved_model_preferences"
+        "path session_host::declare_model_limits"
       ]
     },
     {

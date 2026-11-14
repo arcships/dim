@@ -122,28 +122,22 @@ fn first_shell_command_creates_once_without_submitting_a_model_turn() {
 #[test]
 fn home_previews_the_model_without_creating_a_session_and_survives_preview_errors() {
     for fullscreen in [false, true] {
-        for outcome in [
-            "ready",
-            "rejected",
-            "preview-timeout",
-            "preferences-timeout",
-        ] {
+        for outcome in ["ready", "rejected", "preview-timeout"] {
             let home = Home::new();
             let daemon = home.daemon(move |wire| {
-                if outcome == "preferences-timeout" {
-                    wire.hello(&["session.model.preview", "provider.management"]);
-                    let preferences = wire.read("provider.management");
-                    assert_eq!(preferences["params"], json!({"providerId":"configured-provider"}));
-                } else {
-                    wire.hello(&["session.model.preview"]);
-                    let preview = wire.read("session.model.preview");
-                    assert!(preview["params"].get("model").is_none());
-                    assert!(preview["params"].get("permissionPolicy").is_none());
-                    if outcome == "rejected" {
-                        reject(wire, &preview);
-                    } else if outcome == "ready" {
-                        wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
-                    }
+                wire.hello(&["session.model.preview"]);
+                let preview = wire.read("session.model.preview");
+                assert!(preview["params"].get("model").is_none());
+                assert!(preview["params"].get("permissionPolicy").is_none());
+                assert!(
+                    preview["params"].get("modelPreferences").is_none(),
+                    "The server applies the model's saved preferences; the client sends none: {}",
+                    preview["params"]
+                );
+                if outcome == "rejected" {
+                    reject(wire, &preview);
+                } else if outcome == "ready" {
+                    wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
                 }
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
@@ -151,14 +145,6 @@ fn home_previews_the_model_without_creating_a_session_and_survives_preview_error
             });
             let mut command = command(&home);
             command.args(["--permission", "read-only"]);
-            if outcome == "preferences-timeout" {
-                command.args([
-                    "--provider",
-                    "configured-provider",
-                    "--model",
-                    "configured-model",
-                ]);
-            }
             if fullscreen {
                 command.arg("--fullscreen");
             }
@@ -1232,7 +1218,11 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                     "session.create" => {
                         assert!(configured, "A temporary source must not reach legacy creation");
                         assert_eq!(request["params"]["model"], json!({"provider":provider,"modelId":"model"}));
-                        assert_eq!(request["params"]["modelPreferences"], json!({"reasoningEffort":"low","serviceTier":"priority"}));
+                        assert!(
+                            request["params"].get("modelPreferences").is_none(),
+                            "Nothing is stated, so the server applies the saved pair: {}",
+                            request["params"]
+                        );
                         assert!(request["params"].get("startup").is_none());
                         assert!(request["params"].get("modelFromSession").is_none());
                         reject(wire, &request);

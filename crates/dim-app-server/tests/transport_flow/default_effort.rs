@@ -98,6 +98,15 @@ struct Server {
 /// Runs the server on a socket below `directory`, with `profile` as its
 /// model profile.
 async fn launch(directory: &std::path::Path, profile: &[&str]) -> Server {
+    launch_logging(directory, profile, None).await
+}
+/// [`launch`] with the daemon's log written to `log` instead of inherited, so
+/// a test can read what the server reported.
+async fn launch_logging(
+    directory: &std::path::Path,
+    profile: &[&str],
+    log: Option<&std::path::Path>,
+) -> Server {
     let socket = directory.join("ipc/server.sock");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_dim-app-server"))
         .args(profile)
@@ -109,9 +118,13 @@ async fn launch(directory: &std::path::Path, profile: &[&str]) -> Server {
             directory.join("state").to_str().unwrap(),
         ])
         .env("HOME", directory)
+        .env("RUST_LOG", "dim_app_server=warn")
         .current_dir(directory)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(match log {
+            Some(path) => Stdio::from(std::fs::File::create(path).unwrap()),
+            None => Stdio::inherit(),
+        })
         .kill_on_drop(true)
         .spawn()
         .unwrap();
@@ -1803,4 +1816,685 @@ async fn stored_configuration(directory: &std::path::Path, session_id: &Value) -
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+// #1449: the saved per-model effort and tier a client states nothing about.
+//
+// The product Provider owns them. `session.create`, `session.model.update` and
+// `session.model.preview` apply them; no other way of resolving a model does.
+// Every test runs the server binary with a product home and a fake provider
+// that records the request body, so the reads and the bytes agree.
+
+/// The fake Anthropic endpoint, recording every request body.
+async fn messages_endpoint(capture: Arc<Capture>) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/messages", post(messages))
+        .with_state(capture);
+    let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}"), http)
+}
+
+/// The fake OpenAI-compatible endpoint, recording every request body.
+async fn completions_endpoint(capture: Arc<Capture>) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(completions))
+        .with_state(capture);
+    let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}/v1"), http)
+}
+
+/// The saved preferences of one model, written the way `/models` writes them.
+async fn save_preferences(client: &mut Client, provider: &str, model: &str, patch: Value) {
+    let managed = client
+        .rpc("provider.management", json!({"providerId":provider}))
+        .await;
+    assert_ok(&managed);
+    let version = managed["result"]["providers"][0]["version"].clone();
+    assert_ok(
+        &client
+            .rpc(
+                "provider.preferences.update",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":model,
+                    "patch":patch}),
+            )
+            .await,
+    );
+}
+
+/// Selects `model` as the default the next Session reads, as `/models` Enter
+/// does.
+async fn make_default(client: &mut Client, provider: &str, model: &str) {
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":provider,"modelId":model}),
+            )
+            .await,
+    );
+}
+
+/// #1449: a saved effort is what a new Session starts with, across a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_saved_effort_survives_a_restart_and_reaches_a_new_session() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("saved-effort-restart");
+        let provider = "018ec73f-0000-7000-8000-000000000201";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &endpoint,
+            vec![model("defaulted", Some("high"), &["low", "high"])],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"low"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+
+        server.child.kill().await.unwrap();
+        drop(client);
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["model"]["modelId"],
+            json!("defaulted"),
+            "{created}"
+        );
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"low"}),
+            "the saved effort is what the Session starts with: {created}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_effort(&capture).as_deref(), Some("low"));
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A stated field wins over the saved one and the saved tier stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stated_effort_wins_and_keeps_the_saved_tier() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = completions_endpoint(capture.clone()).await;
+        let directory = directory("stated-effort");
+        let provider = "018ec73f-0000-7000-8000-000000000202";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let mut tiered = model("tiered", Some("high"), &["low", "high"]);
+        tiered["metadata"]["serviceTier"] =
+            json!({"supported":true,"options":["priority","default"]});
+        create_provider(
+            &mut client,
+            provider,
+            "openai-compatible",
+            &endpoint,
+            vec![tiered],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "tiered",
+            json!({"reasoningEffort":{"action":"set","value":"high"},
+                "serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"tiered"},
+                    "modelPreferences":{"reasoningEffort":"low"}}),
+            )
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"low","serviceTier":"priority"}),
+            "{created}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        assert_eq!(wire["reasoning_effort"], json!("low"), "{wire}");
+        assert_eq!(wire["service_tier"], json!("priority"), "{wire}");
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A saved service tier reaches the request with no stated preference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_saved_tier_reaches_the_request() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = completions_endpoint(capture.clone()).await;
+        let directory = directory("saved-tier");
+        let provider = "018ec73f-0000-7000-8000-000000000203";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let mut tiered = model("tiered", None, &["low"]);
+        tiered["metadata"]["serviceTier"] =
+            json!({"supported":true,"options":["priority","default"]});
+        create_provider(
+            &mut client,
+            provider,
+            "openai-compatible",
+            &endpoint,
+            vec![tiered],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "tiered",
+            json!({"serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "tiered").await;
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"serviceTier":"priority"}),
+            "{created}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(last_body(&capture)["service_tier"], json!("priority"));
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// Each model keeps its own saved pair: switching back reads that model's own
+/// value, not the last one adopted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_model_keeps_its_own_saved_pair() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("per-model-pair");
+        let provider = "018ec73f-0000-7000-8000-000000000204";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &endpoint,
+            vec![
+                model("alpha", None, &["low", "high", "max"]),
+                model("beta", None, &["low", "high", "max"]),
+            ],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "alpha",
+            json!({"reasoningEffort":{"action":"set","value":"low"}}),
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "beta",
+            json!({"reasoningEffort":{"action":"set","value":"max"}}),
+        )
+        .await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"alpha"}}),
+            )
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"low"}),
+            "{created}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        let switch = |provider: &'static str, model: &'static str| {
+            json!({"sessionId":session_id,"branchId":"main",
+                "providerId":provider,"modelId":model})
+        };
+        assert_ok(
+            &client
+                .rpc("session.model.update", switch(provider, "beta"))
+                .await,
+        );
+        assert_eq!(
+            configured(&mut client, &session_id).await["model_preferences"],
+            json!({"reasoningEffort":"max"}),
+            "beta's own saved value"
+        );
+        assert_ok(
+            &client
+                .rpc("session.model.update", switch(provider, "alpha"))
+                .await,
+        );
+        assert_eq!(
+            configured(&mut client, &session_id).await["model_preferences"],
+            json!({"reasoningEffort":"low"}),
+            "alpha's own saved value, not beta's"
+        );
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// No saved value at all leaves the model's declared default in place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_saved_value_leaves_the_declared_default() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("no-saved-value");
+        let provider = "018ec73f-0000-7000-8000-000000000206";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &endpoint,
+            vec![model("defaulted", Some("high"), &["low", "high"])],
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high"}),
+            "{created}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_effort(&capture).as_deref(), Some("high"));
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A saved effort the model no longer declares is dropped for that field: the
+/// create succeeds at the declared default and one warning names the Provider,
+/// the model and the field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_saved_effort_falls_back_with_a_warning() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("stale-saved-effort");
+        let provider = "018ec73f-0000-7000-8000-000000000207";
+        let log = directory.join("second.log");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &endpoint,
+            vec![model("defaulted", Some("high"), &["low", "high", "max"])],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"max"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+        server.child.kill().await.unwrap();
+        drop(client);
+
+        // A catalog sync drops `max` from the model's declared efforts.
+        let mut server = launch_logging(
+            &directory,
+            &["--product-home", directory.join("home").to_str().unwrap()],
+            Some(&log),
+        )
+        .await;
+        let mut client = connect(&server).await;
+        let managed = client
+            .rpc("provider.management", json!({"providerId":provider}))
+            .await;
+        assert_ok(&managed);
+        let version = managed["result"]["providers"][0]["version"].clone();
+        let synced = client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":"defaulted",
+                    "edit":{"reasoning":{"supported":true,"effortOptions":["low","high"]}}}),
+            )
+            .await;
+        assert_ok(&synced);
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high"}),
+            "the dropped saved effort falls back to the declared default: {created}"
+        );
+        let written = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).to_string();
+        assert!(
+            written.contains("Saved model preference is not accepted")
+                && written.contains(provider)
+                && written.contains("defaulted")
+                && written.contains("reasoningEffort"),
+            "one warning names the Provider, the model and the field: {written}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_effort(&capture).as_deref(), Some("high"));
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A stale saved effort is dropped for its own field alone: the valid saved
+/// tier beside it still reaches the request, so the fallback is field-local
+/// and not a general drop of the saved pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_saved_effort_keeps_the_valid_saved_tier() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = completions_endpoint(capture.clone()).await;
+        let directory = directory("stale-effort-valid-tier");
+        let provider = "018ec73f-0000-7000-8000-000000000209";
+        let log = directory.join("second.log");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let mut tiered = model("defaulted", Some("high"), &["low", "high", "max"]);
+        tiered["metadata"]["serviceTier"] =
+            json!({"supported":true,"options":["priority","default"]});
+        create_provider(
+            &mut client,
+            provider,
+            "openai-compatible",
+            &endpoint,
+            vec![tiered],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"max"},
+                "serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+        server.child.kill().await.unwrap();
+        drop(client);
+
+        // An edit drops `max` from the model's declared efforts, so the saved
+        // effort is stale while the saved tier stays valid.
+        let mut server = launch_logging(
+            &directory,
+            &["--product-home", directory.join("home").to_str().unwrap()],
+            Some(&log),
+        )
+        .await;
+        let mut client = connect(&server).await;
+        let managed = client
+            .rpc("provider.management", json!({"providerId":provider}))
+            .await;
+        assert_ok(&managed);
+        let version = managed["result"]["providers"][0]["version"].clone();
+        let edited = client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":"defaulted",
+                    "edit":{"reasoning":{"supported":true,"effortOptions":["low","high"]}}}),
+            )
+            .await;
+        assert_ok(&edited);
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high","serviceTier":"priority"}),
+            "the stale effort falls back to the declared default and the tier stays: {created}"
+        );
+        let written = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).to_string();
+        assert_eq!(
+            written
+                .matches("Saved model preference is not accepted")
+                .count(),
+            1,
+            "one warning, for the stale field alone: {written}"
+        );
+        assert!(
+            written.contains("reasoningEffort"),
+            "the warning names the effort field: {written}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        assert_eq!(wire["reasoning_effort"], json!("high"), "{wire}");
+        assert_eq!(wire["service_tier"], json!("priority"), "{wire}");
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The reverse: a saved tier the model's route no longer carries is dropped for
+/// its own field alone, so the valid saved effort beside it still reaches the
+/// request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_saved_tier_keeps_the_valid_saved_effort() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("stale-tier-valid-effort");
+        let provider = "018ec73f-0000-7000-8000-00000000020a";
+        let log = directory.join("second.log");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let root = endpoint.trim_end_matches('/');
+        let mut routed = model("defaulted", Some("high"), &["low", "high"]);
+        routed["metadata"] = json!({
+            "reasoning":{"supported":true,"effort":"high","effortOptions":["low","high"]},
+            "serviceTier":{"supported":true,"options":["priority","default"]},
+            "raw":{"endpointType":"openai"}
+        });
+        assert_ok(
+            &client
+                .rpc(
+                    "provider.create",
+                    json!({"providerId":provider,"displayName":"Routed",
+                        "connection":{"driverKind":"new-api-router","baseUrl":root,
+                            "auth":{"type":"anonymous"}},
+                        "models":[routed],"enabled":true}),
+                )
+                .await,
+        );
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"high"},
+                "serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+        server.child.kill().await.unwrap();
+        drop(client);
+
+        let mut server = launch_logging(
+            &directory,
+            &["--product-home", directory.join("home").to_str().unwrap()],
+            Some(&log),
+        )
+        .await;
+        let mut client = connect(&server).await;
+        // The model's route moves to Anthropic, which carries no service tier:
+        // the saved tier is stale while the saved effort stays valid.
+        let managed = client
+            .rpc("provider.management", json!({"providerId":provider}))
+            .await;
+        assert_ok(&managed);
+        let version = managed["result"]["providers"][0]["version"].clone();
+        let moved = client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":"defaulted",
+                    "edit":{"endpoint":{"action":"set","value":"anthropic"}}}),
+            )
+            .await;
+        assert_ok(&moved);
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high"}),
+            "the stale tier is dropped and the valid saved effort stays: {created}"
+        );
+        let written = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).to_string();
+        assert_eq!(
+            written
+                .matches("Saved model preference is not accepted")
+                .count(),
+            1,
+            "one warning, for the stale field alone: {written}"
+        );
+        assert!(
+            written.contains("serviceTier"),
+            "the warning names the tier field: {written}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_effort(&capture).as_deref(), Some("high"));
+        assert!(last_body(&capture).get("service_tier").is_none());
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A stated effort the model does not accept still fails, exactly as it did
+/// before a saved value became part of an adoption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stated_invalid_effort_still_fails() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("stated-invalid-effort");
+        let provider = "018ec73f-0000-7000-8000-000000000208";
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        create_provider(
+            &mut client,
+            provider,
+            "anthropic",
+            &endpoint,
+            vec![model("defaulted", Some("high"), &["low", "high", "max"])],
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":directory,"tools":[],
+                    "model":{"provider":provider,"modelId":"defaulted"},
+                    "modelPreferences":{"reasoningEffort":"absent"}}),
+            )
+            .await;
+        assert_eq!(
+            created["error"]["data"]["appError"], "provider_failed",
+            "a stated value the model refuses still fails: {created}"
+        );
+        assert!(
+            created["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Reasoning effort is not supported")),
+            "{created}"
+        );
+        assert!(
+            created.get("result").is_none(),
+            "a failed adoption returns no Session: {created}"
+        );
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
 }

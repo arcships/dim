@@ -1,6 +1,6 @@
 //! One model call outside any Session for a consumer that cannot hold
 //! credentials. The caller owns the choice of model; no event is written.
-use super::{ModelPreferences, ProductResolver, ProviderService};
+use super::{ProductResolver, ProviderService};
 use dim_agent_capabilities::auxiliary_model::{self, AuxiliaryTarget};
 use dim_agent_capabilities::host::*;
 use dim_agent_types::ModelId;
@@ -62,12 +62,7 @@ async fn run(
         return Err(unavailable());
     }
     let selection = owner
-        .configuration(
-            Some(model.clone()),
-            None,
-            ModelPreferences::default(),
-            &cancel,
-        )
+        .configuration_at_defaults(Some(model.clone()), None, &cancel)
         .await?;
     let snapshot = selection
         .capability_snapshot

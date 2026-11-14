@@ -323,19 +323,25 @@ cancel it. Owner unload uses the existing cancellation token and drains the call
 
 Provider persists the existing `ModelPreferences` for clients only. The
 [F3 client](../model-configuration.md) sends
-the exact `{providerId, modelId}` with preferences read for that pair to
+the exact `{providerId, modelId}` with preferences for that pair to
 `session.create` or `session.model.update`. An unavailable explicit target fails;
 report it and do not retry without the target or fall back to another model.
-The server never applies saved preferences implicitly. Omitted preferences with
-an explicit target still start at catalog defaults, including a model's declared
-default reasoning effort, service tier and reasoning summary; untargeted F3
-updates still
-change only supplied fields on the current adopted model. Which catalog
-declarations are applied, and why the others only describe the model, is
+The server applies the model's saved preferences when the request states none:
+for each field the client leaves unstated, `session.create`,
+`session.model.preview` and a targeted `session.model.update` take the value saved
+for that `{providerId, modelId}`, then the model's declared default. A stated
+field wins. A saved value the model no longer accepts is dropped for that field,
+the declared default stands, and the server logs one warning; a stated value it
+rejects still fails the adoption. Untargeted F3 updates still change only
+supplied fields on the current adopted model. Which catalog declarations are
+applied, and why the others only describe the model, is
 [the model-configuration rule](../model-configuration.md#model-parameters).
 `/fast` remains
-Session-only; saved `serviceTier` is a persisted fast/tier choice applied only by
-an explicit client request. Consumer-specific models do not inherit chat preferences.
+Session-only; a saved `serviceTier` is a persisted fast/tier choice the server
+applies like a saved effort. `sessions.launch` — how Scheduler, Workflow and
+other plugins start work — is not a client Session: it keeps catalog defaults and
+does not inherit chat preferences, and neither does any other consumer-specific
+model.
 
 Usage reuses implemented `account.usage {providerId} -> Usage` in the `account`
 namespace, forwarding one call to the optional package's existing `usage` method.
@@ -925,8 +931,9 @@ adopts that model and writes the default the next Session in the launch
 workspace reads: the workspace scope when that folder has one, otherwise the
 global scope, with `expectedVersion` from the same scope. A workspace write's
 notice names that folder, and a global write's notice names no folder. A
-cycled effort is saved as its `reasoningEffort` and sent
-with the model's other saved preferences. Editing a Provider's model list is the
+cycled effort is saved as its `reasoningEffort` and the adoption then sends only
+the target, so the server applies the value just saved together with the model's
+other saved preferences. Editing a Provider's model list is the
 models management area ([CLI commands § The Models area](../cli-commands.md#the-models-area)):
 `Edit models` in `/models` and `dimcode models PROVIDER add|edit|set|remove|inspect`
 read `provider.management` and write through `provider.models.*`; the picker
@@ -1050,7 +1057,7 @@ formats retain their existing rejection and byte-preservation rules.
 | Edit | Effect on already-adopted Sessions |
 | --- | --- |
 | Credential, base URL, headers, proxy, timeout | Current connection is resolved on the next request; already-issued I/O uses its admitted connection |
-| Descriptor/capability edits or saved preferences | Adopted snapshot stays unchanged; changes apply on the next explicit adoption, preferences only when passed |
+| Descriptor/capability edits or saved preferences | Adopted snapshot stays unchanged; changes apply on the next explicit adoption, saved preferences then applied by the server unless the request states them |
 | Disable/delete Provider or model | Next request/adoption fails unavailable/not found; no forced switch or cross-owner reference rewrite |
 | A limit declared, or its source removed | An adopted Session keeps its snapshot. With a limit undeclared, the next request fails before credentials or network I/O and names the missing limits; after both are declared, selecting the model adopts them (§3.5). The request output allowance is re-derived from the kept snapshot at every request, never from a stored value above the rule |
 | Effective route change from refresh or an endpoint override | A different adopted route stamp fails with a diagnostic to select the model again. An unstamped Session uses the current route on its next request; either edit can break protocol-bound history or lose effort/tier options mapped for the old protocol |
