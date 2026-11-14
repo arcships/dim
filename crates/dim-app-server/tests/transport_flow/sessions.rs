@@ -83,7 +83,7 @@ impl Sessions {
             reply => panic!("sessions replies asynchronously: {:?}", reply.json()),
         }
     }
-    async fn ok(&self, method: &str, request: Value) -> Value {
+    pub(super) async fn ok(&self, method: &str, request: Value) -> Value {
         let reply = self.call(method, request).await;
         assert_eq!(reply["ok"], true, "{reply}");
         reply["value"].clone()
@@ -108,13 +108,13 @@ impl Sessions {
 fn host_policy() -> Value {
     json!({"preset":"workspace-write","allowedTools":["confirm"],"disallowedTools":["blocked"]})
 }
-struct Served {
-    server: RunningServer,
-    agent: Agent,
-    sessions: Sessions,
-    client: Client,
+pub(super) struct Served {
+    pub(super) server: RunningServer,
+    pub(super) agent: Agent,
+    pub(super) sessions: Sessions,
+    pub(super) client: Client,
     /// Executions of the `confirm` tool, which asks for approval.
-    calls: Arc<AtomicUsize>,
+    pub(super) calls: Arc<AtomicUsize>,
 }
 /// Permission's command rules from a Session part that reloads with the
 /// Agents index, as it injects Collaboration, which injects the index. While
@@ -185,7 +185,7 @@ struct Setup {
     /// The model instead of the echo model.
     model: Option<Arc<dyn dim_agent_capabilities::host::ModelDriver>>,
 }
-async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
+pub(super) async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
     serve_with(Setup {
         database,
         ..Default::default()
@@ -498,6 +498,10 @@ async fn launch_caps_the_policy_by_the_starters_current_policy_or_the_host_defau
             "rejected",
         ),
         (json!({"cwd":cwd,"source":"dim-scheduler"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"client"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"internal"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"acp"}), "rejected"),
+        (json!({"cwd":cwd,"title":7}), "rejected"),
         (
             json!({"cwd":cwd,"starter":{"sessionId":"missing","branchId":"main"}}),
             "session_closed",
@@ -1084,18 +1088,31 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     let first = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
-    let batch = client
-        .rpc(
-            "session.input.withdraw",
-            json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown",
-                "steer":{"content":[{"type":"text","text":"steer"}]}}),
+    let batch = session
+        .inputs(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| InputMessageData {
+                    submission_id: Some(format!("test:batch:{id}")),
+                    ..InputMessageData::text(id, Some(dim_agent_types::InputMode::Append))
+                })
+                .collect(),
+            "main",
         )
-        .await;
-    assert_eq!(batch["result"]["status"], "notHeld", "{batch}");
-    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap() - 1;
+        .await
+        .unwrap();
+    let inside = batch[0].sequence;
     let head = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
+    let page = sessions
+        .ok("history", at(json!({"after":inside - 1,"limit":1})))
+        .await;
+    assert_eq!(
+        page["events"],
+        serde_json::to_value(&batch).unwrap(),
+        "a one-event page limit must not split the two-input batch"
+    );
 
     let mut after = 0;
     let mut events = vec![];
@@ -1126,6 +1143,7 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
 
     for (request, code) in [
         (at(json!({"after":inside})), "rejected"),
+        (at(json!({"through":inside})), "rejected"),
         (at(json!({"after":first,"through":first - 1})), "rejected"),
         (at(json!({"limit":0})), "rejected"),
         (at(json!({"limit":257})), "rejected"),
@@ -1547,6 +1565,42 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
             .await["error"]["data"]["appError"],
         "publication_unknown"
     );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:steer-held",
+                json!([{"type":"text","text":"replace me"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    let reply = client
+        .rpc(
+            "session.input.withdraw",
+            json!({
+                "sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
+                "steer":{"content":[{"type":"text","text":"replacement"}]}
+            }),
+        )
+        .await;
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+    assert_eq!(
+        reply["error"]["data"]["appError"], "publication_unknown",
+        "{reply}"
+    );
+    assert!(reply.get("result").is_none(), "{reply}");
     server.shutdown();
     let _ = server.join().await;
 }
@@ -2150,6 +2204,115 @@ async fn node_crash_resubmission_gets_the_original_receipt() {
     let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
     assert_eq!(recovered["inputId"], receipt["value"]["inputId"]);
     assert_eq!(branch_events(&target, "main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("settlement:crash:append"))).count(), 1);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// `sessions.pending` answers session-access §2's rule at the published head:
+/// an input admitted behind a busy branch is pending, the same input once a
+/// turn consumed it is not, a withdrawn input is not, and an id the branch
+/// never held is not. `input/consumed` is what ends it
+/// (`crates/dim-agent-capabilities/src/input_queue.rs:86-96`); `input/applied`
+/// alone does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(None).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    let at = json!({"sessionId":session.id(),"branchId":"main"});
+    let ask = |input: &Value| {
+        let mut request = at.clone();
+        request["inputId"] = input["inputId"].clone();
+        request
+    };
+
+    // The turn stays open on its approval, so a Queue input waits behind it
+    // and is pending.
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:pending",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        sessions.ok("pending", ask(&held)).await,
+        json!({"pending":true})
+    );
+
+    // A turn consumes the held input, and from then on it is not pending.
+    sessions.ok("stop", at.clone()).await;
+    sessions.ok("idle", at.clone()).await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:drain",
+                json!([{"type":"text","text":"keep going"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if sessions.ok("pending", ask(&held)).await == json!({"pending":false}) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the held input is consumed by a turn");
+
+    // A withdrawn input is not pending, and neither is an id the branch never
+    // held.
+    let deleted = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:deleted",
+                json!([{"type":"text","text":"drop me"}]),
+            ),
+        )
+        .await;
+    sessions.ok("withdraw", ask(&deleted)).await;
+    assert_eq!(
+        sessions.ok("pending", ask(&deleted)).await,
+        json!({"pending":false})
+    );
+    assert_eq!(
+        sessions
+            .ok(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown"})
+            )
+            .await,
+        json!({"pending":false})
+    );
+
+    let mut no_branch = ask(&held);
+    no_branch["branchId"] = json!("missing");
+    assert_eq!(sessions.error("pending", no_branch).await, "branch_missing");
+    assert_eq!(
+        sessions
+            .error(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":""})
+            )
+            .await,
+        "rejected"
+    );
+
     server.shutdown();
     server.join().await.unwrap();
 }

@@ -38,6 +38,8 @@ ordered consumption.
 
 ## Exported services
 
+The [generated catalog](../architecture/rust-agent/generated/catalog.md) is the complete service inventory; the examples below are not exhaustive.
+
 The App Server shares each one in its group (`register_shared_instance`), so it is served inside
 every instance of that group; a row gets the nearest enclosing instance. Its methods are the type's public `&self` methods that can cross languages, all
 `async` for the caller. The generator leaves the others out with a build warning.

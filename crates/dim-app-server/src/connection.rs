@@ -334,6 +334,16 @@ impl Connection {
             }
             let guard = self.admit(&request)?;
             self.admit_entry(rpc, &request.call)?;
+            let activity = if matches!(request.call, Call::Shutdown(_)) {
+                None
+            } else {
+                Some(
+                    rpc.control
+                        .activity
+                        .take_hold()
+                        .ok_or_else(RpcError::reloading)?,
+                )
+            };
             let this = self.clone();
             let Request { id, call } = request;
             if let Call::Contributed { method, params } = call {
@@ -351,6 +361,7 @@ impl Connection {
                         closed: this.closed.clone(),
                     };
                     rpc.commands.clone().spawn(async move {
+                        let _activity = activity;
                         match this
                             .session_method(&rpc, method, params, site, progress)
                             .await
@@ -393,13 +404,17 @@ impl Connection {
                     rpc.unloading.clone(),
                     progress,
                 )?;
-                rpc.commands.spawn(this.answer(id, guard, accepted, sink));
+                rpc.commands.spawn(async move {
+                    let _activity = activity;
+                    this.answer(id, guard, accepted, sink).await;
+                });
                 return Ok(());
             }
             let rpc = rpc.clone();
             let shutdown =
                 matches!(call, Call::Shutdown(_)).then(|| self.hub.shutdown_requests.token());
             rpc.commands.clone().spawn(async move {
+                let _activity = activity;
                 let _guard = guard;
                 let _shutdown = shutdown;
                 let result = this.handle(&rpc, id.clone(), call).await;
@@ -636,7 +651,7 @@ impl Connection {
                 call,
                 Call::InputLookup(_)
                     | Call::History(_)
-                    | Call::HistoryDisplay(_)
+                    | Call::HistoryDisplay(..)
                     | Call::HistoryDetail(_)
                     | Call::Branches(_)
                     | Call::BranchGet(_)
@@ -645,6 +660,7 @@ impl Connection {
                     | Call::Catalog(_)
                     | Call::CatalogCancel(_)
                     | Call::SessionMethods(_)
+                    | Call::ModelPreview(_)
                     | Call::Delete(_)
                     | Call::Fork(_)
                     | Call::BranchEnd(_)
@@ -680,7 +696,9 @@ impl Connection {
                 (Some(&p.session_id), Some(&p.branch_id))
             }
             Call::InputLookup(p) => (Some(&p.session_id), Some(&p.branch_id)),
-            Call::History(p) | Call::HistoryDisplay(p) => (Some(&p.session_id), Some(&p.branch_id)),
+            Call::History(p) | Call::HistoryDisplay(p, ..) => {
+                (Some(&p.session_id), Some(&p.branch_id))
+            }
             Call::HistoryDetail(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Keys(p) => (Some(&p.session_id), Some(&p.branch_id)),
             Call::Stop(p) => (Some(&p.session_id), Some(&p.branch_id)),
@@ -703,6 +721,16 @@ impl Connection {
             Call::Create(p) => {
                 if p.agent_id.is_some() && self.protocol_version() < 3 {
                     return Err(RpcError::invalid("agentId requires protocol v3"));
+                }
+                (None, None)
+            }
+            Call::ModelPreview(_) => {
+                if self.entry != Entry::Local {
+                    return Err(RpcError::app(
+                        -32000,
+                        "local_transport_required",
+                        "Model preview requires a protected local connection",
+                    ));
                 }
                 (None, None)
             }
@@ -729,8 +757,18 @@ impl Connection {
                 }
                 (Some(&p.session_id), None)
             }
+            // A delete names rows the storage format defines and removes them
+            // by session id alone (`storage/timeline.rs` `drop_session`), and a
+            // daemon opens only a store format it knows: an unknown one is
+            // refused at open (`storage/sqlite.rs`). So every row this daemon
+            // can see, it understands and can remove, while the recorded
+            // protocol version only shapes projections. That is why it does not
+            // gate the delete. An empty id is still invalid input, as for every
+            // Session call.
             Call::Delete(p) => {
-                self.authorize_version(rpc, &p.session_id)?;
+                if p.session_id.is_empty() {
+                    return Err(RpcError::invalid("sessionId must not be empty"));
+                }
                 (None, None)
             }
             Call::Fork(p) => {
@@ -802,24 +840,28 @@ impl Connection {
         }
         Ok(())
     }
-    /// A Session belongs to the protocol version that created it. A Session
-    /// without a readable owner row has no recorded version. An empty id
-    /// names no Session at all: it is invalid input, not a closed Session.
+    /// A Session belongs to the protocol version that created it, and a
+    /// connection may use it from that version on: the recorded version is a
+    /// lower bound, not an equality. Only a Session recorded later than this
+    /// connection is refused, and the refusal names both versions so the
+    /// operator can tell the two builds apart. A Session without a readable
+    /// owner row has no recorded version and is refused without one. An empty
+    /// id names no Session at all: it is invalid input, not a closed Session.
     fn authorize_version(&self, rpc: &RpcService, id: &str) -> Result<(), RpcError> {
         if id.is_empty() {
             return Err(RpcError::invalid("sessionId must not be empty"));
         }
-        let known = rpc.index.version_of(id);
-        if known.is_some_and(|version| version != self.protocol_version())
-            || (known.is_none() && rpc.index.session(id).is_some())
-        {
-            return Err(RpcError::app(
-                -32000,
-                "session_protocol_version",
-                "Session belongs to another protocol version",
-            ));
-        }
-        Ok(())
+        let message = match rpc.index.version_of(id) {
+            Some(recorded) if recorded > self.protocol_version() => format!(
+                "Session was created by protocol version {recorded}; this connection speaks {}",
+                self.protocol_version()
+            ),
+            None if rpc.index.session(id).is_some() => {
+                "Session belongs to another protocol version".to_owned()
+            }
+            _ => return Ok(()),
+        };
+        Err(RpcError::app(-32000, "session_protocol_version", message))
     }
     /// Execution owns the cutoff; this connection owns delivery to its subscriber.
     async fn barrier(
@@ -861,7 +903,7 @@ impl Connection {
         let session_id = match &call {
             Call::Submit(p) => Some(&p.session_id),
             Call::InputLookup(p) => Some(&p.session_id),
-            Call::History(p) | Call::HistoryDisplay(p) => Some(&p.session_id),
+            Call::History(p) | Call::HistoryDisplay(p, ..) => Some(&p.session_id),
             Call::HistoryDetail(p) => Some(&p.session_id),
             Call::Branches(p) => Some(&p.session_id),
             Call::BranchGet(p) => Some(&p.session_id),
@@ -885,8 +927,22 @@ impl Connection {
             Call::Close(p) if rpc.index.session_available(&p.session_id) => Some(&p.session_id),
             _ => None,
         };
+        let expected_cwd = match &call {
+            Call::Attach(p) => match p.expected_cwd.as_deref() {
+                Some(cwd) => match crate::protocol::canonical_cwd(cwd).await {
+                    Ok(cwd) => Some(cwd),
+                    Err(error) => return Some(Err(error)),
+                },
+                None => None,
+            },
+            _ => None,
+        };
         let usage = if let Some(session_id) = session_id {
-            match rpc.index.acquire(session_id).await {
+            match rpc
+                .index
+                .acquire_checked(session_id, expected_cwd.as_deref())
+                .await
+            {
                 Ok(usage) => Some(usage),
                 Err(error) => return Some(Err(RpcError::from(error))),
             }
@@ -936,7 +992,20 @@ impl Connection {
                         if connections > 0 || attached_sessions > 0 || running > 0 {
                             Some((connections, attached_sessions, running))
                         } else {
+                            let Some(pause) = rpc.control.activity.pause() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "The daemon has accepted process work; retry after it settles",
+                                )));
+                            };
+                            let Some(sessions) = rpc.index.pause_sessions() else {
+                                return Some(Err(RpcError::service(
+                                    "daemon_busy",
+                                    "A Session is not quiescent; retry after its work settles",
+                                )));
+                            };
                             admission.closing_for_idle = true;
+                            rpc.control.keep_paused(pause, sessions);
                             None
                         }
                     };
@@ -968,7 +1037,8 @@ impl Connection {
                 rpc.control.shutdown().cancel();
                 return None;
             }
-            Call::Create(params) => self.create(rpc, params).await,
+            Call::Create(params) => self.create(rpc, *params).await,
+            Call::ModelPreview(params) => rpc.preview_model(params).await,
             Call::CatalogCancel(params) => {
                 if let Some(Some(cancel)) = self
                     .ids
@@ -1032,6 +1102,7 @@ impl Connection {
                                 Catalog {
                                     with_internal: true,
                                     with_acp_sessions: true,
+                                    with_automation_sessions: true,
                                     include_closed,
                                     ..Catalog::default()
                                 },
@@ -1071,7 +1142,9 @@ impl Connection {
                         sessions.into_iter().map(move |s| (host.clone(), s))
                     })
                     .filter(|(_, session)| {
-                        rpc.index.version_of(session.id()) == Some(self.protocol_version())
+                        rpc.index
+                            .version_of(session.id())
+                            .is_some_and(|recorded| recorded <= self.protocol_version())
                     })
                     .map(|(host, s)| {
                         let status = s.state("main").map_err(RpcError::from)?;
@@ -1151,8 +1224,10 @@ impl Connection {
             }
             Call::Submit(params) => self.submit(rpc, params).await,
             Call::InputLookup(params) => self.input_lookup(rpc, params).await,
-            Call::History(params) => self.history(rpc, params, false).await,
-            Call::HistoryDisplay(params) => self.history(rpc, params, true).await,
+            Call::History(params) => self.history(rpc, params, false, false, false).await,
+            Call::HistoryDisplay(params, tail, transcript) => {
+                self.history(rpc, params, true, tail, transcript).await
+            }
             Call::HistoryDetail(params) => tokio::select! {
                 biased;
                 _ = self.closed.cancelled() => return None,
@@ -1358,7 +1433,7 @@ impl Connection {
                 }
                 let widget = session
                     .session_service::<crate::mcp::McpSession>()?
-                    .widget(&p.tool)
+                    .widget(p.tool)
                     .await
                     .map_err(mcp::app_error)?;
                 Reply::McpWidget(widget)
@@ -1373,7 +1448,7 @@ impl Connection {
                 let started = std::time::Instant::now();
                 let outcome = session
                     .session_service::<crate::mcp::McpSession>()?
-                    .call(&p.server, &p.tool, p.arguments)
+                    .call(p.server.clone(), p.tool.clone(), p.arguments)
                     .await;
                 tracing::info!(
                     target: "mcp.app",
@@ -1423,7 +1498,7 @@ impl Connection {
                 }
                 let result = session
                     .service::<BackgroundExec>(&p.branch_id)?
-                    .stop(&p.task_id)
+                    .stop(p.task_id)
                     .await
                     .map_err(|error| match error {
                         TaskError::Unknown => RpcError::app(
@@ -1432,6 +1507,7 @@ impl Connection {
                             "Command is not a task of this branch",
                         ),
                         TaskError::Closed => RpcError::reloading(),
+                        TaskError::Read(error) => error.into(),
                     })?;
                 Reply::ExecEnded(result)
             }
@@ -1647,12 +1723,6 @@ impl Connection {
         let mut config = crate::agents::session_config(&host.profile, &rpc.config.session_defaults);
         config.cwd = cwd.clone();
         let mut startup_admission = None;
-        let preferences = params.model_preferences.unwrap_or_default();
-        if !rpc.index.selects_models() && preferences != Default::default() {
-            return Err(RpcError::invalid(
-                "Model preferences require the product provider",
-            ));
-        }
         if let Some(source) = &source {
             let adopted = source
                 .session
@@ -1689,74 +1759,16 @@ impl Connection {
                     .startup_connection(connection)
                     .map_err(provider_error)?;
             }
-        } else if let Some(startup) = params.startup {
-            let provider = rpc
-                .ctx
-                .get::<crate::provider::ProviderService>()
-                .ok_or_else(RpcError::reloading)?;
-            let target = params.model.unwrap_or_else(|| {
-                host.profile
-                    .model
-                    .clone()
-                    .map(|model| crate::protocol::ModelSelection {
-                        provider: Some(model.provider_id),
-                        model_id: Some(model.model_id),
-                    })
-                    .unwrap_or_default()
-            });
-            let admission = provider
-                .startup_configuration(
-                    target,
-                    Path::new(&cwd),
-                    preferences,
-                    startup,
-                    None,
-                    &rpc.unloading,
-                )
-                .await
-                .map_err(provider_error)?;
-            config.model = admission.model.clone();
-            startup_admission = Some(admission);
-        } else if rpc.index.selects_models() {
-            if params
-                .model
-                .as_ref()
-                .is_some_and(|model| model.provider.is_some() != model.model_id.is_some())
-            {
-                return Err(RpcError::invalid(
-                    "Explicit model requires provider and modelId",
-                ));
-            }
-            config.model = rpc
-                .model_selection(
-                    params
-                        .model
-                        .as_ref()
-                        .and_then(|model| {
-                            model
-                                .model_id
-                                .as_ref()
-                                .map(|model_id| dim_agent_types::ModelId {
-                                    provider_id: model
-                                        .provider
-                                        .clone()
-                                        .expect("explicit provider was validated"),
-                                    model_id: model_id.clone(),
-                                })
-                        })
-                        .or_else(|| host.profile.model.clone()),
-                    Some(cwd.into()),
-                    preferences,
+        } else {
+            startup_admission = rpc
+                .session_model(
+                    &mut config,
+                    &host.profile,
+                    params.model,
+                    params.model_preferences.unwrap_or_default(),
+                    params.startup,
                 )
                 .await?;
-        } else if let Some(model) = params.model {
-            config.model = dim_agent_types::ModelSelection {
-                provider_id: model.provider.unwrap_or(config.model.provider_id),
-                model_id: model.model_id.unwrap_or(config.model.model_id),
-                capability_snapshot: None,
-                config: None,
-                metadata: None,
-            };
         }
         if let Some(prompt) = params.system_prompt {
             config.system_prompt = prompt;
@@ -1793,11 +1805,52 @@ impl Connection {
                 ));
             }
         };
-        let session = rpc
+        let managed = rpc.ctx.get::<crate::worktrees::ManagedWorktrees>();
+        let worktree = match (params.worktree, &managed) {
+            (Some(request), Some(managed)) => Some(
+                managed
+                    .create(
+                        std::path::Path::new(&cwd),
+                        request.base.as_deref(),
+                        request.branch.as_deref(),
+                        &self.closed,
+                    )
+                    .await
+                    .map_err(|error| error.rpc())?,
+            ),
+            (Some(_), None) => {
+                return Err(RpcError::app(
+                    -32000,
+                    "worktree_unavailable",
+                    "This daemon has no managed worktree root",
+                ));
+            }
+            (None, _) => None,
+        };
+        if let Some(created) = &worktree {
+            config.cwd = created.prepared.subtree.to_string_lossy().into_owned();
+        }
+        let session = match rpc
             .index
-            .create_session(&host, config, self.protocol_version(), None, origin)
+            .create_session(
+                &host,
+                config,
+                self.protocol_version(),
+                None,
+                origin,
+                worktree.as_ref().map(|created| created.prepared.clone()),
+            )
             .await
-            .map_err(RpcError::from)?;
+        {
+            Ok(session) => session,
+            Err(error) => {
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
+                return Err(RpcError::from(error));
+            }
+        };
         if startup_admission.is_some() || source.is_some() {
             let retained = rpc
                 .ctx
@@ -1813,6 +1866,10 @@ impl Connection {
                     .delete(session.id())
                     .await
                     .map_err(RpcError::from)?;
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
+                }
+                clear_worktree_record(rpc, worktree.as_ref()).await;
                 return Err(error);
             }
         }
@@ -1828,6 +1885,7 @@ impl Connection {
                 session.config().model.metadata.as_ref(),
             ),
             sequence: session.sequence("main").map_err(RpcError::from)?,
+            worktree: worktree.as_ref().map(|created| created.reply()),
         }))
     }
 
@@ -1880,6 +1938,22 @@ pub(crate) fn configuration_outcome(
             "Configuration was superseded by another update",
         )),
     }
+}
+
+/// A failed creation after the Session transaction removed its rows: the
+/// directory record it wrote stays a candidate, so drop it when nothing
+/// associates it. A cleanup failure is visible in the next `worktree list`.
+async fn clear_worktree_record(
+    rpc: &RpcService,
+    worktree: Option<&crate::worktrees::CreatedWorktree>,
+) {
+    let (Some(created), Some(store)) = (worktree, rpc.ctx.get::<crate::storage::SessionStore>())
+    else {
+        return;
+    };
+    let _ = store
+        .remove_worktree_directory(created.prepared.directory.clone())
+        .await;
 }
 
 /// Session operations wait for the product execution profile.
@@ -2175,14 +2249,11 @@ impl ConnectionPlugin {
     }
 }
 /// The presence host over the connection and UI registries.
-struct HubClients(Arc<ConnectionHub>);
-impl dim_agent_capabilities::environment_clients::SessionClientsSource for HubClients {
-    fn presences(
-        &self,
-        session_id: &str,
-    ) -> Vec<dim_agent_capabilities::environment_clients::ClientPresence> {
-        self.0.client_presences(session_id)
-    }
+fn hub_clients(
+    hub: Arc<ConnectionHub>,
+) -> dim_agent_capabilities::environment_clients::SessionClientsHost {
+    use dim_agent_capabilities::environment_clients::SessionClientsHost;
+    SessionClientsHost::new(Arc::new(move |session_id| hub.client_presences(session_id)))
 }
 impl DynPlugin for ConnectionPlugin {
     fn name(&self) -> &str {
@@ -2205,14 +2276,7 @@ impl DynPlugin for ConnectionPlugin {
             })?;
             ctx.provide_as::<ConnectionHub>(hub.clone())?;
             dim_agent_capabilities::environment_clients::register_parts(ctx, &parts)?;
-            ctx.provide_at(
-                self.clients.clone(),
-                Arc::new(
-                    dim_agent_capabilities::environment_clients::SessionClientsHost(Arc::new(
-                        HubClients(hub),
-                    )),
-                ),
-            )?;
+            ctx.provide_at(self.clients.clone(), Arc::new(hub_clients(hub)))?;
             Ok(Effect::Done)
         })
     }
@@ -2249,6 +2313,126 @@ pub(crate) struct RpcService {
 }
 
 impl RpcService {
+    async fn preview_model(&self, params: ModelPreview) -> Result<Reply, RpcError> {
+        let cwd = session_cwd(&params.cwd).await?;
+        let host = self
+            .index
+            .host(params.agent_id.as_deref())
+            .ok_or_else(agent_unknown)?;
+        let mut config =
+            crate::agents::session_config(&host.profile, &self.config.session_defaults);
+        config.cwd = cwd;
+        let _admission = self
+            .session_model(
+                &mut config,
+                &host.profile,
+                params.model,
+                params.model_preferences.unwrap_or_default(),
+                params.startup,
+            )
+            .await?;
+        Ok(Reply::ModelPreview(ModelPreviewResult {
+            model_preferences: crate::provider::adopted_selection_preferences(
+                config.model.config.as_ref(),
+                config.model.metadata.as_ref(),
+            ),
+            model: dim_agent_types::ModelId {
+                provider_id: config.model.provider_id,
+                model_id: config.model.model_id,
+            },
+        }))
+    }
+
+    async fn session_model(
+        &self,
+        config: &mut dim_agent_runtime::SessionConfig,
+        profile: &crate::agents::AgentProfile,
+        model: Option<ModelSelection>,
+        preferences: crate::provider::ModelPreferences,
+        startup: Option<crate::provider::StartupInput>,
+    ) -> Result<Option<crate::provider::StartupSelection>, RpcError> {
+        if !self.index.selects_models() && preferences != Default::default() {
+            return Err(RpcError::invalid(
+                "Model preferences require the product provider",
+            ));
+        }
+        if let Some(startup) = startup {
+            if self.config.product_home.is_none() {
+                return Err(RpcError::invalid(
+                    "Model startup requires the protected-local product entry",
+                ));
+            }
+            let provider = self
+                .ctx
+                .get::<crate::provider::ProviderService>()
+                .ok_or_else(RpcError::reloading)?;
+            let target = model.unwrap_or_else(|| {
+                profile
+                    .model
+                    .clone()
+                    .map(|model| ModelSelection {
+                        provider: Some(model.provider_id),
+                        model_id: Some(model.model_id),
+                    })
+                    .unwrap_or_default()
+            });
+            let admission = provider
+                .startup_configuration(
+                    target,
+                    Path::new(&config.cwd),
+                    preferences,
+                    startup,
+                    None,
+                    &self.unloading,
+                )
+                .await
+                .map_err(provider_error)?;
+            config.model = admission.model.clone();
+            return Ok(Some(admission));
+        }
+        if self.index.selects_models() {
+            let explicit = match model {
+                Some(ModelSelection {
+                    provider: Some(provider_id),
+                    model_id: Some(model_id),
+                }) => Some(dim_agent_types::ModelId {
+                    provider_id,
+                    model_id,
+                }),
+                None
+                | Some(ModelSelection {
+                    provider: None,
+                    model_id: None,
+                }) => None,
+                _ => {
+                    return Err(RpcError::invalid(
+                        "Explicit model requires provider and modelId",
+                    ));
+                }
+            };
+            config.model = self
+                .model_selection(
+                    explicit.or_else(|| profile.model.clone()),
+                    Some(PathBuf::from(&config.cwd)),
+                    preferences,
+                )
+                .await?;
+        } else if let Some(model) = model {
+            config.model = dim_agent_types::ModelSelection {
+                provider_id: model
+                    .provider
+                    .unwrap_or_else(|| config.model.provider_id.clone()),
+                model_id: model
+                    .model_id
+                    .unwrap_or_else(|| config.model.model_id.clone()),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            };
+        }
+        Ok(None)
+    }
+
     async fn model_selection(
         &self,
         explicit: Option<dim_agent_types::ModelId>,

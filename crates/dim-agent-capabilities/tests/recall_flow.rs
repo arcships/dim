@@ -1566,6 +1566,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
         call_id: "c3".into(),
         task_id: "task-9".into(),
         description: "run the tests".into(),
+        title: None,
         output_path: "out.txt".into(),
     }));
     recorded.push(results(
@@ -1600,6 +1601,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
             agent_id: "reviewer".into(),
         },
         prompt: "review it".into(),
+        title: None,
     }));
     recorded.push(results(
         "t1",
@@ -1674,6 +1676,7 @@ fn every_call_ending_is_folded_onto_its_one_line() {
             agent_id: "reviewer".into(),
         },
         prompt: "review it again".into(),
+        title: None,
     }));
     recorded.push(results(
         "t1",
@@ -2674,6 +2677,7 @@ fn an_input_that_never_counted_and_thinking_are_not_told() {
     recorded.push(EventKind::InputWithdraw(InputWithdrawData {
         input_id: withdrawn.clone(),
         reason: None,
+        steer: None,
     }));
     recorded.push(EventKind::InputDeleted(InputDeletedData {
         input_id: withdrawn.clone(),
@@ -2943,6 +2947,7 @@ struct PageReads {
     /// reader's, such as a line's BranchLine reading its parent's activity
     /// through the same query.
     read_branch: std::sync::Mutex<Option<String>>,
+    read_inherited: std::sync::atomic::AtomicBool,
     /// The ids the pages returned in read order, while the pinned call runs.
     read: std::sync::Mutex<Option<Vec<String>>>,
 }
@@ -2959,7 +2964,14 @@ impl TimelineStore for PageReads {
             let result = self.memory.query(scope, query, page).await?;
             let recording = self.active.load(std::sync::atomic::Ordering::SeqCst)
                 && self.read_branch.lock().unwrap().as_deref()
-                    == Some(scope.key.branch_id.as_str());
+                    == Some(scope.key.branch_id.as_str())
+                && (!self
+                    .read_inherited
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    || scope
+                        .segments
+                        .iter()
+                        .any(|segment| segment.branch_id != scope.key.branch_id));
             if !recording {
                 return Ok(result);
             }
@@ -3085,6 +3097,13 @@ impl PageReads {
     }
     /// Writes once to `branch` of `session` after the next first page.
     fn pin_head(&self, session: &Session, branch: &str) {
+        self.read_inherited.store(
+            session
+                .branches()
+                .iter()
+                .any(|info| info.id == branch && info.parent.is_some()),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         *self.inject.lock().unwrap() = Some((session.clone(), branch.to_owned()));
         *self.injected.lock().unwrap() = None;
         self.cuts.lock().unwrap().clear();

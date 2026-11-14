@@ -67,7 +67,10 @@ pub fn catalog() -> dim_agent_runtime::names::ServiceCatalog {
 }
 
 fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
-    use dim_agent_runtime::{BRANCH_GROUP, SESSION_GROUP, names::register};
+    use dim_agent_runtime::{
+        BRANCH_GROUP, SESSION_GROUP,
+        names::{name_of, register},
+    };
     let session = Some(SESSION_GROUP);
     register::<timeline_tree::TimelineTree>(catalog, session);
     register::<timeline_tree::TreeCommands>(catalog, session);
@@ -77,7 +80,10 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<prompt::InitialPromptConfiguration>(catalog, session);
     register::<prompt_guide::GuideEntries>(catalog, session);
     register::<prompt_registry::PromptRegistry>(catalog, session);
-    register::<prompt_sources::SessionLanguage>(catalog, session);
+    catalog.register_shared_instance(
+        dim_agent_runtime::names::name_of::<prompt_sources::SessionLanguage>(),
+        SESSION_GROUP,
+    );
     register::<skills::SessionSkills>(catalog, session);
     register::<host::PrepareModelHost>(catalog, session);
     register::<host::PrepareContextHost>(catalog, session);
@@ -91,7 +97,9 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<input_queue::SubmitChecks>(catalog, session);
     register::<session_grants::SessionGrantsHost>(catalog, session);
     register::<file_access::FileAccessFacts>(catalog, session);
-    register::<file_access::WorktreeAssociations>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<
+        file_access::WorktreeAssociations,
+    >());
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);
@@ -118,11 +126,11 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<host::ModelHost>(catalog, None);
     register::<host::ProviderConnectionResolver>(catalog, None);
     register::<host::ModelSelectionHost>(catalog, None);
-    register::<host::CredentialVariablesHost>(catalog, None);
+    catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     register::<host::SessionFilesHost>(catalog, None);
     register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
-    register::<environment_clients::SessionClientsHost>(catalog, None);
+    catalog.register_shared(name_of::<environment_clients::SessionClientsHost>());
     register::<execution_settings::ExecutionSettingsHost>(catalog, None);
     register::<toolchain::ToolchainSourceHost>(catalog, None);
     register::<skills::SkillsCatalog>(catalog, None);

@@ -18,9 +18,11 @@ PromptSources 提供 Session 的具名提示词来源和 Session 的提示词注
 | `dim/environment/date` | State（`<dim-state>`） | 210 | PromptSources | 事实 |
 | `dim/language` | State（`<dim-state>`） | 220 | PromptSources | 事实（已设计，§3） |
 
+投递方式决定变更在哪里生效。`System` 来源组成 system 提示词：另一条线经前缀的配置继承它，在找到该事实处应用。`Context` 与 `State` 来源以 Append 输入块交付，与该 `prompt/changed` 写在同一批次，变更通过 `inputs` 命名该块的 id；一条线继承了该变更、但投递输入还没有在它的前缀里被消费时，不把该变更算作已采用，而是按来源的当前值自行采用，块在本线自己的消费位置到达模型。`Initialize` 变更同样如此：决定的是投递方式，不是变更被写入的原因。
+
 ### 1.1 策略
 
-`dim/base` 是策略：身份那句话和各项规则——安全、语气、客观、工程、git、工作方法、结束回合，以及链接约定。它是关于怎样工作的指引；无论它说什么，运行时都一样。
+`dim/base` 是策略：身份那句话和各项规则——安全、语气、客观、工程、git、工作方法、结束回合，以及链接约定。它是关于怎样工作的指引；无论它说什么，运行时都一样。工具的输入形状，以及其中各条目怎样应用，由该工具自身的声明说明，而不是由 `dim/base` 说明。
 
 shell 指引也是策略。它是环境来源为操作者的 shell 携带的那句话（`Use POSIX shell syntax. …`，或 PowerShell、cmd、Git Bash 等版本），以及在 Windows 上的文件编码指引：怎样引用、怎样调用带空格的路径、向 read 工具请求哪种旧编码。它没有一句陈述运行时事实。
 
@@ -62,7 +64,7 @@ shell 指引也是策略。它是环境来源为操作者的 shell 携带的那�
 
 **没有选择就没有块。** 操作者没有选过语言时——跟随系统默认——来源不产生条目，base 那句话的规则成立。
 
-**载体。** 客户端把操作者的选择带进 Session：`session.create {language?}` 播种它，`session.language.update` 修改它，值就是 `SessionConfig.language`，Session 配置记录中的一个可选成员。daemon 从不读取客户端的界面语言文件。PromptSources 的 Session 部件提供该 Session 的活值（`SessionLanguage` 单元），每次加载时读取它；分支部件把该单元再暴露到每个分支，供修改它的 Session 方法使用，正如 Skill 列表的做法。没有做出选择的 Session（包括旧客户端写下的记录）没有值，也不产生条目。更新先在 `main` 上采纳，并在回复之前让每个已加载的分支也采纳，因此这些分支的下一次请求就带着新值、无需唤醒；之后才加载的分支在加载时读到当前值，各分支的定时检查仍是兜底。
+**载体。** 客户端把操作者的选择带进 Session：`session.create {language?}` 播种它，`session.language.update` 修改它，值就是 `SessionConfig.language`，Session 配置记录中的一个可选成员。daemon 从不读取客户端的界面语言文件。PromptSources 的 Session 部件提供该 Session 的活值（`SessionLanguage` 单元），每次加载时读取它；该单元的 `get` 就是 `sessionLanguage` 数据面，其他语言按名字读取，分支部件把同一单元再暴露到每个分支，供修改它的 Session 方法使用，正如 Skill 列表的做法。数据面没有写操作：更新还要写 Session 记录并让 Prompt 采用来源。没有做出选择的 Session（包括旧客户端写下的记录）没有值，也不产生条目。更新先在 `main` 上采纳，并在回复之前让每个已加载的分支也采纳，因此这些分支的下一次请求就带着新值、无需唤醒；之后才加载的分支在加载时读到当前值，各分支的定时检查仍是兜底。
 
 ## 4. 依赖
 

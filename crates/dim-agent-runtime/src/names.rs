@@ -95,7 +95,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<crate::PartRegistry>(&mut catalog, None);
     let session = Some(SESSION_GROUP);
     register::<SessionConfig>(&mut catalog, session);
-    register::<AgentConfig>(&mut catalog, session);
+    catalog.register_shared_instance(name_of::<AgentConfig>(), SESSION_GROUP);
     register::<SessionIdentity>(&mut catalog, session);
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);
@@ -219,12 +219,11 @@ impl<'a> Names<'a> {
         Ok(Key::of().instance(instance))
     }
     /// Whether the assembly names `T`: a part whose dependency on it is
-    /// optional includes it only then ([`Self::when`]).
+    /// optional includes it only then ([`Self::when`]). A name shared across
+    /// languages is named too: its face is what a part of another language
+    /// provides there.
     pub fn registered<T: ?Sized + 'static>(&self) -> bool {
-        !matches!(
-            registered_key(self.catalog, &name_of::<T>()),
-            Err(LoaderError::UnknownService(_))
-        )
+        named(self.catalog, &name_of::<T>())
     }
     /// The key of the service `name` as the catalog keys it for this copy.
     /// A name that crosses languages is at its dispatcher's key, so `T` is
@@ -310,6 +309,17 @@ impl<'a> Names<'a> {
         )))
     }
 }
+/// Whether the catalog holds an entry for `name`. [`registered_key`] cannot
+/// answer it: every name the catalog does not register is still shared by
+/// name, at the key a registered shared name has. A name outside this copy's
+/// instances is named too.
+fn named(catalog: &ServiceCatalog, name: &str) -> bool {
+    !matches!(
+        rutis_loader::resolve::ExprScope::new(None, catalog).has(name),
+        Err(LoaderError::UnknownService(_))
+    )
+}
+
 /// The catalog's key for `name` outside any instance, or `UnknownService`
 /// when the host did not register the name: rutis shares every name it does
 /// not register, at `host_key(name)`, so that key alone says nothing was

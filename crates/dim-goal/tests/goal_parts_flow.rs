@@ -368,16 +368,16 @@ async fn a_tool_call_or_operator_input_resets_the_streak() {
 async fn a_reload_drops_the_streak_and_explicit_resume_starts_at_zero() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-streak").await;
-    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
+            vec![raw(&texts::set("main", "ship it"), None, false)],
             InputMode::Queue,
         ),
+    );
+    seed.append(
+        "main",
+        goal_state(Some("ship it"), serde_json::json!({"kind":"active"}), false),
     );
     seed.append(
         "main",
@@ -540,16 +540,16 @@ async fn a_cancelled_background_end_takes_the_deferred_decision_once() {
 async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
     let env = Env::start().await;
     let mut seed = env.seed_new("load-open-task").await;
-    let (objective, status) = texts::legacy_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
+            vec![raw(&texts::set("main", "ship it"), None, false)],
             InputMode::Queue,
         ),
+    );
+    seed.append(
+        "main",
+        goal_state(Some("ship it"), serde_json::json!({"kind":"active"}), false),
     );
     seed.append(
         "main",
@@ -607,6 +607,7 @@ async fn a_reloaded_goal_does_not_wait_for_or_continue_after_an_old_task() {
             call_id: "c".into(),
             task_id: "task-1".into(),
             description: "background work".into(),
+            title: None,
             output_path: "/dev/null".into(),
         }),
     );

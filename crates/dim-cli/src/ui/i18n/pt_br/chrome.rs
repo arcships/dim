@@ -7,25 +7,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "Nenhuma mensagem na fila.",
         "Held · awaiting application" => "Retida · aguardando aplicação",
-        "Incorporating · awaiting model consumption" => {
-            "Incorporando · aguardando processamento pelo modelo"
-        }
         "Held" => "Retida",
-        "Incorporating" => "Incorporando",
         "Unread" => "Não lida",
-        "Unread · waiting for your next message" => "Não lida · aguardando sua próxima mensagem",
-        "/queue view · awaiting model consumption" => {
-            "/queue ver · aguardando processamento pelo modelo"
-        }
-        "/queue view · waiting for your next message" => {
-            "/queue ver · aguardando sua próxima mensagem"
-        }
         "Enter export · Esc cancel" => "Enter exportar · Esc cancelar",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Mensagens com anexos permanecem na fila; use /queue para fazer steer ou excluí-las"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue gerenciar · shift+← editar a última · ctrl+s steer agora"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue gerenciar · Shift+← editar a última · rascunho vazio: {key} para steer"
         }
         "+{count} more · {hint}" => "+{count} mais · {hint}",
         "steer or delete queued messages" => "fazer steer com mensagens da fila ou excluí-las",
@@ -127,6 +116,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Este daemon não aceita renomear sessões"
         }
         "Renaming failed" => "Falha ao renomear",
+        "Delete \"{name}\"?" => "Excluir \"{name}\"?",
+        "Deleted {name}." => "{name} excluída.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Nada foi excluído: nenhuma sessão armazenada {name}."
+        }
+        "Delete failed" => "Falha ao excluir",
+        "This daemon does not support deleting Sessions" => {
+            "Este daemon não aceita excluir sessões"
+        }
         "Starting" => "Iniciando",
         "Delegation result" => "Resultado da delegação",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -237,6 +235,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Desconectado; rascunho mantido. Saia e retome esta Sessão."
         }
+        "Cannot open this Session; draft kept." => {
+            "Não é possível abrir esta Sessão; rascunho mantido."
+        }
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Desconectado; rascunho mantido. Saia e execute: {command}"
         }
@@ -311,7 +312,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Erro: {message}",
         "working…  {elapsed}" => "trabalhando…  {elapsed}",
         "thinking…  {elapsed}" => "pensando…  {elapsed}",
-        "Ask anything..." => "Pergunte algo…",
+        "Ask anything... · Ctrl+J newline" => "Pergunte algo… · Ctrl+J nova linha",
         "Earlier history · {id} · {count} messages" => {
             "Histórico anterior · {id} · {count} mensagens"
         }
@@ -377,9 +378,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "sair",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter selecionar · ←/→ esforço · Ctrl+X limpar salvos · Esc limpar/fechar"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter selecionar + padrão · ←/→ esforço · Ctrl+X limpar salvos · Esc limpar/fechar"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Modelo padrão para novas sessões em {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Modelo padrão para novas sessões: {model}",
         "Enter select · Esc clear/close" => "Enter selecionar · Esc limpar/fechar",
         "esc close" => "esc fechar",
         "Suggestions" => "Sugestões",
@@ -387,6 +392,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill carregado: {name}",
         "Hook context · {count} line" => "Contexto do hook · {count} linha",
         "Hook context · {count} lines" => "Contexto do hook · {count} linhas",
+        "Stop hook follow-up · {count} line" => "Seguimento do hook Stop · {count} linha",
+        "Stop hook follow-up · {count} lines" => "Seguimento do hook Stop · {count} linhas",
         "Commands" => "Comandos",
         "Command Palette" => "Paleta de comandos",
         "No matches" => "Sem resultados",
@@ -406,6 +413,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Tema",
         "Language" => "Idioma",
         "Startup UI form" => "Interface inicial",
+        "Default send mode" => "Modo de envio padrão",
         "fullscreen" => "tela cheia",
         "scrollback" => "scrollback",
         "Tool details" => "Detalhes de ferramentas",
@@ -443,8 +451,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Sem sessões salvas neste espaço de trabalho. Ctrl+S mostra mais."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter abrir · Ctrl+S escopo · Ctrl+R atualizar · Esc fechar"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter abrir · Ctrl+X excluir · Ctrl+S escopo · Ctrl+R atualizar · Esc fechar"
         }
         "Loading sessions..." => "Carregando sessões…",
         "No saved sessions yet." => "Sem sessões salvas.",
@@ -543,15 +551,28 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "mostrar atalhos de teclado",
         "Application keys" => "Atalhos do app",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter enviar ou enfileirar · rascunho vazio: steer a primeira da fila · Shift+Enter ou Ctrl+J nova linha · ↑↓ histórico"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter envia sem execução ativa · Shift+Enter / Alt+Enter / Ctrl+J nova linha · ↑↓ histórico"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O ou Ctrl+P comandos · Esc interromper, mensagens da fila voltam · Ctrl+S steer o rascunho ou a primeira da fila · Shift+← editar a última da fila"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Execução ativa com rascunho: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Rascunho vazio: {keys} envia a primeira da fila à execução atual"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O ou Ctrl+P comandos · Esc interromper, mensagens da fila voltam · Shift+← editar a última da fila"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C limpar, duas vezes para sair · Ctrl+D sair com rascunho vazio"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab alternar permissões (com foco na entrada)"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "Com seleção, Shift+Tab para o alvo mais recente · Esc voltar à entrada"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab para alternar)",
         "Fullscreen" => "Tela cheia",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown rolar · Home/End topo ou fim (com rascunho vazio) · Tab escolher mensagem, e editar, q citar"
@@ -597,6 +618,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server ainda é {server} porque outros clientes o estão usando; este cliente {client} também o usa. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server ainda é {server} porque outros clientes o estão usando, e fala o protocolo v{protocol}, que este cliente {client} não pode usar. Nenhuma sessão foi iniciada. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "O App Server ainda é {server} porque outros clientes o estão usando (conexões: {connections}, sessões anexadas: {attached}, turnos em execução: {running}), e fala o protocolo v{protocol}, que este cliente {client} não pode usar. Nenhuma sessão foi iniciada. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server ainda é {server} porque outros clientes o estão usando (conexões: {connections}, sessões anexadas: {attached}, turnos em execução: {running}); este cliente {client} também o usa. Execute `dimcode daemon stop` quando terminarem; a próxima inicialização executará {client}."

@@ -895,16 +895,16 @@ async fn pursuit_8_a_continue_conclusion_waits_for_a_cancelled_background_task()
 /// committed, and restores the Session. Returns the evaluation sequence.
 async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
     let mut seed = env.seed_new("load-deferred").await;
-    let (objective, status) = texts::legacy_evaluator_set_blocks("main", "ship it");
     let set = seed.append(
         "main",
         message(
-            vec![
-                raw(&objective, Some("goal:objective"), false),
-                raw(&status, Some("goal:status"), false),
-            ],
+            vec![raw(&texts::set("main", "ship it"), None, false)],
             InputMode::Queue,
         ),
+    );
+    seed.append(
+        "main",
+        goal_state(Some("ship it"), serde_json::json!({"kind":"active"}), true),
     );
     seed.append(
         "main",
@@ -926,6 +926,7 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
             call_id: "call-1".into(),
             task_id: "task-1".into(),
             description: "background work".into(),
+            title: None,
             output_path: "/dev/null".into(),
         }),
     );
@@ -933,8 +934,8 @@ async fn deferred_conclusion(env: Env, cancelled: bool) -> (Env, u64) {
         "main",
         message(
             vec![raw(
-                &texts::legacy_report("main", "completed", "all tests pass"),
-                Some("goal:status"),
+                &texts::report("main", "completed", "all tests pass"),
+                None,
                 false,
             )],
             InputMode::Append,

@@ -57,7 +57,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 类别 | Rpc 内建方法，与 `session.create`、`session.close` 并列。它不是 `sessionMethods` 条目，因为 Session 不能通过自己的部件卸载自己；也不是管理方法：它作用于一个 Session，Rpc 对 Session 的检查都适用 |
 | 协议 | v3。v1 与 v2 得到 `unknown_method`（"Method requires protocol v3"）。`hello.features` 在列出 `session.create` 的条件下列出它。协议版本仍为 3：客户端通过 `hello.features` 发现新的内建方法，与发现 `session.summaries` 相同 |
 | 调用方 | 能调用 `session.close` 的连接都能调用，配置规则相同：受保护配置下只限本地传输。已配对设备（P3）在 RemoteGateway 的兼容性表中与其他 Session 内建方法一起决定 |
-| Session 版本 | Session 记录的协议版本必须等于连接的版本（`session_protocol_version`），与所有 Session 内建方法相同。没有可读所有者行的 Session 没有记录版本，检查通过 |
+| Session 版本 | 连接的协议版本不低于 Session 记录的版本时才能打开它（否则 `session_protocol_version`），与所有 Session 内建方法相同。`session.delete` 是例外：它不读取 Session 的任何记录，因此可以删除任何记录版本的 Session。没有可读所有者行的 Session 没有记录版本，检查通过。`session_owners.protocol_version` 记录创建该 Session 的版本：它是一个历史事实，用来决定 Code Mode 排除、也被分叉复制，不是任何调用方会改写的权限 |
 | 已损坏的 Session | 按 id 删除。删除不读取 Session 的任何记录，因此校验失败或没有可用所有者的 Session 也能删除；Rpc 对不可用 Session 的检查不适用于 `session.delete` |
 | 回复 | 本次调用移除了 Session 时回复 `{deleted: true}`：移除了它的存储行，或在不带原生存储的守护进程中移除了一个已加载的 Session。未知或已删除的 id 同样成功，回复 `{deleted: false}`：该 id 什么都没被移除，客户端的重试也找不到行。该字段是加在回复上的：旧版 App Server 的 `{}` 仍按原来的成功处理 |
 
@@ -125,7 +125,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | `{deleted: true}` 或 `{deleted: false}` | 行已删除，或本来就没有 | Session 不存在；失去所有者的文件由清扫处理 |
 | `unknown_method`（-32601） | 协议 v1 或 v2 | 不变 |
 | `invalid_params`（-32602） | 缺少 `sessionId` 或不是字符串 | 不变 |
-| `session_protocol_version` | S 属于另一个协议版本 | 不变 |
+| `session_protocol_version` | 仅在 Session 由比连接更新的协议版本创建时出现；删除不会回复它 | 本方法移除该行 |
 | `session_active`（-32000） | 设了 `requireInactive`，且 S 或它会一并移除的某个 Session 处于使用中（§3.2 第 1 步） | 不变：什么都不移除，也不关闭任何东西。消息说明原因：回合正在运行、后台任务持有它，或有几个请求与订阅在用它。失败或正在关闭的线不是原因：它不让 Session 处于使用中 |
 | `product_integration_pending` | 该配置不提供 Session 执行 | 不变 |
 | `-32603` "Session operation failed" | 第 3 步失败（`Locked`、`DirectoryNotEmpty`、`Unsynced`、I/O、节点不可用）或第 4 步失败（SQLite） | 若第 2 步关闭了 S，S 已关闭但未删除，与 `session.close` 之后相同：行还在，本进程内不再列出、不再加载，关闭结束的关系也不恢复。重启后它照常加载，命令输出可能已部分移除。没有加载的 Session 不变。重试 |
@@ -191,7 +191,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 项目 | 规则 |
 | --- | --- |
 | 类别 | Rpc 内建方法。它像 `session.create` 一样创建 Session，只是从另一个 Session 的切点创建（Agents） |
-| 协议与调用方 | 与 `session.delete` 相同（§3.1）。源必须属于连接的协议版本，分叉也采用该版本 |
+| 协议与调用方 | 与 `session.delete` 相同（§3.1）。源的记录版本不得高于连接的版本，分叉记录源的版本 |
 | `at` | 分叉继承的最后一个 `main` 序号。0 表示不继承任何事件 |
 | 回复 | 分叉发布后的 id 及其 `main` 头部。客户端随后附着 |
 | 没有其他参数 | 没有 `branchId` 或配置字段。分叉的配置就是源的配置（§6.3）。客户端之后用 `session.permission.update` 或 `session.model.update` 修改，与 [#26](https://github.com/arcships/dim/issues/26) 对预设的决定相同 |
@@ -333,7 +333,7 @@ S5c 中被否决：在 S 的分叉都删除之前保留 S 的命令输出。ADR 
 | `unknown_method` | 协议 v1 或 v2 | 什么都没创建 |
 | `invalid_params`、`session_invalid_input` | 参数格式、`session.branch_create` 在同一位置会拒绝的切点，或不是静止点的切点（§6.2） | 什么都没创建 |
 | `session_closed` | 源未知或已删除，包括源的删除在分叉事务之前提交 | 什么都没创建 |
-| `session_protocol_version` | 源属于另一个协议版本 | 什么都没创建 |
+| `session_protocol_version` | 源记录的协议版本比连接更新（分叉记录源的版本，§6.1） | 什么都没创建 |
 | `session_build_failed` | F 构建失败 | F 已回滚 |
 | `-32603` "Session operation failed" | 存储失败，包括 F 复制来的行校验失败 | 未提交任何东西，或 F 已回滚 |
 
@@ -536,5 +536,6 @@ pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";
 ### Worktree 关联端口
 
 SessionStore 向 Session 文件事实 owner 提供进程服务 `worktreeAssociations`。
-其类型化 `associate(session, directory, subtree)` 操作遵循 §17 的原子性与错误契约。
-`directory` 在文件访问契约中只有一个共享定义，包含仓库公共目录与 worktree 根目录。端口只写入使用关系，不发现 Git 或授予权限。
+其操作是数据面 `associate {sessionId, repository, root, subtree}`，路径都是 UTF-8 字符串，
+遵循 §17 的原子性与错误契约；Rust 调用方调用同一个方法。目录定义只由文件访问契约给出，
+包含仓库公共目录与 worktree 根目录。端口只写入使用关系，不发现 Git 或授予权限。

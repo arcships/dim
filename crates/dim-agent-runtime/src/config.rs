@@ -26,6 +26,26 @@ impl Default for AgentConfig {
         }
     }
 }
+/// The `get` reply: the Agent's identity and default model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentConfigReply {
+    pub name: String,
+    pub system_prompt: String,
+    pub model: ModelId,
+}
+#[service]
+impl AgentConfig {
+    /// The Agent's identity and default model as data, for parts in other
+    /// languages.
+    pub fn get(&self) -> AgentConfigReply {
+        AgentConfigReply {
+            name: self.name.clone(),
+            system_prompt: self.system_prompt.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {
@@ -67,6 +87,13 @@ pub struct SessionConfig {
     /// member in place while the Session runs; a fork copies it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<ReplyLanguage>,
+    /// The title the creating caller already knew for the Session, fixed at
+    /// creation. Only `sessions.launch` sets it (#1421); SessionTitle applies
+    /// its text rules and writes it as the first manual title. It stays in the
+    /// stored record, so a daemon that stops before that write still makes it
+    /// on the next load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_title: Option<String>,
 }
 fn default_interactive() -> bool {
     true
@@ -197,6 +224,7 @@ impl Default for SessionConfig {
             collaboration_role: CollaborationRole::Leader,
             interactive: default_interactive(),
             language: None,
+            initial_title: None,
         }
     }
 }
@@ -459,6 +487,10 @@ impl SessionLifecycle {
         self.holds
             .compare_exchange(0, RELEASING, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    pub(crate) fn resume_holds(&self) {
+        self.holds.store(0, Ordering::Release);
     }
 }
 

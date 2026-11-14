@@ -5,7 +5,7 @@ use crate::{
     protocol::{Empty, canonical_cwd, optional_non_null},
 };
 use dim_agent_capabilities::methods::{
-    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+    ErrorData, Interruption, MethodCall, MethodDecl, RpcError, params, reply,
 };
 use rutis::{Ctx, Error};
 use serde::{Deserialize, Serialize};
@@ -343,6 +343,8 @@ fn error(error: impl Into<super::ProviderError>) -> RpcError {
     let kind = match &error {
         ProviderError::NotFound => "provider_not_found",
         ProviderError::Conflict(_) => "provider_conflict",
+        ProviderError::CatalogStale { .. } => "provider_catalog_stale",
+        ProviderError::AccountChanged => "provider_account_changed",
         ProviderError::InvalidConfig(_) => "provider_invalid_config",
         ProviderError::Unsupported(_) => "provider_unsupported",
         ProviderError::AuthRequired => "provider_auth_required",
@@ -351,5 +353,40 @@ fn error(error: impl Into<super::ProviderError>) -> RpcError {
         ProviderError::Cancelled => "provider_cancelled",
         ProviderError::Failed => "provider_failed",
     };
-    RpcError::app(-32000, kind, error.to_string())
+    let details = match &error {
+        ProviderError::CatalogStale {
+            provider_id,
+            expected_version,
+            current_version,
+            issuer,
+            subject,
+        } => std::collections::BTreeMap::from([
+            ("providerId".into(), serde_json::json!(provider_id)),
+            (
+                "expectedVersion".into(),
+                serde_json::json!(expected_version),
+            ),
+            ("currentVersion".into(), serde_json::json!(current_version)),
+            ("issuer".into(), serde_json::json!(issuer)),
+            ("subject".into(), serde_json::json!(subject)),
+            (
+                "requiredAction".into(),
+                serde_json::json!(if issuer.is_some() {
+                    "provider.refresh"
+                } else {
+                    "account.login"
+                }),
+            ),
+        ]),
+        _ => Default::default(),
+    };
+    RpcError {
+        code: -32000,
+        message: error.to_string(),
+        data: Some(ErrorData {
+            app_error: kind.into(),
+            details,
+            daemon_busy: None,
+        }),
+    }
 }

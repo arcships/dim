@@ -6,6 +6,7 @@
 //! namespace.
 mod document;
 mod engine;
+mod loops;
 mod methods;
 mod runs;
 mod session;
@@ -28,6 +29,7 @@ use dim_agent_runtime::{AgentBuilder, Names};
 use rutis::host::DynPlugin;
 
 pub use document::ScheduleDocument;
+pub use loops::{LOOPS_FILE, Loop, LoopState, Loops};
 pub use methods::{ScheduleJobs, SchedulerPlugin};
 pub use runs::{RUNS_FILE, SchedulerError};
 pub use session::SchedulerSession;
@@ -86,10 +88,16 @@ fn install_inner(
     + 'static,
 ) -> Result<(), String> {
     let texts = std::sync::Arc::new(texts);
-    dim_agent_runtime::names::register::<ScheduleJobs>(builder.catalog_mut(), None);
-    dim_agent_runtime::names::register::<Wakeups>(builder.catalog_mut(), None);
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<ScheduleJobs>())
+        .register_shared(dim_agent_runtime::names::name_of::<Wakeups>())
+        .register_shared(dim_agent_runtime::names::name_of::<Loops>());
+    let deliveries = methods::DeliveryHolds::default();
     builder.optional_plugin(move |names| {
-        Ok(Box::new(make(names, texts.clone())?) as Box<dyn DynPlugin>)
+        let mut plugin = make(names, texts.clone())?;
+        plugin.deliveries = deliveries.clone();
+        Ok(Box::new(plugin) as Box<dyn DynPlugin>)
     });
     Ok(())
 }

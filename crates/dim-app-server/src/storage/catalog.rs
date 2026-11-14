@@ -223,6 +223,7 @@ impl SessionStore {
                     request.with_preview,
                     request.with_internal,
                     request.with_acp_sessions,
+                    request.with_automation_sessions,
                     request.include_closed,
                 ))
                 .map_err(error)?
@@ -254,13 +255,14 @@ impl SessionStore {
                  CROSS JOIN session_owners o ON o.session_id=c.session_id \
                  CROSS JOIN timeline_branches b ON b.session_id=c.session_id AND b.branch_id='main' \
                  LEFT JOIN session_metadata m ON m.session_id=c.session_id \
-                 WHERE o.protocol_version=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
+                 WHERE o.protocol_version<=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
                  AND c.session_id NOT IN (SELECT value FROM json_each(?3))"
             );
             let mut values: Vec<rusqlite::types::Value> = vec![i64::from(version).into(), serde_json::to_string(&hosts).map_err(error)?.into(), serde_json::to_string(&closed).map_err(error)?.into()];
             if request.with_preview { sql.push_str(" AND c.preview IS NOT NULL"); }
             if !request.with_internal { sql.push_str(" AND s.origin != 'internal'"); }
             if !request.with_acp_sessions { sql.push_str(" AND s.origin != 'acp'"); }
+            if !request.with_automation_sessions { sql.push_str(" AND s.origin != 'automation'"); }
             if let Some(agent) = agent { values.push(agent.into()); sql.push_str(&format!(" AND o.agent_id=?{}", values.len())); }
             if let Some(cwd) = request.cwd { values.push(serde_json::to_string(&cwd).map_err(error)?.into()); sql.push_str(&format!(" AND c.cwd IN (SELECT value FROM json_each(?{}))", values.len())); }
             if let Some(query) = request.query {

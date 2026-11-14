@@ -14,7 +14,7 @@ use rutis_bridge::session::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     future::Future,
     sync::{Arc, Mutex, Weak},
 };
@@ -33,6 +33,9 @@ pub struct RpcError {
 #[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     pub app_error: String,
+    /// Owner-defined wire fields; must not shadow `appError` or built-in fields.
+    #[serde(flatten)]
+    pub details: BTreeMap<String, Value>,
     /// What a refused `daemon.shutdown {ifIdle}` found in use; boxed so a
     /// wire error stays small.
     #[serde(flatten)]
@@ -56,6 +59,7 @@ impl RpcError {
             message: message.into(),
             data: Some(ErrorData {
                 app_error: app_error.into(),
+                details: BTreeMap::new(),
                 daemon_busy: None,
             }),
         }
@@ -68,6 +72,7 @@ impl RpcError {
             message: "The App Server is in use".into(),
             data: Some(ErrorData {
                 app_error: "daemon_busy".into(),
+                details: BTreeMap::new(),
                 daemon_busy: Some(Box::new(DaemonBusy {
                     connections,
                     attached_sessions,
@@ -1110,11 +1115,79 @@ impl HostDispatch for ForeignMethods {
     }
 }
 
+/// One declared method as the reservation question reads it: the name, whether
+/// it mutates and the notification names it may send. `interruption` and
+/// `progress` belong to an actual registration, not to the question, so they do
+/// not cross.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReservedMethod {
+    pub name: String,
+    pub mutating: bool,
+    #[serde(default)]
+    pub notifications: Vec<String>,
+}
+
+/// A namespace and the declarations it would register.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReservedMethodsRequest {
+    pub namespace: String,
+    #[serde(default)]
+    pub declarations: Vec<ReservedMethod>,
+}
+
+/// What `reservedMethods` fails with: `{code, message}`.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ReservedMethodsError {
+    #[error("{message}")]
+    Reserved { message: String },
+}
+
 /// The method names a host keeps from Session namespaces, such as its
 /// protocol's built-ins and roots: a process value the Session's table
 /// consults when a namespace is registered. A host that serves no protocol
 /// names no such value, and its Session tables reserve nothing.
-pub struct ReservedMethods(pub Check);
+pub struct ReservedMethods(Check);
+
+impl ReservedMethods {
+    /// Binds the owner's check as the face's operation.
+    pub fn new(check: Check) -> Self {
+        Self(check)
+    }
+
+    /// The check a [`MethodTable`] consults for the Session's own
+    /// registrations.
+    pub(crate) fn check_type(&self) -> Check {
+        self.0.clone()
+    }
+}
+
+#[rutis::service]
+impl ReservedMethods {
+    /// Refuses a namespace and declarations the host keeps for itself.
+    pub fn check(
+        &self,
+        request: ReservedMethodsRequest,
+    ) -> std::result::Result<(), ReservedMethodsError> {
+        let declarations: Vec<MethodDecl> = request
+            .declarations
+            .into_iter()
+            .map(|declaration| {
+                let mut method =
+                    MethodDecl::new(&declaration.name, declaration.mutating, Interruption::Drain);
+                method.notifications = declaration.notifications;
+                method
+            })
+            .collect();
+        (self.0)(&request.namespace, &declarations).map_err(|error| {
+            ReservedMethodsError::Reserved {
+                message: error.to_string(),
+            }
+        })
+    }
+}
 
 /// The Session's method table: the namespaces its parts register, which Rpc
 /// dispatches through the Session (methods contract A.1).
@@ -1158,7 +1231,7 @@ impl DynPlugin for SessionMethodsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let check: Check = match &self.reserved {
-                Some(reserved) => ctx.require_at(reserved)?.0.clone(),
+                Some(reserved) => ctx.require_at(reserved)?.check_type(),
                 None => Arc::new(|_, _| Ok(())),
             };
             let table = Arc::new(MethodTable::new(check));

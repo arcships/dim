@@ -489,6 +489,12 @@ The protocol decision is accepted: the v2/v3 payloads are the shared event types
 built and shipped with the daemon, the field is the only way a declaration can travel with the
 result it describes, and v1's frozen shape does not change.
 
+`Usage.reasoningTokens` is an optional field of `model/usage`, and neither the store nor the v1
+projection widens for it. The native store takes v46, marker only, because an older daemon cannot
+decode a `Usage` carrying it ([v46](../appserver/native-storage-format.md#v46modelusage-携带推理-token-数)).
+v1 connections receive `model/usage` without it, so v1's frozen shape does not change; v2 and later
+carry the native event whole, and the frozen fixtures stay unchanged.
+
 ## Appendix B. Full conflict table
 
 | Scenario | Sequence order | Outcome | Owner of the decision |
@@ -522,6 +528,12 @@ result it describes, and v1's frozen shape does not change.
 | A withdrawn namespace whose registering row, or that row's copy in the Session, is Failed, Unresolved, Disposed or Stopped | `-32000`, `service_unavailable` (not retryable) |
 | `report` call interrupted | `-32000`, `operation_interrupted` |
 | Provider error | `-32000`, provider's `appError` |
+
+Native method errors may include owner-defined JSON fields beside `data.appError`.
+The method owner defines and supplies their safe public shape; the method table
+and Rpc preserve them without interpreting them. These fields must not shadow
+`appError` or built-in error fields. An error without additional fields keeps its
+existing wire shape.
 
 ## Appendix D. Acceptance
 
@@ -593,12 +605,13 @@ impl MethodTable { // the namespaces registered, and those withdrawn with their 
     pub fn listed(&self) -> Vec<MethodDecl>;           // the registered namespaces' methods
 }
 pub struct SessionMethods(pub Arc<MethodTable>); // Deref<Target = MethodTable>
-pub struct ReservedMethods(pub Check);           // process value: the Session table's check
+pub struct ReservedMethods(Check);               // process value: the Session table's check
+// and the data face `reservedMethods`; `check {namespace, declarations}` asks it
 // crates/dim-app-server/src/methods.rs
 pub struct ManagementMethods(pub Arc<MethodTable>); // Deref<Target = MethodTable>
 ```
 
-`MethodProvider::new` rejects invalid declarations (the A.1 grammar; at least one method, each unique and inside the namespace; and each declared notification: grammar, inside the namespace, unique across the declaration set and never a method's name) and ties the provider to the generation of the part that registers it: when that generation is cancelled, the first step of its unload and before any of its effects runs, the provider stops admitting and interrupts its admitted `Report` calls, and its unload effect waits for every admitted call, so the two tables cannot diverge. A row of another language unloads its plugin in an effect that runs before those registered during its apply, so its accepted calls are told to settle while the plugin still runs. `MethodTable::register` runs the table's `Check`, builds the provider and registers the namespace on behalf of the part that owns `ctx`; a namespace registered already fails. When that part unloads, the table records its row with the namespace, so a later call answers from that row (`Owner::Left`). The `ManagementMethods` check is the management rule of A.1 Reserved names; the Session table's is App Server's `ReservedMethods`, which the table depends on when the assembly names it; a host that names none reserves nothing, and only the grammar applies. The handler receives the `MethodCall` -- the name, the raw params and its `Origin` -- a cancellation token that fires on either unload (A.1) and the call's `Progress`. `origin.caller` is present when a client connection made the call, through either table, and absent otherwise. `RpcError`, with its `From<AgentError>`, lives in the same module (A.1 Shared types); dim-app-server keeps `ManagementMethods`, the reserved-name checks and Rpc's lookups (`management_provider`, `session_provider`).
+`MethodProvider::new` rejects invalid declarations (the A.1 grammar; at least one method, each unique and inside the namespace; and each declared notification: grammar, inside the namespace, unique across the declaration set and never a method's name) and ties the provider to the generation of the part that registers it: when that generation is cancelled, the first step of its unload and before any of its effects runs, the provider stops admitting and interrupts its admitted `Report` calls, and its unload effect waits for every admitted call, so the two tables cannot diverge. A row of another language unloads its plugin in an effect that runs before those registered during its apply, so its accepted calls are told to settle while the plugin still runs. `MethodTable::register` runs the table's `Check`, builds the provider and registers the namespace on behalf of the part that owns `ctx`; a namespace registered already fails. When that part unloads, the table records its row with the namespace, so a later call answers from that row (`Owner::Left`). The `ManagementMethods` check is the management rule of A.1 Reserved names; the Session table's is App Server's `ReservedMethods`, which the table depends on when the assembly names it; a host that names none reserves nothing, and only the grammar applies. `ReservedMethods` is a data face: `reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]} -> {}` refuses a namespace the host keeps, and a Rust table consults the same operation in process ([service faces §4.9](../service-faces.md#49-旧主机端口credentialvariableshost-等六个)). The handler receives the `MethodCall` -- the name, the raw params and its `Origin` -- a cancellation token that fires on either unload (A.1) and the call's `Progress`. `origin.caller` is present when a client connection made the call, through either table, and absent otherwise. `RpcError`, with its `From<AgentError>`, lives in the same module (A.1 Shared types); dim-app-server keeps `ManagementMethods`, the reserved-name checks and Rpc's lookups (`management_provider`, `session_provider`).
 
 `Progress` binds A.2 `progress` per call rather than through a `callChannel` process service: Rpc passes each admitted call a sink that writes `management.progress {id, method, data}` to the calling connection, and the admission hands it to the handler only when the method declares `progress` and closes it before it hands over the reply. The sink queues progress under its own allowance on the connection, so progress never takes room from the reply or durable notifications. Management methods use the same path; `runtime.watch` and `schedule.watch` declare `progress` ([RuntimeManager §10](../plugins/RuntimeManager.md#10-client-change-notices); [Scheduler §11.2](../plugins/Scheduler.md#112-jobs-and-runs)).
 

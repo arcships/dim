@@ -1,6 +1,6 @@
 use crate::{
     context_policy::ContextPolicy,
-    history::HistoryRenderer,
+    history::{HistoryRenderer, StreamedContext},
     host::*,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::{PromptSnapshot, scope_is_visible},
@@ -60,7 +60,7 @@ impl ConfigurationPublisher {
         changes: Vec<PromptChange>,
         model: Option<ModelSelection>,
         tools: Option<ToolSetAdoption>,
-        inputs: impl FnOnce(&PromptSnapshot, &PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
+        inputs: impl FnOnce(&PromptSnapshot, &[PromptChange]) -> Vec<InputBlock> + Send,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> dim_agent_runtime::Result<()> + Send,
     ) -> dim_agent_runtime::Result<Option<u64>> {
         let (before, previous_configuration) = adopted;
@@ -116,10 +116,10 @@ impl ConfigurationPublisher {
                 ));
             }
         }
-        let base = previous_configuration.map(|data| (*data.settings).clone());
         let configuration = match (model, tools) {
             (None, None) => None,
             (model, tools) => {
+                let base = previous_configuration.map(|data| (*data.settings).clone());
                 let mut settings = match (model, base) {
                     (Some(model), base) => ModelConfiguration {
                         provider_id: model.provider_id,
@@ -145,11 +145,48 @@ impl ConfigurationPublisher {
             }
         };
         let effective_configuration = configuration
-            .clone()
-            .or_else(|| previous_configuration.map(|data| (*data.settings).clone()));
+            .as_ref()
+            .or_else(|| previous_configuration.map(|data| data.settings.as_ref()));
+        // A source leaving the System prompt: the prefix's configuration
+        // already composes it without that source, so the removal is written
+        // into the fact rather than derived from it when a line reads. It
+        // precedes the `Set` so a line applies it where the fact is found and
+        // waits only for the new value.
+        let mut written = Vec::with_capacity(changes.len());
+        for change in changes {
+            if let PromptChange::Set { entry } = &change
+                && entry.delivery != PromptDelivery::System
+                && before
+                    .entries
+                    .get(&(entry.source.clone(), entry.scope.clone()))
+                    .is_some_and(|replaced| replaced.delivery == PromptDelivery::System)
+            {
+                written.push(PromptChange::Revoke {
+                    source: entry.source.clone(),
+                    scope: entry.scope.clone(),
+                });
+            }
+            written.push(change);
+        }
+        let changes = written;
         let mut drafts: Vec<EventDraft> = Vec::new();
         if !changes.is_empty() {
             let revision = Uuid::new_v4().to_string();
+            // Each delivery input's id is assigned here, before the change is
+            // built, so the change names the blocks that will deliver it: a
+            // line that inherits the change applies it only once they were
+            // consumed in that line's prefix.
+            let deliveries: Vec<EventDraft> = inputs(before, &changes)
+                .into_iter()
+                .map(|block| {
+                    EventDraft::new(EventKind::InputMessage(InputMessageData {
+                        blocks: vec![block],
+                        mode: Some(InputMode::Append),
+                        ..Default::default()
+                    }))
+                    .with_id(Uuid::new_v4().to_string())
+                })
+                .collect();
             let data = PromptChangedData {
                 timeline: self.identity.branch_id.clone(),
                 revision: revision.clone(),
@@ -160,21 +197,16 @@ impl ConfigurationPublisher {
                     PromptChangeReason::Initialize
                 },
                 changes,
+                inputs: deliveries
+                    .iter()
+                    .map(|draft| draft.id.clone().expect("assigned delivery id"))
+                    .collect(),
             };
-            let mut after = before.clone();
-            after.changed(&data.timeline, &data.revision, &data.changes);
-            let blocks = inputs(before, &after, &data.changes);
+            let system = before.system_after(&data.changes);
             drafts.push(EventKind::PromptChanged(data).into());
-            drafts.extend(blocks.into_iter().map(|block| {
-                EventKind::InputMessage(InputMessageData {
-                    blocks: vec![block],
-                    mode: Some(InputMode::Append),
-                    ..Default::default()
-                })
-                .into()
-            }));
-            if after.system_revision != before.system_revision {
-                let settings = effective_configuration.clone().ok_or_else(|| {
+            drafts.extend(deliveries);
+            if let Some(system) = system {
+                let settings = effective_configuration.cloned().ok_or_else(|| {
                     AgentError::InvalidInput("system prompt update requires configuration".into())
                 })?;
                 drafts.push(
@@ -185,13 +217,16 @@ impl ConfigurationPublisher {
                             timeline: data.timeline.clone(),
                             revision: data.revision.clone(),
                         }),
-                        prompt: after.system_revision.clone(),
+                        prompt: Some(PromptReference {
+                            timeline: self.identity.branch_id.clone(),
+                            revision,
+                        }),
                         settings: Box::new(settings),
                         system: Some(self.guide.compose_system(
                             &self.identity.branch_id,
-                            Some(SystemPrompt::Text(after.system.clone())),
+                            Some(SystemPrompt::Text(system.clone())),
                         )),
-                        system_source: Some(after.system.clone()),
+                        system_source: Some(system),
                     })
                     .into(),
                 );
@@ -371,6 +406,9 @@ pub enum ContextOpError {
     /// No `context/configured` in the branch's history.
     #[error("Context is not configured; adopt a model first")]
     NotConfigured,
+    /// A real model request has not established statistics for the current context.
+    #[error("Context usage will be available after the next model request")]
+    NotReady,
     /// The window facts could not be resolved, or no policy is bound.
     #[error("{0}")]
     Model(HostError),
@@ -378,7 +416,15 @@ pub enum ContextOpError {
     Read(AgentError),
 }
 
+struct PreparedProjection {
+    request_id: String,
+    through: u64,
+    request: std::sync::Weak<ModelRequest>,
+    context: StreamedContext,
+}
+
 pub struct ContextPreparation {
+    projection: Mutex<Option<PreparedProjection>>,
     state: Mutex<PreparationState>,
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
@@ -398,6 +444,33 @@ pub struct ContextPreparation {
     identity: Arc<TimelineIdentity>,
 }
 impl ContextPreparation {
+    pub(crate) fn provide_projection(&self, source: &ContextPrepareData, context: StreamedContext) {
+        if self.policy.is_some() {
+            *self.projection.lock().unwrap() = Some(PreparedProjection {
+                request_id: source.request_id.clone(),
+                through: source.through,
+                request: Arc::downgrade(&source.request),
+                context,
+            });
+        }
+    }
+
+    fn take_projection(&self, source: &ContextPrepareData) -> Option<StreamedContext> {
+        self.projection
+            .lock()
+            .unwrap()
+            .take()
+            .filter(|projection| {
+                projection.request_id == source.request_id
+                    && projection.through == source.through
+                    && projection
+                        .request
+                        .upgrade()
+                        .is_some_and(|request| Arc::ptr_eq(&request, &source.request))
+            })
+            .map(|projection| projection.context)
+    }
+
     async fn rebuild(&self) -> dim_agent_runtime::Result<u64> {
         let through = self.timeline.committed();
         let mut request = TimelineQuery {
@@ -663,6 +736,7 @@ impl ContextPreparation {
         source: ContextPrepareData,
         result: std::result::Result<Arc<ModelRequest>, HostError>,
     ) -> dim_agent_runtime::Result<()> {
+        self.projection.lock().unwrap().take();
         if result.is_err() {
             self.references.lock().unwrap().remove(&source.request_id);
         }
@@ -804,6 +878,7 @@ impl ContextPreparation {
         cancel: CancellationToken,
         generation: &CancellationToken,
     ) -> std::result::Result<Arc<ModelRequest>, HostError> {
+        let projection = self.take_projection(&source);
         crate::context_policy::check_cancel(&cancel)?;
         let request = self
             .host
@@ -855,6 +930,7 @@ impl ContextPreparation {
                     .prepare(
                         request,
                         &source,
+                        projection,
                         exact_prefix.then_some(self.usage.as_ref()),
                         cancel.clone(),
                         &cancelled,
@@ -970,6 +1046,7 @@ impl DynPlugin for ContextPreparationPlugin {
             });
             ctx.provide_at(self.publisher.clone(), publisher)?;
             let service = Arc::new(ContextPreparation {
+                projection: Mutex::new(None),
                 state: Mutex::new(PreparationState::default()),
                 usage: ctx.require_at(&self.usage)?,
                 references: Mutex::new(std::collections::HashMap::new()),
@@ -992,6 +1069,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 }
                 owner.tasks.close();
                 owner.tasks.wait().await;
+                owner.projection.lock().unwrap().take();
                 owner.references.lock().unwrap().clear();
                 AgentError::aggregate(owner.errors.lock().unwrap().clone()).map_err(Into::into)
             })?;

@@ -253,18 +253,16 @@ async fn a_deleted_input_leaves_the_key_at_its_earlier_live_block_or_absent() {
         .await
         .unwrap();
     let queue = session.service::<InputQueue>("main").unwrap();
-    let answer = queue
-        .withdraw(
-            InputWithdrawData {
-                input_id: held.id.clone(),
-                reason: Some("withdrawn while held".into()),
-            },
-            None,
-        )
+    let (answer, _) = queue
+        .withdraw_checked(InputWithdrawData {
+            input_id: held.id.clone(),
+            reason: Some("withdrawn while held".into()),
+            steer: None,
+        })
         .await
         .unwrap();
     assert!(
-        matches!(answer.withdrawal, Withdrawal::Deleted { .. }),
+        matches!(answer, Withdrawal::Deleted { .. }),
         "the turn holds the input unapplied: {answer:?}"
     );
     session.stop("main", "end the wait".into()).await.unwrap();

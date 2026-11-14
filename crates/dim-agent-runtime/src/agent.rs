@@ -413,6 +413,26 @@ pub enum InUse {
 }
 #[derive(Clone)]
 pub struct Session(Arc<SessionInner>);
+
+/// An idle Session with branch writes and new activity holds paused. Dropping
+/// this guard resumes admission; closing the Session still settles normally.
+pub struct SessionPause {
+    session: Session,
+    branches: Vec<Branch>,
+}
+
+impl Drop for SessionPause {
+    fn drop(&mut self) {
+        if self.session.is_closing() {
+            return;
+        }
+        for branch in &self.branches {
+            branch.0.timeline().thaw();
+        }
+        self.session.0.owner.lifecycle.resume_holds();
+    }
+}
+
 struct SessionInner {
     owner: Arc<SessionAssembly>,
     view: FiberView,
@@ -494,6 +514,21 @@ impl Session {
             return Err(AgentError::Closed(self.id().into()));
         }
         self.published(branch)?.input(data).await
+    }
+    /// [`Self::input`], also saying whether this call wrote the input; see
+    /// [`Branch::input_commit`].
+    pub async fn input_commit(
+        &self,
+        data: InputMessageData,
+        branch: &str,
+    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
+        if let Some(error) = self.0.owner.faults.failure() {
+            return Err(error);
+        }
+        if self.0.owner.closing.is_cancelled() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.published(branch)?.input_commit(data).await
     }
     /// Appends a validated batch of input to `branch` as one atomic commit;
     /// see [`Branch::inputs`] for the contract.
@@ -717,13 +752,24 @@ impl Session {
     /// so appends only wait briefly; a hold held at the call refuses it
     /// without taking a lock.
     pub async fn unload_if_idle(&self) -> Result<bool> {
-        let lifecycle = &self.0.owner.lifecycle;
-        if self.is_closing()
-            || self.failure().is_some()
-            || self.0.owner.assembly.ephemeral_store.is_some()
-            || self.in_use().is_some()
-        {
+        if self.0.owner.assembly.ephemeral_store.is_some() {
             return Ok(false);
+        }
+        let Some(_pause) = self.pause_if_idle() else {
+            return Ok(false);
+        };
+        self.0.owner.unloading.cancel();
+        self.finish(true).await?;
+        Ok(true)
+    }
+
+    /// Atomically pauses an idle Session without closing it or writing facts.
+    /// The host must exclude new Session uses until it drops the guard. Refusal
+    /// changes nothing and never waits for a branch commit lock or active work.
+    pub fn pause_if_idle(&self) -> Option<SessionPause> {
+        let lifecycle = &self.0.owner.lifecycle;
+        if self.is_closing() || self.failure().is_some() || self.in_use().is_some() {
+            return None;
         }
         // Every branch is checked under its commit lock before any is frozen,
         // so a refused release never rejects a concurrent append.
@@ -732,28 +778,25 @@ impl Session {
         // idle-unload.md §6.1).
         let mut branches = self.branches();
         branches.sort_by(|a, b| a.id.cmp(&b.id));
-        let Some(handles) = branches
+        let handles = branches
             .iter()
             .map(|info| self.0.tree.get(&info.id))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(false);
-        };
-        let Some(tails) = handles
-            .iter()
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
             .filter(|branch| !branch.0.is_closed())
+            .collect::<Vec<_>>();
+        let tails = handles
+            .iter()
             .map(|branch| branch.0.lock_idle())
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Ok(false);
-        };
+            .collect::<Option<Vec<_>>>()?;
         if !lifecycle.refuse_holds() {
-            return Ok(false);
+            return None;
         }
         tails.into_iter().for_each(TailLock::freeze);
-        self.0.owner.unloading.cancel();
-        self.finish(true).await?;
-        Ok(true)
+        Some(SessionPause {
+            session: self.clone(),
+            branches: handles,
+        })
     }
     pub fn close(&self) -> BoxFuture<'static, Result<()>> {
         self.finish(false)

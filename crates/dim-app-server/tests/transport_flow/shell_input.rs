@@ -80,7 +80,7 @@ async fn background_exec_output_is_live_bounded_and_scoped() {
     let command = "while [ ! -f long-line ]; do sleep 0.01; done; awk 'BEGIN { for (i=0; i<150000; i++) printf \"x\"; printf \"\\n\" }'; while [ ! -f produce ]; do sleep 0.01; done; awk 'BEGIN { for (i=0; i<3000; i++) printf \"%04d-%080d\\n\", i, 0 }'; printf 'tail\\001\\n'; while [ ! -f finish ]; do sleep 0.01; done; printf 'final\\n'";
     let text = format!(
         "tool:exec {}",
-        json!({"command":command,"runInBackground":true,"timeoutMs":-1})
+        json!({"command":command,"title":"Capture command output","runInBackground":true,"timeoutMs":-1})
     );
     assert_ok(
         &shell
@@ -96,10 +96,54 @@ async fn background_exec_output_is_live_bounded_and_scoped() {
         if event["params"]["event"]["type"] == "exec"
             && event["params"]["event"]["name"] == "started"
         {
+            assert_eq!(
+                event["params"]["event"]["data"]["title"],
+                "Capture command output"
+            );
             break event["params"]["event"]["data"]["task_id"].clone();
         }
     };
     session.idle("main").await.unwrap();
+    let pending = shell
+        .client
+        .rpc(
+            "session.exec.pending",
+            json!({"sessionId":shell.sid,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    assert_eq!(pending["result"]["tasks"][0]["taskId"], task);
+    assert_eq!(
+        pending["result"]["tasks"][0]["title"],
+        "Capture command output"
+    );
+    assert_eq!(
+        pending["result"]["tasks"][0]["description"],
+        command.chars().take(200).collect::<String>()
+    );
+    assert_ok(
+        &shell
+            .client
+            .rpc("session.detach", json!({"sessionId":shell.sid}))
+            .await,
+    );
+    let refused = shell
+        .client
+        .rpc("daemon.shutdown", json!({"ifIdle":true}))
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "daemon_busy",
+        "detached execution must survive an idle shutdown: {refused}"
+    );
+    assert_eq!(refused["error"]["data"]["running"], 1, "{refused}");
+    assert_eq!(refused["error"]["data"]["connections"], 0, "{refused}");
+    assert_eq!(refused["error"]["data"]["attachedSessions"], 0, "{refused}");
+    assert_ok(
+        &shell
+            .client
+            .rpc("session.attach", json!({"sessionId":shell.sid}))
+            .await,
+    );
     let params = json!({"sessionId":shell.sid,"branchId":"main","taskId":task});
     let child = session
         .branch(
@@ -398,6 +442,18 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     let task = next_exec_started(&mut shell, 0).await;
     session.idle("main").await.unwrap();
     let params = json!({"sessionId":shell.sid,"branchId":"main","taskId":task});
+    let pending = shell
+        .client
+        .rpc(
+            "session.exec.pending",
+            json!({"sessionId":shell.sid,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    let inventory_task: dim_agent_types::PendingExec =
+        serde_json::from_value(pending["result"]["tasks"][0].clone()).unwrap();
+    assert_eq!(inventory_task.title, None);
+    assert!(pending["result"]["tasks"][0].get("title").is_none());
     // Before any output the registered file is empty: an empty page, no next
     // cursor.
     let empty = exec_output_page(&mut shell, &params, 0, 64).await;
@@ -1024,10 +1080,14 @@ impl Shell {
     }
     /// `session` adds to the `session.create` params.
     async fn launch_with(session: Value) -> Self {
-        Self::launch_unloading(session, ServerConfig::default().idle_unload_after).await
+        Self::launch_unloading(session, ServerConfig::default().idle_unload_after, None).await
     }
     /// As [`Self::launch_with`], with `grace` as the idle unload grace period.
-    async fn launch_unloading(session: Value, grace: Duration) -> Self {
+    async fn launch_unloading(
+        session: Value,
+        grace: Duration,
+        session_typescript: Option<dim_app_server::session_typescript::SessionTypeScriptConfig>,
+    ) -> Self {
         let home = PathBuf::from("/tmp").join(format!("dsh-{}", uuid::Uuid::new_v4()));
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -1099,6 +1159,7 @@ impl Shell {
                     ..Default::default()
                 },
                 idle_unload_after: grace,
+                session_typescript,
                 ..Default::default()
             },
         )
@@ -2069,7 +2130,7 @@ const GRACE: Duration = Duration::from_millis(200);
 /// completed, and the Session then unloads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_idle_unload_pass_keeps_a_session_while_a_run_works() {
-    let mut shell = Shell::launch_unloading(json!({}), GRACE).await;
+    let mut shell = Shell::launch_unloading(json!({}), GRACE, None).await;
     let session = shell
         .server
         .agent()
@@ -2106,6 +2167,7 @@ async fn the_idle_unload_pass_keeps_a_session_while_a_background_exec_works() {
     let mut shell = Shell::launch_unloading(
         json!({"tools":["exec"], "permissionPolicy":{"preset":"full-access"}}),
         GRACE,
+        None,
     )
     .await;
     let session = shell
@@ -2154,5 +2216,155 @@ async fn the_idle_unload_pass_keeps_a_session_while_a_background_exec_works() {
         .map(|event| event["name"].as_str().unwrap())
         .collect();
     assert_eq!(woken, ["start", "end"], "{events:?}");
+    shell.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_object_faces_use_session_and_branch_owners_across_the_bridge() {
+    use dim_agent_capabilities::workspace_tools::background::BackgroundExec;
+    use dim_app_server::mcp::McpSession;
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"object-faces",
+        "name":parts.anchor.parent().unwrap().join("fixtures/object-faces.ts"),
+        "provides":{}, "config":{},
+    })];
+    let mut shell = Shell::launch_unloading(
+        json!({"tools":["exec"],"permissionPolicy":{"preset":"full-access"}}),
+        ServerConfig::default().idle_unload_after,
+        Some(parts),
+    )
+    .await;
+    let session = shell
+        .server
+        .agent()
+        .unwrap()
+        .get_session(&shell.sid)
+        .unwrap();
+    let state = super::session_typescript::when_served(
+        &mut shell.client,
+        "session.objectface.call",
+        json!({"sessionId":shell.sid,"operation":"state"}),
+    )
+    .await;
+    assert_ok(&state);
+    assert_eq!(
+        state["result"],
+        serde_json::to_value(session.session_service::<McpSession>().unwrap().state()).unwrap()
+    );
+    let missing = shell
+        .client
+        .rpc(
+            "session.objectface.call",
+            json!({"sessionId":shell.sid,"operation":"missingServer"}),
+        )
+        .await;
+    assert_ok(&missing);
+    assert_eq!(
+        missing["result"]["error"]["code"], "UnknownServer",
+        "{missing}"
+    );
+    assert!(missing["result"]["error"]["message"].is_string());
+
+    assert_ok(
+        &shell
+            .client
+            .rpc("session.attach", json!({"sessionId":shell.sid}))
+            .await,
+    );
+    let text = format!(
+        "tool:exec {}",
+        json!({"command":"printf bridge-output; while [ ! -f finish ]; do sleep 0.01; done", "runInBackground":true,"timeoutMs":-1})
+    );
+    assert_ok(
+        &shell
+            .client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":shell.sid,"branchId":"main","text":text}),
+            )
+            .await,
+    );
+    let task = loop {
+        let event = shell.client.notice("session.event").await;
+        if event["params"]["event"]["type"] == "exec"
+            && event["params"]["event"]["name"] == "started"
+        {
+            break event["params"]["event"]["data"]["task_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        }
+    };
+    session.idle("main").await.unwrap();
+    let background = session.service::<BackgroundExec>("main").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while background.output(task.clone()).await.unwrap() != "bridge-output" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for operation in ["output", "outputPage", "wait"] {
+        let reply = shell
+            .client
+            .rpc(
+                "session.objectface.call",
+                json!({"sessionId":shell.sid,"operation":operation,"taskId":task}),
+            )
+            .await;
+        assert_ok(&reply);
+        match operation {
+            "output" => assert_eq!(reply["result"], "bridge-output"),
+            "outputPage" => assert_eq!(
+                reply["result"],
+                serde_json::to_value(background.output_page(task.clone(), 0, 64).await.unwrap())
+                    .unwrap()
+            ),
+            "wait" => {
+                assert_eq!(reply["result"]["error"]["code"], "timeout", "{reply}");
+                assert!(reply["result"]["error"]["message"].is_string());
+            }
+            _ => unreachable!(),
+        }
+    }
+    let second = shell
+        .client
+        .rpc("session.create", json!({"cwd":shell.work,"tools":[]}))
+        .await;
+    assert_ok(&second);
+    let second = second["result"]["sessionId"].as_str().unwrap();
+    let refused = super::session_typescript::when_served(
+        &mut shell.client,
+        "session.objectface.call",
+        json!({"sessionId":second,"operation":"output","taskId":task}),
+    )
+    .await;
+    assert_ok(&refused);
+    assert_eq!(
+        refused["result"]["error"]["code"], "unknown",
+        "a different Session cannot read this branch's task: {refused}"
+    );
+
+    let stopped = shell
+        .client
+        .rpc(
+            "session.objectface.call",
+            json!({"sessionId":shell.sid,"operation":"stop","taskId":task}),
+        )
+        .await;
+    assert_ok(&stopped);
+    assert_eq!(stopped["result"]["task_id"], task);
+    assert_eq!(stopped["result"]["status"], "cancelled");
+    let ended = shell
+        .client
+        .rpc(
+            "session.objectface.call",
+            json!({"sessionId":shell.sid,"operation":"wait","taskId":task}),
+        )
+        .await;
+    assert_ok(&ended);
+    assert_eq!(ended["result"], stopped["result"]);
     shell.shutdown().await;
 }

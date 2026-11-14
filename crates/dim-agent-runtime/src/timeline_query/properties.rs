@@ -66,6 +66,8 @@ pub enum QueryOrderKey {
 pub enum QueryOperand {
     Field { path: String },
     Outer { path: String },
+    Root { path: String },
+    Concat { parts: Vec<QueryOperand> },
     Element { path: String },
     Value { value: Value },
 }
@@ -493,10 +495,8 @@ impl QueryFilter {
                 Ok(())
             }
             Self::Exists { condition } => {
-                if related || element {
-                    return invalid(
-                        "related queries cannot nest or start inside an array condition",
-                    );
+                if element {
+                    return invalid("related queries cannot start inside an array condition");
                 }
                 condition.validate(true, false)
             }
@@ -515,9 +515,14 @@ impl QueryOperand {
     fn validate(&self, related: bool, element: bool) -> Result<()> {
         match self {
             Self::Field { path } => validate_field(path, false),
-            Self::Outer { path } if related => validate_field(path, false),
+            Self::Outer { path } | Self::Root { path } if related => validate_field(path, false),
+            Self::Concat { parts } => parts
+                .iter()
+                .try_for_each(|part| part.validate(related, element)),
             Self::Element { path } if element => validate_path(path, false, true),
-            Self::Outer { .. } => invalid("outer fields require a related query"),
+            Self::Outer { .. } | Self::Root { .. } => {
+                invalid("outer fields require a related query")
+            }
             Self::Element { .. } => invalid("element fields require an array condition"),
             Self::Value { value } if value.is_array() || value.is_object() => {
                 invalid("comparison literals must be scalars")
@@ -577,4 +582,199 @@ fn validate_path(path: &str, array: bool, empty: bool) -> Result<()> {
 
 fn invalid<T>(message: &str) -> Result<T> {
     Err(AgentError::InvalidInput(message.into()))
+}
+
+/// Pins the equivalence a store relies on when it compares properties by
+/// `query_match_key` instead of `query_compare` per candidate: `Eq` holds
+/// exactly when both sides hold a match key and the keys are equal (#1473).
+#[cfg(test)]
+mod match_key_proof {
+    use super::*;
+    use serde_json::{Value, json};
+
+    /// Values that stress integer/float equality, signed zero, precision
+    /// boundaries and text that is not ASCII.
+    fn candidates() -> Vec<Value> {
+        let mut values = vec![
+            Value::Null,
+            Value::Bool(false),
+            Value::Bool(true),
+            json!(""),
+            json!("0"),
+            json!("1"),
+            json!("1.0"),
+            json!(" "),
+            json!("ünïcode"),
+            json!("日本語"),
+            json!("\u{0}"),
+            json!([]),
+            json!([1]),
+            json!({}),
+            json!({"a": 1}),
+        ];
+        for integer in [
+            0i64,
+            1,
+            -1,
+            2,
+            -2,
+            255,
+            256,
+            i64::from(i32::MAX),
+            i64::from(i32::MIN),
+            1 << 30,
+            1 << 52,
+            (1 << 53) - 1,
+            1 << 53,
+            (1 << 53) + 1,
+            1 << 62,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            values.push(Value::from(integer));
+        }
+        // Above `i64::MAX` a JSON number is a `u64`, and `scalar_key` keeps it exact.
+        for unsigned in [(1u64 << 63) + 1, u64::MAX, 1u64 << 63] {
+            values.push(Value::from(unsigned));
+        }
+        for text in ["18446744073709551615", "9223372036854775808"] {
+            values.push(text.parse().expect("a JSON number"));
+        }
+        for float in [
+            0.0f64,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            1.5,
+            2.0,
+            255.0,
+            9007199254740992.0,
+            9007199254740993.0,
+            1.0e300,
+            -1.0e300,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5.0e-324,
+            -5.0e-324,
+            2.2250738585072014e-308,
+            f64::MAX,
+            f64::MIN,
+            std::f64::consts::PI,
+        ] {
+            values.push(json!(float));
+        }
+        values
+    }
+
+    fn key(value: &Value) -> Option<Vec<u8>> {
+        let value = QueryValue::Value {
+            value: value.clone(),
+        };
+        matches!(value.scalar_kind(), Some(1..=4))
+            .then(|| value.scalar_key().expect("a match key is scalar"))
+    }
+
+    fn value(value: &Value) -> QueryValue {
+        QueryValue::Value {
+            value: value.clone(),
+        }
+    }
+
+    #[test]
+    fn equality_matches_exactly_when_both_sides_hold_equal_match_keys() {
+        let values = candidates();
+        let mut agreeing = 0;
+        let mut unequal_keys = 0;
+        let mut comparisons = 0;
+        for left in &values {
+            for right in &values {
+                comparisons += 1;
+                let matches = QueryComparison::Eq.matches(&value(left), &value(right));
+                let (Some(left_key), Some(right_key)) = (key(left), key(right)) else {
+                    assert!(
+                        !matches,
+                        "a value without a match key matched: {left} = {right}"
+                    );
+                    continue;
+                };
+                agreeing += 1;
+                if left_key != right_key {
+                    unequal_keys += 1;
+                }
+                assert_eq!(
+                    matches,
+                    left_key == right_key,
+                    "{left} = {right}: matches={matches}, keys {} = {}",
+                    left_key.len(),
+                    right_key.len()
+                );
+            }
+        }
+        println!(
+            "{} values, {comparisons} pairs, {agreeing} with two match keys, {unequal_keys} of them unequal",
+            values.len()
+        );
+        assert!(
+            comparisons > 1000,
+            "{comparisons} pairs is too few to prove it"
+        );
+        assert!(
+            unequal_keys > 1000,
+            "{unequal_keys} unequal key pairs is too few to prove the negative case"
+        );
+    }
+
+    #[test]
+    fn structured_and_missing_values_never_hold_a_match_key() {
+        for value in [
+            QueryValue::Missing,
+            QueryValue::Value { value: Value::Null },
+        ] {
+            assert!(value.scalar_kind().is_some());
+        }
+        for structured in [json!([]), json!([1]), json!({}), json!({"a": 1})] {
+            assert_eq!(key(&structured), None, "{structured} holds a match key");
+            assert!(
+                !QueryComparison::Eq.matches(&value(&structured), &value(&structured)),
+                "{structured} matched itself"
+            );
+        }
+        assert_eq!(
+            QueryValue::Missing.scalar_key().expect("missing has a key"),
+            vec![0]
+        );
+    }
+
+    /// The pairs most likely to drift apart, spelled out so a failure is readable.
+    #[test]
+    fn the_named_edge_pairs_agree() {
+        for (left, right, equal) in [
+            (json!(1), json!(1.0), true),
+            (json!(1), json!(1e0), true),
+            (json!(9007199254740993i64), json!(9007199254740992.0), false),
+            (json!(0), json!(-0.0), true),
+            (json!(true), json!(1), false),
+            (json!("1"), json!(1), false),
+            (json!(null), json!(null), true),
+            (json!(""), json!(""), true),
+            (json!("a"), json!("A"), false),
+            (json!(-0.0), json!(0.0), true),
+            (json!(18446744073709551615u64), json!(-1), false),
+        ] {
+            let matches = QueryComparison::Eq.matches(&value(&left), &value(&right));
+            assert_eq!(matches, equal, "{left} = {right}");
+            assert_eq!(
+                key(&left) == key(&right),
+                equal,
+                "{left} = {right}: keys disagree with the comparison"
+            );
+        }
+        // A missing operand never matches, even against a missing one.
+        assert!(!QueryComparison::Eq.matches(&QueryValue::Missing, &QueryValue::Missing));
+        assert!(!QueryComparison::Ne.matches(&QueryValue::Missing, &QueryValue::Missing));
+        assert_eq!(key(&json!(null)), Some(vec![1]));
+        assert_eq!(key(&json!(0)), key(&json!(-0.0)));
+    }
 }

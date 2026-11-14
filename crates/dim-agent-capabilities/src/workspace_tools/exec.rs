@@ -11,7 +11,7 @@ use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
         EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, HostPlatform, ISOLATION_SUMMARY,
-        Isolation, Os, ProcessTree, ShellKind, TemporaryDirectory,
+        Isolation, Os, ProcessTree, ShellEdition, ShellKind, TemporaryDirectory,
     },
     tool_registry::definition,
 };
@@ -64,6 +64,7 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute."},
+                "title": {"type": "string", "minLength": 1, "description": "Short, nonblank single-line task title shown in the background task list; separate from the command."},
                 "cwd": {"type": "string", "description": "Working directory. Defaults to session cwd."},
                 "runInBackground": {
                     "type": "boolean",
@@ -74,7 +75,7 @@ pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
                     "description": "Optional timeout in milliseconds. Estimate how long this command should be allowed to run. If omitted, the command times out after 300000 ms. Negative values disable the total timeout only when runInBackground is true; foreground negative values use the default timeout."
                 },
             },
-            "required": ["command"]
+            "required": ["command", "title"]
         }),
     );
     definition.risk = Some("execute_process".into());
@@ -120,13 +121,14 @@ pub(super) async fn stop(
     let owner = branch
         .service::<BackgroundExec>()
         .map_err(super::host_error)?;
-    match owner.stop(&input.task_id).await {
+    match owner.stop(input.task_id).await {
         Ok(ended) => Ok(ToolResult {
             is_error: (ended.status == ExecStatus::Failed).then_some(true),
             ..ToolResult::text(
                 serde_json::to_string(&ended).expect("exec terminal contains JSON data"),
             )
         }),
+        Err(super::background::TaskError::Read(error)) => Err(super::host_error(error)),
         Err(super::background::TaskError::Unknown) => Ok(failed(
             "Command is not a task of this branch. Use the Task ID returned by exec on this branch; use agent for Collaboration members. No command was stopped.",
             "exec_task_unknown",
@@ -191,6 +193,7 @@ fn object(value: Value) -> JsonObject {
 
 struct Input {
     command: String,
+    title: Option<String>,
     cwd: Option<String>,
     run_in_background: bool,
     timeout_ms: u64,
@@ -207,7 +210,7 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
     if !removed.is_empty() {
         return Err((
             format!(
-                "exec accepts command, cwd, runInBackground and timeoutMs; a negative timeoutMs disables the background timeout. Remove {}.",
+                "exec accepts command, title, cwd, runInBackground and timeoutMs; a negative timeoutMs disables the background timeout. Remove {}.",
                 removed.join(", ")
             ),
             "exec_invalid_request",
@@ -246,11 +249,27 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
             ));
         }
     };
+    let title = match input.get("title") {
+        None => None,
+        Some(Value::String(title))
+            if !title.trim().is_empty()
+                && !title.contains(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']) =>
+        {
+            Some(title.clone())
+        }
+        _ => {
+            return Err((
+                "exec title must be a nonblank single-line string.".into(),
+                "exec_invalid_request",
+            ));
+        }
+    };
     let negative = timeout
         .and_then(Value::as_f64)
         .is_some_and(|value| value < 0.0);
     Ok(Input {
         command,
+        title,
         cwd: input.get("cwd").and_then(Value::as_str).map(String::from),
         run_in_background: input.get("runInBackground") == Some(&Value::Bool(true)),
         timeout_ms: match timeout.and_then(Value::as_f64) {
@@ -261,13 +280,173 @@ fn parse(input: &JsonObject) -> Result<Input, (String, &'static str)> {
     })
 }
 
-/// Detects an unquoted POSIX background `&`.
-fn has_unquoted_posix_background_ampersand(script: &str) -> bool {
+/// The POSIX `&` that the shell reads as a background marker, if any.
+///
+/// The shell reads `&` as a list terminator except inside quotes, a comment, a
+/// heredoc body, arithmetic, `${...}`, a backslash escape, or as the second half
+/// of `&&`, `<&`, `>&` or `;;&`. A command substitution runs a shell of its own
+/// wherever the shell runs it: in plain text, in `" "`, in `${...}` and in a
+/// heredoc body whose delimiter is unquoted, so its `&` is a marker. A quoted or
+/// backslashed heredoc delimiter runs none, and its `&` is text.
+///
+/// A few contexts differ by edition, and [`ShellReading`] holds them: whether
+/// `((` is an arithmetic command, whether `|&` is a pipe or a ksh coprocess
+/// marker, whether `&>` and `&>>` are redirects or markers, and whether an
+/// unquoted heredoc delimiter matches a line joined from several physical ones.
+///
+/// A command this scan cannot read to the end falls back to
+/// [`quote_only_marker`], which refuses any `&` outside quotes, and `&>` and
+/// `&>>` in an edition without that redirect.
+fn background_marker(script: &str, edition: ShellEdition) -> Option<BackgroundMarker> {
+    let kind = edition.kind();
+    if kind != ShellKind::Posix {
+        return None;
+    }
+    readings(edition)
+        .iter()
+        .find_map(|reading| scan_marker(script, *reading))
+}
+
+/// The marker one reading refuses, if that reading refuses one.
+fn scan_marker(script: &str, reading: ShellReading) -> Option<BackgroundMarker> {
+    let mut scan = ShellScan::new(script, reading);
+    scan.text(None);
+    match scan.marker {
+        Some(marker) => Some(marker),
+        None if scan.unclosed => quote_only_marker(script, reading),
+        None => None,
+    }
+}
+
+/// The `&` the running shell reads as a background marker.
+#[derive(Clone, Copy)]
+struct BackgroundMarker {
+    /// Character index into the command as given.
+    index: usize,
+    /// The marker as written there.
+    token: &'static str,
+}
+
+impl BackgroundMarker {
+    /// The 1-based line and column, counted in characters of the command as
+    /// given.
+    fn position(&self, script: &str) -> (usize, usize) {
+        let before: String = script.chars().take(self.index).collect();
+        let line = before.matches('\n').count() + 1;
+        let column = before.chars().rev().take_while(|ch| *ch != '\n').count() + 1;
+        (line, column)
+    }
+}
+
+/// The marker written at `at`.
+fn marker_at(chars: &[char], at: usize) -> &'static str {
+    match (chars.get(at), chars.get(at + 1)) {
+        (Some('|'), _) => "|&",
+        (_, Some('!')) => "&!",
+        (_, Some('|')) => "&|",
+        _ => "&",
+    }
+}
+
+/// The readings a command may run under.
+///
+/// `sh` is bash on one host and dash on another, and the fields do not order:
+/// dash joins an operator across a continuation where bash does not, and bash
+/// joins a heredoc delimiter where dash does not, so neither is stricter.
+fn readings(edition: ShellEdition) -> &'static [ShellReading] {
+    match edition {
+        ShellEdition::Bash | ShellEdition::GitBash => &[BASH],
+        ShellEdition::Zsh => &[ZSH],
+        ShellEdition::Dash => &[DASH],
+        ShellEdition::Ksh => &[KSH],
+        ShellEdition::Sh => &[BASH, DASH],
+        ShellEdition::Pwsh | ShellEdition::WindowsPowershell | ShellEdition::Cmd => &[],
+    }
+}
+
+/// How the running edition reads the constructs that differ between shells.
+#[derive(Clone, Copy)]
+struct ShellReading {
+    /// `(( ... ))` at a command start is arithmetic, not two subshells: bash,
+    /// zsh and ksh have it, dash and sh do not.
+    arithmetic_command: bool,
+    /// `|&` is an ordinary pipe: bash and zsh. Elsewhere it is a ksh coprocess,
+    /// which runs in the background, or a syntax error.
+    pipe_ampersand: bool,
+    /// `&>` and `&>>` are redirects: bash and zsh. Elsewhere they are a marker
+    /// followed by a redirect.
+    amp_redirect: bool,
+    /// An unquoted heredoc delimiter matches a logical line joined from several
+    /// physical lines: bash and zsh. dash and ksh compare physical lines only.
+    joined_delimiter: bool,
+    /// A continuation between two characters of an operator joins them: bash
+    /// and dash. zsh rejects a split operator and ksh reads two markers.
+    joins_operators: bool,
+    /// `$'...'` is a quote in which `\` escapes the next character and only an
+    /// unescaped `'` closes it: bash, zsh and ksh. dash has no such quote.
+    ansi_c_quote: bool,
+}
+
+/// How one shell reads the constructs that differ. Measured on bash 3.2.57,
+/// zsh 5.9, Apple dash-16 and ksh93u+ 2012-08-01; another program behind `ksh`
+/// or `dash` is read as the one measured here.
+const BASH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: true,
+    amp_redirect: true,
+    joined_delimiter: true,
+    joins_operators: true,
+    ansi_c_quote: true,
+};
+const ZSH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: true,
+    amp_redirect: true,
+    joined_delimiter: true,
+    joins_operators: false,
+    ansi_c_quote: true,
+};
+const DASH: ShellReading = ShellReading {
+    arithmetic_command: false,
+    pipe_ampersand: false,
+    amp_redirect: false,
+    joined_delimiter: false,
+    joins_operators: true,
+    ansi_c_quote: false,
+};
+const KSH: ShellReading = ShellReading {
+    arithmetic_command: true,
+    pipe_ampersand: false,
+    amp_redirect: false,
+    joined_delimiter: false,
+    joins_operators: false,
+    ansi_c_quote: true,
+};
+
+/// The last `&` outside `' '` and `" "` that neither neighbour makes inert.
+///
+/// This is the fallback for a command [`ShellScan`] gives up on, so it reads no
+/// continuations: a scan that stopped early may have stopped inside a quote
+/// whose extent joining would move.
+fn quote_only_marker(script: &str, reading: ShellReading) -> Option<BackgroundMarker> {
     let chars: Vec<char> = script.chars().collect();
     let (mut single, mut double) = (false, false);
+    let mut found = None;
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
+        if ch == '$' && chars.get(i + 1) == Some(&'\'') && reading.ansi_c_quote && !double {
+            i += 2;
+            while let Some(inner) = chars.get(i) {
+                i += 1;
+                match inner {
+                    '\\' => i += 1,
+                    '\'' => break,
+                    _ => {}
+                }
+            }
+            continue;
+        }
         if ch == '\'' && !double {
             single = !single;
         } else if ch == '"' && !single {
@@ -279,16 +458,668 @@ fn has_unquoted_posix_background_ampersand(script: &str) -> bool {
                 i += 2;
                 continue;
             }
-            if previous != Some('&') && next != Some('>') && previous != Some('>') {
-                return true;
+            let redirect = reading.amp_redirect && next == Some('>');
+            if previous != Some('&') && !redirect && previous != Some('>') {
+                found = Some(BackgroundMarker {
+                    index: i,
+                    token: marker_at(&chars, i),
+                });
             }
         }
         i += 1;
     }
-    false
+    found
 }
 
 const HEAVY_SEARCH_COMMANDS: [&str; 7] = ["rg", "grep", "ag", "find", "fd", "tree", "du"];
+
+/// The deepest nesting read before the rest of the command is left to
+/// [`quote_only_marker`]. A model-written command can nest substitutions without
+/// bound, and this scan recurses.
+const SHELL_SCAN_DEPTH: usize = 64;
+
+struct Heredoc {
+    delimiter: String,
+    strip_tabs: bool,
+    expand: bool,
+}
+
+/// Walks a POSIX command and records whether an `&` in it is a list terminator.
+struct ShellScan {
+    chars: Vec<char>,
+    index: usize,
+    marker: Option<BackgroundMarker>,
+    unclosed: bool,
+    heredocs: Vec<Heredoc>,
+    depth: usize,
+    reading: ShellReading,
+    /// Whether a continuation is removed while reading ahead. Every shell joins
+    /// in `" "`, `${...}`, arithmetic, backquotes, a heredoc delimiter and an
+    /// unquoted heredoc body, and none joins in a comment, `' '` or a quoted
+    /// heredoc body. In shell text [`ShellReading::joins_operators`] decides.
+    join: bool,
+}
+
+impl ShellScan {
+    fn new(script: &str, reading: ShellReading) -> Self {
+        Self {
+            chars: script.chars().collect(),
+            index: 0,
+            marker: None,
+            unclosed: false,
+            heredocs: Vec::new(),
+            depth: 0,
+            reading,
+            join: false,
+        }
+    }
+
+    /// The physical index of the character `offset` logical characters ahead.
+    ///
+    /// A logical character is a physical one, with a continuation removed first
+    /// where [`Self::join`] is set. A continuation is a newline preceded by an
+    /// odd run of backslashes; an even run is a sequence of escapes ending in
+    /// a literal `\`, and its newline stays a newline.
+    fn at(&self, offset: usize) -> Option<usize> {
+        let mut index = self.index;
+        let mut left = offset;
+        loop {
+            let ch = *self.chars.get(index)?;
+            if self.join
+                && ch == '\\'
+                && self.chars.get(index + 1) == Some(&'\n')
+                && self.backslashes_before(index) % 2 == 1
+            {
+                index += 2;
+                continue;
+            }
+            if left == 0 {
+                return Some(index);
+            }
+            left -= 1;
+            index += 1;
+        }
+    }
+
+    /// How many backslashes end at `index`, counting backwards.
+    fn backslashes_before(&self, index: usize) -> usize {
+        self.chars[..=index]
+            .iter()
+            .rev()
+            .take_while(|ch| **ch == '\\')
+            .count()
+    }
+
+    fn peek(&self, offset: usize) -> Option<char> {
+        self.at(offset).map(|index| self.chars[index])
+    }
+
+    fn skip(&mut self, count: usize) {
+        self.index = self.at(count).unwrap_or(self.chars.len());
+    }
+
+    /// Records the marker at `at`, keeping the first one found.
+    fn mark(&mut self, at: usize) {
+        if self.marker.is_none() {
+            self.marker = Some(BackgroundMarker {
+                index: at,
+                token: marker_at(&self.chars, at),
+            });
+        }
+    }
+
+    fn enter(&mut self) -> bool {
+        if self.depth == SHELL_SCAN_DEPTH {
+            self.unclosed = true;
+            self.skip(self.chars.len());
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    /// Shell text, up to `close` where that ends an enclosing substitution.
+    fn text(&mut self, close: Option<char>) {
+        if !self.enter() {
+            return;
+        }
+        let joins = self.join || self.reading.joins_operators;
+        let joined = std::mem::replace(&mut self.join, joins);
+        let mut done = false;
+        let mut word_start = true;
+        let mut parens = 0_usize;
+        while !done {
+            let Some(ch) = self.peek(0) else { break };
+            match ch {
+                '\n' => {
+                    self.skip(1);
+                    word_start = true;
+                    self.read_heredocs();
+                }
+                ' ' | '\t' => {
+                    self.skip(1);
+                    word_start = true;
+                }
+                '#' if word_start => self.comment(),
+                '\\' => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '\'' => {
+                    self.single_quoted();
+                    word_start = false;
+                }
+                '"' => {
+                    self.skip(1);
+                    self.double_quoted();
+                    word_start = false;
+                }
+                '`' => {
+                    self.skip(1);
+                    if close == Some('`') {
+                        done = true;
+                    } else {
+                        self.text(Some('`'));
+                    }
+                    word_start = false;
+                }
+                '$' if self.peek(1) == Some('\'') && self.reading.ansi_c_quote => {
+                    self.ansi_c_quoted();
+                    word_start = false;
+                }
+                '$' => {
+                    self.dollar();
+                    word_start = false;
+                }
+                '(' => {
+                    if self.peek(1) == Some('(') && word_start && self.reading.arithmetic_command {
+                        self.arithmetic(2);
+                    } else {
+                        self.skip(1);
+                        parens += 1;
+                    }
+                    word_start = true;
+                }
+                ')' if parens > 0 => {
+                    parens -= 1;
+                    self.skip(1);
+                    word_start = false;
+                }
+                ')' if close == Some(')') => {
+                    self.skip(1);
+                    done = true;
+                }
+                '}' if close == Some('}') => {
+                    self.skip(1);
+                    done = true;
+                }
+                ')' => {
+                    self.skip(1);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('<') && self.peek(2) != Some('<') => {
+                    self.heredoc_opener();
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('<') => {
+                    self.skip(3);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('&') => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '<' if self.peek(1) == Some('(') => {
+                    self.skip(2);
+                    self.text(Some(')'));
+                    word_start = false;
+                }
+                '>' if self.peek(1) == Some('&') => {
+                    self.skip(2);
+                    word_start = false;
+                }
+                '>' if self.peek(1) == Some('(') => {
+                    self.skip(2);
+                    self.text(Some(')'));
+                    word_start = false;
+                }
+                '<' | '>' => {
+                    self.skip(1);
+                    word_start = false;
+                }
+                '|' => {
+                    if self.peek(1) == Some('&') && !self.reading.pipe_ampersand {
+                        self.mark(self.index);
+                        self.skip(2);
+                    } else {
+                        let width = if matches!(self.peek(1), Some('&') | Some('|')) {
+                            2
+                        } else {
+                            1
+                        };
+                        self.skip(width);
+                    }
+                    word_start = true;
+                }
+                ';' => {
+                    let width = if self.peek(1) == Some(';') && self.peek(2) == Some('&') {
+                        3
+                    } else if matches!(self.peek(1), Some(';') | Some('&')) {
+                        2
+                    } else {
+                        1
+                    };
+                    self.skip(width);
+                    word_start = true;
+                }
+                '&' => {
+                    let redirect = self.reading.amp_redirect && self.peek(1) == Some('>');
+                    let width = if self.peek(1) == Some('&') {
+                        2
+                    } else if redirect {
+                        if self.peek(2) == Some('>') { 3 } else { 2 }
+                    } else {
+                        self.mark(self.index);
+                        1
+                    };
+                    self.skip(width);
+                    word_start = true;
+                }
+                _ => {
+                    self.skip(1);
+                    word_start = false;
+                }
+            }
+        }
+        if !done && close.is_some() {
+            self.unclosed = true;
+        }
+        self.join = joined;
+        self.depth -= 1;
+    }
+
+    fn comment(&mut self) {
+        while let Some(ch) = self.chars.get(self.index) {
+            if *ch == '\n' {
+                return;
+            }
+            self.index += 1;
+        }
+    }
+
+    /// `$'...'`: here `\` escapes the next character, so `\'` does not close
+    /// the quote.
+    fn ansi_c_quoted(&mut self) {
+        self.skip(2);
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                return;
+            };
+            self.skip(1);
+            match ch {
+                '\\' => self.skip(1),
+                '\'' => return,
+                _ => {}
+            }
+        }
+    }
+
+    fn single_quoted(&mut self) {
+        self.index += 1;
+        loop {
+            let Some(ch) = self.chars.get(self.index) else {
+                self.unclosed = true;
+                return;
+            };
+            self.index += 1;
+            if *ch == '\'' {
+                return;
+            }
+        }
+    }
+
+    /// `" "`, where the shell runs substitutions and reads every other `&` as
+    /// text.
+    fn double_quoted(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.double_quoted_inner();
+        self.join = joined;
+    }
+
+    fn double_quoted_inner(&mut self) {
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                return;
+            };
+            match ch {
+                '\\' => self.skip(2),
+                '"' => {
+                    self.skip(1);
+                    return;
+                }
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                '$' => self.dollar(),
+                _ => self.skip(1),
+            }
+        }
+    }
+    /// `$((...))` and `((...))`, where `&` is bitwise and, when the context
+    /// closes with `))` as arithmetic must.
+    ///
+    /// A context that closes its own level with a single `)` is not arithmetic:
+    /// the shell reads `((` as a subshell of a subshell, or `$((` as a
+    /// substitution around a subshell, and an `&` inside is then a marker. Such
+    /// a context is rewound to its opener and read as shell text instead.
+    fn arithmetic(&mut self, opener: usize) {
+        let start = self.index;
+        let joined = std::mem::replace(&mut self.join, true);
+        let end = self.arithmetic_end(opener);
+        self.join = joined;
+        if let Some(end) = end {
+            self.index = end;
+            return;
+        }
+        self.index = start;
+        self.nested(opener);
+    }
+
+    /// Reads the arithmetic context to its `))` and answers where it ends, or
+    /// resets the index and answers nothing when it closes with one `)`.
+    fn arithmetic_end(&mut self, opener: usize) -> Option<usize> {
+        if !self.enter() {
+            return Some(self.index);
+        }
+        self.skip(opener);
+        let mut parens = 0_usize;
+        let end = loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                break Some(self.index);
+            };
+            match ch {
+                '(' => {
+                    parens += 1;
+                    self.skip(1);
+                }
+                ')' if parens == 0 && self.peek(1) == Some(')') => {
+                    self.skip(2);
+                    break Some(self.index);
+                }
+                ')' if parens == 0 => {
+                    self.index -= opener;
+                    break None;
+                }
+                ')' => {
+                    parens -= 1;
+                    self.skip(1);
+                }
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        };
+        self.depth -= 1;
+        end
+    }
+
+    /// A `$(` or `(` that turned out to hold a subshell rather than arithmetic,
+    /// read as the shell reads it, up to the `)` that closes it.
+    ///
+    /// Only the outer opener is skipped, one `(` of `((` and the `$(` of `$((`:
+    /// the `(` that follows it is an ordinary subshell opener, which `text`'s
+    /// `'('` arm counts, so the scan stops at the outer `)` instead of reading to
+    /// the end of the command.
+    fn nested(&mut self, opener: usize) {
+        self.skip(opener - 1);
+        self.text(Some(')'));
+    }
+
+    /// `${...}`, where `&` is part of the word unless a substitution runs.
+    ///
+    /// `${ command; }` and `${|command; }` hold shell text rather than a
+    /// parameter name. bash 5.3 and ksh93 run the command in the current shell;
+    /// an edition without the form rejects it as a bad substitution and starts
+    /// nothing, so reading it as command text loses nothing real.
+    fn parameter(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.parameter_inner();
+        self.join = joined;
+    }
+
+    fn parameter_inner(&mut self) {
+        if matches!(
+            self.peek(2),
+            Some(' ') | Some('\t') | Some('\n') | Some('|')
+        ) {
+            self.skip(2);
+            self.text(Some('}'));
+            return;
+        }
+        if !self.enter() {
+            return;
+        }
+        self.skip(2);
+        let mut braces = 0_usize;
+        loop {
+            let Some(ch) = self.peek(0) else {
+                self.unclosed = true;
+                break;
+            };
+            match ch {
+                '\\' => self.skip(2),
+                '{' => {
+                    braces += 1;
+                    self.skip(1);
+                }
+                '}' if braces == 0 => {
+                    self.skip(1);
+                    break;
+                }
+                '}' => {
+                    braces -= 1;
+                    self.skip(1);
+                }
+                '"' => {
+                    self.skip(1);
+                    self.double_quoted();
+                }
+                '\'' => self.single_quoted(),
+                '$' if self.peek(1) == Some('\'') && self.reading.ansi_c_quote => {
+                    self.ansi_c_quoted();
+                }
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        }
+        self.depth -= 1;
+    }
+
+    fn dollar(&mut self) {
+        match (self.peek(1), self.peek(2)) {
+            (Some('('), Some('(')) => self.arithmetic(3),
+            (Some('('), _) => {
+                self.skip(2);
+                self.text(Some(')'));
+            }
+            (Some('{'), _) => self.parameter(),
+            _ => self.skip(1),
+        }
+    }
+
+    fn heredoc_opener(&mut self) {
+        let joined = std::mem::replace(&mut self.join, true);
+        self.heredoc_opener_inner();
+        self.join = joined;
+    }
+
+    fn heredoc_opener_inner(&mut self) {
+        self.skip(2);
+        let strip_tabs = self.peek(0) == Some('-');
+        if strip_tabs {
+            self.skip(1);
+        }
+        while matches!(self.peek(0), Some(' ') | Some('\t')) {
+            self.skip(1);
+        }
+        let mut delimiter = String::new();
+        let mut expand = true;
+        while let Some(ch) = self.peek(0) {
+            match ch {
+                '\'' | '"' => {
+                    expand = false;
+                    self.skip(1);
+                    while let Some(inner) = self.peek(0) {
+                        self.skip(1);
+                        if inner == ch {
+                            break;
+                        }
+                        delimiter.push(inner);
+                    }
+                }
+                '\\' => {
+                    expand = false;
+                    self.skip(1);
+                    if let Some(inner) = self.peek(0) {
+                        delimiter.push(inner);
+                        self.skip(1);
+                    }
+                }
+                ch if ch.is_whitespace()
+                    || matches!(ch, ';' | '|' | '&' | '<' | '>' | '(' | ')') =>
+                {
+                    break;
+                }
+                ch => {
+                    delimiter.push(ch);
+                    self.skip(1);
+                }
+            }
+        }
+        self.heredocs.push(Heredoc {
+            delimiter,
+            strip_tabs,
+            expand,
+        });
+    }
+
+    /// Reads the heredoc bodies queued on the line that just ended.
+    ///
+    /// A body is a run of logical lines. `<<-` strips the leading tabs of each
+    /// logical line's first physical line. The delimiter matches a logical line
+    /// of one physical line in every edition, and one joined across
+    /// continuations only where the edition joins it.
+    fn read_heredocs(&mut self) {
+        while !self.heredocs.is_empty() {
+            let heredoc = self.heredocs.remove(0);
+            let mut body = String::new();
+            let mut origin = Vec::new();
+            loop {
+                let start = self.index;
+                let Some((first, terminated)) = self.physical_line() else {
+                    self.unclosed = true;
+                    break;
+                };
+                let strip = if heredoc.strip_tabs {
+                    first.len() - first.trim_start_matches('\t').len()
+                } else {
+                    0
+                };
+                let mut logical = first[strip..].to_owned();
+                let mut origin_of_line: Vec<usize> = (0..first.len())
+                    .map(|offset| start + offset)
+                    .skip(strip)
+                    .collect();
+                let mut joined = false;
+                let mut last_terminated = terminated;
+                while heredoc.expand && last_terminated && ends_in_continuation(&logical) {
+                    logical.pop();
+                    origin_of_line.pop();
+                    let next_start = self.index;
+                    let Some((next, terminated)) = self.physical_line() else {
+                        last_terminated = false;
+                        break;
+                    };
+                    logical.push_str(&next);
+                    origin_of_line.extend((0..next.len()).map(|offset| next_start + offset));
+                    joined = true;
+                    last_terminated = terminated;
+                }
+                if logical == heredoc.delimiter && (!joined || self.reading.joined_delimiter) {
+                    break;
+                }
+                body.push_str(&logical);
+                body.push('\n');
+                origin.extend(origin_of_line);
+                origin.push(start);
+                if !last_terminated {
+                    self.unclosed = true;
+                    break;
+                }
+            }
+            if heredoc.expand {
+                let mut inner = ShellScan::new(&body, self.reading);
+                inner.expansions();
+                if let Some(marker) = inner.marker {
+                    let at = origin.get(marker.index).copied().unwrap_or(marker.index);
+                    self.mark(at);
+                }
+                self.unclosed |= inner.unclosed;
+            }
+        }
+    }
+
+    /// One physical line and whether a newline followed it.
+    fn physical_line(&mut self) -> Option<(String, bool)> {
+        if self.index >= self.chars.len() {
+            return None;
+        }
+        let start = self.index;
+        let mut end = start;
+        while end < self.chars.len() && self.chars[end] != '\n' {
+            end += 1;
+        }
+        let line: String = self.chars[start..end].iter().collect();
+        let terminated = end < self.chars.len();
+        self.index = if terminated { end + 1 } else { end };
+        Some((line, terminated))
+    }
+
+    /// A heredoc body under an unquoted delimiter: only expansions run, and
+    /// every other character, `&` and quotes included, is text.
+    fn expansions(&mut self) {
+        self.join = true;
+        while let Some(ch) = self.peek(0) {
+            match ch {
+                '\\' => self.skip(2),
+                '$' => self.dollar(),
+                '`' => {
+                    self.skip(1);
+                    self.text(Some('`'));
+                }
+                _ => self.skip(1),
+            }
+        }
+    }
+}
+
+/// Whether a physical line ends in a line continuation: an odd run of
+/// backslashes before its newline.
+fn ends_in_continuation(line: &str) -> bool {
+    line.bytes().rev().take_while(|byte| *byte == b'\\').count() % 2 == 1
+}
+
 const HIGH_COST_BASENAMES: [&str; 5] = ["node_modules", ".git", "dist", "build", "target"];
 
 fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult> {
@@ -1214,6 +2045,7 @@ pub(super) fn recovered_result(task_id: &str, output_path: &str) -> ToolResult {
 struct Call<'a> {
     task_id: String,
     command: &'a str,
+    title: Option<&'a str>,
     cwd: String,
     timeout_ms: i64,
 }
@@ -1270,10 +2102,13 @@ pub(super) async fn execute(
         }
         Err(error) => return Ok(failed(error.reason, error.code)),
     };
-    let kind = shell.edition.kind();
-    if kind == ShellKind::Posix && has_unquoted_posix_background_ampersand(&input.command) {
+    if let Some(marker) = background_marker(&input.command, shell.edition) {
+        let (line, column) = marker.position(&input.command);
+        let token = marker.token;
         return Ok(failed(
-            "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later.",
+            format!(
+                "exec manages background tasks; remove shell background markers such as & and set runInBackground to true when the result can be handled later. The {token} at line {line}, column {column} starts a background job."
+            ),
             "exec_invalid_request",
         ));
     }
@@ -1289,6 +2124,7 @@ pub(super) async fn execute(
     let request = Call {
         task_id: task_id.clone(),
         command: &input.command,
+        title: input.title.as_deref(),
         cwd: cwd_text,
         timeout_ms: effective_timeout.map_or(-1, |timeout| timeout as i64),
     };
@@ -1577,6 +2413,7 @@ async fn hand_off(
                     .chars()
                     .take(DESCRIPTION_CHARS)
                     .collect(),
+                title: request.title.map(String::from),
                 output_path: output_path.clone(),
             },
             process,
@@ -1661,5 +2498,312 @@ fn termination_failure_keeps_captured_output() {
         } else {
             assert!(!fields.contains_key("outputPath"));
         }
+    }
+}
+
+/// An `&` that every POSIX edition reads as a background marker.
+#[cfg(test)]
+const ALWAYS_REFUSED: &[&str] = &[
+    "sleep 5 &",
+    "sleep 5 & echo done",
+    "sleep 5 & sleep 6; wait",
+    "for i in 1 2; do sleep 1 & done; wait",
+    "nohup python3 app.py &",
+    "( sleep 5 & )",
+    "{ sleep 5 & }",
+    "cat <<'EOF'\nx\nEOF\nsleep 5 &",
+    "# a & b\nsleep 5 &",
+    "cmd1 && cmd2 &",
+    "cmd 2>&1 &",
+    "cat <<'EOF' | wc -l\na & b\nEOF\nsleep 5 &",
+    "echo $((1&1)) &",
+    "x=$(echo a & echo b)",
+    "x=`echo a & echo b`",
+    "sleep 5 & # start it\nwait",
+    "python3 - <<'PY' &\nimport time\nPY",
+    "echo \"$(sleep 5 &)\"",
+    "echo \"`sleep 5 &`\"",
+    "x=\"${v:-$(sleep 5 &)}\"",
+    "cat <<EOF\n$(sleep 5 &)\nEOF",
+    "echo \"$(sleep 5 > /dev/null &)\"",
+    "python3 -c \"print(\"x\")\" ; sleep 5 &",
+    "((sleep 5 &) )",
+    "echo $((sleep 5 &) )",
+    "((true) && (sleep 5 &))",
+    "echo ${ sleep 5 & }",
+    "echo ${| sleep 5 & }",
+    "sleep 5 &!",
+    "sleep 5 &|",
+    "echo \"$((true) )\"; sleep 5 &",
+    "echo \"$((true) )\" \"a & b\"; sleep 5 &",
+    "cat <<EOF\nabc\\\\\nEOF\nsleep 5 &\nEOF",
+    "cat <<'EOF'\nabc\\\nEOF\nsleep 5 &\nEOF",
+    "cat <<EOF\nabc\\\nEOF\n'\nEOF\nsleep 5 &\necho '",
+    "echo \"$\\\n(sleep 5 &)\"",
+    "echo \"${v:-$\\\n(sleep 5 &)}\"",
+    "# note \\\nsleep 5 &",
+    "/bin/sle\\\nep 5 &",
+    "cat <<EOF \\\\\nEOF\nsleep 5 &\nx=1\nEOF",
+    "echo \"a\\\\\n\" ; sleep 5 & echo \"b\" \"\"",
+    "echo ${v:-a\\\\\n} ; sleep 5 & echo }",
+];
+
+/// An `&` whose verdict differs by edition, in [`EDITIONS`] order: `true` is
+/// refused. Every row follows the edition table on [`ShellReading`], and a
+/// `false` here is a row the shell accepts without starting the job.
+#[cfg(test)]
+const BY_EDITION: &[(&str, [bool; 6])] = &[
+    (
+        "cat <<true\ntr\\\nue\nsleep 5 &\ntrue",
+        [true, true, true, true, false, false],
+    ),
+    (
+        "cat <<-true\n\ttr\\\nue\nsleep 5 &\ntrue",
+        [true, true, true, true, false, false],
+    ),
+    (
+        "echo $'a\\' ' & sleep 5 &",
+        [true, true, true, true, false, true],
+    ),
+    ("(( sleep 5 & ))", [false, false, false, true, true, false]),
+    ("(( a & b ))", [false, false, false, true, true, false]),
+    ("(( (1 & 2) ))", [false, false, false, true, true, false]),
+    (
+        "sleep 5 &\\\n& echo hi",
+        [false, false, true, false, false, true],
+    ),
+    (
+        "echo \"$\\\n(sleep 5 &)\"",
+        [true, true, true, true, true, true],
+    ),
+    (
+        "echo \"${v:-$\\\n(sleep 5 &)}\"",
+        [true, true, true, true, true, true],
+    ),
+    (
+        "cat <\\\n<EOF\n'\nEOF\nsleep 5 &\necho '",
+        [true, true, false, true, true, false],
+    ),
+    (
+        "echo $'it\\'s & fine'",
+        [false, false, false, true, true, false],
+    ),
+    (
+        "echo ${v:-$'a\\'b'} & sleep 5 &",
+        [true, true, true, true, false, true],
+    ),
+    ("sleep 5 |& cat", [false, false, false, true, true, true]),
+    (
+        "sleep 5 &> /dev/null",
+        [false, false, false, true, true, true],
+    ),
+    (
+        "sleep 5 &>> /dev/null",
+        [false, false, false, true, true, true],
+    ),
+];
+
+/// An `&` that no edition reads as a background marker.
+#[cfg(test)]
+const INERT: &[&str] = &[
+    "# a & b",
+    "echo hi # a & b",
+    "echo hi; # a & b",
+    "python3 - <<'PY'\nmask = a & b\nprint(mask)\nPY",
+    "cat <<EOF\na & b\nEOF",
+    "cat <<-EOF\n\ta & b\n\tEOF",
+    "cat <<\\EOF\na & b\nEOF",
+    "cat <<EOF\nabc\\\nEOF\n'\nEOF",
+    "cat <<'true'\ntr\\\nue\n(sleep 5 &)\ntrue",
+    "cat <<\"EOF\"\na & b\nEOF",
+    "cat <<A <<B\nx & y\nA\na & b\nB",
+    "v=$(cat <<'EOF'\na & b\nEOF\n)",
+    "cat <<'EOF' | wc -l\na & b\nEOF",
+    "cat <<EOF\n# a & b\nEOF",
+    "cat <<'EOF'\n$(sleep 5 &)\nEOF",
+    "cat <<\"EOF\"\n$(sleep 5 &)\nEOF",
+    "cat <<\\EOF\n$(sleep 5 &)\nEOF",
+    "cat <<EOF\n$(echo 'a & b')\nEOF",
+    "while read -r l; do echo \"$l\"; done <<'EOF'\na & b\nEOF",
+    "cat <<'EOF' > out.txt\na & b\nEOF",
+    "x=`cat <<'EOF'\na & b\nEOF\n`",
+    "echo $(( 6 & 3 ))",
+    "v=$(( (n & 1) + 2 ))",
+    "echo $(( (1 & 2) ))",
+    "${v/&/-}",
+    "echo a \\& b",
+    "# don't do this & that\nls",
+    "echo \"a & b\"",
+    "echo 'a & b'",
+    "python3 -c \"print('a & b')\"",
+    "python3 -c \"print(\\\"a & b\\\")\"",
+    "x=$(grep 'a & b' file.txt)",
+    "x=`grep \"a & b\" file.txt`",
+    "echo \"$(python3 - <<'PY'\nprint(1 & 2)\nPY\n)\"",
+    "echo $(echo \"a & b\")",
+    "echo \"$((true) )\" \"a & b\"",
+    "echo ${v:-$(echo 'a & b')}",
+    "case x in a) echo 1 ;& b) echo 2 ;; esac",
+    "case x in a) echo 1 ;;& b) echo 2 ;; esac",
+    "exec 3<&0",
+    "cat <&3",
+    "cmd 2>&1",
+    "cmd1 && cmd2",
+    "cmd1 || cmd2",
+    "cat <<-EOF\n\t$(echo 'a & b')\n\tEOF",
+];
+
+/// Every POSIX edition exec can run.
+#[cfg(test)]
+const EDITIONS: &[ShellEdition] = &[
+    ShellEdition::Bash,
+    ShellEdition::GitBash,
+    ShellEdition::Zsh,
+    ShellEdition::Sh,
+    ShellEdition::Dash,
+    ShellEdition::Ksh,
+];
+
+#[cfg(test)]
+fn refuses(script: &str, edition: ShellEdition) -> bool {
+    background_marker(script, edition).is_some()
+}
+
+#[cfg(test)]
+#[test]
+fn the_shell_decides_which_ampersands_start_a_background_job() {
+    for edition in EDITIONS {
+        for script in INERT {
+            assert!(
+                !refuses(script, *edition),
+                "{edition:?} accepts: {script:?}"
+            );
+        }
+        for script in ALWAYS_REFUSED {
+            assert!(refuses(script, *edition), "{edition:?} refuses: {script:?}");
+        }
+    }
+    for (script, verdicts) in BY_EDITION {
+        for (edition, refused) in EDITIONS.iter().zip(verdicts) {
+            assert_eq!(
+                refuses(script, *edition),
+                *refused,
+                "{edition:?} on {script:?}"
+            );
+        }
+    }
+    for script in [
+        "echo \"$((true) )\"; sleep 5 &",
+        "echo \"$((true) )\" \"a & b\"; sleep 5 &",
+        "echo \"$((true) )\" \"a & b\"",
+    ] {
+        for edition in EDITIONS {
+            for reading in readings(*edition) {
+                let mut scan = ShellScan::new(script, *reading);
+                scan.text(None);
+                assert!(
+                    !scan.unclosed,
+                    "{edition:?} reads the arithmetic rewind to the end: {script:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn an_unreadable_command_keeps_the_quote_only_verdict() {
+    for (script, refused) in [
+        ("echo \"a & b", false),
+        ("echo 'a & b", false),
+        ("echo $(echo 'a & b'", false),
+        ("cat <<'EOF'\na & b", true),
+        ("x=$(sleep 5 &", true),
+        ("echo ${v &", true),
+        ("x=`sleep 5 &", true),
+    ] {
+        assert_eq!(refuses(script, ShellEdition::Bash), refused, "{script:?}");
+    }
+}
+
+/// Appending a marker to a script the scan already holds at the top level must
+/// refuse it, on every edition. A scan left inside a quote or a body it never
+/// left reads the appended marker as text.
+#[cfg(test)]
+#[test]
+fn every_inert_script_leaves_the_scan_at_the_top_level() {
+    for script in INERT {
+        for edition in EDITIONS {
+            assert!(
+                refuses(&format!("{script}\nsleep 5 &"), *edition),
+                "{edition:?} still accepts after a marker: {script:?}"
+            );
+        }
+    }
+    for (script, verdicts) in BY_EDITION {
+        for (edition, refused) in EDITIONS.iter().zip(verdicts) {
+            if *refused {
+                continue;
+            }
+            assert!(
+                refuses(&format!("{script}\nsleep 5 &"), *edition)
+                    || REJECTS_THE_LINE
+                        .iter()
+                        .any(|(row, rejected)| row == script && rejected == edition),
+                "{edition:?} still accepts after a marker: {script:?}"
+            );
+        }
+    }
+    for (row, edition) in REJECTS_THE_LINE {
+        let listed = BY_EDITION.iter().any(|(script, verdicts)| {
+            script == row
+                && EDITIONS
+                    .iter()
+                    .zip(verdicts)
+                    .any(|(candidate, refused)| candidate == edition && !*refused)
+        });
+        assert!(
+            listed,
+            "{edition:?} does not accept {row:?}: remove the entry from REJECTS_THE_LINE"
+        );
+        assert!(
+            !refuses(&format!("{row}\nsleep 5 &"), *edition),
+            "{edition:?} already refuses {row:?} with a marker: remove the entry from REJECTS_THE_LINE"
+        );
+    }
+}
+
+/// Accepted pairs whose shell rejects the whole line, so a marker appended after
+/// it starts nothing.
+#[cfg(test)]
+const REJECTS_THE_LINE: &[(&str, ShellEdition)] = &[
+    ("echo $'a\\' ' & sleep 5 &", ShellEdition::Dash),
+    ("echo ${v:-$'a\\'b'} & sleep 5 &", ShellEdition::Dash),
+];
+
+/// The refusal names the marker that decided: the first one a reading refuses,
+/// as written, counted in characters of the command as given.
+#[cfg(test)]
+#[test]
+fn the_refusal_names_the_marker_that_decided() {
+    for (script, edition, token, line, column) in [
+        ("sleep 5 &", ShellEdition::Bash, "&", 1, 9),
+        ("sleep 5 &! ", ShellEdition::Bash, "&!", 1, 9),
+        ("sleep 5 &|", ShellEdition::Bash, "&|", 1, 9),
+        ("sleep 5 |& cat", ShellEdition::Ksh, "|&", 1, 9),
+        ("echo hi\nsleep 5 &", ShellEdition::Bash, "&", 2, 9),
+        (
+            "cat <<EOF\n$(sleep 5 &)\nEOF",
+            ShellEdition::Bash,
+            "&",
+            2,
+            11,
+        ),
+        ("cat <<'EOF'\na & b", ShellEdition::Bash, "&", 2, 3),
+    ] {
+        let marker = background_marker(script, edition)
+            .unwrap_or_else(|| panic!("{edition:?} refuses {script:?}"));
+        assert_eq!(marker.token, token, "{script:?}");
+        assert_eq!(marker.position(script), (line, column), "{script:?}");
     }
 }

@@ -101,7 +101,7 @@ toolHost.execute(call: ToolCall, caller: ToolExecutionContext, cancelled: () => 
 ```
 
 `definitions` 不进数据面：宿主工具的声明由 ToolRegistry 在 Session 内读取，随工具采用进入模型配置。
-`cancelled` 完成时取消这次调用的 token，调用方丢弃调用（行卸载、进程结束）同样取消它。
+`cancelled` 完成时取消这次调用的 token。桥调用方须在放弃调用前触发取消；仅丢弃桥返回值不会取消工作。直接丢弃 Rust 调用 future 会取消它。
 数据面只委托 `ToolDriver::execute`：审批、路径解析与风险都由既有环节决定，各宿主绑定
 （`WorkspaceTools`、`ShellSession`、嵌入方自己的 `ToolHost`）给出同一个面。
 

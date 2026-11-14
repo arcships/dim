@@ -1,15 +1,15 @@
 use super::*;
 use crate::tree_protocol as wire;
 use dim_agent_capabilities::input_queue::{
-    CheckInterrupted, SubmitCheckReply, SubmitCheckRequest, SubmitChecks, SubmitEntry,
-    append_blocks,
+    CheckInterrupted, SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry, append_blocks,
 };
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    BranchOptions, QueryComparison, QueryFilter, QueryOperand, QueryOrder, QueryOrderKey,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, TimelineQuery,
+    BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
+    QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
+    TimelineQuery,
 };
-use dim_agent_types::{BranchSource, InputBlock, InputMode};
+use dim_agent_types::{BranchSource, InputBlock, InputMode, TimelinePosition};
 
 impl Connection {
     /// Runs the Session's submit checks before writing operator input (Hooks
@@ -19,7 +19,7 @@ impl Connection {
         rpc: &RpcService,
         session: &Session,
         request: SubmitCheckRequest,
-    ) -> Result<SubmitCheckReply, RpcError> {
+    ) -> Result<SubmitDecision, RpcError> {
         let checks = session
             .session_service::<SubmitChecks>()
             .map_err(RpcError::from)?;
@@ -53,7 +53,7 @@ impl Connection {
         // it made valid would be written and titled after all.
         data.validate()
             .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
-        match self
+        let checked = self
             .submit_check(
                 rpc,
                 &session,
@@ -64,14 +64,33 @@ impl Connection {
                     mode: data.effective_mode(),
                 },
             )
-            .await?
-        {
-            SubmitCheckReply::Block { message } => {
+            .await?;
+        // A warning is the caller's, never the model's: it names work the
+        // checks did not do, and the input is written without it. Version 1
+        // and 2 encodings are frozen, so they carry no warnings.
+        let checked = match checked {
+            SubmitDecision::Block { message } => {
                 return Err(RpcError::app(-32000, "input_blocked", message));
             }
-            SubmitCheckReply::Proceed { blocks } => append_blocks(&mut data.user, blocks),
+            SubmitDecision::Proceed { blocks, warnings } => {
+                append_blocks(&mut data.user, blocks);
+                warnings
+            }
+        };
+        let (event, commit) = session
+            .input_commit(data, branch)
+            .await
+            .map_err(RpcError::from)?;
+        // A warning describes the write of this call. A resubmission of a
+        // `submissionId` the branch already holds wrote nothing, so it answers
+        // the first input's receipt with none of this attempt's warnings.
+        let warnings = match commit {
+            InputCommit::Written => checked,
+            InputCommit::Existing => Vec::new(),
         }
-        let event = session.input(data, branch).await.map_err(RpcError::from)?;
+        .into_iter()
+        .filter(|_| self.protocol_version() >= 3)
+        .collect();
         if self.protocol_version() >= 3 {
             let mut published = publication.watch();
             tokio::select! {
@@ -94,7 +113,7 @@ impl Connection {
                 ));
             }
         }
-        Ok(Reply::Submit(SubmitResult { event }))
+        Ok(Reply::Submit(SubmitResult { event, warnings }))
     }
 
     pub(super) async fn input_lookup(
@@ -121,7 +140,22 @@ impl Connection {
         rpc: &RpcService,
         params: History,
         display: bool,
+        tail: bool,
+        transcript: bool,
     ) -> Result<Reply, RpcError> {
+        if transcript && !tail {
+            return Err(RpcError::invalid("transcript requires tail"));
+        }
+        if transcript && params.limit.is_some_and(|limit| limit > HISTORY_PAGE_LIMIT) {
+            return Err(RpcError::invalid(format!(
+                "transcript limit must be between 1 and {HISTORY_PAGE_LIMIT}"
+            )));
+        }
+        if tail && (params.latest_turn || params.after.is_some()) {
+            return Err(RpcError::invalid(
+                "tail cannot be combined with latestTurn or after",
+            ));
+        }
         if params.latest_turn && params.after.is_some() {
             return Err(RpcError::invalid(
                 "latestTurn and after are mutually exclusive",
@@ -133,17 +167,21 @@ impl Connection {
         if params.before == Some(0) {
             return Err(RpcError::invalid("before must be at least 1"));
         }
-        if params.latest_turn && params.limit.is_some_and(|limit| limit > HISTORY_TURN_LIMIT) {
+        if (params.latest_turn || tail)
+            && params.limit.is_some_and(|limit| limit > HISTORY_TURN_LIMIT)
+        {
             return Err(RpcError::invalid(format!(
                 "latestTurn limit must be between 1 and {HISTORY_TURN_LIMIT}"
             )));
         }
-        let limit = if params.latest_turn {
+        let limit = if transcript {
+            params.limit.unwrap_or(HISTORY_PAGE_LIMIT)
+        } else if params.latest_turn || tail {
             params.limit.unwrap_or(HISTORY_TURN_LIMIT)
         } else {
             params.limit.unwrap_or(HISTORY_PAGE_LIMIT)
         };
-        let window = params.latest_turn || params.before.is_some();
+        let window = tail || params.latest_turn || params.before.is_some();
         if window && !rpc.index.has_session_store() {
             return Err(RpcError::invalid(
                 "history windows require the native Session store",
@@ -220,7 +258,13 @@ impl Connection {
             } else {
                 HistoryRead::Open(&session, self.protocol_version())
             };
-            let reply = window_at(&read, branch, before, limit, through, turn, display).await;
+            let reply = if transcript {
+                display_transcript(&read, branch, before, limit, through).await
+            } else if tail {
+                display_tail(&read, branch, before, limit, through).await
+            } else {
+                window_at(&read, branch, before, limit, through, turn, display).await
+            };
             // The owner is chosen before the read: a line that ends in between
             // answers `BranchEnded`, and the tree serves the same request at its
             // fixed head.
@@ -231,16 +275,14 @@ impl Connection {
                         .as_ref()
                         .is_some_and(|data| data.app_error == "branch_ended") =>
                 {
-                    window_at(
-                        &HistoryRead::Ended(&tree, self.protocol_version()),
-                        branch,
-                        before,
-                        limit,
-                        through,
-                        turn,
-                        display,
-                    )
-                    .await
+                    let ended = HistoryRead::Ended(&tree, self.protocol_version());
+                    if transcript {
+                        display_transcript(&ended, branch, before, limit, through).await
+                    } else if tail {
+                        display_tail(&ended, branch, before, limit, through).await
+                    } else {
+                        window_at(&ended, branch, before, limit, through, turn, display).await
+                    }
                 }
                 other => other,
             };
@@ -524,8 +566,8 @@ impl Connection {
         boundary.map_err(RpcError::invalid)?;
         // A blocked prompt creates no branch (Hooks A.6.2). A branch's first
         // input is built from the prompt alone, so the checks' contexts are
-        // dropped.
-        match self
+        // dropped and their warnings ride on the reply.
+        let checked = self
             .submit_check(
                 rpc,
                 &session,
@@ -540,19 +582,27 @@ impl Connection {
                     mode: InputMode::Queue,
                 },
             )
-            .await?
-        {
-            SubmitCheckReply::Block { message } => {
+            .await?;
+        let warnings = match checked {
+            SubmitDecision::Block { message } => {
                 return Err(RpcError::app(-32000, "input_blocked", message));
             }
-            SubmitCheckReply::Proceed { blocks } if !blocks.is_empty() => {
-                tracing::warn!(
-                    contexts = blocks.len(),
-                    "submit check contexts dropped: a branch's first input is its prompt"
-                );
+            SubmitDecision::Proceed { blocks, warnings } => {
+                if !blocks.is_empty() {
+                    tracing::warn!(
+                        contexts = blocks.len(),
+                        "submit check contexts dropped: a branch's first input is its prompt"
+                    );
+                }
+                // `session.branch_create` is served from protocol v2 on
+                // (`connection.rs`'s `validate_call`), and the v2 encoding is
+                // frozen, so only v3 and later carry the warnings.
+                warnings
+                    .into_iter()
+                    .filter(|_| self.protocol_version() >= 3)
+                    .collect()
             }
-            SubmitCheckReply::Proceed { .. } => {}
-        }
+        };
         let id = session
             .branch(
                 params.parent_branch_id,
@@ -573,6 +623,7 @@ impl Connection {
             .expect("successful creation is published");
         Ok(Reply::BranchCreate(wire::CreateResult {
             branch: branch.into(),
+            warnings,
         }))
     }
 }
@@ -685,36 +736,30 @@ async fn turn_window(
         unreachable!("turn start has a sequence")
     };
     let turn_start = start.as_u64().expect("event sequence is unsigned");
-    let step = tree
-        .query(
-            branch.to_owned(),
-            query(
-                QueryFilter::And {
-                    conditions: vec![
-                        QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: vec!["step/model-start".into()],
-                        },
-                        QueryFilter::Compare {
-                            left: QueryOperand::Field {
-                                path: "position.sequence".into(),
-                            },
-                            comparison: QueryComparison::Gt,
-                            right: QueryOperand::Value {
-                                value: turn_start.into(),
-                            },
-                        },
-                    ],
-                },
-                QueryPick::First,
-            ),
-        )
-        .await
-        .map_err(history_error)?;
-    let QueryOutput::Rows { rows } = step.result else {
-        unreachable!("field selection returns rows")
+    let mut first_model = query(
+        QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec!["step/model-start".into()],
+        },
+        QueryPick::First,
+    );
+    first_model.from = Some(TimelinePosition {
+        branch_id: branch.into(),
+        sequence: turn_start + 1,
+    });
+    let rows = if turn_start < through {
+        let step = tree
+            .query(branch.to_owned(), first_model)
+            .await
+            .map_err(history_error)?;
+        let QueryOutput::Rows { rows } = step.result else {
+            unreachable!("field selection returns rows")
+        };
+        rows
+    } else {
+        Vec::new()
     };
     let mut window_start = turn_start;
     let mut consumed = false;
@@ -722,71 +767,71 @@ async fn turn_window(
         let [QueryValue::Value { value: first_step }] = row.values.as_slice() else {
             unreachable!("model start has a sequence")
         };
-        let inputs = tree
-            .query(
-                branch.to_owned(),
-                query(
-                    QueryFilter::And {
-                        conditions: vec![
-                            QueryFilter::In {
-                                value: QueryOperand::Field {
-                                    path: "kind".into(),
-                                },
-                                values: vec!["input/message".into()],
-                            },
-                            QueryFilter::Exists {
-                                condition: Box::new(QueryFilter::And {
-                                    conditions: vec![
-                                        QueryFilter::In {
-                                            value: QueryOperand::Field {
-                                                path: "kind".into(),
-                                            },
-                                            values: vec!["input/consumed".into()],
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "data.input_id".into(),
-                                            },
-                                            comparison: QueryComparison::Eq,
-                                            right: QueryOperand::Outer { path: "id".into() },
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "position.sequence".into(),
-                                            },
-                                            comparison: QueryComparison::Gt,
-                                            right: QueryOperand::Value {
-                                                value: turn_start.into(),
-                                            },
-                                        },
-                                        QueryFilter::Compare {
-                                            left: QueryOperand::Field {
-                                                path: "position.sequence".into(),
-                                            },
-                                            comparison: QueryComparison::Lt,
-                                            right: QueryOperand::Value {
-                                                value: first_step.clone(),
-                                            },
-                                        },
-                                    ],
-                                }),
-                            },
-                        ],
-                    },
-                    QueryPick::First,
-                ),
-            )
-            .await
-            .map_err(history_error)?;
-        let QueryOutput::Rows { rows } = inputs.result else {
-            unreachable!("field selection returns rows")
+        let mut adopted = query(
+            QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "kind".into(),
+                },
+                values: vec!["input/consumed".into()],
+            },
+            QueryPick::First,
+        );
+        adopted.from = Some(TimelinePosition {
+            branch_id: branch.into(),
+            sequence: turn_start + 1,
+        });
+        adopted.through = Some(first_step.as_u64().expect("model sequence is unsigned") - 1);
+        adopted.query.pick = None;
+        adopted.query.select = QuerySelect::Fields {
+            fields: vec!["data.input_id".into()],
         };
-        if let Some(row) = rows.first() {
-            let [QueryValue::Value { value: sequence }] = row.values.as_slice() else {
-                unreachable!("input has a sequence")
+        adopted.page.as_mut().unwrap().limit = std::num::NonZeroU64::new(128).unwrap();
+        while adopted.from.as_ref().unwrap().sequence <= adopted.through.unwrap() {
+            let reply = tree
+                .query(branch.to_owned(), adopted.clone())
+                .await
+                .map_err(history_error)?;
+            let QueryOutput::Rows { rows } = reply.result else {
+                unreachable!("consumed identities")
             };
-            window_start = window_start.min(sequence.as_u64().expect("event sequence is unsigned"));
-            consumed = true;
+            let ids = rows
+                .into_iter()
+                .map(|row| {
+                    let [QueryValue::Value { value }] = <[_; 1]>::try_from(row.values).unwrap()
+                    else {
+                        unreachable!("input identity")
+                    };
+                    value
+                })
+                .collect::<Vec<_>>();
+            if !ids.is_empty() {
+                let inputs = tree
+                    .query(
+                        branch.to_owned(),
+                        query(
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: "id".into() },
+                                values: ids,
+                            },
+                            QueryPick::First,
+                        ),
+                    )
+                    .await
+                    .map_err(history_error)?;
+                let QueryOutput::Rows { rows } = inputs.result else {
+                    unreachable!("input position")
+                };
+                if let Some(row) = rows.first() {
+                    let [QueryValue::Value { value: sequence }] = row.values.as_slice() else {
+                        unreachable!("input sequence")
+                    };
+                    window_start =
+                        window_start.min(sequence.as_u64().expect("input sequence is unsigned"));
+                    consumed = true;
+                }
+            }
+            let Some(next) = reply.next else { break };
+            adopted.page.as_mut().unwrap().after = Some(next);
         }
     }
     if !consumed {
@@ -1071,6 +1116,239 @@ async fn window_at(
     history_window(read, branch, events, through, turn).await
 }
 
+async fn display_transcript(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    before: u64,
+    limit: usize,
+    through: u64,
+) -> Result<wire::HistoryResult, RpcError> {
+    let top = before.saturating_sub(1).min(through);
+    if top == 0 {
+        return Ok(wire::HistoryResult {
+            events: Vec::new(),
+            through,
+            next_after: through,
+            done: true,
+            next_before: None,
+            turn_start: None,
+        });
+    }
+    let kinds = |values: &[&str]| QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values: values.iter().map(|value| (*value).into()).collect(),
+    };
+    let filters = [
+        (
+            false,
+            kinds(&[
+                "input/message",
+                "input/applied",
+                "input/consumed",
+                "input/withdraw",
+                "input/deleted",
+                "step/text",
+                "step/thinking",
+                "step/tool-use",
+                "step/tool-use-start",
+                "step/tool-call",
+                "step/tool-start",
+                "step/tool-completed",
+                "step/tool-result",
+                "step/model-output-end",
+                "turn/end",
+                "exec/started",
+                "exec/ended",
+                "collaboration/request",
+                "collaboration/delivered",
+                "collaboration/result",
+                "branch/create",
+                "branch/create-failed",
+                "branch/ended",
+                "branch/end",
+                "context/compaction-start",
+            ]),
+        ),
+        (true, kinds(&["context/compaction"])),
+    ];
+    let template = TimelineQuery {
+        scope: TimelineQueryScope::Branch,
+        from: None,
+        through: Some(top),
+        include_publishing: false,
+        query: QuerySpec {
+            filter: None,
+            select: QuerySelect::Fields {
+                fields: vec!["position.sequence".into()],
+            },
+            group_by: Vec::new(),
+            pick: None,
+            order_by: vec![QueryOrder {
+                key: QueryOrderKey::Position,
+                direction: dim_agent_runtime::TimelineQueryDirection::Descending,
+            }],
+        },
+        page: Some(QueryPage {
+            limit: std::num::NonZeroU64::new(limit as u64).unwrap(),
+            after: None,
+        }),
+    };
+    let mut candidates = std::collections::BTreeMap::new();
+    let mut more = false;
+    for (compaction, filter) in filters {
+        let mut query = template.clone();
+        query.query.filter = Some(filter);
+        let page = read.query(branch, query).await.map_err(history_error)?;
+        more |= page.next.is_some();
+        let QueryOutput::Rows { rows } = page.result else {
+            unreachable!("transcript positions")
+        };
+        for row in rows {
+            let [QueryValue::Value { value }] =
+                <[_; 1]>::try_from(row.values).expect("one position")
+            else {
+                unreachable!("position value")
+            };
+            candidates.insert(value.as_u64().expect("event position"), compaction);
+        }
+    }
+    more |= candidates.len() > limit;
+    let positions: Vec<_> = candidates.into_iter().rev().take(limit).collect();
+    let version = match read {
+        HistoryRead::Open(_, v) | HistoryRead::Ended(_, v) => *v,
+    };
+    let mut kept = Vec::new();
+    let mut bytes = 0;
+    'body: for batch in positions.chunks(8) {
+        let ordinary: Vec<_> = batch
+            .iter()
+            .filter(|(_, compaction)| !compaction)
+            .map(|(sequence, _)| serde_json::Value::from(*sequence))
+            .collect();
+        let mut items = Vec::new();
+        if !ordinary.is_empty() {
+            let mut query = template.clone();
+            query.query.filter = Some(QueryFilter::In {
+                value: QueryOperand::Field {
+                    path: "position.sequence".into(),
+                },
+                values: ordinary,
+            });
+            query.query.select = QuerySelect::Events;
+            query.query.order_by.clear();
+            let page = read.query(branch, query).await.map_err(history_error)?;
+            let QueryOutput::Events { events } = page.result else {
+                unreachable!("selected transcript events")
+            };
+            for row in events {
+                items.extend(history_items(vec![row.event], version)?);
+            }
+        }
+        let summaries: Vec<_> = batch
+            .iter()
+            .filter(|(_, compaction)| *compaction)
+            .map(|(sequence, _)| serde_json::Value::from(*sequence))
+            .collect();
+        if !summaries.is_empty() {
+            let low = batch.last().unwrap().0;
+            let high = batch.first().unwrap().0;
+            items.extend(
+                compaction_items(
+                    read,
+                    branch,
+                    low,
+                    high,
+                    batch.len() as u64,
+                    QueryFilter::And {
+                        conditions: vec![
+                            kinds(&["context/compaction"]),
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "position.sequence".into(),
+                                },
+                                values: summaries,
+                            },
+                        ],
+                    },
+                )
+                .await?,
+            );
+        }
+        items.sort_by_key(|item| std::cmp::Reverse(item.sequence));
+        for item in items {
+            if item.bytes > REPLY_FRAME_BYTES {
+                return Err(RpcError::app(
+                    -32000,
+                    "history_too_large",
+                    "A display event exceeds the reply frame budget",
+                ));
+            }
+            if bytes > 0 && bytes + item.bytes > HISTORY_TURN_BYTES {
+                more = true;
+                break 'body;
+            }
+            bytes += item.bytes;
+            kept.push(item);
+        }
+    }
+    let next_before = kept.last().map(|item| item.sequence);
+    kept.sort_by_key(|item| item.sequence);
+    Ok(wire::HistoryResult {
+        events: kept.into_iter().filter_map(|item| item.event).collect(),
+        through,
+        next_after: through,
+        done: !more,
+        next_before,
+        turn_start: None,
+    })
+}
+
+async fn display_tail(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    before: u64,
+    limit: usize,
+    through: u64,
+) -> Result<wire::HistoryResult, RpcError> {
+    let top = before.saturating_sub(1).min(through);
+    let low = top.saturating_sub(limit.saturating_sub(1) as u64).max(1);
+    let mut next = top;
+    let mut bytes = 0;
+    let mut kept = Vec::new();
+    'page: while next >= low && next > 0 {
+        let start = next.saturating_sub(7).max(low);
+        let items = window_items(read, branch, start, next, true, false).await?;
+        for item in items.into_iter().rev() {
+            if item.bytes > REPLY_FRAME_BYTES {
+                return Err(RpcError::app(
+                    -32000,
+                    "history_too_large",
+                    "A display event exceeds the reply frame budget",
+                ));
+            }
+            if bytes > 0 && bytes + item.bytes > HISTORY_TURN_BYTES {
+                break 'page;
+            }
+            bytes += item.bytes;
+            kept.push(item);
+        }
+        next = start - 1;
+    }
+    kept.reverse();
+    let next_before = kept.first().map(|item| item.sequence);
+    let next_after = kept.last().map_or(through, |item| item.sequence);
+    Ok(wire::HistoryResult {
+        events: kept.into_iter().filter_map(|item| item.event).collect(),
+        through,
+        next_after,
+        done: next_before.is_none_or(|sequence| sequence <= 1),
+        next_before,
+        turn_start: None,
+    })
+}
+
 /// The newest events below `before` inside `window_start..=through`
 /// (session-history-window §4.2), read through the loaded line's query or the
 /// tree's stored read. The page ends at the newest batch end at or below
@@ -1102,7 +1380,7 @@ async fn window_page(
         .max(1)
         .max(window_start);
     let low = batch_start(read, branch, low, window_start).await?;
-    window_items(read, branch, low, end, display).await
+    window_items(read, branch, low, end, display, true).await
 }
 
 /// The greatest atomic-batch end at or below `top`, searching no lower than
@@ -1150,6 +1428,7 @@ async fn window_items(
     low: u64,
     end: u64,
     display: bool,
+    configuration: bool,
 ) -> Result<Vec<HistoryItem>, RpcError> {
     let limit = end.saturating_sub(low).saturating_add(1).max(1);
     let filter = if display {
@@ -1157,7 +1436,16 @@ async fn window_items(
             conditions: vec![
                 wire::ProductEvent::query_filter(),
                 QueryFilter::Not {
-                    condition: Box::new(completed_compaction()),
+                    condition: Box::new(QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "kind".into(),
+                        },
+                        values: if configuration {
+                            vec!["context/compaction".into()]
+                        } else {
+                            vec!["context/compaction".into(), "context/configured".into()]
+                        },
+                    }),
                 },
             ],
         }
@@ -1198,80 +1486,24 @@ async fn window_items(
     };
     let mut visible = history_items(events.into_iter().map(|row| row.event).collect(), version)?;
     if display {
-        let reply = read
-            .query(
+        visible.extend(
+            compaction_items(
+                read,
                 branch,
-                TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    from: Some(dim_agent_types::TimelinePosition {
-                        branch_id: branch.into(),
-                        sequence: low,
-                    }),
-                    through: Some(end),
-                    include_publishing: false,
-                    query: QuerySpec {
-                        filter: Some(completed_compaction()),
-                        select: QuerySelect::Fields {
-                            fields: [
-                                "id",
-                                "position.sequence",
-                                "create_at",
-                                "data.start",
-                                "data.strategy",
-                                "data.diagnostics.insufficientSpace",
-                            ]
-                            .map(String::from)
-                            .to_vec(),
-                        },
-                        group_by: vec![],
-                        pick: None,
-                        order_by: vec![],
+                low,
+                end,
+                limit,
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
                     },
-                    page: Some(QueryPage {
-                        limit: std::num::NonZeroU64::new(limit).unwrap(),
-                        after: None,
-                    }),
+                    values: vec!["context/compaction".into()],
                 },
             )
-            .await
-            .map_err(history_error)?;
-        let QueryOutput::Rows { rows } = reply.result else {
-            unreachable!("display selects summary fields")
-        };
-        for row in rows {
-            let [id, sequence, create_at, start, strategy, insufficient_space]: [_; 6] =
-                row.values.try_into().expect("compaction summary fields");
-            let value = |value| match value {
-                QueryValue::Value { value } => value,
-                _ => unreachable!("required compaction summary field"),
-            };
-            let optional = |value| match value {
-                QueryValue::Missing => None,
-                QueryValue::Value { value } => Some(value),
-                _ => unreachable!("scalar compaction summary field"),
-            };
-            let item = wire::CompactionItem {
-                id: serde_json::from_value(value(id)).expect("event id"),
-                sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
-                create_at: serde_json::from_value(value(create_at)).expect("event creation time"),
-                data: dim_agent_types::CompactionSummary {
-                    start: optional(start)
-                        .map(|value| serde_json::from_value(value).expect("compaction start")),
-                    strategy: serde_json::from_value(value(strategy)).expect("compaction strategy"),
-                    insufficient_space: optional(insufficient_space)
-                        .map(|value| serde_json::from_value(value).expect("insufficient space")),
-                },
-            };
-            let encoded = serde_json::value::to_raw_value(&item)
-                .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
-            visible.push(HistoryItem {
-                sequence: item.sequence,
-                bytes: encoded.get().len(),
-                event: Some(encoded),
-            });
-        }
-        visible.sort_unstable_by_key(|item| item.sequence);
+            .await?,
+        );
     }
+    visible.sort_unstable_by_key(|item| item.sequence);
     let mut visible = visible.into_iter().peekable();
     Ok((low..=end)
         .map(|sequence| {
@@ -1298,6 +1530,146 @@ fn completed_compaction() -> QueryFilter {
             })
             .collect(),
     }
+}
+
+async fn compaction_items(
+    read: &HistoryRead<'_>,
+    branch: &str,
+    low: u64,
+    end: u64,
+    limit: u64,
+    filter: QueryFilter,
+) -> Result<Vec<HistoryItem>, RpcError> {
+    let version = match read {
+        HistoryRead::Open(_, v) | HistoryRead::Ended(_, v) => *v,
+    };
+    let mut visible = Vec::new();
+    let reply = read
+        .query(
+            branch,
+            TimelineQuery {
+                scope: TimelineQueryScope::Branch,
+                from: Some(dim_agent_types::TimelinePosition {
+                    branch_id: branch.into(),
+                    sequence: low,
+                }),
+                through: Some(end),
+                include_publishing: false,
+                query: QuerySpec {
+                    filter: Some(filter),
+                    select: QuerySelect::Fields {
+                        fields: [
+                            "id",
+                            "position.sequence",
+                            "create_at",
+                            "data.start",
+                            "data.strategy",
+                            "data.diagnostics.insufficientSpace",
+                            "data.status",
+                        ]
+                        .map(String::from)
+                        .to_vec(),
+                    },
+                    group_by: vec![],
+                    pick: None,
+                    order_by: vec![],
+                },
+                page: Some(QueryPage {
+                    limit: std::num::NonZeroU64::new(limit).unwrap(),
+                    after: None,
+                }),
+            },
+        )
+        .await
+        .map_err(history_error)?;
+    let QueryOutput::Rows { rows } = reply.result else {
+        unreachable!("display selects summary fields")
+    };
+    let mut other = Vec::new();
+    for row in rows {
+        let [
+            id,
+            sequence,
+            create_at,
+            start,
+            strategy,
+            insufficient_space,
+            status,
+        ]: [_; 7] = row.values.try_into().expect("compaction summary fields");
+        let value = |value| match value {
+            QueryValue::Value { value } => value,
+            _ => unreachable!("required compaction summary field"),
+        };
+        let optional = |value| match value {
+            QueryValue::Missing => None,
+            QueryValue::Value { value } => Some(value),
+            _ => unreachable!("scalar compaction summary field"),
+        };
+        if value(status) != "completed" {
+            other.push(value(id));
+            continue;
+        }
+        let item = wire::CompactionItem {
+            id: serde_json::from_value(value(id)).expect("event id"),
+            sequence: serde_json::from_value(value(sequence)).expect("event sequence"),
+            create_at: serde_json::from_value(value(create_at)).expect("event creation time"),
+            data: dim_agent_types::CompactionSummary {
+                start: optional(start)
+                    .map(|value| serde_json::from_value(value).expect("compaction start")),
+                strategy: serde_json::from_value(value(strategy)).expect("compaction strategy"),
+                insufficient_space: optional(insufficient_space)
+                    .map(|value| serde_json::from_value(value).expect("insufficient space")),
+            },
+        };
+        let encoded = serde_json::value::to_raw_value(&item)
+            .map_err(|error| RpcError::wire(-32603, error.to_string()))?;
+        visible.push(HistoryItem {
+            sequence: item.sequence,
+            bytes: encoded.get().len(),
+            event: Some(encoded),
+        });
+    }
+    if !other.is_empty() {
+        let reply = read
+            .query(
+                branch,
+                TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: Some(TimelinePosition {
+                        branch_id: branch.into(),
+                        sequence: low,
+                    }),
+                    through: Some(end),
+                    include_publishing: false,
+                    query: QuerySpec {
+                        filter: Some(QueryFilter::In {
+                            value: QueryOperand::Field { path: "id".into() },
+                            values: other,
+                        }),
+                        select: QuerySelect::Events,
+                        group_by: vec![],
+                        pick: None,
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: std::num::NonZeroU64::new(limit).unwrap(),
+                        after: None,
+                    }),
+                },
+            )
+            .await
+            .map_err(history_error)?;
+        let QueryOutput::Events { events } = reply.result else {
+            unreachable!("compaction events")
+        };
+        visible.extend(history_items(
+            events.into_iter().map(|event| event.event).collect(),
+            version,
+        )?);
+    }
+    visible.sort_unstable_by_key(|item| item.sequence);
+
+    Ok(visible)
 }
 
 /// One event of a history page with its encoded form, built once, and size.
@@ -1466,7 +1838,7 @@ async fn forward_page(
         }
     }
     let items = if end > after {
-        window_items(read, branch, after + 1, end, display).await?
+        window_items(read, branch, after + 1, end, display, true).await?
     } else {
         Vec::new()
     };

@@ -4,8 +4,14 @@
 //! ever upgrades within itself, as the publish scripts guarantee from the
 //! other side.
 
+#[cfg(unix)]
+mod staged;
+
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 const PACKAGE: &str = "dimcode";
 /// Alphas ship as their own package with the `dima` command, so they install
@@ -22,10 +28,8 @@ const SKIP_FILE: &str = "upgrade-skip.json";
 pub struct Offer {
     pub current: String,
     pub version: String,
-    /// How to install it in place; `None` when the install source is not
-    /// one we can tell, and only `manual` is shown.
-    pub install: Option<Install>,
-    /// The command to run by hand.
+    /// The command to run: `update` for a recognised installation, else the
+    /// package manager's own command.
     pub manual: String,
 }
 
@@ -34,17 +38,69 @@ pub struct Offer {
 pub struct Install {
     pub version: String,
     pub program: PathBuf,
-    pub args: Vec<String>,
-    /// What starts the updated CLI: this executable when the install keeps
-    /// it in place, else the package's command on `PATH`.
-    pub relaunch: PathBuf,
+    pub manager: Manager,
+    /// The manager's installation root, outside the packages it replaces.
+    pub directory: PathBuf,
+    /// The package this copy was installed from, which names the directory the
+    /// manager installs it into and the commands that start it.
+    pub package: String,
+}
+
+/// How the manager installs the new version.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Manager {
+    /// The manager installs under any prefix it is given, so the update installs
+    /// the new version beside the live package and switches it in afterwards.
+    /// Only unix exchanges the package folder without touching a running image.
+    #[cfg(unix)]
+    Staged,
+    /// The manager installs only into the layout the update replaces, with
+    /// these arguments before the package.
+    InPlace { arguments: Vec<String> },
 }
 
 impl Install {
+    /// The package and channel tag the manager installs.
+    fn spec(&self) -> String {
+        format!("{}@{}", self.package, self.version)
+    }
+
+    /// The manager's arguments for installing the new version into `prefix`
+    /// when that is a staging directory. `--globalconfig` keeps the global npm
+    /// configuration of the live installation: `--prefix` alone points npm at
+    /// `<prefix>/etc/npmrc` and would drop the registry, mirror and credentials
+    /// an operator saved with `npm config set -g`.
+    #[cfg(unix)]
+    fn staging_command(&self, prefix: &Path) -> Vec<String> {
+        let globalconfig = self.directory.join("etc").join("npmrc");
+        vec![
+            "install".to_owned(),
+            "-g".to_owned(),
+            "--prefer-online".to_owned(),
+            "--prefix".to_owned(),
+            prefix.to_string_lossy().into_owned(),
+            "--globalconfig".to_owned(),
+            globalconfig.to_string_lossy().into_owned(),
+            self.spec(),
+        ]
+    }
+
+    /// The manager's arguments for installing the version where it lives now.
+    fn in_place_command(&self) -> Vec<String> {
+        match &self.manager {
+            #[cfg(unix)]
+            Manager::Staged => self.staging_command(&self.directory),
+            Manager::InPlace { arguments } => {
+                arguments.iter().cloned().chain([self.spec()]).collect()
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub fn command_line(&self) -> String {
         let program = self.program.file_name().unwrap_or(self.program.as_os_str());
         std::iter::once(program.to_string_lossy().into_owned())
-            .chain(self.args.iter().cloned())
+            .chain(self.in_place_command())
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -67,11 +123,16 @@ pub fn registry() -> String {
 }
 
 /// The npm package this copy was started from; the launcher names it.
-fn package() -> String {
-    std::env::var("DIMCODE_NPM_PACKAGE").unwrap_or_else(|_| {
-        let alpha = channel(env!("CARGO_PKG_VERSION")) == "alpha";
-        (if alpha { ALPHA_PACKAGE } else { PACKAGE }).to_owned()
-    })
+fn package() -> Result<String, String> {
+    if let Some(package) = std::env::var_os("DIMCODE_NPM_PACKAGE") {
+        return match package.to_str() {
+            Some(PACKAGE) => Ok(PACKAGE.to_owned()),
+            Some(ALPHA_PACKAGE) => Ok(ALPHA_PACKAGE.to_owned()),
+            _ => Err("DIMCODE_NPM_PACKAGE must be dimcode or dimcode-alpha".to_owned()),
+        };
+    }
+    let alpha = channel(env!("CARGO_PKG_VERSION")) == "alpha";
+    Ok((if alpha { ALPHA_PACKAGE } else { PACKAGE }).to_owned())
 }
 
 /// The dist-tag a version upgrades along: its prerelease identifier, or
@@ -131,54 +192,83 @@ fn manual(package: &str, current: &str) -> String {
 /// when another Node comes first on `PATH`.
 fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
     let path = exe.to_string_lossy().replace('\\', "/");
-    let spec = format!("{package}@{version}");
-    let (program, args) = if path.contains("/.bun/install/global/node_modules/") {
-        ("bun".into(), vec!["add", "-g"])
-    } else if path.contains("/.volta/") {
-        ("volta".into(), vec!["install"])
-    } else if path.contains("/pnpm/global/") || path.contains("/.pnpm/") {
-        ("pnpm".into(), vec!["add", "-g"])
-    } else if path.contains("/yarn/global/") {
-        ("yarn".into(), vec!["global", "add"])
-    } else {
-        let marker = if cfg!(windows) {
-            "/node_modules/"
+    let (program, manager, directory) =
+        if let Some((prefix, _)) = path.split_once("/.bun/install/global/node_modules/") {
+            (
+                "bun".into(),
+                in_place(&["add", "-g"]),
+                Path::new(prefix).join(".bun/install/global"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/.volta/") {
+            (
+                "volta".into(),
+                in_place(&["install"]),
+                Path::new(prefix).join(".volta"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/pnpm/global/") {
+            (
+                "pnpm".into(),
+                in_place(&["add", "-g"]),
+                Path::new(prefix).join("pnpm/global"),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/.pnpm/") {
+            let directory = Path::new(prefix);
+            let directory = if directory.ends_with("node_modules") {
+                directory.parent()?
+            } else {
+                directory
+            };
+            (
+                "pnpm".into(),
+                in_place(&["add", "-g"]),
+                directory.to_path_buf(),
+            )
+        } else if let Some((prefix, _)) = path.split_once("/yarn/global/") {
+            (
+                "yarn".into(),
+                in_place(&["global", "add"]),
+                Path::new(prefix).join("yarn/global"),
+            )
         } else {
-            "/lib/node_modules/"
+            let marker = if cfg!(windows) {
+                "/node_modules/"
+            } else {
+                "/lib/node_modules/"
+            };
+            let (prefix, _) = path.split_once(marker)?;
+            let npm = if cfg!(windows) {
+                Path::new(prefix).join("npm.cmd")
+            } else {
+                Path::new(prefix).join("bin").join("npm")
+            };
+            let npm = if npm.is_file() { npm } else { "npm".into() };
+            // Windows npm installs under `<prefix>\node_modules` with command
+            // shims in `<prefix>`, and this process runs from inside the folder
+            // an exchange would replace, so it keeps the in-place install there.
+            #[cfg(windows)]
+            let manager = in_place(&["install", "-g", "--prefer-online", "--prefix", prefix]);
+            // No unix system keeps an image mapped, so the package folder can be
+            // replaced while this process runs from inside it.
+            #[cfg(unix)]
+            let manager = Manager::Staged;
+            (npm, manager, PathBuf::from(prefix))
         };
-        let (prefix, _) = path.split_once(marker)?;
-        let npm = if cfg!(windows) {
-            Path::new(prefix).join("npm.cmd")
-        } else {
-            Path::new(prefix).join("bin").join("npm")
-        };
-        let npm = if npm.is_file() { npm } else { "npm".into() };
-        (
-            npm,
-            vec!["install", "-g", "--prefer-online", "--prefix", prefix],
-        )
-    };
     Some(Install {
         version: version.to_owned(),
         program,
-        args: args.into_iter().map(str::to_owned).chain([spec]).collect(),
-        relaunch: relaunch(exe, package),
+        manager,
+        directory,
+        package: package.to_owned(),
     })
 }
 
-/// npm and bun reinstall a package in place, so this executable is the
-/// updated one afterwards; pnpm, yarn and volta move it, so the package's
-/// command on `PATH` starts it.
-fn relaunch(exe: &Path, package: &str) -> PathBuf {
-    let path = exe.to_string_lossy().replace('\\', "/");
-    if path.contains("/.pnpm/") || path.contains("/yarn/global/") || path.contains("/.volta/") {
-        PathBuf::from(if package == ALPHA_PACKAGE {
-            ALPHA_COMMAND
-        } else {
-            package
-        })
-    } else {
-        exe.to_path_buf()
+/// How a manager without a staging step is told to install.
+fn in_place(arguments: &[&str]) -> Manager {
+    Manager::InPlace {
+        arguments: arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect(),
     }
 }
 
@@ -193,7 +283,7 @@ fn upgrade_tag(version: &str, release: bool) -> Option<&str> {
 /// `None` when there is none or the registry did not answer in time.
 pub async fn available(home: &Path, current: &str) -> Option<Offer> {
     let tag = upgrade_tag(current, crate::version::RELEASE)?;
-    let package = package();
+    let package = package().ok()?;
     let client = reqwest::Client::builder().timeout(TIMEOUT).build().ok()?;
     let tags: serde_json::Value = client
         .get(format!("{}/-/package/{package}/dist-tags", registry()))
@@ -210,31 +300,275 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
+    let manual = if installer(&exe, &package, version).is_some() {
+        let command = if package == ALPHA_PACKAGE {
+            ALPHA_COMMAND
+        } else {
+            PACKAGE
+        };
+        format!("{command} update")
+    } else {
+        manual(&package, current)
+    };
     Some(Offer {
         current: current.to_owned(),
         version: version.to_owned(),
-        install: installer(&exe, &package, version),
-        manual: manual(&package, current),
+        manual,
     })
 }
 
-/// Runs `install`; the last line it wrote to stderr when it fails.
-pub async fn install(install: Install) -> Result<(), String> {
-    let output = tokio::process::Command::new(&install.program)
-        .args(&install.args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
+/// Updates this installation's package on its current channel, independently
+/// of automatic-check preferences and skipped versions. Unknown installation
+/// layouts return a manual command without installing anything.
+pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
+    let package = package()?;
+    let current = crate::version::VERSION;
+    let tag = channel(current);
+    let executable = std::env::current_exe()?;
+    let installation = installer(&executable, &package, tag).ok_or_else(|| {
+        format!(
+            "Cannot update this installation automatically. For a package install, run: {}. For a source build, pull and rebuild the source.",
+            manual(&package, current)
+        )
+    })?;
+    let mut signals = crate::plugins::Signals::listen()?;
+    let mut stderr = std::io::stderr();
+    let interactive = stderr.is_terminal();
+    if !interactive {
+        writeln!(stderr, "Updating {package} on the {tag} channel...")?;
+    }
+    let cancel = CancellationToken::new();
+    let installation = install(installation, cancel.clone(), legacy_exited);
+    tokio::pin!(installation);
+    let started = tokio::time::Instant::now();
+    let mut progress = tokio::time::interval(Duration::from_millis(120));
+    let mut output_error = None;
+    let result = loop {
+        tokio::select! {
+            result = &mut installation => break result,
+            _ = signals.received(), if !cancel.is_cancelled() => cancel.cancel(),
+            _ = progress.tick(), if interactive && output_error.is_none() => {
+                let elapsed = started.elapsed();
+                let frame = ['|', '/', '-', '\\'][(elapsed.as_millis() / 120 % 4) as usize];
+                let detail = crate::sanitize::safe_line(&format!("({tag}) · {}s", elapsed.as_secs()));
+                let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+                let label_width = usize::from(width).saturating_sub(
+                    unicode_width::UnicodeWidthStr::width(detail.as_str()) + 4
+                );
+                let label = crate::sanitize::safe_line(&format!("Updating {package}"));
+                let label = crate::ui::text::truncate_cells(&label, label_width);
+                let text = format!("{frame} {label} {detail}");
+                let text = crate::ui::text::truncate_cells(&text, width.saturating_sub(1).into());
+                if let Err(error) = crossterm::execute!(stderr,
+                    crossterm::cursor::MoveToColumn(0),
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+                    crossterm::style::Print(text),
+                ) {
+                    output_error = Some(error);
+                    cancel.cancel();
+                }
+            }
+        }
+    };
+    if let Some(error) = output_error {
+        return Err(match result {
+            Ok(_) => format!("{error}; the update itself had finished"),
+            Err(update) => format!("{error}; {update}"),
+        }
+        .into());
+    }
+    if interactive {
+        crossterm::execute!(
+            stderr,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+        )?;
+    }
+    let warnings = result?;
+    writeln!(stderr, "Updated {package} on the {tag} channel.")?;
+    for warning in warnings {
+        writeln!(stderr, "{warning}")?;
+    }
+    Ok(0)
+}
+
+const LOCK_FILE: &str = ".dimcode-update.lock";
+const BASELINE_FILE: &str = ".dimcode-consumers";
+
+/// The shared lock this process holds on its installation for its lifetime.
+static LEASE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+fn open_lock(directory: &Path, create: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(create)
+        .create(create)
+        .truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o644).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(directory.join(LOCK_FILE))?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(
+            "Installation lock must be a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn shared(directory: &Path) -> Result<Option<std::fs::File>, String> {
+    let path = directory.join(LOCK_FILE);
+    let file = match open_lock(directory, true).or_else(|_| open_lock(directory, false)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Cannot register with installation {}: {error}. Make {LOCK_FILE} readable to every user of this installation",
+                path.display()
+            ));
+        }
+    };
+    match file.try_lock_shared() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err("An update is replacing this installation; retry after it finishes".to_owned())
+        }
+        Err(std::fs::TryLockError::Error(error)) => Err(error.to_string()),
+    }
+}
+
+/// Registers this process as a live consumer of the installation it runs
+/// from, in any home, until it exits. An update refuses while any consumer
+/// holds the lease. Does nothing for a source build, a layout the updater
+/// does not recognise, or an installation no update has locked yet. Fails
+/// when the lock file exists but cannot be opened, and while an update is
+/// replacing the installation.
+pub fn hold_installation() -> Result<(), String> {
+    let Ok(package) = package() else {
+        return Ok(());
+    };
+    let Some(directory) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| installer(&exe, &package, "x"))
+        .map(|install| install.directory)
+    else {
+        return Ok(());
+    };
+    *LEASE.lock().unwrap() = shared(&directory)?;
+    Ok(())
+}
+
+/// Runs `install`; failures report the last nonempty stderr line.
+/// Cancellation terminates and waits for the installer's process tree.
+///
+/// The installation lock is taken exclusively, so it fails while any other
+/// process (client, server or installer, in any home) uses the installation.
+/// This process's own lease is released for the duration and restored after.
+/// Without the baseline marker an older consumer, which holds no lease, cannot
+/// be ruled out: the install is refused unless `legacy_exited` states that
+/// every older client and server has exited, which then creates the marker.
+pub async fn install(
+    install: Install,
+    cancel: CancellationToken,
+    legacy_exited: bool,
+) -> Result<Vec<String>, String> {
+    let own = LEASE.lock().unwrap().take();
+    drop(own);
+    let result = install_exclusive(&install, cancel, legacy_exited).await;
+    *LEASE.lock().unwrap() = shared(&install.directory).ok().flatten();
+    result
+}
+
+async fn install_exclusive(
+    install: &Install,
+    cancel: CancellationToken,
+    legacy_exited: bool,
+) -> Result<Vec<String>, String> {
+    let lock = lease(install, legacy_exited)?;
+    let result = match install.manager {
+        #[cfg(unix)]
+        Manager::Staged => staged::update(install, &cancel).await,
+        Manager::InPlace { .. } => run_manager(install, install.in_place_command(), cancel)
+            .await
+            .map(|()| Vec::new()),
+    };
+    drop(lock);
+    result
+}
+
+/// Takes the installation's exclusive lease and records the baseline marker,
+/// returning the lock so it is held for as long as the caller needs it.
+fn lease(install: &Install, legacy_exited: bool) -> Result<std::fs::File, String> {
+    let path = install.directory.join(LOCK_FILE);
+    let lock = open_lock(&install.directory, true)
+        .map_err(|error| format!("Cannot lock installation {}: {error}", path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(
+                "This installation is in use by a client, server or update (in any home). Exit them, stop the server with `dimcode daemon stop`, and retry".to_owned(),
+            );
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
+    }
+    let baseline = install.directory.join(BASELINE_FILE);
+    if !baseline.exists() {
+        if !legacy_exited {
+            return Err("Older versions do not register as users of this installation, so an idle installation cannot be confirmed. Exit every client and stop every server, then run `dimcode update --confirm-legacy-exited`".to_owned());
+        }
+        std::fs::write(&baseline, b"")
+            .map_err(|error| format!("Cannot record {}: {error}", baseline.display()))?;
+    }
+    Ok(lock)
+}
+
+/// Runs the manager and waits for it, ending its process tree on cancellation.
+async fn run_manager(
+    install: &Install,
+    args: Vec<String>,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let mut command = tokio::process::Command::new(&install.program);
+    command.args(&args).stdin(std::process::Stdio::null());
+    let mut tree = dim_agent_capabilities::host_platform::ProcessTree::spawn(command)
         .map_err(|error| format!("{}: {error}", install.program.display()))?;
-    if output.status.success() {
+    let mut stdout = tree.stdout();
+    let mut stderr = tree.stderr();
+    let mut errors = Vec::new();
+    let mut sink = tokio::io::sink();
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err("Update interrupted".to_owned()),
+        result = async {
+            let (status, _, _) = tokio::try_join!(
+                tree.wait(),
+                tokio::io::copy(&mut stdout, &mut sink),
+                stderr.read_to_end(&mut errors),
+            )?;
+            Ok::<_, std::io::Error>(status)
+        } => result.map_err(|error| error.to_string()),
+    };
+    let status = match result {
+        Ok(status) => status,
+        Err(error) => {
+            tree.terminate()
+                .await
+                .map_err(|cleanup| format!("{error}; {cleanup}"))?;
+            return Err(error);
+        }
+    };
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(&errors);
     Err(stderr
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .map_or_else(|| output.status.to_string(), |line| line.trim().to_owned()))
+        .map_or_else(|| status.to_string(), |line| line.trim().to_owned()))
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -309,9 +643,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             npm.command_line(),
-            "npm install -g --prefer-online --prefix /u/.nvm/versions/node/v24 dimcode@0.1.0-alpha.2"
+            "npm install -g --prefer-online --prefix /u/.nvm/versions/node/v24 --globalconfig /u/.nvm/versions/node/v24/etc/npmrc dimcode@0.1.0-alpha.2"
         );
-        assert!(npm.relaunch.ends_with("bin/dimcode"));
+        assert_eq!(npm.package, "dimcode");
+        assert_eq!(npm.manager, Manager::Staged);
         let prefix = tempfile::tempdir().unwrap();
         std::fs::create_dir(prefix.path().join("bin")).unwrap();
         std::fs::write(prefix.path().join("bin/npm"), "").unwrap();
@@ -319,7 +654,9 @@ mod tests {
         let np = installer(&copied, "dimcode", spec).unwrap();
         assert_eq!(np.program, prefix.path().join("bin/npm"));
         assert_eq!(
-            np.args.last().map(String::as_str),
+            np.staging_command(Path::new("/stage"))
+                .last()
+                .map(String::as_str),
             Some("dimcode@0.1.0-alpha.2")
         );
         let bun = installer(
@@ -336,7 +673,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pnpm.command_line(), "pnpm add -g dimcode@0.1.0-alpha.2");
-        assert_eq!(pnpm.relaunch, PathBuf::from("dimcode"));
         let alpha = installer(
             Path::new("/u/Library/pnpm/global/5/.pnpm/dimcode-darwin-arm64@0.1.0-alpha.2/node_modules/dimcode-darwin-arm64/bin/dimcode"),
             ALPHA_PACKAGE,
@@ -347,7 +683,24 @@ mod tests {
             alpha.command_line(),
             "pnpm add -g dimcode-alpha@0.1.0-alpha.2"
         );
-        assert_eq!(alpha.relaunch, PathBuf::from("dima"));
         assert!(installer(Path::new("/u/dim/target/debug/dimcode"), "dimcode", spec).is_none());
+    }
+
+    /// Windows replaces the package folder in place, so its command stays the
+    /// one it always was: no staging prefix and no `--globalconfig`.
+    #[cfg(windows)]
+    #[test]
+    fn the_install_keeps_the_in_place_command_on_windows() {
+        let install = installer(
+            Path::new(r"C:\Users\u\AppData\Roaming\npm\node_modules\dimcode\bin\dimcode.exe"),
+            "dimcode",
+            "0.1.0-alpha.2",
+        )
+        .unwrap();
+        assert_eq!(
+            install.command_line(),
+            "npm install -g --prefer-online --prefix C:/Users/u/AppData/Roaming/npm dimcode@0.1.0-alpha.2"
+        );
+        assert!(matches!(install.manager, Manager::InPlace { .. }));
     }
 }

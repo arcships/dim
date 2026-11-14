@@ -5,6 +5,7 @@ import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
 import { createPinia, setActivePinia } from "pinia"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
@@ -74,7 +75,7 @@ const question = (branchId, callId, multiSelect = false) => ({
   questions: [{ id: "1", question: `Choose ${callId}`, options: [{ label: "Alpha" }, { label: "Beta" }], multiSelect, allowCustom: true }],
 })
 
-function mount(t, branchId, questions = [], component, stores = {}) {
+function mount(t, branchId, questions = [], component, stores = {}, props = {}) {
   const replies = [], submissions = []
   globalThis.chatInputNavigations = []
   const view = reactive({
@@ -104,8 +105,9 @@ function mount(t, branchId, questions = [], component, stores = {}) {
   const app = renderer.createApp(component ?? (branchId === "main" ? ChatPage : LineConversation), {
     sessionId: "session", branchId,
     ...(component ? { running: false, modelSelectable: false, model: undefined, attachments: false, send: async () => {}, selectModel() {} } : {}),
+    ...props,
   })
-  app.directive("tooltip", {})
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   t.after(() => app.unmount())
   return { root, view, replies, submissions }
@@ -120,7 +122,7 @@ async function permissionSession(t, policy) {
     supports: (method) => ["session.history.latestTurn", "session.methods", "session.permission.get", "session.permission.update"].includes(method),
     client: { async call(method, params, read) {
       if (method === "session.attach") return read({ model: { providerId: "test", modelId: "test" } })
-      if (method === "session.methods") return read({ methods: ["session.permission.get", "session.permission.update", "session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })
+      if (method === "session.methods") return read({ methods: ["session.input.pending", "session.question.pending", "session.turn.get"].map((name) => ({ name })) })
       if (method === "session.branches") return read({ branches: [] })
       if (method === "session.input.pending") return read({ ...params, inputs: [], next: null })
       if (method === "session.question.pending") return read({ ...params, batches: [], next: null })
@@ -145,7 +147,7 @@ async function permissionSession(t, policy) {
 test("permission presets preserve tool exceptions and confirm full access", async (t) => {
   const initial = { preset: "workspace-write", allowedTools: ["read"], disallowedTools: ["exec"] }
   const { root, chat, server, option } = await permissionSession(t, initial)
-  const confirmation = () => all(root).find((element) => element.type === "dialog" && element.props.open)
+  const confirmation = () => all(root).find((element) => element.props.role === "dialog")
   assert.equal(option("composer.permission.preset.workspace-write").props["aria-pressed"], true)
   assert.match(text(root), /composer.permission.allowedTools: read/)
   assert.match(text(root), /composer.permission.disallowedTools: exec/)
@@ -384,6 +386,80 @@ test("schedule commands navigate only when admitted and not escaped", async t =>
       }
     }
   }
+})
+
+test("a /loop submission reaches the loop callback, and is offered only when one is given", async (t) => {
+  const calls = []
+  const loop = async (words) => { calls.push(words) }
+  const { root, submissions } = mount(t, "main", [], ComposerPanel, {}, { sessionCommands: { loop } })
+  const field = all(root).find((element) => element.type === "textarea")
+  field.props.onFocus()
+  field.props["onUpdate:modelValue"]("/loop 5m check")
+  await flush()
+  field.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+  await flush()
+  assert.deepEqual(calls, ["5m check"], "the words after /loop reach the callback")
+  assert.deepEqual(submissions, [], "the command is not sent as model input")
+
+  const bare = mount(t, "main", [], ComposerPanel, {}, { sessionCommands: { loop } })
+  const bareField = all(bare.root).find((element) => element.type === "textarea")
+  const enter = () => bareField.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+  bareField.props.onFocus()
+  bareField.props["onUpdate:modelValue"]("/loop")
+  await flush()
+  await enter()
+  await flush()
+  assert.equal(bareField.value, "/loop ", "the menu completes the command without dispatching it")
+  await enter()
+  await flush()
+  assert.deepEqual(calls, ["5m check", ""], "a bare /loop asks for the line's loops")
+
+  const absent = mount(t, "main", [], ComposerPanel)
+  const absentField = all(absent.root).find((element) => element.type === "textarea")
+  absentField.props.onFocus()
+  absentField.props["onUpdate:modelValue"]("/loop")
+  await flush()
+  assert.equal(
+    all(absent.root).some((element) => element.type === "button" && text(element).startsWith("/loop")),
+    false,
+    "without a callback /loop is not offered",
+  )
+})
+
+test("a /loop stop without an ID stops a loop only when it is the line's only live one", async (t) => {
+  const stops = [], toasts = []
+  const live = [
+    { loopId: "newest", state: "running", round: 3, nextAt: "2026-11-13T09:41:00.000Z", prompt: "poll" },
+    { loopId: "older", state: "waiting", round: 2, nextAt: null, prompt: "wait" },
+  ]
+  const stopWith = async (words, listed) => {
+    const { root, view } = mount(t, "main", [], undefined, {
+      toast: { push(toast) { toasts.push(toast) } },
+    })
+    view.methods = ["session.loop.start", "session.loop.list", "session.loop.stop"]
+    const chat = globalThis.chatInputStores.chat
+    chat.readLoops = async () => listed
+    chat.stopLoop = async (sessionId, loopId) => { stops.push({ sessionId, loopId }) }
+    const field = all(root).find((element) => element.type === "textarea")
+    field.props.onFocus()
+    field.props["onUpdate:modelValue"](words)
+    await flush()
+    field.props.onKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} })
+    await flush()
+  }
+
+  await stopWith("/loop stop", live)
+  assert.deepEqual(stops, [], "two live loops stop nothing")
+  assert.deepEqual(toasts.map((toast) => toast.title), ["loop.noSingle"])
+
+  stops.length = 0; toasts.length = 0
+  await stopWith("/loop stop", [live[1], { ...live[0], state: "stopped" }])
+  assert.deepEqual(stops, [{ sessionId: "session", loopId: "older" }], "the line's only live loop is stopped")
+  assert.deepEqual(toasts.map((toast) => toast.title), ["loop.stopped"])
+
+  stops.length = 0; toasts.length = 0
+  await stopWith("/loop stop newest", live)
+  assert.deepEqual(stops, [{ sessionId: "session", loopId: "newest" }], "an explicit ID stops that loop")
 })
 
 test("files picked with overlapping names keep their own paths in the submitted message", async (t) => {

@@ -90,6 +90,11 @@ export interface AuxiliaryReply {
   usage?: {
     promptTokens: number; completionTokens: number; totalTokens: number;
     cacheReadTokens?: number; cacheWriteTokens?: number;
+    /** The part of `completionTokens` spent thinking, already inside it and
+     * in `totalTokens`. It is the count the protocol adapter gives: absent
+     * when the adapter gives none, and zero when Gemini or a Responses adapter
+     * reads a missing field as zero, as it does for the cached count. */
+    reasoningTokens?: number;
     cost?: number; currency?: string;
   };
 }
@@ -122,6 +127,10 @@ export interface LaunchRequest {
   model?: ModelId | null;
   policy?: Partial<PermissionPolicy> | null;
   starter?: SessionRef | null;
+  /** The class of work the launch runs; absent: the caller's own, `internal`. */
+  origin?: 'automation' | null;
+  /** The label a picker shows before the first input; SessionTitle writes it. */
+  title?: string | null;
 }
 export interface LaunchReply { sessionId: string; policy: PermissionPolicy }
 export interface RawBlock {
@@ -152,13 +161,17 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
 /** The services Dim's Rust types serve to other languages, by name:
  * `ctx.use<Services['name']>('name')`. */
 export type {
-  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, Services, SessionIdentity, SessionLifecycle,
+  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
+/** Whether an input is still pending on the branch (session access §2): from
+ * its write until consumption or deletion. An id the branch does not hold is
+ * not pending. */
+export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
@@ -177,6 +190,7 @@ export interface Sessions {
   exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
+  pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
@@ -237,6 +251,32 @@ export type EventHubErrorThrown = import('./branch-services.js').RustError<'Even
 export interface EventHub {
   declare(declaration: EventHubDeclaration): Promise<void>;
   publish(request: EventHubPublishRequest): Promise<EventHubPublishReply>;
+}
+
+/** `eventSubscriptions.subscribe`: the subscription the calling row creates
+ * for one Session (design A.3, §3.3). */
+export interface EventSubscriptionCall {
+  sessionId: string;
+  types: string[];
+  match?: Record<string, string>;
+  mode?: 'queue' | 'steer' | 'append';
+  /** Defaults to `main`. */
+  branchId?: string;
+}
+/** `eventSubscriptions.unsubscribe` (design A.3). */
+export interface EventUnsubscribeCall {
+  sessionId: string;
+  subscriptionId: string;
+}
+/** Process service `eventSubscriptions`, EventHub's subscription core: a row
+ * of any language manages the subscriptions of the Session it names, as
+ * `eventhub.subscribe`, `eventhub.unsubscribe` and `eventhub.subscriptions`
+ * do (design Appendix F). */
+export interface EventSubscriptions {
+  sources(): Promise<unknown>;
+  subscribe(call: EventSubscriptionCall): Promise<unknown>;
+  unsubscribe(call: EventUnsubscribeCall): Promise<unknown>;
+  list(call: { sessionId: string }): Promise<unknown>;
 }
 
 /** The host's creation-time snapshot (`sessionConfig.get()`, `ToolCall.config`);

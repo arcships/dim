@@ -100,9 +100,8 @@ impl Wait {
     ///
     /// The caller cancels the call with `cancelled`; the wait then ends as
     /// [`WaitResult::Interrupted`] and that answer stands. A caller that
-    /// goes away without cancelling (its row unloads or the process ends)
-    /// drops the call: no answer is produced and the branch's single wait
-    /// slot is released, so the next `wait` on this branch starts.
+    /// drops the native Rust future releases the single-wait slot. A bridge
+    /// caller must signal `cancelled` before abandoning its reply.
     pub async fn wait(
         &self,
         task_id: Option<String>,

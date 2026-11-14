@@ -44,11 +44,13 @@ mod ui_leaf;
 pub mod web;
 mod web_entry;
 mod workspace_files;
+mod worktrees;
 
 use agents::{AgentIndex, AgentsPlugin};
 pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
 use collaboration::CollaborationPlugin;
 use connection::{ConnectionHub, ConnectionPlugin, RpcPlugin};
+pub use control::{ProcessActivity, ProcessHold};
 use control::{ServerControl, ServerControlPlugin};
 use dim_agent_runtime::{
     Agent, AgentBuilder, AgentError, Modules, SessionConfig, StartupProgress, register_part,
@@ -59,7 +61,7 @@ use rutis::host::{CtxHost, FiberView, Key};
 use rutis_loader::runtime::SessionRows;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -67,7 +69,8 @@ use std::{
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use transport::{ListenAddresses, TransportPlugin};
+use transport::TransportPlugin;
+pub use transport::{BoundAddresses, ListenAddresses, ListenAddressesError};
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -435,15 +438,6 @@ impl Drop for Startup {
     }
 }
 
-/// The credential variable names the assembly root publishes for this
-/// process. The model catalog is immutable after startup.
-struct CredentialVariableNames(BTreeSet<String>);
-impl dim_agent_capabilities::host::CredentialVariables for CredentialVariableNames {
-    fn credential_variables(&self) -> BTreeSet<String> {
-        self.0.clone()
-    }
-}
-
 /// Builds the process tree, opens admission once required host rows are Active
 /// and the runtimes have released their rows, and returns the listener addresses.
 /// The `localId` data face: the daemon's peer id, readable by a leaf.
@@ -650,14 +644,13 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         tokio::runtime::Handle::current(),
         Arc::new(|error| tracing::error!(%error, "App Server runtime error")),
     );
-    root.provide(dim_agent_capabilities::host::CredentialVariablesHost(
-        Arc::new(CredentialVariableNames(
-            config
-                .model_catalog
-                .as_ref()
-                .map(|models| models.api_key_envs())
-                .unwrap_or_default(),
-        )),
+    let credential_variables = config
+        .model_catalog
+        .as_ref()
+        .map(|models| models.api_key_envs())
+        .unwrap_or_default();
+    root.provide(dim_agent_capabilities::host::CredentialVariablesHost::new(
+        Arc::new(move || credential_variables.clone()),
     ))
     .map_err(|error| ServerError::Runtime(error.into()))?;
     let control = ServerControlPlugin::new();
@@ -675,6 +668,12 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         std::sync::Arc::new(LocalIdDispatch(peer)),
     )
     .map_err(|error| ServerError::Runtime(error.into()))?;
+    // One reservation check for the process: every Session table consults it
+    // (methods contract A.1). A process-wide value stays the one the served
+    // rows resolve, as a per-Agent value did, and keeps its name's one
+    // dispatcher.
+    root.provide(methods::reserved_for_sessions())
+        .map_err(|error| ServerError::Runtime(error.into()))?;
     let mut builtins = Modules::new();
     dim_agent_capabilities::register_names(&mut builder);
     register_names(builder.catalog_mut());
@@ -682,13 +681,11 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     // typed registration overwrites a shared key (managementMethods).
     crate::session_typescript::share_names(builder.catalog_mut());
     register_faces(&mut builder);
-    dim_agent_runtime::names::register::<dim_agent_capabilities::methods::ReservedMethods>(
-        builder.catalog_mut(),
-        None,
-    );
-    builder.process_value(Arc::new(dim_agent_capabilities::methods::ReservedMethods(
-        methods::reserved_for_sessions(),
-    )));
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<
+            dim_agent_capabilities::methods::ReservedMethods,
+        >());
     let mut rows = vec![register_part(
         &mut builtins,
         builder.catalog(),
@@ -736,6 +733,24 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             move |names| {
                 Ok(Box::new(storage::SessionStorePlugin::new(
                     names, files_root,
+                )?))
+            },
+        )?);
+    }
+    // The managed root outlives a Session, so its owner exists only where the
+    // product home and the native store do.
+    if let Some(home) = config
+        .product_home
+        .clone()
+        .filter(|_| config.database_path.is_some())
+    {
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(worktrees::ManagedWorktreesPlugin::new(
+                    names,
+                    home.clone(),
                 )?))
             },
         )?);
@@ -1310,16 +1325,20 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     };
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
+    register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
     register::<storage::SessionStore>(catalog, None);
+    register::<worktrees::ManagedWorktrees>(catalog, None);
     register::<agents::AgentDirectory>(catalog, None);
     register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
-    register::<collaboration::CollaborationDirectory>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<
+        collaboration::CollaborationDirectory,
+    >());
     register::<collaboration::Collaboration>(catalog, None);
     register::<plugin_files::PluginFileTransactions>(catalog, None);
     register::<ConnectionHub>(catalog, None);
-    register::<ListenAddresses>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<ListenAddresses>());
     register::<ui_host::UiHost>(catalog, None);
     register::<ui_extensions::UiExtensions>(catalog, None);
     register::<ui_extensions::UiResources>(catalog, Some(SESSION_GROUP));
@@ -1349,6 +1368,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     for name in [
         "callChannel",
         "pluginFiles",
+        "processActivity",
         "sessions",
         "sessionMetadata",
         "auxiliaryModel",
@@ -1362,26 +1382,18 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
 /// The reasons for the product profile's internal names (#1300).
 pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
-        ("agentConfig", "legacy-no-consumer"),
         ("basePromptSettingsHost", "owner-api"),
-        ("eventSubscriptions", "legacy-no-consumer"),
         ("promptSourcesBranch", "hot-path"),
-        ("scheduleJobs", "owner-api"),
-        ("sessionLanguage", "legacy-no-consumer"),
         ("skillsInstructionsSettingsHost", "owner-api"),
         ("summaryPromptSettingsHost", "owner-api"),
-        ("wakeups", "owner-api"),
         ("agentDirectory", "owner-api"),
         ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),
         ("auxiliaryModelHost", "owner-api"),
-        ("backgroundExec", "object"),
         ("branchLine", "hot-path"),
         ("branchOpening", "hot-path"),
         ("callers", "owner-api"),
         ("collaboration", "host-resource"),
-        ("collaborationConfig", "legacy-no-consumer"),
-        ("collaborationDirectory", "legacy-no-consumer"),
         ("collaborationSession", "legacy-no-consumer"),
         ("commandRulesHost", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
@@ -1391,7 +1403,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextModelHost", "hot-path"),
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
-        ("credentialVariablesHost", "legacy-no-consumer"),
         ("executionSettingsHost", "legacy-no-consumer"),
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
@@ -1401,13 +1412,13 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("hooksService", "host-resource"),
         ("hostPlatform", "object"),
         ("initialPromptConfiguration", "hot-path"),
-        ("listenAddresses", "legacy-no-consumer"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
+        // Session creation calls it directly; no leaf needs the service.
+        ("managedWorktrees", "hot-path"),
         ("managedProviders", "secret"),
         ("mcpAuth", "secret"),
         ("mcpService", "host-resource"),
-        ("mcpSession", "object"),
         ("mentionIndex", "host-resource"),
         ("modalityConnectionHost", "legacy-no-consumer"),
         ("modelHost", "owner-api"),
@@ -1424,10 +1435,8 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("providerConnectionResolver", "host-resource"),
         ("providerService", "secret"),
         ("publication", "host-resource"),
-        ("reservedMethods", "legacy-no-consumer"),
         ("selectableModelsHost", "legacy-no-consumer"),
         ("serverControl", "control"),
-        ("sessionClientsHost", "legacy-no-consumer"),
         ("sessionFilesHost", "owner-api"),
         ("sessionLoader", "control"),
         ("sessionSkills", "host-resource"),
@@ -1435,7 +1444,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("settingsService", "owner-api"),
         ("skillsBranch", "host-resource"),
         ("skillsCatalog", "host-resource"),
-        ("skillsConfig", "legacy-no-consumer"),
         ("sqliteStorage", "object"),
         ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
@@ -1448,7 +1456,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("toolchainSourceHost", "legacy-no-consumer"),
         ("uiExtensions", "control"),
         ("uiHost", "control"),
-        ("worktreeAssociations", "legacy-no-consumer"),
     ] {
         builder.internal_name(name, reason);
     }

@@ -324,6 +324,7 @@ impl ModelDriver for ReportedPrompt {
             total_tokens: self.0 + 1.,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            reasoning_tokens: None,
             cost: None,
             currency: None,
         };

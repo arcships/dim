@@ -338,7 +338,7 @@ async fn granted_agent_with(
     grants: Arc<dyn ReadSessionGrants>,
     files: Arc<TestFiles>,
     platform: HostPlatform,
-    associations: Option<Arc<dyn file_access::AssociateWorktree>>,
+    associations: Option<file_access::WorktreeAssociations>,
 ) -> MinimalHost {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
@@ -350,7 +350,7 @@ async fn granted_agent_with(
         .process_value(Arc::new(SessionFilesHost(files)))
         .process_value(Arc::new(platform));
     if let Some(associations) = associations {
-        builder.process_value(Arc::new(file_access::WorktreeAssociations(associations)));
+        builder.process_value(Arc::new(associations));
     }
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
     file_access::install(&mut builder);
@@ -729,6 +729,29 @@ async fn file_read_facts_decide_each_path_by_preset() {
             }
             // A write grant also permits reads.
             assert_eq!(read_verdict(&permission, &write_granted).await, "allow");
+            if policy != PermissionPreset::FullAccess {
+                let approval = session.service::<Approval>("main").unwrap();
+                let input = serde_json::json!({"path": outside});
+                session
+                    .submit(format!("tool:read {input}"), InputMode::Queue, "main")
+                    .await
+                    .unwrap();
+                loop {
+                    let mut pending = false;
+                    approval.replay(|_| pending = true);
+                    if pending {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                permission
+                    .update(0, preset(PermissionPreset::FullAccess))
+                    .await
+                    .unwrap();
+                session.idle("main").await.unwrap();
+                assert_eq!(text(&last_result(&session, "main").await), "read ran");
+                approval.replay(|request| panic!("stale read approval: {request:?}"));
+            }
             session.close().await.unwrap();
         }
 
@@ -1159,7 +1182,129 @@ async fn updates_are_versioned_per_branch_take_effect_when_dispatched_and_surviv
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_allowed_approval_is_rechecked_against_the_current_policy() {
+async fn full_access_releases_all_waiting_calls_without_user_responses() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let tools = Arc::new(RiskTools::default());
+        let rules = TestRules::new(vec![]);
+        let agent = ruled_agent(tools.clone(), rules.clone()).await;
+        let session = agent
+            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+            .await
+            .unwrap();
+        let child = session
+            .branch(
+                "main".into(),
+                session.sequence("main").unwrap(),
+                BranchOptions {
+                    prompt: "tool:exec {\"command\":\"echo child call\"}".into(),
+                    source: BranchSource::Host {
+                        operation_id: "waiting-child".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let child_approval = session.service::<Approval>(&child).unwrap();
+        submit_exec(&session, "echo model call").await;
+        let model_request = approval_request(&session, "echo model call").await;
+        let approval = session.service::<Approval>("main").unwrap();
+        let mut waiting = Vec::new();
+        let mut requests = vec![model_request];
+        let cancelled = CancellationToken::new();
+        for command in [
+            "echo second call",
+            "echo third call",
+            "git push",
+            "echo cancelled",
+        ] {
+            let admitted = tokio::spawn({
+                let approval = approval.clone();
+                let cancel = if command == "echo cancelled" {
+                    cancelled.clone()
+                } else {
+                    CancellationToken::new()
+                };
+                async move {
+                    approval
+                        .admit(exec_call(command), Some("execute_process"), cancel)
+                        .await
+                }
+            });
+            waiting.push((command, admitted));
+            requests.push(approval_request(&session, command).await);
+        }
+        rules.set(Some(vec![rule(
+            "git push",
+            CommandMatch::Exact,
+            CommandRuleDecision::Deny,
+        )]));
+        cancelled.cancel();
+        session
+            .service::<Permission>("main")
+            .unwrap()
+            .update(0, preset(PermissionPreset::FullAccess))
+            .await
+            .unwrap();
+        for (command, admitted) in waiting {
+            let result = admitted.await.unwrap();
+            if command == "git push" {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "Command denied by command rule `git push` (exact)"
+                );
+            } else if command == "echo cancelled" {
+                assert!(matches!(result, Err(HostError::Cancelled(_))));
+            } else {
+                result.unwrap();
+            }
+        }
+        session.idle("main").await.unwrap();
+        assert_eq!(tools.calls.load(Ordering::SeqCst), 1);
+        assert_ne!(last_result(&session, "main").await.is_error, Some(true));
+        let events = branch_events(&session, "main", ..).await.unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ApprovalRespond(_))),
+            "policy changes must not impersonate a user's response"
+        );
+        for request in requests {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        &event.kind,
+                        EventKind::ApprovalCancelled(data) if data.approval_id == request
+                    ))
+                    .count(),
+                1,
+                "each waiting request must end exactly once"
+            );
+        }
+        approval.replay(|request| panic!("stale approval: {request:?}"));
+        let child_request = loop {
+            let mut requests = Vec::new();
+            child_approval.replay(|request| requests.push(request.approval_id.clone()));
+            if let Some(request) = requests.pop() {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        };
+        child_approval
+            .respond(&child_request, ApprovalDecision::Deny)
+            .await
+            .unwrap();
+        session.idle(&child).await.unwrap();
+        assert_eq!(tools.calls.load(Ordering::SeqCst), 1);
+        session.close().await.unwrap();
+        agent.close().await.unwrap();
+    })
+    .await
+    .expect("waiting calls did not adopt full access");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_policy_denial_settles_a_waiting_call_without_a_user_response() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let tools = Arc::new(RiskTools::default());
         let agent = agent(tools.clone()).await;
@@ -1198,11 +1343,13 @@ async fn an_allowed_approval_is_rechecked_against_the_current_policy() {
             .await
             .unwrap();
         let approval = session.service::<Approval>("main").unwrap();
-        approval
-            .respond(&approval_id, ApprovalDecision::Allow)
-            .await
-            .unwrap();
         session.idle("main").await.unwrap();
+        assert_eq!(
+            approval
+                .respond(&approval_id, ApprovalDecision::Allow)
+                .await,
+            Err(dim_agent_capabilities::approval::ApprovalRespondError::Unknown)
+        );
         assert!(last_result(&session, "main").await.is_error == Some(true));
         assert!(
             branch_events(&session, "main", ..)
@@ -1556,40 +1703,51 @@ async fn a_policy_tightened_during_the_rules_read_decides_the_call() {
         );
         session.close().await.unwrap();
 
-        rules.hold.store(false, Ordering::SeqCst);
-        let session = agent
-            .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
-            .await
-            .unwrap();
-        submit_exec(&session, "ls").await;
-        let id = approval_request(&session, "ls").await;
-        rules.hold.store(true, Ordering::SeqCst);
-        let approval = session.service::<Approval>("main").unwrap();
-        approval
-            .respond(&id, ApprovalDecision::Allow)
-            .await
-            .unwrap();
-        rules.entered.notified().await;
-        let permission = session.service::<Permission>("main").unwrap();
-        permission
-            .update(
-                0,
-                PermissionPolicy {
-                    preset: PermissionPreset::WorkspaceWrite,
-                    allowed_tools: vec![],
-                    disallowed_tools: vec!["exec".into()],
-                },
-            )
-            .await
-            .unwrap();
-        rules.release.notify_one();
-        session.idle("main").await.unwrap();
-        assert_eq!(
-            text(&last_result(&session, "main").await),
-            "Tool `exec` is disallowed by the permission policy"
-        );
-        assert_eq!(tools.calls.load(Ordering::SeqCst), 0);
-        session.close().await.unwrap();
+        for manual in [true, false] {
+            rules.hold.store(false, Ordering::SeqCst);
+            let session = agent
+                .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+                .await
+                .unwrap();
+            submit_exec(&session, "ls").await;
+            let id = approval_request(&session, "ls").await;
+            rules.hold.store(true, Ordering::SeqCst);
+            let approval = session.service::<Approval>("main").unwrap();
+            let permission = session.service::<Permission>("main").unwrap();
+            let version = if manual {
+                approval
+                    .respond(&id, ApprovalDecision::Allow)
+                    .await
+                    .unwrap();
+                0
+            } else {
+                permission
+                    .update(0, preset(PermissionPreset::FullAccess))
+                    .await
+                    .unwrap()
+            };
+            rules.entered.notified().await;
+            permission
+                .update(
+                    version,
+                    PermissionPolicy {
+                        preset: PermissionPreset::WorkspaceWrite,
+                        allowed_tools: vec![],
+                        disallowed_tools: vec!["exec".into()],
+                    },
+                )
+                .await
+                .unwrap();
+            rules.hold.store(false, Ordering::SeqCst);
+            rules.release.notify_one();
+            session.idle("main").await.unwrap();
+            assert_eq!(
+                text(&last_result(&session, "main").await),
+                "Tool `exec` is disallowed by the permission policy"
+            );
+            assert_eq!(tools.calls.load(Ordering::SeqCst), 0);
+            session.close().await.unwrap();
+        }
         agent.close().await.unwrap();
     })
     .await
@@ -1603,6 +1761,7 @@ enum Advice {
     Deny(&'static str),
     None,
     Error,
+    Pause,
     /// Waits for its cancellation token.
     Hold,
     /// Never answers and never looks at its token, so only Permission
@@ -1621,6 +1780,7 @@ struct TestAdvisor {
     /// Released when the advisor runs, so a test can act on a pending advice.
     entered: Arc<tokio::sync::Semaphore>,
     cancel: Arc<Mutex<Option<CancellationToken>>>,
+    release: Arc<Notify>,
 }
 impl AdviseTool for TestAdvisor {
     fn advise(
@@ -1634,6 +1794,10 @@ impl AdviseTool for TestAdvisor {
         self.entered.add_permits(1);
         Box::pin(async move {
             match self.answer {
+                Advice::Pause => {
+                    self.release.notified().await;
+                    Ok(ToolAdviceReply::None)
+                }
                 Advice::Hold => {
                     cancel.cancelled().await;
                     Ok(ToolAdviceReply::None)
@@ -1811,6 +1975,7 @@ fn advisor(
         requests: handles.requests.clone(),
         entered: handles.entered.clone(),
         cancel: handles.cancel.clone(),
+        release: handles.release.clone(),
     };
     (Arc::new(advisor), handles)
 }
@@ -1820,6 +1985,7 @@ struct AdvisorHandles {
     requests: Arc<Mutex<Vec<ToolAdviceRequest>>>,
     entered: Arc<tokio::sync::Semaphore>,
     cancel: Arc<Mutex<Option<CancellationToken>>>,
+    release: Arc<Notify>,
 }
 /// Waits for the advisor to run; a missing call fails the test instead of
 /// hanging it.
@@ -1836,6 +2002,7 @@ impl Default for AdvisorHandles {
             requests: Arc::default(),
             entered: Arc::new(tokio::sync::Semaphore::new(0)),
             cancel: Arc::default(),
+            release: Arc::default(),
         }
     }
 }
@@ -1925,6 +2092,105 @@ async fn advisors_are_asked_in_name_order_and_an_ask_refines_an_allow() {
             BranchSource::Tool { call_id, .. } if call_id == "call"
         ));
     }
+    session.close().await.unwrap();
+    agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_access_keeps_advisor_questions_without_repeating_advice() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (hooks, _) = advisor(
+        "hooks",
+        Advice::Ask("explicit review required"),
+        asked.clone(),
+    );
+    let (agent, _mounted) = advised_agent(
+        Arc::new(RiskTools::default()),
+        Arc::new(NoCommandRules),
+        vec![("hooks", hooks)],
+    )
+    .await;
+    let session = agent
+        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .await
+        .unwrap();
+    let approval = session.service::<Approval>("main").unwrap();
+    let mut admitted = tokio::spawn({
+        let approval = approval.clone();
+        async move {
+            approval
+                .admit(
+                    exec_call("ls"),
+                    Some("execute_process"),
+                    CancellationToken::new(),
+                )
+                .await
+        }
+    });
+    let request = asked_approval(&session, "ls").await;
+    session
+        .service::<Permission>("main")
+        .unwrap()
+        .update(0, preset(PermissionPreset::FullAccess))
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut admitted)
+            .await
+            .is_err()
+    );
+    approval
+        .respond(&request, ApprovalDecision::Allow)
+        .await
+        .unwrap();
+    admitted.await.unwrap().unwrap();
+    assert_eq!(*asked.lock().unwrap(), ["hooks"]);
+    session.close().await.unwrap();
+    agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_policy_change_during_advice_does_not_leave_a_stale_question() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (hooks, handles) = advisor("hooks", Advice::Pause, asked.clone());
+    let (agent, _mounted) = advised_agent(
+        Arc::new(RiskTools::default()),
+        Arc::new(NoCommandRules),
+        vec![("hooks", hooks)],
+    )
+    .await;
+    let session = agent
+        .create_session(config(preset(PermissionPreset::WorkspaceWrite)))
+        .await
+        .unwrap();
+    let approval = session.service::<Approval>("main").unwrap();
+    let admitted = tokio::spawn({
+        let approval = approval.clone();
+        async move {
+            approval
+                .admit(
+                    exec_call("ls"),
+                    Some("execute_process"),
+                    CancellationToken::new(),
+                )
+                .await
+        }
+    });
+    entered(&handles).await;
+    session
+        .service::<Permission>("main")
+        .unwrap()
+        .update(0, preset(PermissionPreset::FullAccess))
+        .await
+        .unwrap();
+    handles.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), admitted)
+        .await
+        .expect("the policy change before request registration was lost")
+        .unwrap()
+        .unwrap();
+    approval.replay(|request| panic!("stale approval: {request:?}"));
+    assert_eq!(*asked.lock().unwrap(), ["hooks"]);
     session.close().await.unwrap();
     agent.close().await.unwrap();
 }

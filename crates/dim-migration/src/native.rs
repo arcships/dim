@@ -638,6 +638,7 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
         "Imported history from legacy Session {}. These messages and tool results were imported; no historical model request or tool was executed by this import.",
         data.id
     );
+    let mut pending_calls = BTreeMap::new();
     for record in &data.records {
         let first = events.len();
         let timestamp = record
@@ -725,6 +726,11 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                         MessagePart::ToolUse {
                             id, name, input, ..
                         } => {
+                            if pending_calls.insert(id.clone(), request.clone()).is_some() {
+                                return Err(Error::Deferred(
+                                    "Legacy history has ambiguous tool call IDs; Session retained in source".into(),
+                                ));
+                            }
                             push(
                                 &mut events,
                                 EventKind::ToolUseStart(ToolUseStartData {
@@ -782,7 +788,6 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                 );
             }
             Role::ToolResult => {
-                let mut results = Vec::new();
                 for part in parts {
                     if let MessagePart::ToolResult {
                         tool_use_id,
@@ -791,7 +796,12 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                         structured_content,
                     } = part
                     {
-                        results.push(ToolCallResult {
+                        let origin = pending_calls.remove(&tool_use_id).ok_or_else(|| {
+                            Error::Deferred(
+                                "Legacy history has an unmatched tool result; Session retained in source".into(),
+                            )
+                        })?;
+                        let result = ToolCallResult {
                             call_id: tool_use_id,
                             result: ToolResult {
                                 content,
@@ -802,24 +812,24 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                                 context_messages: None,
                                 effects: None,
                             },
-                        });
+                        };
+                        push(
+                            &mut events,
+                            EventKind::ToolResult(ToolResultData {
+                                turn_id: origin.clone(),
+                                request_id: origin,
+                                call_event_id: None,
+                                results: vec![result],
+                            }),
+                            None,
+                            now,
+                        );
                     } else {
                         return Err(Error::Deferred(
                             "Legacy tool result has incompatible parts".into(),
                         ));
                     }
                 }
-                push(
-                    &mut events,
-                    EventKind::ToolResult(ToolResultData {
-                        turn_id: request.clone(),
-                        request_id: request,
-                        call_event_id: None,
-                        results,
-                    }),
-                    None,
-                    now,
-                );
             }
         }
         let batch_end = events.len() as u64;
@@ -835,6 +845,11 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
                 tags.push("migration:context-excluded".into());
             }
         }
+    }
+    if !pending_calls.is_empty() {
+        return Err(Error::Deferred(
+            "Legacy history has unfinished tool calls; Session retained in source".into(),
+        ));
     }
     let through = events.len() as u64;
     let command = through + 1;

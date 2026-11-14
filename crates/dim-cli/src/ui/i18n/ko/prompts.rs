@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y 종료 · n 취소 · ←→ 이동 · enter 확인"
         }
-        "Restart dimcode?" => "dimcode를 재시작할까요?",
-        "Restart" => "재시작",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y 재시작 · n 취소 · ←→ 이동 · enter 확인"
-        }
         // upgrade_dialog.rs
         "Update available" => "업데이트 있음",
         "Version {latest} is available (you have {current})." => {
             "{latest} 버전 출시 (현재 {current})"
         }
-        "Will run: {command}" => "실행 예정: {command}",
         "To update, run: {command}" => "업데이트하려면 실행: {command}",
-        "Update now" => "지금 업데이트",
         "Skip this version" => "이 버전 건너뛰기",
         "Skipped {version}." => "{version} 건너뜀.",
-        "Later" => "나중에",
         "Close" => "닫기",
-        "Restart now" => "지금 재시작",
-        "Updating to {version}..." => "{version}(으)로 업데이트 중…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "{version}(으)로 업데이트됨. DimCode 재시작 시 적용"
-        }
-        "Update failed: {error}" => "업데이트 실패: {error}",
         "←→ move · Enter confirm · Esc close" => "←→ 이동 · Enter 확인 · Esc 닫기",
         // prompts.rs: permission request
         "Permission required" => "권한 필요",
@@ -57,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "스마트 권한",
         "Full access" => "전체 액세스",
         "Run {tool}" => "{tool} 실행",
+        "edit {count} replacement in {path}" => "{path}에서 edit {count}개 치환",
+        "edit {count} replacements in {path}" => "{path}에서 edit {count}개 치환",
         "Changing the approvals mode from here is not yet available" => {
             "여기서 승인 모드 변경 아직 미지원"
         }
@@ -73,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 선택 · Tab 다음 · / 명령 · Esc 거절"
         }
         "Question" => "질문",
+        "↑↓ scroll" => "↑↓ 스크롤",
+        "replacements {from}-{to} of {count}" => "치환 {count}개 중 {from}-{to}",
         "Question on branch {branch}" => "브랜치 {branch}의 질문",
         "Permission on branch {branch}" => "브랜치 {branch} 권한",
         "Sending answer…" => "답변 전송 중…",

@@ -54,6 +54,29 @@ configuration and no profile record of its own. Its implementation is
   `PromptSnapshot` contains prompt entries and revisions, but no adopted model
   configuration; F3 adds that derived value to this owner-held snapshot.
 
+## Model preview before creation
+
+The protected-local `session.model.preview` read accepts `{cwd, agentId?, model?,
+modelPreferences?, startup?}` with the same field shapes and resolution rules as
+`session.create`. It returns `{model: {providerId, modelId}, modelPreferences?}`,
+using the effective preferences described below. It is advertised in v3/v4
+`hello.features` for local Session-execution clients, in both the product and
+model-config profiles. Clients call it only when advertised.
+
+The read resolves through the same model owner as creation, including Agent
+profile selection, workspace/global defaults, automatic selection and startup
+overrides. It creates no Session, UI registration or Timeline facts, saves no
+selection or preference, and releases any temporary connection admission before
+returning. Credentials and connection details are not returned. A direct
+connection's preview identity is temporary, not an identity to reuse for creation.
+Errors use the ordinary model-resolution errors and leave creation available.
+
+The initial TUI Home displays this preview without adopting it as a model choice.
+Submission still resolves the original launch inputs against the current defaults;
+the attached Session's adopted configuration replaces the preview. A preview is
+not a reservation: another client's settings changes may alter the eventual model.
+An older daemon without this read keeps the existing selection/attachment display.
+
 ## Temporary startup adoption
 
 [Model startup](model-startup.md) adds optional `startup` to the protected-local
@@ -135,7 +158,9 @@ guessed complete selection.
 `/effort VALUE`, alias `/reasoning VALUE`, sends `reasoningEffort` without a target.
 The `/models` picker cycles a model's advertised efforts with ←/→. Enter saves a
 cycled effort as that model's `reasoningEffort`, then adopts the model with its
-saved preferences.
+saved preferences. Enter also writes the default the next Session in the launch
+workspace reads — the workspace's own row when the folder has one, else `global`
+([provider management §4](appserver/provider-management.md#4-client-integration)).
 Values come from declared `effortOptions` and the existing reasoning-off declaration.
 The CLI reads the adopted provider/model identity and `capability_snapshot` from
 the public `context/configured` view and takes choices from that declaration.
@@ -189,7 +214,8 @@ declared service tier and the declared reasoning summary.
 | `defaultEnabled`, `off`, `supported` | configures | they select or deny the effort control and send nothing themselves |
 | `serviceTier` | configures | the tier mapping, validated against the advertised options |
 | `summaries` | configures | the summary style, in the one body that carries it |
-| `mode`, `level`, `levelOptions`, `verbosity`, `verbosityOptions`, `budget` | not applied | no field exists on any request path; the first five would need their own control dispatch |
+| `budget` | configures | `max` lowers and `min` floors a Gemini thinking budget that the split derives or caps; `default` and `unit` are not read |
+| `mode`, `level`, `levelOptions`, `verbosity`, `verbosityOptions` | not applied | no field exists on any request path; they would need their own control dispatch |
 | `visibility`, `continuation`, `notes` | describes | no reader; they are upstream prose |
 | `interleaved` | describes | not expressible on any dim protocol path |
 
@@ -250,6 +276,41 @@ maximum stays in the capability snapshot
 ([ContextCompaction §5.1](plugins/ContextCompaction.md#51-productcontextmodel)).
 A Session that stored another value reads it back through the same rule when a
 request is prepared, and the stored fact is left unchanged.
+
+That allowance is also split: `answer_tokens` keeps a quarter of it for the
+answer, at least 4096 tokens and never more than half, and `thinking_tokens` is
+the rest, so a reply that thinks can never spend the whole allowance on
+thinking. The split is provisional, like the compaction trigger reserve.
+
+It applies only where a request already thinks with a budget, so no model starts
+thinking because of it. Anthropic and Bedrock take a budget when the
+configuration carries `reasoning.budgetTokens` or `reasoning.enabled`; a model
+that thinks with an effort alone keeps no budget. Gemini takes the thinking room
+on a budget-mode model whose declaration does not say thinking is off, on a
+request that states no effort, because an effort is a thinking level that a
+budget cannot sit beside. On Anthropic the request sends the answer room as
+`max_tokens` and the budget as `thinking.budget_tokens`, which the adapter sums
+back into the allowance; Bedrock sends the allowance as `maxTokens` with the
+budget beside it; Gemini keeps `maxOutputTokens` at the allowance and sends the
+room as `thinkingBudget`, lowered to the model's declared maximum; a room below
+the declared minimum sends no budget, and the paragraph below gives the rule.
+
+A configured budget is an upper bound: it is validated as it always was, then
+capped by the thinking room, so the answer never falls below `answer_tokens`. It
+is refused only when the room itself is below the protocol's floor. A request
+with no output allowance keeps the request it had. The effort-only protocols
+(`openai-chat`, `openai-compatible`, `openai-responses`, `xai`, `xai-responses`),
+adaptive-thinking Anthropic models and level-mode Gemini models have no field to
+carry a reserve, so there thinking and the answer share one cap as before.
+
+Gemini states its budget's floor too, and the split never turns thinking off or
+changes its default: a derived room below the model's declared minimum sends no
+budget, so the model keeps its own, and a configured budget the room lowers
+below that minimum is refused, naming the allowance. A configured budget already
+below the minimum without the cap keeps the path it had. A configured `0` or
+`-1` is sent as it is, because those are Gemini's own off and dynamic settings
+rather than a size, and a budget the provider declares natively is sent as
+given, uncapped like Anthropic's native budget.
 
 `/fast on` sends `serviceTier: "priority"`; `/fast off` sends
 `serviceTier: "default"`. The shortcut requires both advertised values and a
@@ -478,6 +539,22 @@ configuration-superseded, reload/interruption and Session-closed contracts.
 
 ## Scrollback interaction
 
+Both native TUI modes draw the model label and its effective reasoning effort
+in the theme's highlight colour. Scrollback keeps this label in its bottom status
+row; fullscreen keeps it on the composer's top border. With fullscreen mouse
+reporting enabled, clicking the visible model label opens the existing `/models`
+picker without discarding the draft. Only a press and release on the same label
+cell counts; dragging, resizing, a hidden label or an open overlay cannot activate
+it. Esc closes the picker and returns to the draft.
+
+```text
+╭────────────────────── provider / model · high ─╮
+│ draft                 [click model label]     │
+╰───────────────────────────────────────────────╯
+                         ↓
+               /models picker · Esc returns
+```
+
 Commands run at the existing idle prompt. Bare `/effort` and `/fast` read the
 adopted provider/model identity from public `context/configured` history/notifications
 and show supported choices from the existing `provider.catalog` response, without
@@ -539,6 +616,7 @@ become model input; headless prompt/stdin content keeps its literal meaning.
 | --- | --- |
 | Provider / current model-update entry | Apply preferences to an adopted base when no target is supplied; apply the per-field set/clear patch, clearing one field from the model's declared configuration while keeping the sibling; preserve explicit-target behavior. |
 | App Server `session.attach` | Derive the reply's `model` and `modelPreferences` from the latest adopted configuration, falling back to the creation configuration. |
+| App Server `session.model.preview` / TUI Home | Read the prospective model without creating a Session; stored-selection reads cannot resolve startup overrides or automatic fallback. Reuse creation's resolver. |
 | Agents Session entry | Resolve a profile and submit prompt/model through one contributed method, and answer a branch's recorded profile from its published snapshot. |
 | Prompt | Accept frozen sources through its current command/adoption path; expose adopted ModelConfiguration in its existing published snapshot. |
 | PromptSources | Reuse System-entry construction and refresh dynamic sources only. |
@@ -547,7 +625,8 @@ become model input; headless prompt/stdin content keeps its literal meaning.
 New public content is the absent-target model-update semantics, the per-field
 clear action and the attach reply's current source, the Agent Session methods and
 the adopted configuration's profile record, Prompt's resolved-source operation
-and its derived configuration snapshot field. Each serves the operations above.
+and its derived configuration snapshot field, plus the pre-creation model read.
+Each serves the operations above.
 No core port, durable event, persistence format, loader option, lifecycle stage,
 dependency manager or general configuration registry is added.
 
@@ -591,7 +670,7 @@ supplies immutable content. Neither owns another module's state.
 | §4.7 | Public profiles, model resolution, published Prompt state and Prompt operations. |
 | §4.8 | Existing infrastructure suffices; no mechanism-owner requirement. |
 | §4.9 | Only adopted facts are durable; names, choices and replies remain UI data. A clear stores no state; the readback stays derived. |
-| §1 / D1 | Process catalogs, Session entry and branch state keep their owners; App Server adds only the Agents entry. |
+| §1 / D1 | Process catalogs, Session entry and branch state keep their owners; App Server entries expose adoption and pre-creation resolution without owning model state. The preview is not a Capability. |
 | D2 | No registry/manager wiring part; the entry serves profile adoption. |
 | D3 | Dependencies point outward; Provider lookup per call does not gate core loading. |
 | D4 | Business changes adopt data without loader edits/reloads. |

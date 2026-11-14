@@ -206,6 +206,18 @@ impl DynPlugin for SessionTitle {
                     _ = closing.stop.cancelled() => {},
                 }
             });
+            if let Some(requested) = config.initial_title.clone() {
+                let writing = owner.clone();
+                let published = lifecycle.clone();
+                owner.tasks.spawn(async move {
+                    tokio::select! {
+                        active = published.activated() => {
+                            if active { writing.initial(requested).await; }
+                        }
+                        _ = writing.stop.cancelled() => {},
+                    }
+                });
+            }
             if config.interactive && config.collaboration_role == CollaborationRole::Leader {
                 let observed = owner.clone();
                 ctx.listen::<SessionBroadcast>()
@@ -292,6 +304,39 @@ impl Owner {
             .map_err(|_| ())?;
         serde_json::from_value(snapshot.document).map_err(|_| ())
     }
+    /// Writes the title the Session's creation requested (#1421): only while
+    /// nothing has titled it, under rename's text rule and the operator's
+    /// `maxLength`, as the first manual title. A `Conflict` means another
+    /// writer titled the Session first, and that title wins.
+    async fn initial(&self, requested: String) {
+        let stored = self.store.metadata(&self.id).await;
+        let Ok(stored) = stored else {
+            tracing::info!(target: "session_title", outcome = "initial_failed", "the title record is unreadable");
+            return;
+        };
+        if stored.revision != 0 || self.stop.is_cancelled() {
+            return;
+        }
+        let document = self.document().await;
+        let Ok(document) = document else {
+            tracing::info!(target: "session_title", outcome = "initial_failed", "the title settings are unreadable");
+            return;
+        };
+        let Some(text) = requested_title(&requested, document.max_length) else {
+            tracing::info!(target: "session_title", outcome = "initial_skipped", "the requested title has no text");
+            return;
+        };
+        let title = Title {
+            text,
+            source: TitleSource::Manual,
+        };
+        match self.store.set_title(&self.id, 0, Some(title)).await {
+            Ok(_) | Err(MetadataError::Conflict) => {}
+            Err(error) => {
+                tracing::info!(target: "session_title", outcome = "initial_failed", %error)
+            }
+        }
+    }
     async fn attempt(&self, sequence: u64, input_id: String, epoch: u64) {
         let started = Instant::now();
         let mut entered = false;
@@ -311,7 +356,14 @@ impl Owner {
                 query: QuerySpec { filter: Some(filter), select, group_by: vec![], pick, order_by: vec![] },
                 page: Some(QueryPage { limit: NonZeroU64::MIN, after: None }),
             };
-            let first = self.tree.query("main".into(), request(None, QueryFilter::And {
+            let operator = self.tree.query("main".into(), request(None, QueryFilter::And {
+                conditions: vec![kind("input/message"), field("id", input_id.into()), eligible_input()],
+            }, QuerySelect::Fields { fields: vec!["id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
+            let through = operator.through;
+            if through < sequence { return Err(()); }
+            let QueryOutput::Rows { rows } = operator.result else { return Err(()); };
+            if rows.is_empty() { return Ok("skipped"); }
+            let first = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
                 conditions: vec![kind("input/applied"), QueryFilter::Exists {
                     condition: Box::new(QueryFilter::And { conditions: vec![
                         kind("input/message"),
@@ -324,16 +376,9 @@ impl Owner {
                     ] }),
                 }],
             }, QuerySelect::Fields { fields: vec!["data.input_id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
-            let through = first.through;
-            if through < sequence { return Err(()); }
             let QueryOutput::Rows { rows } = first.result else { return Err(()); };
             let Some(first) = rows.first() else { return Ok("skipped"); };
             let [QueryValue::Value { value: Value::String(first_id) }] = first.values.as_slice() else { return Err(()); };
-            let operator = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
-                conditions: vec![kind("input/message"), field("id", input_id.into()), eligible_input()],
-            }, QuerySelect::Fields { fields: vec!["id".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
-            let QueryOutput::Rows { rows } = operator.result else { return Err(()); };
-            if rows.is_empty() { return Ok("skipped"); }
             let input = self.tree.query("main".into(), request(Some(through), QueryFilter::And {
                 conditions: vec![kind("input/message"), field("id", first_id.clone().into())],
             }, QuerySelect::Fields { fields: vec!["data.user".into(), "data.blocks".into()] }, Some(QueryPick::First))).await.map_err(|_| ())?;
@@ -635,6 +680,22 @@ fn fallback_title(text: &str, max_length: usize) -> String {
     let text = SPACE.replace_all(text, " ");
     let text: String = text.trim_matches(space).chars().take(max_length).collect();
     text.trim_matches(space).to_owned()
+}
+/// The title a Session's creation requested (#1421), under `session.rename`'s
+/// text rule: no text for an empty one, or one with a control character or a
+/// line separator. The length is bounded the way [`fallback_title`] bounds a
+/// generated one, and punctuation stays: the text is the caller's own, not a
+/// model's reply.
+fn requested_title(text: &str, max_length: usize) -> Option<String> {
+    if text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        return None;
+    }
+    let text: String = text.trim_matches(space).chars().take(max_length).collect();
+    let text = text.trim_matches(space);
+    (!text.is_empty()).then(|| text.to_owned())
 }
 fn title_text(text: &str, max_length: usize) -> String {
     let line = text

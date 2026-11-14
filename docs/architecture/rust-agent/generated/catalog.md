@@ -18,21 +18,23 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `callers` | process | CallChannel | internal(owner-api) | — |
 | `collaboration` | process | Collaboration | internal(host-resource) | — |
-| `collaborationDirectory` | process | CollaborationDirectory | internal(legacy-no-consumer) | — |
+| `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
 | `connectionHub` | process | Connection | internal(control) | — |
-| `credentialVariablesHost` | process | root | internal(legacy-no-consumer) | — |
+| `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
-| `eventSubscriptions` | process | eventhub | internal(legacy-no-consumer) | — |
+| `eventSubscriptions` | process | eventhub | data | `list` sync, `sources` sync, `subscribe` async, `unsubscribe` async |
 | `executionSettingsHost` | process | ExecutionSettings | internal(legacy-no-consumer) | — |
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
 | `hooksService` | process | HooksSettings | internal(host-resource) | — |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
-| `listenAddresses` | process | Transport | internal(legacy-no-consumer) | — |
+| `listenAddresses` | process | Transport | data | `read` async |
 | `loader` | process | rutis-loader | internal(owner-api) | — |
 | `loaderService` | process | rutis-loader | shared-no-dispatcher | — |
 | `localId` | process | root | data | `get` sync |
+| `loops` | process | Scheduler | data | `list` async, `next` async, `start` async, `stop` async |
 | `managedProviders` | process | ManagedProviders | internal(secret) | — |
+| `managedWorktrees` | process | ManagedWorktrees | internal(hot-path) | — |
 | `managementMethods` | process | ManagementMethods | data | `register` async |
 | `mcpAuth` | process | Mcp | internal(secret) | — |
 | `mcpService` | process | Mcp | internal(host-resource) | — |
@@ -45,21 +47,22 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `pluginFileTransactions` | process | PluginFiles | internal(host-resource) | — |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `pluginMounter` | process | rutis-loader | shared-no-dispatcher | — |
+| `processActivity` | process | ServerControl | data | `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | internal(legacy-no-consumer) | — |
 | `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | internal(secret) | — |
 | `publication` | process | McpPublication | internal(host-resource) | — |
-| `reservedMethods` | process | — | internal(legacy-no-consumer) | — |
+| `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
-| `scheduleJobs` | process | Scheduler | internal(owner-api) | — |
+| `scheduleJobs` | process | Scheduler | data | `call` async |
 | `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
 | `serverControl` | process | ServerControl | internal(control) | — |
-| `sessionClientsHost` | process | Connection | internal(legacy-no-consumer) | — |
+| `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFilesHost` | process | SessionStore | internal(owner-api) | — |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
-| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `stop` async, `withdraw` async |
+| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
 | `settings` | process | Settings | data | `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | internal(host-resource) | — |
@@ -69,11 +72,11 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `toolchainSourceHost` | process | ToolchainSource | internal(legacy-no-consumer) | — |
 | `uiExtensions` | process | UiExtensions | internal(control) | — |
 | `uiHost` | process | UiHost | internal(control) | — |
-| `wakeups` | process | Scheduler | internal(owner-api) | — |
+| `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |
 | `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
-| `worktreeAssociations` | process | SessionStore | internal(legacy-no-consumer) | — |
-| `agentConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
-| `collaborationConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `worktreeAssociations` | process | SessionStore | data | `associate` async |
+| `agentConfig` | session | SessionScope | data | `get` async |
+| `collaborationConfig` | session | SessionScope | data | `get` async |
 | `collaborationSession` | session | CollaborationSession | internal(legacy-no-consumer) | — |
 | `commandRulesHost` | session | CommandRules | internal(hot-path) | — |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
@@ -82,19 +85,19 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `guideEntries` | session | PromptGuide | data | `register` async |
 | `historyRenderer` | session | SessionScope | internal(hot-path) | — |
 | `initialPromptConfiguration` | session | PromptRegistry | internal(hot-path) | — |
-| `mcpSession` | session | McpSession | internal(object) | — |
+| `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
 | `prepareContextHost` | session | SessionScope | internal(hot-path) | — |
 | `prepareModelHost` | session | PrepareModelHost | internal(hot-path) | — |
 | `promptHost` | session | PromptRegistry | internal(hot-path) | — |
 | `promptRegistry` | session | PromptRegistry | internal(hot-path) | — |
 | `sessionConfig` | session | SessionScope | data | `get` async |
 | `sessionIdentity` | session | SessionScope | data | `get` async |
-| `sessionLanguage` | session | PromptSources | internal(legacy-no-consumer) | — |
+| `sessionLanguage` | session | PromptSources | data | `get` async |
 | `sessionLifecycle` | session | SessionScope | data | `activated` async, `closing` async, `hold` async, `release` async |
 | `sessionLoader` | session | SessionScope | internal(control) | — |
 | `sessionMethods` | session | SessionMethods | data | `register` async |
 | `sessionSkills` | session | Skills | internal(host-resource) | — |
-| `skillsConfig` | session | SessionScope | internal(legacy-no-consumer) | — |
+| `skillsConfig` | session | SessionScope | data | `get` async |
 | `submitChecks` | session | InputMethods | internal(hot-path) | — |
 | `timelineFactory` | session | SessionScope | internal(control) | — |
 | `timelineStore` | session | SessionScope | internal(object) | — |
@@ -107,7 +110,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
 | `agentLoop` | branch | Loop | internal(hot-path) | — |
 | `approval` | branch | Approval | data | `decide` async, `pending` async |
-| `backgroundExec` | branch | BackgroundExec | internal(object) | — |
+| `backgroundExec` | branch | BackgroundExec | data | `output` async, `outputPage` async, `stop` async, `wait` async |
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | internal(hot-path) | — |
 | `branchOpening` | branch | BranchScope | internal(hot-path) | — |

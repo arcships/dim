@@ -86,6 +86,31 @@ pub struct LaunchRequest {
     /// Session defaults.
     #[serde(default)]
     pub starter: Option<SessionRef>,
+    /// The class of work the launch runs; absent: the caller's own work, which
+    /// makes the Session `internal`.
+    #[serde(default)]
+    pub origin: Option<LaunchOrigin>,
+    /// The title the caller knows for the Session before its first input
+    /// (#1421). Agents only checks that it is a string; SessionTitle applies
+    /// its text rules and writes it as the first manual title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+/// The creation origins a `sessions.launch` caller may declare: work a saved
+/// configuration runs with no person present. A closed enum, so a caller
+/// names a purpose the App Server owns rather than a free-form visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchOrigin {
+    Automation,
+}
+impl LaunchOrigin {
+    /// The stored origin this declared class names.
+    pub const fn session_origin(self) -> SessionOrigin {
+        match self {
+            Self::Automation => SessionOrigin::Automation,
+        }
+    }
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -194,6 +219,21 @@ const HISTORY_PAGE_LIMIT: usize = 256;
 pub struct HistoryPage {
     pub through: u64,
     pub events: Vec<Arc<AgentEvent>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    /// The `inputId` an earlier write or lookup named.
+    pub input_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply {
+    pub pending: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,6 +370,10 @@ impl AgentIndex {
         self: &Arc<Self>,
         request: LaunchRequest,
     ) -> Result<LaunchReply, SessionsError> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| SessionsError::reloading("process admission"))?;
         let (host, config, policy) = self
             .until_unloaded(async {
                 if request.policy.as_ref().is_some_and(|policy| {
@@ -374,6 +418,7 @@ impl AgentIndex {
                 config.cwd = cwd;
                 config.permission_policy = policy.clone();
                 config.interactive = false;
+                config.initial_title = request.title;
                 if self.selects_models {
                     let selection = self
                         .model_selection()
@@ -401,15 +446,18 @@ impl AgentIndex {
                 Ok((host, config, policy))
             })
             .await?;
+        let origin = request.origin.map(LaunchOrigin::session_origin);
         let index = self.clone();
         let session = tokio::spawn(async move {
+            let _activity = activity;
             let session = index
                 .create_session(
                     &host,
                     config,
                     PROTOCOL_VERSION,
                     None,
-                    SessionOrigin::Internal,
+                    origin.unwrap_or(SessionOrigin::Internal),
+                    None,
                 )
                 .await?;
             index.retain_versions();
@@ -601,6 +649,27 @@ impl AgentIndex {
         .await
     }
 
+    /// Answers whether `inputId` is still pending on the branch
+    /// (session-access §2): pending from its `input/message` until
+    /// `input/applied` followed by `input/consumed`, or `input/deleted`,
+    /// references it. The branch's own InputQueue holds exactly that set, so
+    /// this reads it and reads no Timeline. An id the branch does not hold is
+    /// not pending.
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError> {
+        self.until_unloaded(async {
+            if request.input_id.is_empty() {
+                return Err(SessionsError::rejected("inputId must not be empty"));
+            }
+            let lease = self.acquire(&request.session_id).await?;
+            let pending = lease
+                .session
+                .service::<InputQueue>(&request.branch_id)?
+                .pending(&request.input_id);
+            Ok(PendingReply { pending })
+        })
+        .await
+    }
+
     /// Withdraws an input the caller wrote, by its `inputId`, through the
     /// branch's InputQueue, and returns InputQueue's decision. A deletion
     /// replies once `input/deleted` is published.
@@ -611,18 +680,16 @@ impl AgentIndex {
             let answer = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
-                .withdraw(
-                    InputWithdrawData {
-                        input_id: request.input_id,
-                        reason: request.reason,
-                    },
-                    None,
-                )
+                .withdraw(InputWithdrawData {
+                    input_id: request.input_id,
+                    reason: request.reason,
+                    steer: None,
+                })
                 .await?;
-            if let Withdrawal::Deleted { sequence } = answer.withdrawal {
+            if let Withdrawal::Deleted { sequence } = answer {
                 published(&publication, sequence).await?;
             }
-            Ok(answer.withdrawal)
+            Ok(answer)
         })
         .await
     }
@@ -684,7 +751,7 @@ impl HostDispatch for SessionsService {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
-            "history": "async", "withdraw": "async", "stop": "async", "idle": "async",
+            "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
             "delete": "async",
         }))
     }
@@ -750,6 +817,7 @@ async fn call(
         "lookup" => reply(index.lookup(request(args)?).await?),
         "exists" => reply(index.exists(request(args)?).await?),
         "history" => reply(index.history(request(args)?).await?),
+        "pending" => reply(index.pending(request(args)?).await?),
         "withdraw" => reply(match index.withdraw(request(args)?).await? {
             Withdrawal::Deleted { sequence } => json!({"status": "deleted", "sequence": sequence}),
             Withdrawal::NotHeld => json!({"status": "notHeld"}),

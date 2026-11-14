@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y quitter · n rester · ←→ déplacer · enter valider"
         }
-        "Restart dimcode?" => "Redémarrer dimcode?",
-        "Restart" => "Redémarrer",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y redémarrer · n rester · ←→ déplacer · enter valider"
-        }
         // upgrade_dialog.rs
         "Update available" => "Mise à jour disponible",
         "Version {latest} is available (you have {current})." => {
             "Version {latest} disponible (actuelle: {current})."
         }
-        "Will run: {command}" => "Exécutera: {command}",
         "To update, run: {command}" => "Pour mettre à jour: {command}",
-        "Update now" => "Mettre à jour",
         "Skip this version" => "Ignorer cette version",
         "Skipped {version}." => "{version} ignorée.",
-        "Later" => "Plus tard",
         "Close" => "Fermer",
-        "Restart now" => "Redémarrer",
-        "Updating to {version}..." => "Mise à jour vers {version}…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "{version} installée. Redémarrer DimCode pour l'utiliser."
-        }
-        "Update failed: {error}" => "Échec de mise à jour: {error}",
         "←→ move · Enter confirm · Esc close" => "←→ déplacer · Enter valider · Esc fermer",
         // prompts.rs: permission request
         "Permission required" => "Autorisation requise",
@@ -57,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Approuver pour moi",
         "Full access" => "Accès complet",
         "Run {tool}" => "Exécuter {tool}",
+        "edit {count} replacement in {path}" => "edit {count} remplacement dans {path}",
+        "edit {count} replacements in {path}" => "edit {count} remplacements dans {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Mode d'approbation non modifiable ici pour l'instant"
         }
@@ -73,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 choisir · Tab suivante · / commandes · Esc décliner"
         }
         "Question" => "Question",
+        "↑↓ scroll" => "↑↓ défiler",
+        "replacements {from}-{to} of {count}" => "remplacements {from}-{to} sur {count}",
         "Question on branch {branch}" => "Question de la branche {branch}",
         "Permission on branch {branch}" => "Permission sur la branche {branch}",
         "Sending answer…" => "Envoi…",

@@ -113,6 +113,11 @@ async fn record(
     window: String,
     missed: bool,
 ) -> Result<Option<Delivery>, SchedulerError> {
+    let activity = shared
+        .activity
+        .take_hold()
+        .ok_or_else(|| SchedulerError::new("service_reloading", "Process admission is paused"))?;
+    let _settling = shared.settling.lock().await;
     let accepted = job.clone();
     let job = job.clone();
     let target = job
@@ -193,10 +198,21 @@ async fn record(
     if let Some(run) = &run
         && run.state == DeliveryState::Delivering
     {
-        match spawn_target {
-            Target::Session { .. } => shared.spawn(deliver(shared.clone(), accepted, run.clone())),
-            Target::Launch { .. } => shared.spawn(execute(shared.clone(), accepted, run.clone())),
-        }
+        let activity = Arc::new(activity);
+        shared
+            .deliveries
+            .lock()
+            .expect("delivery admission")
+            .insert(run.run_id.clone(), activity.clone());
+        let owner = shared.clone();
+        let run = run.clone();
+        shared.spawn(async move {
+            let _activity = activity;
+            match spawn_target {
+                Target::Session { .. } => deliver(owner, accepted, run).await,
+                Target::Launch { .. } => execute(owner, accepted, run).await,
+            }
+        });
     }
     if run.is_some() {
         shared.spawn(prune(shared.clone()));
@@ -226,6 +242,9 @@ pub async fn accept(shared: Arc<Shared>, job_id: &str) -> Result<Delivery, Sched
 /// and otherwise one `missed` record covers the gap. An `at` job is disabled
 /// once its instant has passed.
 pub async fn tick(shared: &Arc<Shared>) -> Result<(), SchedulerError> {
+    let Some(_activity) = shared.activity.take_hold() else {
+        return Ok(());
+    };
     let cancel = CancellationToken::new();
     let document = read_document(shared, &cancel).await?.document;
     let history = runs::read(&shared.files).await?;
@@ -467,6 +486,11 @@ async fn finish(
     .await?;
     if let Some(run) = settled {
         shared.watch.run(&run);
+        shared
+            .deliveries
+            .lock()
+            .expect("delivery admission")
+            .remove(&run.run_id);
         shared.spawn(prune(shared.clone()));
     }
     Ok(())
@@ -488,6 +512,12 @@ fn stop_time_passed(run: &Delivery) -> bool {
 /// Sessions are deleted first, and their records stay when the delete fails,
 /// so the next pass retries.
 pub async fn prune(shared: Arc<Shared>) {
+    let Some(_activity) = shared.activity.take_hold() else {
+        shared
+            .retention
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
+    };
     let _pass = shared.pruning.lock().await;
     let pending = match prune_once(&shared).await {
         Ok(pending) => pending,
@@ -672,6 +702,12 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
         return;
     }
     loop {
+        let Some(_activity) = shared.activity.take_hold() else {
+            if !shared.pause(std::time::Duration::from_secs(1)).await {
+                return;
+            }
+            continue;
+        };
         if !record_exists(&shared, &run_id).await {
             return;
         }
@@ -814,6 +850,9 @@ async fn settle_target_gone(
 /// attempt per pass; a record whose stored count is already at the bound
 /// settles `lost` without one (D21).
 pub async fn settle_delivering(shared: &Arc<Shared>) {
+    let Some(_activity) = shared.activity.take_hold() else {
+        return;
+    };
     let _pass = shared.settling.lock().await;
     let deliveries = match runs::read(&shared.files).await {
         Ok(deliveries) => deliveries,
@@ -877,9 +916,21 @@ async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), Scheduler
     })
     .await?;
     match step {
-        LookupStep::Settled => Ok(()),
+        LookupStep::Settled => {
+            shared
+                .deliveries
+                .lock()
+                .expect("delivery admission")
+                .remove(run_id);
+            Ok(())
+        }
         LookupStep::Exhausted(settled) => {
             shared.watch.run(&settled);
+            shared
+                .deliveries
+                .lock()
+                .expect("delivery admission")
+                .remove(run_id);
             shared.spawn(prune(shared.clone()));
             Ok(())
         }
@@ -949,6 +1000,11 @@ async fn settle_delivered(
     .await?;
     if let Some(run) = moved.lock().unwrap().clone() {
         shared.watch.run(&run);
+        shared
+            .deliveries
+            .lock()
+            .expect("delivery admission")
+            .remove(&run.run_id);
         shared.spawn(prune(shared.clone()));
     }
     Ok(())
@@ -982,6 +1038,11 @@ async fn settle_lost(
     .await?;
     if let Some(run) = moved.lock().unwrap().clone() {
         shared.watch.run(&run);
+        shared
+            .deliveries
+            .lock()
+            .expect("delivery admission")
+            .remove(&run.run_id);
         shared.spawn(prune(shared.clone()));
     }
     Ok(())
@@ -990,6 +1051,10 @@ async fn settle_lost(
 /// Runs one launch window: one launch, one input, and the stop timer that
 /// ends the Session at its deadline (§3.1, §3.2, A.5).
 async fn execute(shared: Arc<Shared>, job: Job, run: Delivery) {
+    #[cfg(feature = "testing")]
+    if let Some(holds) = &shared.holds {
+        holds.before_launch().await;
+    }
     if let Err(error) = launch_target(&shared, &job, &run).await
         && error.code != UNLOADING
     {
@@ -1017,7 +1082,9 @@ async fn launch_target(
             "a launch delivery names a non-launch target",
         ));
     };
-    let mut args = json!({"cwd": cwd, "policy": requested_policy(policy)});
+    // The launch declares what the Session is for and the label a picker
+    // shows: the job's own name (#1421).
+    let mut args = json!({"cwd": cwd, "policy": requested_policy(policy), "origin": "automation", "title": job.name});
     if let Some(agent) = agent_id.as_ref() {
         args["agent"] = json!(agent);
     }

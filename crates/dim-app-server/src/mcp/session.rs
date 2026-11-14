@@ -44,7 +44,8 @@ pub fn install(builder: &mut AgentBuilder) {
         .require_part("TemporaryMcp");
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
 pub enum McpSourceState {
     Disabled,
     Connecting,
@@ -91,7 +92,8 @@ impl McpSourceState {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpSessionState {
     pub servers: BTreeMap<String, McpSourceState>,
     pub catalog_error: Option<String>,
@@ -214,10 +216,15 @@ struct PublishedTool {
     name: String,
 }
 impl PublicService for McpSession {}
+#[rutis::service]
 impl McpSession {
+    /// This Session's entries and their states: what the `mcpSession`
+    /// face's `state` reads.
     pub fn state(&self) -> McpSessionState {
         self.state.get()
     }
+    /// The state watch Rust callers read beside the face's snapshot.
+    #[service(skip)]
     pub fn subscribe(&self) -> watch::Receiver<McpSessionState> {
         self.state.subscribe()
     }
@@ -282,19 +289,23 @@ impl McpSession {
 
     /// The widget a published tool declares (MCP Apps D4): its entry, the
     /// server's own tool name, the document that entry's connection serves,
-    /// and the tool definition a host applies to the view.
+    /// and the tool definition a host applies to the view. What the
+    /// `mcpSession` face's `widget` answers; a dropped call cancels the
+    /// document read.
     pub async fn widget(
         &self,
-        published: &str,
+        published: String,
     ) -> std::result::Result<McpWidgetResult, McpAppError> {
         if self.stopped.is_cancelled() {
             return Err(McpAppError::Unavailable);
         }
+        let cancel = self.stopped.child_token();
+        let _dropped = cancel.clone().drop_guard();
         let resolved = self
             .names
             .lock()
             .unwrap()
-            .get(published)
+            .get(&published)
             .cloned()
             .ok_or(McpAppError::Absent)?;
         let server = resolved.server;
@@ -323,7 +334,7 @@ impl McpSession {
             return Err(McpAppError::Unsupported);
         }
         let document = connection
-            .resource(uri.clone(), &self.stopped.child_token())
+            .resource(uri.clone(), &cancel)
             .await
             .map_err(McpAppError::from)?;
         let mime_type = document.mime_type.ok_or(McpAppError::Unsupported)?;
@@ -355,23 +366,27 @@ impl McpSession {
 
     /// One tool call on one entry of this Session, on that entry's own
     /// connection (MCP Apps D5). It is the user's action on an enabled entry,
-    /// not an agent decision: no branch admits it and it writes no fact.
+    /// not an agent decision: no branch admits it and it writes no fact. What
+    /// the `mcpSession` face's `call` answers; a dropped call cancels the
+    /// server request.
     pub async fn call(
         &self,
-        server: &str,
-        tool: &str,
+        server: String,
+        tool: String,
         arguments: dim_agent_types::JsonObject,
     ) -> std::result::Result<McpAppCallResult, McpAppError> {
         if self.stopped.is_cancelled() {
             return Err(McpAppError::Unavailable);
         }
-        if !self.state.get().servers.contains_key(server) {
+        let cancel = self.stopped.child_token();
+        let _dropped = cancel.clone().drop_guard();
+        if !self.state.get().servers.contains_key(&server) {
             return Err(McpAppError::UnknownServer);
         }
         let connection = {
             let entries = self.entries.lock().unwrap();
             entries
-                .get(server)
+                .get(&server)
                 .map(|entry| entry.connection.clone())
                 .ok_or(McpAppError::Unavailable)?
         };
@@ -387,7 +402,7 @@ impl McpSession {
             return Err(McpAppError::NotCallable);
         }
         let answer = connection
-            .call_result(tool.name.clone(), arguments, &self.stopped.child_token())
+            .call_result(tool.name.clone(), arguments, &cancel)
             .await
             .map_err(McpAppError::from)?;
         Ok(McpAppCallResult {

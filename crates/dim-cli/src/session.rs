@@ -8,12 +8,15 @@ use crate::{
     display::Display,
     export, goal_command,
     input::Input,
-    mcp,
+    loop_command, mcp,
     model::session::RenameReply,
     permission, permission_command,
     question::line::Questions,
 };
 use dim_agent_types::{ApprovalCallData, ContentBlock, PermissionPolicy, UserInput};
+
+/// The branch a line-mode command acts on: the prompt shows `main`.
+const MAIN_BRANCH: &str = "main";
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -242,6 +245,16 @@ pub async fn chat(
                 crate::sanitize::safe(&created.model.model_id)
             );
         }
+        // A script reading `--json` gets the daemon's records alone.
+        if let Some(worktree) = &created.worktree
+            && !display.json
+        {
+            display.record(&format!(
+                "worktree: {}\t{}",
+                crate::sanitize::safe(&worktree.task_id),
+                crate::sanitize::safe(&worktree.root)
+            ))?;
+        }
         created.session_id
     };
     let selected = if let (Some(preset), Some(_)) = (options.permission, &options.resume) {
@@ -253,7 +266,9 @@ pub async fn chat(
         Some(
             permission::select(client, &session_id, preset)
                 .await
-                .map_err(|error| format!("Cannot set the permission preset: {error}"))?,
+                .map_err(|error| {
+                    crate::client::resume_failure("Cannot set the permission preset", error)
+                })?,
         )
     } else {
         None
@@ -378,6 +393,23 @@ pub async fn chat(
                     let text = text.as_deref().expect("plain goal command");
                     if let Err(error) =
                         goal_command::command(client, &session_id, text, &mut display, &mut interrupts).await
+                    {
+                        display.record(&format!("Error: {error}"))?;
+                    }
+                    draft.clear();
+                    continue;
+                }
+                Some("/loop") => {
+                    let text = text.as_deref().expect("plain loop command");
+                    if let Err(error) = loop_command::command(
+                        client,
+                        &session_id,
+                        MAIN_BRANCH,
+                        text,
+                        &mut display,
+                        &mut interrupts,
+                    )
+                    .await
                     {
                         display.record(&format!("Error: {error}"))?;
                     }
@@ -979,11 +1011,16 @@ async fn wait_turn(
                 }
             }
             Message::Response { id, result } if Some(id) == submit => {
-                if let Err(error) = result {
-                    match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
+                let written = match result {
+                    Ok(written) => written,
+                    Err(error) => match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
                         Some("invalid_params" | "session_invalid_input" | "session_closed" | "session_build_failed" | "service_reloading" | "unknown_method" | "input_blocked") => return Err(error.into()),
                         _ => return Err(format!("Submission outcome could not be confirmed: {error}. The input may already be queued; resume the session instead of sending it again").into()),
-                    }
+                    },
+                };
+                // A check's warning names work the input was written without.
+                for warning in crate::wire::warnings(&written) {
+                    display.record(&warning.message)?;
                 }
                 if let Some(draft) = draft.take() {
                     draft.clear();
@@ -1236,8 +1273,8 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             let event = &params["event"];
             if method == "session.event"
                 && params["branchId"] == "main"
-                && ((event["type"] == "turn" && event["name"] == "end")
-                    || (event["type"] == "step" && event["name"] == "model-output-end"))
+                && event["type"] == "turn"
+                && event["name"] == "end"
                 && event["data"]["status"] == "failed"
             {
                 display.failed = true;

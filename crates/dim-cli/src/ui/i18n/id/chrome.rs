@@ -7,27 +7,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "Tidak ada pesan dalam antrean.",
         "Held · awaiting application" => "Ditahan · menunggu penerapan",
-        "Incorporating · awaiting model consumption" => {
-            "Sedang dimasukkan · menunggu pemrosesan oleh model"
-        }
         "Held" => "Ditahan",
-        "Incorporating" => "Sedang dimasukkan",
         "Unread" => "Belum dibaca",
-        "Unread · waiting for your next message" => {
-            "Belum dibaca · menunggu pesan Anda berikutnya"
-        }
-        "/queue view · awaiting model consumption" => {
-            "/queue lihat · menunggu pemrosesan oleh model"
-        }
-        "/queue view · waiting for your next message" => {
-            "/queue lihat · menunggu pesan Anda berikutnya"
-        }
         "Enter export · Esc cancel" => "Enter ekspor · Esc batal",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "Pesan dengan lampiran tetap dalam antrean; gunakan /queue untuk steer atau menghapusnya"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue kelola · shift+← edit terakhir · ctrl+s steer kini"
+        "/queue manage · Shift+← edit last · empty draft: {key} steer" => {
+            "/queue kelola · Shift+← edit terakhir · draf kosong: {key} untuk steer"
         }
         "+{count} more · {hint}" => "+{count} lagi · {hint}",
         "steer or delete queued messages" => "steer atau hapus pesan dalam antrean",
@@ -127,6 +114,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Daemon ini tidak mendukung penggantian nama Sesi"
         }
         "Renaming failed" => "Penggantian nama gagal",
+        "Delete \"{name}\"?" => "Hapus \"{name}\"?",
+        "Deleted {name}." => "{name} dihapus.",
+        "Nothing was removed: no stored Session {name}." => {
+            "Tidak ada yang dihapus: tidak ada Sesi tersimpan {name}."
+        }
+        "Delete failed" => "Penghapusan gagal",
+        "This daemon does not support deleting Sessions" => {
+            "Daemon ini tidak mendukung penghapusan Sesi"
+        }
         "Starting" => "Memulai",
         "Delegation result" => "Hasil delegasi",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -235,6 +231,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "Terputus; draf disimpan. Keluar lalu lanjutkan Sesi ini."
         }
+        "Cannot open this Session; draft kept." => "Sesi ini tidak dapat dibuka; draf disimpan.",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "Terputus; draf disimpan. Keluar lalu jalankan: {command}"
         }
@@ -309,7 +306,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "Error: {message}",
         "working…  {elapsed}" => "bekerja…  {elapsed}",
         "thinking…  {elapsed}" => "berpikir…  {elapsed}",
-        "Ask anything..." => "Tanya apa saja…",
+        "Ask anything... · Ctrl+J newline" => "Tanya apa saja… · Ctrl+J baris baru",
         "Earlier history · {id} · {count} messages" => "Riwayat lama · {id} · {count} pesan",
         "No active session" => "Tak ada sesi aktif",
         "answer required" => "perlu jawaban",
@@ -371,9 +368,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "keluar",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter pilih · ←/→ upaya · Ctrl+X hapus simpanan · Esc hapus/tutup"
+        "Enter select + default · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
+            "Enter pilih + default · ←/→ upaya · Ctrl+X hapus simpanan · Esc hapus/tutup"
         }
+        "Default for new sessions in {folder}: {model}" => {
+            "Model default untuk sesi baru di {folder}: {model}"
+        }
+        "Default for new sessions: {model}" => "Model default untuk sesi baru: {model}",
         "Enter select · Esc clear/close" => "Enter pilih · Esc hapus/tutup",
         "esc close" => "esc tutup",
         "Suggestions" => "Saran",
@@ -381,6 +382,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Skill loaded: {name}" => "Skill dimuat: {name}",
         "Hook context · {count} line" => "Konteks hook · {count} baris",
         "Hook context · {count} lines" => "Konteks hook · {count} baris",
+        "Stop hook follow-up · {count} line" => "Tindak lanjut hook Stop · {count} baris",
+        "Stop hook follow-up · {count} lines" => "Tindak lanjut hook Stop · {count} baris",
         "Commands" => "Perintah",
         "Command Palette" => "Palet Perintah",
         "No matches" => "Tak ada hasil",
@@ -400,6 +403,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "Tema",
         "Language" => "Bahasa",
         "Startup UI form" => "Bentuk UI awal",
+        "Default send mode" => "Mode pengiriman bawaan",
         "fullscreen" => "layar penuh",
         "scrollback" => "scrollback",
         "Tool details" => "Detail tool",
@@ -437,8 +441,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "Belum ada sesi tersimpan di workspace ini. Ctrl+S menampilkan lebih banyak."
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter buka · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter buka · Ctrl+X hapus · Ctrl+S cakupan · Ctrl+R refresh · Esc tutup"
         }
         "Loading sessions..." => "Memuat sesi…",
         "No saved sessions yet." => "Belum ada sesi tersimpan.",
@@ -539,15 +543,28 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // keys.rs
         "show the key bindings" => "lihat pintasan tombol",
         "Application keys" => "Tombol aplikasi",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter kirim atau antrekan · draf kosong: steer antrean pertama · Shift+Enter/Ctrl+J baris baru · ↑↓ riwayat"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "Enter kirim saat idle · Shift+Enter / Alt+Enter / Ctrl+J baris baru · ↑↓ riwayat"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P perintah · Esc interupsi, pesan antrean kembali · Ctrl+S steer draf atau antrean pertama · Shift+← edit antrean terakhir"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "Sedang berjalan dengan draf: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => {
+            "Draf kosong: {keys} mengirim antrean pertama ke proses yang sedang berjalan"
+        }
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P perintah · Esc interupsi, pesan antrean kembali · Shift+← edit antrean terakhir"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C hapus, 2x untuk keluar · Ctrl+D keluar jika draf kosong"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab ganti izin (saat kolom masukan aktif)"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "Saat dipilih, Shift+Tab ke target lebih baru · Esc kembali ke masukan"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab untuk beralih)",
         "Fullscreen" => "Layar penuh",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown gulir · Home/End atas/bawah (saat draf kosong) · Tab pilih pesan, e edit, q kutip"
@@ -593,6 +610,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya; klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya, dan ia memakai protokol v{protocol}, yang tidak dapat dipakai klien {client} ini. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}), dan ia memakai protokol v{protocol}, yang tidak dapat dipakai klien {client} ini. Tidak ada sesi yang dimulai. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."
         }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server masih {server} karena klien lain sedang memakainya (koneksi: {connections}, sesi terlampir: {attached}, giliran berjalan: {running}); klien {client} ini juga memakainya. Jalankan `dimcode daemon stop` setelah mereka selesai; mulai berikutnya akan menjalankan {client}."

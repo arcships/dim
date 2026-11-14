@@ -162,7 +162,9 @@ are the contract's ([A.1](../contracts/session-access.md#a1-the-sessions-service
   "cwd": "string",                                     // absolute
   "model?": { "providerId": "string", "modelId": "string" },
   "policy?": { /* PermissionPolicy */ },
-  "starter?": { "sessionId": "string", "branchId": "string" } }
+  "starter?": { "sessionId": "string", "branchId": "string" },
+  "origin?": "automation",                             // absent: the caller's own work, `internal`
+  "title?": "string" }                                  // absent: none; SessionTitle writes it
 // reply
 { "sessionId": "string", "policy": { /* the effective PermissionPolicy */ } }
 ```
@@ -207,17 +209,19 @@ side's preset.
 | `permissionPolicy` | The effective policy |
 | `interactive` | `false` |
 | `collaborationRole` | The default (leader) |
-| `origin` | `internal`: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `origin` | `internal`, or `automation` when the request declares it: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list, and an automation Session is one a saved configuration launched with no person present, so a picker lists it only when the client asks for that class ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `initialTitle` | The request's `title`, kept in the Session's fixed configuration. SessionTitle is the title's one writer: on `apply`, for a Session whose title revision is still 0, it applies `session.rename`'s text rule and the operator's `maxLength`, then writes it as the first manual title. A `Conflict`, or a text the rule refuses, writes nothing |
 | Protocol version | `PROTOCOL_VERSION` (3): written to the record, and registered with `insert_version` after creation, as `session.create` and Collaboration do. Rpc serves a loaded Session only once its version is registered, and current clients list it. Creation and registration run in one task, so they finish together even if the caller stops waiting |
 | Record | Prepared creation (`AgentIndex::create_session`): project authorization, then the owned record, as for `session.create` |
 
-Errors: `rejected` (shape, `cwd`, empty tool names in `policy`), `agent_unknown`, `session_closed` or
-`branch_missing` (the starter), `reloading` (also while the starter's Permission reloads), `failed` (model
-resolution, project authorization, storage, an unavailable stored Agent, a starter that cannot be restored, Session
-build).
+Errors: `rejected` (shape, `cwd`, empty tool names in `policy`, an `origin` other than `automation`, a `title` that
+is not a string), `agent_unknown`, `session_closed` or `branch_missing` (the starter), `reloading` (also while the
+starter's Permission reloads), `failed` (model resolution, project authorization, storage, an unavailable stored
+Agent, a starter that cannot be restored, Session build).
 
 A launch is not idempotent. If the reply is lost, the result can be an empty Session that no caller knows about. It
-is non-interactive and listed like any other Session. No launch lookup is added for this harmless case.
+is non-interactive and listed like any other Session — by `session.summaries`, and by `session.catalog` under the
+filter of the class it was created in. No launch lookup is added for this harmless case.
 
 ### 6.2 input
 
@@ -413,7 +417,7 @@ the same turn. Errors: `session_closed`, `branch_missing`, `reloading`, and `fai
 `{sessionId, branchId, inputId, reason?}` → `{status: "deleted", sequence}` or `{status: "notHeld"}`.
 
 Agents gets S1's InputQueue with `Session::service::<InputQueue>` on that branch, calls
-`withdraw(InputWithdrawData { input_id, reason }, None)` and returns its decision. S1 replies once it has written
+`withdraw(InputWithdrawData { input_id, reason, steer: None })` and returns its decision. S1 replies once it has written
 `input/deleted`, which is then committed but not necessarily published, so for `deleted` Agents waits for that
 publication before replying, as `input` does (D8); a branch that closes or fails first replies `publication_unknown`.
 S2 adds no semantics: no ownership check, since a caller withdraws by the `input_id` it received (contract §9.3), no
@@ -471,6 +475,14 @@ restorable Session is `true`. It acquires nothing, takes no lease, restores no S
 no effect on idle unload. It exists for consumers that must reconcile their own records against Session deletion
 without polling a close that must not look like a deletion (EventHub §3.4). An Agents reload answers `reloading`;
 a caller keeps its records and asks again later.
+
+### 6.10 pending
+
+`{sessionId, branchId, inputId}` → `{pending}`; errors `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`.
+
+The read answers whether the input is still pending on that branch under the rule of [session access §2](../contracts/session-access.md#2-data-and-state): pending from its `input/message` until `input/applied` followed by `input/consumed`, or `input/deleted`, references it. The branch's own InputQueue holds exactly that set, so the method reads it with `Session::service::<InputQueue>(branch)` — the path `withdraw` uses (§6.6) — and reads no Timeline. It acquires the Session like every method except `launch`, `delete` and `exists`, so an unloaded branch is restored for the answer.
+
+An `inputId` the branch does not hold answers `false`; that covers both an id that was consumed or deleted and one a restart lost. A fixed loop reads this before it delivers its next window, so a round still held behind a running turn defers that window instead of queueing a second one.
 
 ## 7. Sequence
 
@@ -824,7 +836,7 @@ Each change stays within S2 (roadmap §5.3); the contract's `sessions` part is u
 | # | Change | Why |
 | --- | --- | --- |
 | 1 | `withdraw` waits for the publication of `input/deleted` before replying `deleted`, and can reply `publication_unknown` | S1 replies once the deletion is committed, not once it is dispatched as §14.1 asked. Without the wait, `history {atLeast: sequence}` right after the reply could fail |
-| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData, None)`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
+| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
 | 3 | Each typed method takes the request type of its wire shape (`LookupRequest`, `WithdrawRequest`, `StopRequest`) instead of positional arguments | One type per shape; the named service only decodes and encodes |
 | 4 | `history` rejects `atLeast` together with `through`, and returns every event unfiltered | The two set `through` in conflicting ways. A filtered page could end inside a batch, and the next `after` would be rejected |
 | 5 | A failed `stop` or `idle` wait that is not a closed Session, a missing branch or a reload replies `failed` | Those failures are the branch's dispatch failures. Mapping a handler's `InvalidInput` to `rejected` would blame the caller |
@@ -930,6 +942,8 @@ pub struct WithdrawRequest {
     pub session_id: String, pub branch_id: String,
     pub input_id: String, pub reason: Option<String>,
 }
+pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
+pub struct PendingReply { pub pending: bool }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() follows the code
 
@@ -939,6 +953,8 @@ impl AgentIndex {
     pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError>;
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError>;
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal from S1
+    /// Whether the input is still pending on the branch (§6.10).
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c's delete, served as `sessions.delete {sessionId}` (§6.8).

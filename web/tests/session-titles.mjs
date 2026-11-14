@@ -100,7 +100,6 @@ test("owner notices update visible titles without letting delayed lists or dupli
   const root = node("root")
   const { h } = await import("vue")
   const app = renderer.createApp({ render: () => h(SidebarWorkspaceGroup, { workspace: sessions.workspaces[0], expanded: true, nowMs: 100 }) })
-  app.directive("tooltip", {})
   app.mount(root)
   t.after(() => app.unmount())
   const label = () => all(root).find(element => element.props.class === "session-open")
@@ -193,4 +192,39 @@ test("reconnect reads current titles after attaching so a rename without a liste
   assert.equal(sessions.byId.get("session").title, "Renamed before attach")
   socket.onmessage({ data: JSON.stringify({ jsonrpc: "2.0", method: "session.notice", params: { sessionId: "session", source: "SessionStore", kind: "title", data: title("Renamed after attach", 3) } }) })
   assert.equal(sessions.byId.get("session").title, "Renamed after attach")
+})
+
+test("the sidebar leaves out the classes a picker hides, automation included", async t => {
+  setActivePinia(createPinia())
+  const NativeSocket = globalThis.WebSocket, nativeLocation = globalThis.location
+  let socket
+  const requests = []
+  globalThis.location = { protocol: "http:", host: "fixture" }
+  globalThis.WebSocket = class {
+    static OPEN = 1
+    readyState = 1
+    constructor() { socket = this }
+    send(value) { requests.push(JSON.parse(value)) }
+    close() {}
+  }
+  const connection = useConnectionStore()
+  const sessions = useSessionsStore()
+  t.after(() => { connection.client.stop(); globalThis.WebSocket = NativeSocket; globalThis.location = nativeLocation })
+  connection.client.start()
+  const reply = list => {
+    const request = requests.shift()
+    assert.equal(request.method, "session.summaries")
+    socket.onmessage({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result: list }) })
+  }
+  const refresh = sessions.refresh()
+  reply([
+    summary({ sessionId: "chat", cwd: "/workspace", origin: "client", updatedAt: 4 }),
+    summary({ sessionId: "unknown", cwd: "/workspace", origin: "unknown", updatedAt: 3 }),
+    summary({ sessionId: "internal", cwd: "/workspace", origin: "internal", updatedAt: 2 }),
+    summary({ sessionId: "automation", cwd: "/workspace", origin: "automation", updatedAt: 1 }),
+  ])
+  await refresh
+  const shown = sessions.workspaces.flatMap(workspace => workspace.sessions.map(session => session.sessionId))
+  assert.deepEqual(shown, ["chat", "unknown"])
+  assert.equal(sessions.byId.get("automation").sessionId, "automation")
 })

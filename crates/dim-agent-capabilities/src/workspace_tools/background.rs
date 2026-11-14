@@ -11,9 +11,9 @@ use crate::{
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
 };
 use dim_agent_runtime::{
-    AgentError, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
-    QuerySpec, QueryValue, SessionLifecycle, Timeline, TimelineIdentity, TimelineQuery,
-    TimelineQueryScope,
+    AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, SessionLifecycle, Timeline,
+    TimelineIdentity, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -36,6 +36,7 @@ pub struct StartRequest {
     /// Proposed id; a `before` hook may rewrite it, the final one is returned.
     pub task_id: String,
     pub description: String,
+    pub title: Option<String>,
     pub output_path: String,
 }
 
@@ -49,25 +50,64 @@ pub enum StartError {
     Termination(Box<ToolResult>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TaskError {
+    /// Required task facts could not be read.
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
     /// No matching task or live output on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
 }
 
 /// Why one paged read of a task's registered output file answered nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum OutputPageError {
+    /// Required task facts could not be read.
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
     /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
     Unknown,
     /// The registered output file is gone or unreadable: it was cleaned, or
     /// the task's Session was deleted.
+    #[error("the task's output file is no longer available")]
     Unavailable,
     /// This instance was unloaded.
+    #[error("BackgroundExec is closed")]
     Closed,
+    /// The page budget was zero.
+    #[error("limit must be at least 1")]
+    InvalidLimit,
 }
+
+/// Why waiting for a task's end answered nothing.
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitError {
+    /// Required task facts could not be read.
+    #[error("{0}")]
+    Read(#[serde(skip)] AgentError),
+    /// No matching task on this branch.
+    #[error("no such task is known on this branch")]
+    Unknown,
+    /// This instance was unloaded, or the task's record was released.
+    #[error("BackgroundExec is closed")]
+    Closed,
+    /// The wait's own timeout elapsed first.
+    #[error("the task did not end before the timeout")]
+    Timeout,
+}
+
+/// Default page and largest page the paged read serves; a caller's `limit`
+/// clamps to the latter.
+pub const OUTPUT_PAGE_BYTES: u64 = 1024 * 1024;
+pub const OUTPUT_PAGE_BYTES_MAX: u64 = 4 * 1024 * 1024;
 
 /// One page of a task's registered output file, as
 /// `session.exec.output.page` answers it.
@@ -131,6 +171,7 @@ struct State {
 
 pub struct BackgroundExec {
     timeline: Arc<Timeline>,
+    from: Option<TimelinePosition>,
     /// Gives each task its Session hold.
     session: Arc<SessionLifecycle>,
     /// Parent of every task's cancellation; cancelled on unload and branch close.
@@ -140,9 +181,14 @@ pub struct BackgroundExec {
     state: Mutex<State>,
 }
 
+#[rutis::service]
 impl BackgroundExec {
     /// Records the task with `exec/started` and supervises `process`; on
     /// failure the process is terminated and reaped before returning.
+    ///
+    /// Starting needs the live process, so it is the exec tool's own
+    /// operation; the `backgroundExec` face serves the task id afterwards.
+    #[service(skip)]
     pub async fn start(
         self: &Arc<Self>,
         request: StartRequest,
@@ -170,6 +216,7 @@ impl BackgroundExec {
                 call_id: request.call_id,
                 task_id: request.task_id,
                 description: request.description,
+                title: request.title,
                 output_path: request.output_path,
             })
             .into(),
@@ -256,8 +303,9 @@ impl BackgroundExec {
         Ok(task_id)
     }
 
-    /// Reads the live capture without reconstructing a resource from history.
-    pub async fn output(&self, task_id: &str) -> Result<String, TaskError> {
+    /// Reads the live capture without reconstructing a resource from history:
+    /// what `backgroundExec.output` answers.
+    pub async fn output(&self, task_id: String) -> Result<String, TaskError> {
         let output = {
             let state = self.state.lock().unwrap();
             if state.closed {
@@ -265,35 +313,71 @@ impl BackgroundExec {
             }
             state
                 .tasks
-                .get(task_id)
+                .get(&task_id)
                 .and_then(|task| task.output.clone())
                 .ok_or(TaskError::Unknown)?
         };
         Ok(output.preview().await)
     }
 
-    /// Reads one page of the task's registered output file, by byte offset.
+    /// Reads one page of the task's registered output file, by byte offset:
+    /// what `backgroundExec.outputPage` answers. `limit` rejects 0 and clamps
+    /// to [`OUTPUT_PAGE_BYTES_MAX`]; a dropped call drops the read.
+    pub async fn output_page(
+        &self,
+        task_id: String,
+        cursor: u64,
+        limit: u64,
+    ) -> Result<OutputPage, OutputPageError> {
+        if limit == 0 {
+            return Err(OutputPageError::InvalidLimit);
+        }
+        let limit = limit.min(OUTPUT_PAGE_BYTES_MAX) as usize;
+        self.page(&task_id, cursor, limit).await
+    }
+
+    /// The paged read behind [`Self::output_page`].
+    ///
     /// The file is the read's only source, so a running task, an ended task
     /// and a task rebuilt after an unload answer alike; the live capture and
     /// the result preview are not consulted. The file is append-only, so a
     /// cursor the method handed out always names a byte that never changes.
-    pub async fn output_page(
+    async fn page(
         &self,
         task_id: &str,
         cursor: u64,
         limit: usize,
     ) -> Result<OutputPage, OutputPageError> {
-        let (output_path, ended, live) = {
+        let current = {
             let state = self.state.lock().unwrap();
             if state.closed {
                 return Err(OutputPageError::Closed);
             }
-            let task = state.tasks.get(task_id).ok_or(OutputPageError::Unknown)?;
-            (
-                task.output_path.clone(),
-                task.ended.borrow().clone(),
-                task.output.clone(),
-            )
+            state.tasks.get(task_id).map(|task| {
+                (
+                    task.output_path.clone(),
+                    task.ended.borrow().clone(),
+                    task.output.clone(),
+                )
+            })
+        };
+        let (output_path, ended, live) = match current {
+            Some(current) => current,
+            None => {
+                let start = self
+                    .started(task_id, self.timeline.committed())
+                    .await
+                    .map_err(OutputPageError::Read)?
+                    .ok_or(OutputPageError::Unknown)?;
+                let ended = self
+                    .terminal(task_id, self.timeline.committed())
+                    .await
+                    .map_err(OutputPageError::Read)?;
+                if self.state.lock().unwrap().closed {
+                    return Err(OutputPageError::Closed);
+                }
+                (start.output_path, ended, None)
+            }
         };
         let mut file = tokio::fs::File::open(&output_path)
             .await
@@ -376,21 +460,94 @@ impl BackgroundExec {
         })
     }
 
+    /// Waits until the task ends, or `timeout_ms` elapses: what
+    /// `backgroundExec.wait` answers. An ended task answers its record at
+    /// once; a dropped call releases the wait.
+    pub async fn wait(&self, task_id: String, timeout_ms: u64) -> Result<ExecEndedData, WaitError> {
+        let current = {
+            let state = self.state.lock().unwrap();
+            if state.closed {
+                return Err(WaitError::Closed);
+            }
+            state.tasks.get(&task_id).map(|task| task.ended.subscribe())
+        };
+        let Some(mut ended) = current else {
+            let through = self.timeline.committed();
+            if self
+                .started(&task_id, through)
+                .await
+                .map_err(WaitError::Read)?
+                .is_none()
+            {
+                return Err(WaitError::Unknown);
+            }
+            let ended = self
+                .terminal(&task_id, through)
+                .await
+                .map_err(WaitError::Read)?;
+            if self.state.lock().unwrap().closed {
+                return Err(WaitError::Closed);
+            }
+            return ended.ok_or_else(|| {
+                WaitError::Read(AgentError::fault(
+                    "BackgroundExec",
+                    "owned task has no terminal or live resource",
+                ))
+            });
+        };
+        if let Some(done) = ended.borrow().clone() {
+            return Ok(done);
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            ended.wait_for(Option::is_some),
+        )
+        .await
+        {
+            Ok(Ok(done)) => Ok(done.clone().expect("waited for Some")),
+            Ok(Err(_)) => Err(WaitError::Closed),
+            Err(_) => Err(WaitError::Timeout),
+        }
+    }
+
     /// Stops a task: cancels it while running, so it ends `cancelled` and
     /// does not wake. Returns once its `exec/ended` is dispatched; a task that
     /// already ended keeps its result and its wake.
-    pub async fn stop(&self, task_id: &str) -> Result<ExecEndedData, TaskError> {
-        let mut ended = {
+    pub async fn stop(&self, task_id: String) -> Result<ExecEndedData, TaskError> {
+        let current = {
             let mut state = self.state.lock().unwrap();
             if state.closed {
                 return Err(TaskError::Closed);
             }
-            let task = state.tasks.get_mut(task_id).ok_or(TaskError::Unknown)?;
-            if let Some(done) = task.ended.borrow().clone() {
-                return Ok(done);
+            state.tasks.get_mut(&task_id).map(|task| {
+                if task.ended.borrow().is_none() {
+                    task.cancel.cancel();
+                }
+                task.ended.subscribe()
+            })
+        };
+        let Some(mut ended) = current else {
+            if self
+                .started(&task_id, self.timeline.committed())
+                .await
+                .map_err(TaskError::Read)?
+                .is_none()
+            {
+                return Err(TaskError::Unknown);
             }
-            task.cancel.cancel();
-            task.ended.subscribe()
+            let ended = self
+                .terminal(&task_id, self.timeline.committed())
+                .await
+                .map_err(TaskError::Read)?;
+            if self.state.lock().unwrap().closed {
+                return Err(TaskError::Closed);
+            }
+            return ended.ok_or_else(|| {
+                TaskError::Read(AgentError::fault(
+                    "BackgroundExec",
+                    "owned task has no terminal or live resource",
+                ))
+            });
         };
         ended
             .wait_for(Option::is_some)
@@ -458,189 +615,172 @@ impl BackgroundExec {
         }
     }
 
-    /// Pairs this branch's `exec/started` with `exec/ended`. An open task did
-    /// not survive its owner: its `failed` terminal is written now and wakes
-    /// when dispatched. Returns the waking `exec/ended` events that no input
-    /// references yet: the previous generation stopped before posting them.
+    fn query(&self, through: u64, filter: QueryFilter) -> TimelineQuery {
+        TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: self.from.clone(),
+            through: Some(through),
+            include_publishing: true,
+            query: QuerySpec {
+                filter: Some(filter),
+                select: QuerySelect::Events,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::new(128).unwrap(),
+                after: None,
+            }),
+        }
+    }
+
+    async fn task_event(
+        &self,
+        task_id: &str,
+        through: u64,
+        kind: &str,
+    ) -> dim_agent_runtime::Result<Option<AgentEvent>> {
+        let mut query = self.query(
+            through,
+            QueryFilter::And {
+                conditions: vec![
+                    in_field("kind", &[kind]),
+                    in_field("data.task_id", &[task_id]),
+                ],
+            },
+        );
+        query.from = None;
+        query.query.pick = Some(QueryPick::First);
+        query.page = Some(QueryPage {
+            limit: std::num::NonZeroU64::MIN,
+            after: None,
+        });
+        let QueryOutput::Events { events } = self.timeline.query(query).await?.result else {
+            unreachable!("task event selection");
+        };
+        Ok(events
+            .into_iter()
+            .next()
+            .map(|row| Arc::unwrap_or_clone(row.event)))
+    }
+
+    async fn started(
+        &self,
+        task_id: &str,
+        through: u64,
+    ) -> dim_agent_runtime::Result<Option<ExecStartedData>> {
+        Ok(self
+            .task_event(task_id, through, "exec/started")
+            .await?
+            .map(|event| {
+                let EventKind::ExecStarted(data) = event.kind else {
+                    unreachable!("task start selection");
+                };
+                data
+            }))
+    }
+
+    async fn terminal(
+        &self,
+        task_id: &str,
+        through: u64,
+    ) -> dim_agent_runtime::Result<Option<ExecEndedData>> {
+        Ok(self
+            .task_event(task_id, through, "exec/ended")
+            .await?
+            .map(|event| {
+                let EventKind::ExecEnded(data) = event.kind else {
+                    unreachable!("task terminal selection");
+                };
+                data
+            }))
+    }
+
     async fn rebuild(
         &self,
     ) -> dim_agent_runtime::Result<(u64, Vec<(String, ExecEndedData, String)>)> {
         let through = self.timeline.committed();
-        let mut after = None;
-        let mut tasks = HashMap::new();
-        let mut open = Vec::new();
-        let mut unposted: Vec<(String, ExecEndedData)> = Vec::new();
-        let mut closing = false;
-        loop {
-            let reply = self
-                .timeline
-                .query(TimelineQuery {
-                    scope: TimelineQueryScope::Branch,
-                    from: None,
-                    through: Some(through),
-                    include_publishing: true,
-                    query: QuerySpec {
-                        filter: Some(QueryFilter::In {
-                            value: QueryOperand::Field {
-                                path: "kind".into(),
-                            },
-                            values: [
-                                "exec/started",
-                                "exec/ended",
-                                "stop/interrupt",
-                                "input/message",
-                            ]
-                            .map(Into::into)
-                            .to_vec(),
+        let mut pending = self.query(
+            through,
+            QueryFilter::And {
+                conditions: vec![
+                    in_field("kind", &["exec/started"]),
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Exists {
+                            condition: Box::new(QueryFilter::And {
+                                conditions: vec![
+                                    in_field("kind", &["exec/ended"]),
+                                    QueryFilter::Compare {
+                                        left: QueryOperand::Field {
+                                            path: "data.task_id".into(),
+                                        },
+                                        comparison: QueryComparison::Eq,
+                                        right: QueryOperand::Outer {
+                                            path: "data.task_id".into(),
+                                        },
+                                    },
+                                ],
+                            }),
                         }),
-                        select: QuerySelect::Fields {
-                            fields: [
-                                "kind",
-                                "id",
-                                "data.task_id",
-                                "data.description",
-                                "data.output_path",
-                                "data.status",
-                                "data.result",
-                                "data.scope",
-                                "tags",
-                            ]
-                            .map(String::from)
-                            .to_vec(),
-                        },
-                        group_by: vec![],
-                        pick: None,
-                        order_by: vec![],
                     },
-                    page: Some(QueryPage {
-                        limit: std::num::NonZeroU64::new(256).unwrap(),
-                        after,
-                    }),
-                })
-                .await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("field selection returns rows")
+                ],
+            },
+        );
+        loop {
+            let reply = self.timeline.query(pending.clone()).await?;
+            let QueryOutput::Events { events } = reply.result else {
+                unreachable!("unfinished task selection");
             };
-            for row in rows {
-                let [
-                    QueryValue::Value {
-                        value: serde_json::Value::String(kind),
-                    },
-                    QueryValue::Value {
-                        value: serde_json::Value::String(id),
-                    },
-                    task_id,
-                    description,
-                    output_path,
-                    status,
-                    result,
-                    scope,
-                    tags,
-                ] = row.values.as_slice()
-                else {
-                    unreachable!("event has a kind and id")
+            for row in events {
+                let EventKind::ExecStarted(data) = Arc::unwrap_or_clone(row.event).kind else {
+                    unreachable!("unfinished task start");
                 };
-                match kind.as_str() {
-                    "stop/interrupt" => {
-                        if matches!(scope, QueryValue::Value { value: serde_json::Value::String(scope) } if scope == "branch")
-                        {
-                            closing = true;
-                        }
-                    }
-                    "exec/started" => {
-                        let (
-                            QueryValue::Value {
-                                value: serde_json::Value::String(task_id),
-                            },
-                            QueryValue::Value {
-                                value: serde_json::Value::String(description),
-                            },
-                            QueryValue::Value {
-                                value: serde_json::Value::String(output_path),
-                            },
-                        ) = (task_id, description, output_path)
-                        else {
-                            unreachable!("exec start has task id, description and output path")
-                        };
-                        tasks.insert(
-                            task_id.clone(),
-                            Task::new(
-                                description.clone(),
-                                CancellationToken::new(),
-                                None,
-                                output_path.clone(),
-                            ),
-                        );
-                        open.push((task_id.clone(), output_path.clone()));
-                    }
-                    "exec/ended" => {
-                        let (
-                            QueryValue::Value {
-                                value: serde_json::Value::String(task_id),
-                            },
-                            QueryValue::Value { value: status },
-                            QueryValue::Value { value: result },
-                        ) = (task_id, status, result)
-                        else {
-                            unreachable!("exec end has task id, status and result")
-                        };
-                        let data = ExecEndedData {
-                            task_id: task_id.clone(),
-                            status: serde_json::from_value(status.clone())
-                                .expect("exec status follows the event contract"),
-                            result: serde_json::from_value(result.clone())
-                                .expect("exec result follows the event contract"),
-                        };
-                        open.retain(|(open_id, _)| open_id != task_id);
-                        if let Some(task) = tasks.get_mut(task_id) {
-                            task.ended.send_replace(Some(data.clone()));
-                        }
-                        if wakes(&data) && !closing {
-                            unposted.push((id.clone(), data));
-                        }
-                    }
-                    "input/message" => {
-                        if let QueryValue::Value {
-                            value: serde_json::Value::Array(tags),
-                        } = tags
-                            && let Some(result) = tags.iter().find_map(|tag| {
-                                tag.as_str()
-                                    .and_then(|tag| tag.strip_prefix(WAKE_RESULT_TAG))
-                            })
-                        {
-                            unposted.retain(|(id, _)| id != result);
-                        }
-                    }
-                    _ => unreachable!("query selects background task lifecycle facts"),
-                }
+                self.state.lock().unwrap().tasks.insert(
+                    data.task_id.clone(),
+                    Task::new(
+                        data.description,
+                        CancellationToken::new(),
+                        None,
+                        data.output_path.clone(),
+                    ),
+                );
+                self.timeline.append(
+                    EventKind::ExecEnded(ExecEndedData {
+                        result: recovered_result(&data.task_id, &data.output_path),
+                        task_id: data.task_id,
+                        status: ExecStatus::Failed,
+                    })
+                    .into(),
+                )?;
             }
-            after = reply.next;
-            if after.is_none() {
+            let Some(next) = reply.next else {
                 break;
-            }
+            };
+            pending.page.as_mut().unwrap().after = Some(next);
         }
-        let unposted = unposted
-            .into_iter()
-            .map(|(id, data)| {
-                let name = tasks
-                    .get(&data.task_id)
-                    .map_or_else(|| data.task_id.clone(), |task| task.description.clone());
-                (id, data, name)
-            })
-            .collect();
-        self.state.lock().unwrap().tasks = tasks;
-        for (task_id, output_path) in open {
-            let written = self.timeline.append(
-                EventKind::ExecEnded(ExecEndedData {
-                    result: recovered_result(&task_id, &output_path),
-                    task_id: task_id.clone(),
-                    status: ExecStatus::Failed,
-                })
-                .into(),
-            );
-            if let Err(error) = written {
-                tracing::warn!(%error, task_id, "recovery exec/ended was not written");
+        let mut unposted = Vec::new();
+        let mut pending = self.query(through, unposted_filter());
+        loop {
+            let reply = self.timeline.query(pending.clone()).await?;
+            let QueryOutput::Events { events } = reply.result else {
+                unreachable!("unposted task result selection");
+            };
+            for row in events {
+                let event = Arc::unwrap_or_clone(row.event);
+                let EventKind::ExecEnded(data) = event.kind else {
+                    unreachable!("unposted task terminal");
+                };
+                let name = self
+                    .started(&data.task_id, through)
+                    .await?
+                    .map_or_else(|| data.task_id.clone(), |start| start.description);
+                unposted.push((event.id, data, name));
             }
+            let Some(next) = reply.next else {
+                break;
+            };
+            pending.page.as_mut().unwrap().after = Some(next);
         }
         Ok((through, unposted))
     }
@@ -667,6 +807,96 @@ impl BackgroundExec {
         state.closed = true;
         state.tasks.clear();
     }
+}
+
+fn in_field(path: &str, values: &[&str]) -> QueryFilter {
+    QueryFilter::In {
+        value: QueryOperand::Field { path: path.into() },
+        values: values.iter().map(|value| (*value).into()).collect(),
+    }
+}
+
+fn unposted_filter() -> QueryFilter {
+    let mut conditions = vec![in_field("kind", &["exec/ended"])];
+    conditions.extend(vec![
+        in_field("data.status", &["completed", "failed"]),
+        QueryFilter::Not {
+            condition: Box::new(QueryFilter::Exists {
+                condition: Box::new(QueryFilter::And {
+                    conditions: vec![
+                        in_field("kind", &["stop/interrupt"]),
+                        in_field("data.scope", &["branch"]),
+                        QueryFilter::Compare {
+                            left: QueryOperand::Field {
+                                path: "position.sequence".into(),
+                            },
+                            comparison: QueryComparison::Le,
+                            right: QueryOperand::Outer {
+                                path: "position.sequence".into(),
+                            },
+                        },
+                        QueryFilter::Not {
+                            condition: Box::new(QueryFilter::Exists {
+                                condition: Box::new(QueryFilter::And {
+                                    conditions: vec![
+                                        in_field(
+                                            "kind",
+                                            &["branch/start", "branch/resume", "session/forked"],
+                                        ),
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field {
+                                                path: "position.sequence".into(),
+                                            },
+                                            comparison: QueryComparison::Gt,
+                                            right: QueryOperand::Outer {
+                                                path: "position.sequence".into(),
+                                            },
+                                        },
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field {
+                                                path: "position.sequence".into(),
+                                            },
+                                            comparison: QueryComparison::Le,
+                                            right: QueryOperand::Root {
+                                                path: "position.sequence".into(),
+                                            },
+                                        },
+                                    ],
+                                }),
+                            }),
+                        },
+                    ],
+                }),
+            }),
+        },
+    ]);
+    conditions.push(QueryFilter::Not {
+        condition: Box::new(QueryFilter::Exists {
+            condition: Box::new(QueryFilter::And {
+                conditions: vec![
+                    in_field("kind", &["input/message"]),
+                    QueryFilter::Any {
+                        field: "tags".into(),
+                        condition: Box::new(QueryFilter::Compare {
+                            left: QueryOperand::Element {
+                                path: String::new(),
+                            },
+                            comparison: QueryComparison::Eq,
+                            right: QueryOperand::Concat {
+                                parts: vec![
+                                    QueryOperand::Value {
+                                        value: WAKE_RESULT_TAG.into(),
+                                    },
+                                    QueryOperand::Outer { path: "id".into() },
+                                ],
+                            },
+                        }),
+                    },
+                ],
+            }),
+        }),
+    });
+    QueryFilter::And { conditions }
 }
 
 /// Tags of a wake input: the task it reports and the `exec/ended` it carries.
@@ -787,8 +1017,44 @@ impl DynPlugin for BackgroundExecPlugin {
                     text: EXEC_ENTRY.into(),
                 },
             )?;
+            let QueryOutput::Rows { rows } = timeline
+                .query(TimelineQuery {
+                    scope: TimelineQueryScope::Branch,
+                    from: None,
+                    through: Some(timeline.committed()),
+                    include_publishing: true,
+                    query: QuerySpec {
+                        filter: Some(in_field("kind", &["session/forked"])),
+                        select: QuerySelect::Fields {
+                            fields: vec!["position".into()],
+                        },
+                        group_by: vec![],
+                        pick: Some(QueryPick::Last),
+                        order_by: vec![],
+                    },
+                    page: Some(QueryPage {
+                        limit: std::num::NonZeroU64::MIN,
+                        after: None,
+                    }),
+                })
+                .await?
+                .result
+            else {
+                unreachable!("local fork boundary");
+            };
+            let from = rows.into_iter().next().map(|row| {
+                let [QueryValue::Value { value }] =
+                    <[_; 1]>::try_from(row.values).expect("fork boundary position")
+                else {
+                    unreachable!("fork boundary field");
+                };
+                let position: TimelinePosition =
+                    serde_json::from_value(value).expect("Timeline position contract");
+                position
+            });
             let service = Arc::new(BackgroundExec {
                 timeline,
+                from,
                 session,
                 lifecycle: CancellationToken::new(),
                 tasks: TaskTracker::new(),
@@ -832,6 +1098,13 @@ pub mod testing {
         sync::Mutex,
     };
     use tokio::sync::oneshot;
+
+    /// Counts active completion watches for an existing task.
+    pub fn completion_watches(background: &super::BackgroundExec, task_id: &str) -> usize {
+        background.state.lock().unwrap().tasks[task_id]
+            .ended
+            .receiver_count()
+    }
 
     type Hold = (PathBuf, oneshot::Sender<()>, oneshot::Receiver<()>);
     static HOLDS: Mutex<Vec<Hold>> = Mutex::new(Vec::new());

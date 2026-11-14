@@ -149,7 +149,7 @@ registers — never a client-supplied path — so a task id from another branch 
 Session cannot select a file; a task whose file was cleaned answers
 `exec_output_unavailable`, distinct from the tail's `exec_task_unknown`, and an
 unknown task answers `exec_task_unknown` saying no such task is known on the
-branch, since an ended task's file is still readable there. The
+branch, since an ended task's file is still readable there. A copied Session resolves these facts across its copied prefix; the fork boundary restricts recovery and reposting only, not historical output reads. A fork is admitted only at a rest point, so a copied background task is already terminal; stopping it returns that terminal and never cancels the source Session's process. The
 `session.exec.output` tail keeps its preview rule and its
 `exec_task_unknown` once the live capture is cleared. This paged read is the
 full-file browsing §1 settles; it does not settle a daemon-hosted open/export
@@ -292,7 +292,9 @@ Parameters are `sessionId`, `branchId`, optional published `through` and optiona
 ascending by start sequence. An ended branch is readable through the branch facade.
 
 A task has `eventId`, `sequence`, `startedAt`, `taskId`, `turnId`, `requestId`, `callId`,
-`description`. These fields come from `exec/started` with no matching `exec/ended` at that
-cutoff. The query does not read captured output, output paths, tool arguments or results.
+`description` and optional `title`, omitted when the owner fact has none
+([WorkspaceTools' title contract](../architecture/rust-agent/plugins/WorkspaceTools.md#backgroundexec)).
+These fields come from `exec/started` with no matching `exec/ended` at that cutoff.
+The query does not read captured output, output paths, tool arguments or results.
 Later `exec/ended` settles the inventory by `taskId`. Read failure leaves controls unavailable;
 it does not prove that no tasks exist. This adds no task table and does not change stop admission.

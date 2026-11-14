@@ -55,32 +55,43 @@ impl InputQueue {
         &self,
         decisions: Vec<Decision>,
         through: u64,
-    ) -> Result<(u64, Option<u64>)> {
+    ) -> Result<(u64, WithdrawalAnswer)> {
         if decisions.is_empty() {
-            return Ok((through, None));
+            return Ok((through, (Withdrawal::NotHeld, None)));
         }
         let mut deleted = None;
-        let drafts = decisions
-            .into_iter()
-            .enumerate()
-            .map(|(index, decision)| {
-                match decision {
-                    Decision::Apply(input_id, mode) => EventKind::InputApplied(InputAppliedData {
-                        input_id,
-                        mode: Some(mode),
-                    }),
-                    Decision::Delete(input_id) => {
-                        deleted = Some(index);
-                        EventKind::InputDeleted(InputDeletedData { input_id })
-                    }
+        let mut replacement = None;
+        let mut drafts = Vec::new();
+        for decision in decisions {
+            match decision {
+                Decision::Apply(input_id, mode) => {
+                    drafts.push(
+                        EventKind::InputApplied(InputAppliedData {
+                            input_id,
+                            mode: Some(mode),
+                        })
+                        .into(),
+                    );
                 }
-                .into()
-            })
-            .collect();
+                Decision::Delete(input_id, steer) => {
+                    if let Some(input) = steer {
+                        replacement = Some(drafts.len());
+                        drafts.push(EventKind::InputMessage(input).into());
+                    }
+                    deleted = Some(drafts.len());
+                    drafts.push(EventKind::InputDeleted(InputDeletedData { input_id }).into());
+                }
+            }
+        }
         let events = self.timeline.append_batch_registered(drafts, |_| Ok(()))?;
         Ok((
             events.last().expect("nonempty decisions").sequence,
-            deleted.map(|index| events[index].sequence),
+            (
+                deleted.map_or(Withdrawal::NotHeld, |index| Withdrawal::Deleted {
+                    sequence: events[index].sequence,
+                }),
+                replacement.map(|index| events[index].clone()),
+            ),
         ))
     }
 
@@ -209,7 +220,13 @@ impl InputQueue {
                         } else {
                             &["input/applied", "input/withdraw"]
                         },
-                        &["kind", "data.input_id", "position.sequence", "data.mode"],
+                        &[
+                            "kind",
+                            "data.input_id",
+                            "position.sequence",
+                            "data.mode",
+                            "id",
+                        ],
                     );
                     controls.query.filter = Some(QueryFilter::And {
                         conditions: vec![
@@ -218,7 +235,7 @@ impl InputQueue {
                         ],
                     });
                     controls.query.group_by = vec!["kind".into(), "data.input_id".into()];
-                    controls.query.pick = Some(QueryPick::Last);
+                    controls.query.pick = Some(QueryPick::First);
                     controls.page.as_mut().expect("control page").limit =
                         NonZeroU64::new(256).unwrap();
                     let controls = self.timeline.query(controls).await?;
@@ -232,8 +249,8 @@ impl InputQueue {
                         unreachable!("input control fields")
                     };
                     for row in rows {
-                        let [kind, id, at, mode] =
-                            <[_; 4]>::try_from(row.values).expect("input control fields");
+                        let [kind, id, at, mode, command] =
+                            <[_; 5]>::try_from(row.values).expect("input control fields");
                         let id: String = decode(id)?;
                         let at: u64 = decode(at)?;
                         match decode::<String>(kind)?.as_str() {
@@ -241,9 +258,47 @@ impl InputQueue {
                                 applied.insert(id, (at, mode));
                             }
                             "input/withdraw" => {
-                                withdrawn.insert(id, at);
+                                withdrawn.insert(id, (at, decode::<String>(command)?));
                             }
                             _ => unreachable!("selected input controls"),
+                        }
+                    }
+                }
+                let mut user_inputs = std::collections::HashSet::new();
+                if !handover {
+                    let missing: Vec<_> = rows
+                        .iter()
+                        .filter_map(|row| {
+                            let QueryValue::Value { value } = &row.values[0] else {
+                                unreachable!("current input identity")
+                            };
+                            let id = value.as_str().expect("current input id");
+                            (row.values[2] == QueryValue::Missing
+                                && !applied.contains_key(id)
+                                && !withdrawn.contains_key(id))
+                            .then(|| value.clone())
+                        })
+                        .collect();
+                    if !missing.is_empty() {
+                        let mut user = query(through, &["input/message"], &["id"]);
+                        user.query.filter = Some(QueryFilter::And {
+                            conditions: vec![
+                                field("id", missing),
+                                QueryFilter::Present {
+                                    value: QueryOperand::Field {
+                                        path: "data.user".into(),
+                                    },
+                                },
+                            ],
+                        });
+                        let QueryOutput::Rows { rows } = self.timeline.query(user).await?.result
+                        else {
+                            unreachable!("user identities")
+                        };
+                        for row in rows {
+                            user_inputs.insert(decode::<String>(
+                                row.values.into_iter().next().expect("input id"),
+                            )?);
                         }
                     }
                 }
@@ -253,10 +308,29 @@ impl InputQueue {
                     let id: String = decode(id)?;
                     let sequence: u64 = decode(sequence)?;
                     let withdraw = withdrawn.remove(&id);
+                    let mut steer = None;
+                    if !applied.contains_key(&id)
+                        && let Some((_, command)) = &withdraw
+                    {
+                        let mut candidate = query(through, &["input/withdraw"], &["data.steer"]);
+                        candidate.query.filter = Some(field("id", vec![json!(command)]));
+                        let [value] = <[_; 1]>::try_from(
+                            self.last(candidate)
+                                .await?
+                                .expect("the selected withdrawal"),
+                        )
+                        .expect("withdrawal candidate field");
+                        if value != QueryValue::Missing {
+                            steer = Some(decode::<InputMessageData>(value)?);
+                        }
+                    }
                     if handover {
                         let turn_id: String = decode(target)?;
                         if withdraw.is_some() || state.turn.as_ref() != Some(&turn_id) {
-                            decisions.push(Decision::Delete(id));
+                            decisions.push((
+                                withdraw.as_ref().map_or(boundary, |(at, _)| *at),
+                                Decision::Delete(id, steer),
+                            ));
                         } else {
                             entries.push((
                                 sequence,
@@ -270,8 +344,8 @@ impl InputQueue {
                     }
                     let (released, applied_at, mode) = if let Some((at, mode)) = applied.remove(&id)
                     {
-                        if let Some(withdraw) = withdraw
-                            && withdraw < at
+                        if let Some((withdraw, _)) = &withdraw
+                            && *withdraw < at
                         {
                             return Err(AgentError::fault(
                                 "InputQueue",
@@ -289,33 +363,15 @@ impl InputQueue {
                                 mode
                             },
                         )
-                    } else if withdraw.is_some() {
-                        decisions.push(Decision::Delete(id));
+                    } else if let Some((at, _)) = withdraw {
+                        decisions.push((at, Decision::Delete(id, steer)));
                         continue;
                     } else {
                         (false, 0, mode)
                     };
                     let mode = match mode {
                         QueryValue::Missing => {
-                            let mut user = query(through, &["input/message"], &[]);
-                            user.query.filter = Some(QueryFilter::And {
-                                conditions: vec![
-                                    field("id", vec![json!(id)]),
-                                    QueryFilter::Present {
-                                        value: QueryOperand::Field {
-                                            path: "data.user".into(),
-                                        },
-                                    },
-                                ],
-                            });
-                            user.query.select = QuerySelect::Exists;
-                            user.page = None;
-                            let QueryOutput::Exists { exists } =
-                                self.timeline.query(user).await?.result
-                            else {
-                                unreachable!("user presence")
-                            };
-                            if exists {
+                            if user_inputs.contains(&id) {
                                 InputMode::Queue
                             } else {
                                 InputMode::Append
@@ -375,10 +431,16 @@ impl InputQueue {
                 Some(entry.id.clone())
             })
             .collect();
-        for id in release {
-            decisions.extend(state.release(&id));
+        decisions.sort_by_key(|(at, _)| *at);
+        let mut published = through;
+        for (_, decision) in decisions {
+            (published, _) = self.write(vec![decision], published)?;
         }
-        let (published, _) = self.write(decisions, through)?;
+        let releases = release
+            .into_iter()
+            .flat_map(|id| state.release(&id))
+            .collect();
+        let (published, _) = self.write(releases, published)?;
         self.await_publication(published).await?;
         self.publish(published, state.queued);
         *self.state.lock().unwrap() = state;

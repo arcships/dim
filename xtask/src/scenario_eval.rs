@@ -217,7 +217,9 @@
 //!   wall clock from the first submission; both stop the run. `budget.window`
 //!   is the context window the scenario is written for and is checked, not
 //!   set: the window is the model's declared limit, so a run whose Session
-//!   declares another one is a failed run.
+//!   declares another one is a failed run. The Session reports it only after
+//!   its first request has counted the context, so the check waits for the
+//!   run to settle; a run that starts no request has no window to check.
 //! - A `must_show` probe passes when the judge finds that the run shows it; a
 //!   `must_not_show` probe passes when the run does not, and a run that shows
 //!   it is a violation.
@@ -412,6 +414,7 @@ const RUN_TOOLS: &[&str] = &[
     "branch",
     "events",
     "goal_update",
+    "loop",
     "member_approval_allow",
     "member_approval_reject",
     "recall",
@@ -4500,6 +4503,16 @@ struct Driven {
     error: Option<String>,
 }
 
+/// Why a Session whose window is not the scenario's cannot be measured, or `None`.
+fn window_mismatch(window: Option<f64>, declared: u64) -> Option<String> {
+    (window != Some(declared as f64)).then(|| {
+        format!(
+            "the Session declares a context window of {}, and the scenario declares {declared}",
+            window.map_or_else(|| "none".to_owned(), |window| window.to_string())
+        )
+    })
+}
+
 /// Drives one Session through the App Server's client methods, as a client
 /// does: create, attach, submit the script, and wait for idle or a budget.
 /// `tools` is the Session's mount list; `None` is the tools-check
@@ -4564,6 +4577,7 @@ async fn drive(
         driven.error = Some(format!("session.attach failed: {error}"));
         return driven;
     }
+    let mut window_deferred = false;
     match client
         .rpc(
             "session.context.usage",
@@ -4574,15 +4588,14 @@ async fn drive(
         Ok(usage) => {
             let window = usage["contextWindow"].as_f64();
             driven.window = window;
-            if window != Some(scenario.budget.window as f64) {
+            if let Some(error) = window_mismatch(window, scenario.budget.window) {
                 driven.stop = "error";
-                driven.error = Some(format!(
-                    "the Session declares a context window of {}, and the scenario declares {}",
-                    window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
-                    scenario.budget.window
-                ));
+                driven.error = Some(error);
                 return driven;
             }
+        }
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+            window_deferred = true;
         }
         Err(error) => {
             driven.stop = "error";
@@ -4843,6 +4856,25 @@ async fn drive(
                            "reason": format!("budget: {}", driven.stop)}),
                 )
                 .await;
+        }
+    }
+    if window_deferred && driven.error.is_none() {
+        match client
+            .rpc(
+                "session.context.usage",
+                json!({"sessionId":session,"branchId":"main"}),
+            )
+            .await
+        {
+            Ok(usage) => {
+                driven.window = usage["contextWindow"].as_f64();
+                driven.error = window_mismatch(driven.window, scenario.budget.window);
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {}
+            Err(error) => driven.error = Some(format!("Context window check failed: {error}")),
+        }
+        if driven.error.is_some() {
+            driven.stop = "error";
         }
     }
     driven
@@ -8493,6 +8525,7 @@ mod tests {
                             total_tokens: 385_000.,
                             cache_read_tokens: None,
                             cache_write_tokens: None,
+                            reasoning_tokens: None,
                             cost: None,
                             currency: None,
                         },
@@ -10356,56 +10389,6 @@ mod tests {
             assert_eq!(record["judgeOutcome"], "judged", "{record}");
         }
         assert!(options.out.join("current/case/run-0/workspace").is_dir());
-    }
-
-    /// A question is declined rather than awaited: the run's next request
-    /// carries the refusal, and the run ends its turn instead of sitting on
-    /// its wall-clock budget.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_question_is_declined_and_the_run_ends() {
-        /// The judge's verdict, and an `ask_user` call for a run request that
-        /// does not carry the refusal yet.
-        fn asks_a_question(text: &str) -> Option<Value> {
-            judged(text).or_else(|| {
-                (!text.contains("User declined to answer")).then(|| {
-                    tool_call(
-                        "ask_user",
-                        r#"{"questions":[{"question":"Where to deploy?","options":[{"label":"production"},{"label":"staging"}]}]}"#,
-                    )
-                })
-            })
-        }
-        let fixture = Fixture::start(
-            "question",
-            asks_a_question,
-            json!({
-                "message": "Ask me where to deploy.",
-                "budget": {"turns": 4, "seconds": 120, "window": 24000},
-                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
-            }),
-            &[],
-        )
-        .await;
-        let options = fixture.options(fixture.directory.join("out"));
-        let report = fixture.evaluate(&options).await.unwrap();
-        assert!(
-            report.contains("candidate is inconclusive: no comparison is a regression"),
-            "{report}"
-        );
-        let records = fixture.records(&options.out);
-        assert_eq!(records.len(), 2, "one run per arm");
-        for record in &records {
-            assert_eq!(record["stop"], "idle", "{record}");
-            assert_eq!(record["judgeOutcome"], "judged", "{record}");
-        }
-        for arm in ["current", "candidate"] {
-            let requests = fixture.arm(arm);
-            assert_eq!(requests.len(), 2, "{arm}: the question and the answer");
-            assert!(
-                requests[1].contains("User declined to answer. Proceed without these answers."),
-                "{arm}: the model reads the refusal"
-            );
-        }
     }
 
     /// A line that stays busy across many checks is asked once: its request

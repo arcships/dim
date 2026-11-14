@@ -61,7 +61,11 @@ named by `failure_sequence`, the request's output facts, the turn's
 - **Retryable failure.** `failure.kind` is `network`, `rate_limited` or
   `server_error`. Every other kind, including `unknown`, `malformed_response`,
   `output_limit`, `context_too_long` and the credential kinds, is outside the
-  first coverage.
+  first coverage. A failure whose reply announced calls it never executed
+  reaches this decision only when the turn's one continuation is already spent:
+  the Loop continues it first, without a disposer, and the handover
+  continuation spends that same slot when its consumption lands
+  ([Loop](../../architecture/rust-agent/plugins/Loop.md#a-failed-step-whose-calls-were-announced-and-never-executed)).
 - **Committed output.** The failed request committed a `step/text`,
   `step/thinking`, `step/tool-use-start`, `step/tool-use` or
   `step/model-content` fact. Output that was produced but dropped at
@@ -79,6 +83,9 @@ named by `failure_sequence`, the request's output facts, the turn's
 - **No accepted continuation yet.** After this turn's `turn/start`, the turn
   has no `context/prepare` carrying `failure_chain`. The continuation's own
   `context/prepare` carries it, so a second failure in the same turn declines.
+  The Loop also spends the turn's one continuation when it continues a reply
+  whose calls were announced and never executed, so that continuation and this
+  one share the same slot and a turn accepts one of them.
 
 The tool-boundary case declines for both reasons: a tool call from a no-tools
 continuation request settles failed with `failure.kind = unknown`, which is

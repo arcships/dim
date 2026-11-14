@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y 終了 · n 戻る · ←→ 移動 · enter 確定"
         }
-        "Restart dimcode?" => "dimcode を再起動しますか？",
-        "Restart" => "再起動",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y 再起動 · n 戻る · ←→ 移動 · enter 確定"
-        }
         // upgrade_dialog.rs
         "Update available" => "アップデートあり",
         "Version {latest} is available (you have {current})." => {
             "{latest} が利用可能（現在 {current}）。"
         }
-        "Will run: {command}" => "実行：{command}",
         "To update, run: {command}" => "更新コマンド：{command}",
-        "Update now" => "今すぐ更新",
         "Skip this version" => "このバージョンをスキップ",
         "Skipped {version}." => "{version} をスキップ。",
-        "Later" => "後で",
         "Close" => "閉じる",
-        "Restart now" => "今すぐ再起動",
-        "Updating to {version}..." => "{version} に更新中…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "{version} に更新。DimCode の再起動で反映。"
-        }
-        "Update failed: {error}" => "更新失敗：{error}",
         "←→ move · Enter confirm · Esc close" => "←→ 移動 · Enter 確定 · Esc 閉じる",
         // prompts.rs: permission request
         "Permission required" => "許可が必要",
@@ -57,6 +43,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "自動承認",
         "Full access" => "フルアクセス",
         "Run {tool}" => "{tool} を実行",
+        "edit {count} replacement in {path}" => "{path} で edit {count} 件置換",
+        "edit {count} replacements in {path}" => "{path} で edit {count} 件置換",
         "Changing the approvals mode from here is not yet available" => {
             "ここでは承認モードを変更不可"
         }
@@ -73,6 +61,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 選択 · Tab 次へ · / コマンド · Esc 断る"
         }
         "Question" => "質問",
+        "↑↓ scroll" => "↑↓ スクロール",
+        "replacements {from}-{to} of {count}" => "{count} 件中 {from}-{to} 件の置換",
         "Question on branch {branch}" => "ブランチ {branch} からの質問",
         "Permission on branch {branch}" => "ブランチ {branch} への許可",
         "Sending answer…" => "回答を送信中…",

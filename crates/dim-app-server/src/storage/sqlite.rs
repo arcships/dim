@@ -4,6 +4,7 @@ use rutis::host::ErrorKind;
 use rutis::{Ctx, Plugin};
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -16,7 +17,7 @@ use std::{
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 41;
+pub const FORMAT: u32 = 48;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -55,7 +56,7 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 41))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 48))",
     ),
     (
         "settings_documents",
@@ -75,7 +76,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "agent_sessions",
-        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))",
+        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')))",
     ),
     (
         "agent_sessions_by_leader",
@@ -120,6 +121,10 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "timeline_events_by_id",
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
+    ),
+    (
+        "timeline_events_branch_interrupts",
+        "CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'",
     ),
     (
         "timeline_events_requests",
@@ -187,7 +192,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "worktree_directories",
-        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))",
+        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, last_used_at_ms INTEGER, PRIMARY KEY (repository, root))",
     ),
     (
         "session_worktrees",
@@ -223,6 +228,26 @@ const V38_SESSION_OWNERS: &str = "DROP INDEX session_owners_by_agent;\nALTER TAB
 /// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
 /// recognize a store older than v30.
 const AGENT_SESSIONS_BEFORE_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
+/// The text of `agent_sessions` from v30 through v41; `schema_of` uses it to
+/// recognize a store older than v42.
+const AGENT_SESSIONS_BEFORE_V42: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))";
+/// v42 rebuilds `agent_sessions` so its `CHECK` accepts `automation`, the
+/// origin of a Session a saved configuration launched (#1421). A `CHECK` set
+/// cannot be widened in place, so the table is recreated, with the one index
+/// `SCHEMA` places on it. Unlike v38's rebuild of `session_owners`, other
+/// tables reference `agent_sessions`, and a rename rewrites those references
+/// unless the connection runs with `legacy_alter_table` on and foreign keys
+/// off; the startup transaction does both. Creating the table under its final
+/// name, rather than renaming it in, keeps its statement free of the quotes a
+/// rename adds.
+const V42_AGENT_SESSIONS: &str = "DROP INDEX agent_sessions_by_leader;
+PRAGMA legacy_alter_table=ON;
+ALTER TABLE agent_sessions RENAME TO agent_sessions_v41;
+CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')));
+INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions_v41;
+DROP TABLE agent_sessions_v41;
+CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+PRAGMA legacy_alter_table=OFF;";
 /// The text of `timeline_events` before v31 adds the two reading switches.
 const TIMELINE_EVENTS_BEFORE_V31: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
@@ -240,10 +265,17 @@ UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;
 const V31_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
+/// The text of `worktree_directories` before v45 adds the last-used time;
+/// `schema_of` uses it to recognize a store older than v45.
+const WORKTREE_DIRECTORIES_BEFORE_V45: &str = "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))";
+/// v45 adds the directory's last-used time, written by the association's
+/// write and removal: an upgrade cannot fill the rows it never recorded, so
+/// the column is nullable and a `NULL` time is unknown.
+const V45_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 27] = [
+const UPGRADES: [(u32, &[&str]); 34] = [
     (
         13,
         &[
@@ -350,6 +382,28 @@ const UPGRADES: [(u32, &[&str]); 27] = [
         ],
     ),
     (40, &[]),
+    (41, &[]),
+    // #1413: checked withdrawal candidates, unreadable by v42.
+    (42, &[]),
+    // v44: one optional field on one event kind (`prompt/changed` names its
+    // delivery inputs); the marker only. A daemon from before this format does
+    // not decode stored events at startup, so it would accept a store holding
+    // the field and fail on the first `prompt/changed` it decodes; the marker
+    // makes it refuse the store at open instead.
+    (43, &[]),
+    // #1451: the managed worktree's last-used time; the column only, and a
+    // store this daemon rewrites keeps `NULL` for rows it never recorded.
+    (44, &[]),
+    // #1477: one optional field on one event (`model/usage` counts its
+    // reasoning tokens); the marker only. `Usage` denies unknown fields and
+    // startup does not decode stored events, so a daemon from before this
+    // format would accept a store holding the field and fail on the first
+    // `model/usage` it decodes; the marker makes it refuse the store at open
+    // instead.
+    (45, &[]),
+    (46, &["timeline_events_branch_interrupts"]),
+    // #1496: task titles in strict exec/started and collaboration/request payloads.
+    (47, &[]),
 ];
 
 fn format_table(version: u32) -> String {
@@ -383,6 +437,10 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
+                "agent_sessions" if version < 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
+                "worktree_directories" if version < 45 => {
+                    WORKTREE_DIRECTORIES_BEFORE_V45.to_owned()
+                }
                 "session_owners" if version < 41 => SESSION_OWNERS_BEFORE_V38.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
                 "timeline_events" if version < 31 => TIMELINE_EVENTS_BEFORE_V31.to_owned(),
@@ -413,6 +471,26 @@ fn main_schema(version: u32) -> Vec<(&'static str, String)> {
                     .expect("owner schema")
                     .1
                     .to_owned(),
+                _ => sql,
+            };
+            (name, sql)
+        })
+        .collect()
+}
+
+fn resume_schema(version: u32) -> Vec<(&'static str, String)> {
+    schema_of(44)
+        .into_iter()
+        .chain(
+            SCHEMA
+                .iter()
+                .filter(|(name, _)| *name == "timeline_events_branch_interrupts")
+                .map(|(name, sql)| (*name, (*sql).to_owned())),
+        )
+        .map(|(name, sql)| {
+            let sql = match name {
+                "agent_store_format" => format_table(version),
+                "agent_sessions" if version == 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
                 _ => sql,
             };
             (name, sql)
@@ -482,10 +560,26 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
 }
 /// The format whose exact schema `actual` is: the current format, or one an
 /// upgrade step starts from.
-fn known_format(actual: &[(String, String)]) -> Option<u32> {
+fn known_format(actual: &[(String, String)], marker: Option<i64>) -> Option<u32> {
+    let matches = |version: u32| same_schema(actual, schema_of(version));
+    // A marker-only step shares the schema of the step before it (v42 and
+    // v43 differ only in the event encoding). The marker decides the version
+    // the schema cannot.
+    if let Some(marker) = marker
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value <= FORMAT)
+        && matches(marker)
+    {
+        return Some(marker);
+    }
     std::iter::once(FORMAT)
         .chain(UPGRADES.iter().map(|(from, _)| *from))
-        .find(|version| same_schema(actual, schema_of(*version)))
+        .find(|version| matches(*version))
+        .or_else(|| {
+            [42, 43, 44]
+                .into_iter()
+                .find(|version| same_schema(actual, resume_schema(*version)))
+        })
         .or_else(|| {
             [37, 38]
                 .into_iter()
@@ -505,6 +599,36 @@ fn markers(connection: &Connection) -> Result<Vec<i64>> {
 
 fn storage(error: impl std::fmt::Display) -> AgentError {
     AgentError::Storage(error.to_string())
+}
+
+/// The rows `PRAGMA foreign_key_check` reports, counted by `(table, parent)`.
+/// It returns one row per offending row, so the count needs no ordering and no
+/// second pass: the reference counts are what an upgrade compares.
+fn violations(connection: &Connection) -> Result<BTreeMap<(String, String), i64>> {
+    let mut counts = BTreeMap::new();
+    let mut check = connection
+        .prepare("SELECT * FROM pragma_foreign_key_check")
+        .map_err(storage)?;
+    let mut rows = check.query([]).map_err(storage)?;
+    while let Some(row) = rows.next().map_err(storage)? {
+        let table: String = row.get(0).map_err(storage)?;
+        let parent: String = row.get(2).map_err(storage)?;
+        *counts.entry((table, parent)).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// The first `(table, parent)` pair an upgrade left with more violations than
+/// it found, with both counts. A pair that is unchanged or smaller is a state
+/// the store already documented, which a retry converges.
+fn grew(
+    after: BTreeMap<(String, String), i64>,
+    before: &BTreeMap<(String, String), i64>,
+) -> Option<(String, String, i64, i64)> {
+    after.into_iter().find_map(|(pair, count)| {
+        let found = before.get(&pair).copied().unwrap_or(0);
+        (count > found).then_some((pair.0, pair.1, found, count))
+    })
 }
 
 /// The store upgrade a running daemon reports beside the store, when the note
@@ -930,6 +1054,15 @@ impl SqliteStorage {
         let mut connection = Connection::open(&path).map_err(storage)?;
         functions(&connection)?;
         connection.busy_handler(Some(busy)).map_err(storage)?;
+        // The bundled SQLite enables foreign keys on a new connection, and the
+        // pragma cannot change inside a transaction. The upgrade step that
+        // rebuilds `agent_sessions` (#1421) renames a table other tables
+        // reference, and an enforced rename makes SQLite rewrite their stored
+        // SQL to the temporary name. The transaction therefore runs unenforced
+        // and the commit checks every reference instead.
+        connection
+            .pragma_update(None, "foreign_keys", false)
+            .map_err(storage)?;
         // This opening owns the connection, so dropping it before COMMIT rolls back the transaction.
         connection
             .execute_batch("BEGIN IMMEDIATE")
@@ -942,6 +1075,9 @@ impl SqliteStorage {
             ))
         };
         let mut upgraded_from = None;
+        // What the store left dangling before any upgrade step ran, by
+        // `(table, parent)`; read only on the upgrade path.
+        let mut violations_before: BTreeMap<(String, String), i64> = BTreeMap::new();
         if actual.is_empty() {
             for (_, sql) in SCHEMA
                 .iter()
@@ -955,8 +1091,11 @@ impl SqliteStorage {
             connection
                 .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                 .map_err(storage)?;
-        } else if let Some(version) = known_format(&actual) {
-            let markers = markers(&connection)?;
+        } else if let Some(version) = {
+            let markers = markers(&connection).unwrap_or_default();
+            known_format(&actual, single_marker(&markers))
+        } {
+            let markers = markers(&connection).unwrap_or_default();
             if markers != [i64::from(version)] {
                 write_startup_failure(
                     &path,
@@ -991,6 +1130,8 @@ impl SqliteStorage {
                         .map_err(storage)?;
                     progress.report(true);
                 }
+                let resume =
+                    matches!(version, 42..=44) && same_schema(&actual, resume_schema(version));
                 let upgrade_from = if version >= 37
                     && !actual
                         .iter()
@@ -1000,12 +1141,23 @@ impl SqliteStorage {
                 } else {
                     version
                 };
+                // What the store already leaves dangling, before any step runs:
+                // an interrupted `drop_session` or `copy_fork_rows` is a state
+                // the store documents, not damage.
+                violations_before = violations(&connection).map_err(storage)?;
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= upgrade_from) {
                     if *from == 26 {
                         connection.execute_batch(V27_COLUMNS).map_err(storage)?;
                     }
                     if *from == 29 {
                         connection.execute_batch(V30_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 44
+                        && actual.iter().any(|(name, sql)| {
+                            name == "worktree_directories" && sql == WORKTREE_DIRECTORIES_BEFORE_V45
+                        })
+                    {
+                        connection.execute_batch(V45_COLUMNS).map_err(storage)?;
                     }
                     if *from == 30 {
                         connection.execute_batch(V31_COLUMNS).map_err(storage)?;
@@ -1041,6 +1193,9 @@ impl SqliteStorage {
                         .chain(super::arrays::SCHEMA)
                         .chain(super::identities::SCHEMA)
                         .filter(|(name, _)| added.contains(name))
+                        .filter(|(name, _)| {
+                            !(resume && *name == "timeline_events_branch_interrupts")
+                        })
                     {
                         connection.execute_batch(sql).map_err(storage)?;
                     }
@@ -1083,8 +1238,19 @@ impl SqliteStorage {
                             super::members::backfill_v40(&connection)?;
                         }
                     }
+                    if *from == 46 && !resume {
+                        for (_, sql) in DERIVED_INDEXES {
+                            connection.execute_batch(sql).map_err(storage)?;
+                        }
+                        super::members::backfill_v42(&connection)?;
+                    }
                     if *from == 38 {
                         super::arrays::backfill(&connection)?;
+                    }
+                    if *from == 41 || *from == 42 && version == 42 && resume {
+                        connection
+                            .execute_batch(V42_AGENT_SESSIONS)
+                            .map_err(storage)?;
                     }
                     if *from == 24 {
                         connection
@@ -1107,7 +1273,7 @@ impl SqliteStorage {
                 connection
                     .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
-                if known_format(&schema(&connection)?) != Some(FORMAT) {
+                if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT) {
                     return Err(storage("upgraded native store has an unexpected schema"));
                 }
                 upgraded_from = Some(version);
@@ -1134,6 +1300,26 @@ impl SqliteStorage {
         }
         for (_, sql) in DERIVED_INDEXES {
             connection.execute_batch(sql).map_err(storage)?;
+        }
+        // The transaction ran with foreign keys off (see its opening), so an
+        // upgrade compares the violations it found with the ones it leaves: a
+        // pair whose count grew refuses the store, and one that is unchanged or
+        // shrank passes. The upgrade must not hide a violation it created, not
+        // repair one — `drop_session` and `copy_fork_rows` leave deliberate
+        // interrupted states that a retry converges, and they name pairs such as
+        // `timeline_events → timeline_branches` that no rebuild of
+        // `agent_sessions` can change. An ordinary open writes nothing, so it
+        // needs no pass.
+        if upgraded_from.is_some()
+            && let Some((table, parent, before, after)) = grew(
+                violations(&connection).map_err(storage)?,
+                &violations_before,
+            )
+        {
+            return Err(storage(format!(
+                "the upgraded store at {} holds {after} rows of {table} that name no {parent}, against {before} before the upgrade; the database was preserved",
+                path.display()
+            )));
         }
         connection.execute_batch("COMMIT").map_err(storage)?;
         if upgraded_from.is_some() {
@@ -1205,8 +1391,10 @@ impl SqliteStorage {
                 path.display()
             ))
         };
-        let format = known_format(&schema(&connection)?).ok_or_else(unsupported)?;
-        if markers(&connection)? != [i64::from(format)] {
+        let stored_markers = markers(&connection).unwrap_or_default();
+        let format = known_format(&schema(&connection)?, single_marker(&stored_markers))
+            .ok_or_else(unsupported)?;
+        if stored_markers != [i64::from(format)] {
             return Err(unsupported());
         }
         Ok((
@@ -1558,7 +1746,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
             path.display()
         ))
     };
-    if known_format(&schema(&connection)?) != Some(FORMAT)
+    if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT)
         || markers(&connection)? != [i64::from(FORMAT)]
     {
         return Err(unsupported());

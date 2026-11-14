@@ -12,12 +12,19 @@ branch's InputQueue. It also provides the Session table `submitChecks`
 ([`SubmitChecks`](../../../../crates/dim-agent-capabilities/src/input_queue.rs)):
 Session parts register submit checks with it from their own `apply` and the
 registration is withdrawn when that part unloads. A `session.input.withdraw`
-with `steer` calls each check registered now, in name order, before its batch;
+with `steer` validates the operator's content and calls each check registered
+now, in name order, before admitting its command;
 any block fails the call with `input_blocked` and writes nothing, else each
 context that is one runtime marker element becomes a text block after the
 steer's own content, and one that is not is dropped with a diagnostic. This is
 Hooks A.6.2's generic capability; InputQueue gives the checks no meaning, and
-with none registered the withdrawal writes unchecked.
+with none registered the validated candidate has no submit-check additions.
+The reply carries the named submit-check warnings only with the receipt for
+a committed replacement ([Hooks A.6.2](../../../design/plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)).
+The checked candidate is passed inside the withdrawal command, not submitted
+as an independent input. Passing checks does not reserve the held input;
+InputQueue decides conditional acceptance in sequence order
+([Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal)).
 
 ### Dependencies
 
@@ -71,42 +78,77 @@ observable input queue.
 | Service | Purpose |
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
-| `B:Timeline` | Commit application decisions. |
-| `S:TreeCommands` | Commit an input `submit` writes, through the branch's validating input entry. |
-| `B:TimelineIdentity` | Name this branch to `submit`. |
+| `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
+| `S:TreeCommands` | Reach the validating branch input entry for `submit`. |
+| `B:TimelineIdentity` | Identify the branch for `submit`. |
 
 ### Data face
 
-`inputQueue` ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)) is
-this part's service by name, so a part of any language submits and withdraws
-through the same queue a Rust part calls:
+`inputQueue` is provided by this branch owner; Rust and wire calls use the same
+operations ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)).
 
 ```text
 inputQueue.submit(input: InputMessageData) -> {inputId, sequence}
-inputQueue.withdraw(command: InputWithdrawData, steer?: InputMessageData)
-  -> {status: "deleted", sequence, steer?: {inputId, sequence}}
-  | {status: "notHeld", steer?: {inputId, sequence}}
+inputQueue.withdraw(command: {input_id, reason?})
+  -> {status: "deleted", sequence} | {status: "notHeld"}
   -> error {code, message}
 ```
 
-`submit` commits through the branch's validating input entry; `withdraw` is
-InputQueue's own decision, and with a `steer` the withdrawal and that input are
-one batch, as `session.input.withdraw` writes them. Both return the decision the
-owner made; the queue's ordering, its recovery and its StateCell stay here.
+`submit` uses the branch input entry and its submission-id admission. `withdraw`
+only withdraws: it rejects any `steer` candidate before writing a command, including
+one carrying a submission id. Operator Steer uses `session.input.withdraw` above,
+which validates content, runs submit checks and admits the conditional replacement.
+A `notHeld` decision never creates a replacement. Plain withdrawal waits for its
+result's publication; an unconfirmed accepted outcome is `PublicationUnknown`.
+Malformed commands are `InvalidInput`; branch-input failures retain `AgentError` codes.
+
+The Rust-only `withdraw_checked` implementation accepts the checked command from
+InputMethods and returns the decision plus its optional committed event. It is
+not a data-face operation; checks, warnings and publication confirmation stay at
+the existing Session entry.
 
 ### Events and lifetime
 
-Consumes input, withdrawal, turn and interrupt facts; produces only the original
-application/deletion decisions. It writes no queue recovery or node events.
+Consumes `input/message`, `input/consumed`, `input/withdraw`, `input/applied`,
+`input/deleted`, `turn/start`, `turn/end` and `stop/interrupt`, including result
+facts needed by recovery. Its withdrawal service writes `input/withdraw`;
+its decisions produce `input/applied`, `input/deleted` and, only for an accepted
+queued-input Steer, the replacement `input/message`. It does not run a model itself.
+It writes no queue recovery or node events and holds no historical event list.
+No background tasks or external resources.
+An idle append is pending until a driving input; an interrupt is not permission
+to start a new turn from previously unapplied input.
+
+For an accepted queued-input Steer, the replacement `input/message` precedes
+the original input's `input/deleted` in one atomic result batch. A `notHeld`
+decision writes neither result nor replacement, even though its command remains
+committed, and returns no Steer receipt. The branch service returns its committed
+decision. InputMethods confirms an accepted Steer's result publication through
+the branch facade before returning its RPC receipt, reporting `publication_unknown`
+if publication cannot be confirmed. A retry after a lost reply cannot replace
+the deleted input again. A candidate in `input/withdraw.steer` is not itself an
+adopted input and never enters model context. The owner contract is
+[Session access A.4](../../../design/contracts/session-access.md#a4-withdrawal),
+and its durable form is the
+[v43 format decision](../../../design/appserver/native-storage-format.md#v43-conditional-queued-input-steer).
 
 Recovery fixes a published cutoff, selects ordinary and handover current members,
-then reads last applied/withdraw controls for each page of at most 128 identities.
+then reads first applied/withdraw controls for each page of at most 128 identities.
 Two last turn boundaries and an interrupt only when needed determine turn/starting.
-It never reads input bodies to recover entries; old missing input modes use an
-identity-driven user-presence query. Applied mode defaults agree with Loop.
+It never reads input bodies to recover entries; old missing input modes use
+one identity-driven user-presence query for all missing modes in a page, returning only IDs. Applied mode defaults agree with Loop.
+Only an owed accepted withdrawal decision loads its optional full checked `steer`
+candidate, through the selected command's identity. Recovery never reruns external
+submission checks or falls back to full history. A committed replacement/deletion
+batch removes the original from current membership and is not recreated.
+The first withdrawal owns an owed candidate; later commands cannot replace it.
+Owed results retain withdrawal sequence order across current members.
 Current entries, queued count, turn, starting and release bits stay in memory.
-Only necessary applied/deleted output waits for its commit before publishing the
-observable queue; empty or unchanged transitions do not publish a new count.
+Necessary applied/deleted output, including an accepted Steer's atomic result,
+waits for its commit before publishing the observable queue; pure turn/starting
+changes publish after their committed source is handled. Empty or unchanged
+transitions do not publish a new count. Closing clears only this generation's
+reply waiters, without refreshing the published snapshot.
 Public pending semantics still exclude handovers. Old derived recovery records
 are ignored; original facts and native member indexes remain authoritative.
 

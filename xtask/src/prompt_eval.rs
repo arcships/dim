@@ -507,6 +507,7 @@ async fn drive(
     {
         return Driven::failed(format!("session.attach failed: {error}"));
     }
+    let mut window_deferred = false;
     match client
         .rpc(
             "session.context.usage",
@@ -521,6 +522,9 @@ async fn drive(
                     usage["contextWindow"], scenario.budget.window
                 ));
             }
+        }
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+            window_deferred = true;
         }
         Err(error) => {
             return Driven::failed(format!(
@@ -734,16 +738,61 @@ async fn drive(
             )
             .await;
     }
+    let mut window_error = None;
+    let window = if window_deferred {
+        match client
+            .rpc(
+                "session.context.usage",
+                json!({"sessionId":session,"branchId":"main"}),
+            )
+            .await
+        {
+            Ok(usage) => {
+                let window = usage["contextWindow"].as_f64();
+                if window.is_none() {
+                    window_error = Some("The Session returned no context window".to_owned());
+                }
+                window
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+                None
+            }
+            Err(error) => {
+                window_error = Some(format!("Context window check failed: {error}"));
+                None
+            }
+        }
+    } else {
+        Some(scenario.budget.window as f64)
+    };
     let _ = client
         .rpc("session.close", json!({"sessionId": session}))
         .await;
-    let error = (stop == "turns" || stop == "seconds").then(|| {
-        format!(
-            "the run ended on its budget ({stop}) after {} of {} scripted turns",
-            turns,
-            script.len()
-        )
-    });
+    let windows_differ = window.is_some_and(|window| window != scenario.budget.window as f64);
+    let stop = if windows_differ || window_error.is_some() {
+        "error"
+    } else {
+        stop
+    };
+    let error = window_error
+        .or_else(|| {
+            windows_differ.then(|| {
+                format!(
+                    "the Session declares a context window of {}, and the scenario declares {}",
+                    window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
+                    scenario.budget.window
+                )
+            })
+        })
+        .or_else(|| {
+            (stop == "turns" || stop == "seconds").then(|| {
+                format!(
+                    "the run ended on its budget ({stop}) after {} of {} scripted turns",
+                    turns,
+                    script.len()
+                )
+            })
+        });
     Driven {
         session,
         stop,
@@ -820,6 +869,7 @@ impl Model {
                         total_tokens: 128.,
                         cache_read_tokens: Some(64.),
                         cache_write_tokens: None,
+                        reasoning_tokens: None,
                         cost: None,
                         currency: None,
                     }),
@@ -1197,6 +1247,7 @@ async fn replay_one(
                 total_tokens: 0.,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                reasoning_tokens: None,
                 cost: None,
                 currency: None,
             });

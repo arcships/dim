@@ -9,18 +9,31 @@ use crate::model::view::{MemberTarget, TaskKind};
 
 #[derive(Default)]
 pub(super) struct BranchHistory {
-    window: dim_client::window::Window,
+    pub(super) window: dim_client::window::Window,
     pub done: bool,
+    pub ended: bool,
     pub error: Option<String>,
     live: Vec<Event>,
-    window_complete: bool,
+    pub(super) window_complete: bool,
     inventory_index: usize,
     inventory_cursor: Option<serde_json::Value>,
     goal_stale: bool,
-    earlier: bool,
+    earlier: EarlierRead,
     pub running: Option<bool>,
     pub latest_reply: u64,
     pub seen_reply: u64,
+}
+
+/// The earlier read a branch is recorded as waiting for: none, one queued or
+/// in flight, or one that failed while the window still holds the older
+/// request it was asked for. Only `Reading` folds the page that lands as older
+/// history; `Failed` is there to be read again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum EarlierRead {
+    #[default]
+    None,
+    Reading,
+    Failed,
 }
 
 pub(super) struct HistoryRequest {
@@ -50,9 +63,17 @@ pub(super) struct StopBatch {
     unavailable: usize,
 }
 
+impl HistoryRequest {
+    pub(super) fn is_tool_origin(&self, branch: &str, request: &str, call: &str) -> bool {
+        self.branch_id == branch
+            && matches!(&self.stage, ReadStage::ToolOrigin { request_id, call_id } if request_id == request && call_id == call)
+    }
+}
+
 impl Worker {
     /// The replacement releases this attachment after creating or finding its Session.
     pub(super) fn invalidate_projection(&mut self) -> String {
+        self.opening_reads.clear();
         self.compaction_targets(Default::default());
         self.release_members();
         self.projection_id += 1;
@@ -69,6 +90,7 @@ impl Worker {
         self.context_request = None;
         self.context_stale = false;
         self.cursors.clear();
+        self.tool_origins.clear();
         self.focus = "main".into();
         self.side = None;
         self.lines.clear();
@@ -107,6 +129,7 @@ impl Worker {
             history.window_complete = false;
             history.inventory_index = 0;
             history.inventory_cursor = None;
+            history.earlier = EarlierRead::None;
             if let Some(request) = &mut self.task_history_request
                 && request.branch_id == branch_id
             {
@@ -134,6 +157,16 @@ impl Worker {
                 if let Some(parent) = &data.parent {
                     self.discover_branch(parent);
                 }
+            }
+            EventContent::BranchEnded(data) => {
+                self.task_history
+                    .entry(data.branch.clone())
+                    .and_modify(|history| history.ended = true)
+                    .or_insert_with(|| BranchHistory {
+                        ended: true,
+                        done: true,
+                        ..Default::default()
+                    });
             }
             EventContent::BranchCreateFailed(data) => {
                 let (branch, error) = match data {
@@ -169,6 +202,7 @@ impl Worker {
             .task_history
             .get_mut(branch_id)
             .expect("discovered branch");
+        history.ended |= matches!(event.content, EventContent::BranchEnd(_));
         let mut unread_changed = false;
         if branch_id != "main"
             && event.sequence > applied.max(history.latest_reply)
@@ -194,6 +228,9 @@ impl Worker {
     pub(super) fn retry_task_history(&mut self) {
         for (id, history) in &mut self.task_history {
             if history.error.take().is_some() {
+                if history.earlier == EarlierRead::Failed {
+                    history.earlier = EarlierRead::Reading;
+                }
                 self.task_history_queue.push_back(id.clone());
             }
         }
@@ -207,17 +244,37 @@ impl Worker {
         let Some(history) = self.task_history.get_mut(&self.focus) else {
             return;
         };
-        if !history.done || history.earlier {
+        if !history.done || history.earlier == EarlierRead::Reading {
             return;
         }
         if history.window.before.is_none() {
             self.send(Update::Notice("Beginning of conversation".into()));
             return;
         }
-        history.earlier = true;
+        history.earlier = EarlierRead::Reading;
         history.window_complete = false;
         history.error = None;
         self.task_history_queue.push_back(self.focus.clone());
+    }
+
+    /// Whether the view `earlier()` would act on has older history to read.
+    /// It reads the same fields `earlier()` tests: `earlier_member` for a
+    /// selected member, otherwise `task_history[focus]` in `earlier`.
+    pub(super) fn earlier_view(&self) -> Earlier {
+        if self.members.selected.is_some() {
+            return self.earlier_observation();
+        }
+        self.task_history
+            .get(&self.focus)
+            .map_or(Earlier::AtStart, |history| {
+                if history.earlier == EarlierRead::Reading {
+                    Earlier::Reading
+                } else if history.window.before.is_some() {
+                    Earlier::Unread
+                } else {
+                    Earlier::AtStart
+                }
+            })
     }
 
     pub(super) async fn poll_task_history(&mut self) -> crate::Result<()> {
@@ -253,38 +310,29 @@ impl Worker {
                 return Ok(());
             }
         }
-        let Some(branch_id) = self.task_history_queue.pop_front() else {
-            if self.methods.contains("session.tool.get") {
-                let mut shown = vec![self.focus.clone()];
-                if let Some(side) = &self.side
-                    && side != &self.focus
-                {
-                    shown.push(side.clone());
-                }
-                for branch in shown {
-                    if !self
-                        .task_history
-                        .get(&branch)
-                        .is_some_and(|history| history.done)
-                    {
-                        continue;
-                    }
-                    let missing = transcript_mut(&mut self.projection, &mut self.lines, &branch)
-                        .and_then(|projection| projection.missing_tool());
-                    if let Some((request_id, call_id)) = missing {
-                        if let Some(projection) =
-                            transcript_mut(&mut self.projection, &mut self.lines, &branch)
-                        {
-                            projection.tool_lookup(&request_id, &call_id, None);
-                        }
-                        match self.client.send("session.tool.get",json!({"sessionId":self.session_id,"branchId":branch,"requestId":request_id,"callId":call_id})).await {
-                            Ok(id)=>self.task_history_request=Some(HistoryRequest { id,session_id:self.session_id.clone(),branch_id:branch,current:true,stage:ReadStage::ToolOrigin { request_id,call_id } }),
-                            Err(error)=>self.send(Update::Notice(format!("Tool origin: {error}"))),
-                        }
-                        break;
-                    }
+        if let Some((branch_id, request_id, call_id)) = self.tool_origins.pop_front() {
+            if !transcript_mut(&mut self.projection, &mut self.lines, &branch_id).is_some_and(
+                |projection| {
+                    projection.rows().iter().any(|row| {
+                        row.batch.as_deref() == Some(&request_id)
+                            && row.call_id.as_deref() == Some(&call_id)
+                            && !row.tool_lookup_done
+                    })
+                },
+            ) {
+                return Ok(());
+            }
+            match self.client.send("session.tool.get", json!({"sessionId":self.session_id,"branchId":branch_id,"requestId":request_id,"callId":call_id})).await {
+                Ok(id) => self.task_history_request = Some(HistoryRequest { id, session_id:self.session_id.clone(), branch_id, current:true, stage:ReadStage::ToolOrigin { request_id,call_id } }),
+                Err(error) => {
+                    if let Some(projection) = transcript_mut(&mut self.projection,&mut self.lines,&branch_id) { projection.tool_lookup(&request_id,&call_id,None); }
+                    self.send(Update::Notice(format!("Tool origin: {error}")));
+                    self.changed();
                 }
             }
+            return Ok(());
+        }
+        let Some(branch_id) = self.task_history_queue.pop_front() else {
             return Ok(());
         };
         if !self.client.supports(&["session.history.latestTurn"]) {
@@ -302,6 +350,11 @@ impl Worker {
                 json!({"sessionId":self.session_id,"branchId":branch_id}),
             )
         } else if self.task_history[&branch_id].window_complete {
+            if self.task_history[&branch_id].ended {
+                self.finish_window(&branch_id);
+                self.changed();
+                return Ok(());
+            }
             for required in ["session.input.pending", "session.turn.get"] {
                 if !self.methods.contains(required) {
                     self.fail_inventory(
@@ -343,9 +396,12 @@ impl Worker {
                 } else {
                     "session.history"
                 },
-                self.task_history[&branch_id]
-                    .window
-                    .params(&self.session_id, &branch_id),
+                self.task_history[&branch_id].window.params_with_display(
+                    &self.session_id,
+                    &branch_id,
+                    self.client.offers("session.history.display.tail"),
+                    self.client.offers("session.history.display.transcript"),
+                ),
             )
         };
         match self.client.send(method, params).await {
@@ -400,8 +456,22 @@ impl Worker {
                         projection.tool_lookup(request_id, call_id, read.call);
                     }
                 }
-                Ok(_) => self.send(Update::Notice("Tool origin identity changed".into())),
-                Err(error) => self.send(Update::Notice(format!("Tool origin: {error}"))),
+                Ok(_) => {
+                    if let Some(projection) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &request.branch_id)
+                    {
+                        projection.tool_lookup(request_id, call_id, None);
+                    }
+                    self.send(Update::Notice("Tool origin identity changed".into()));
+                }
+                Err(error) => {
+                    if let Some(projection) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &request.branch_id)
+                    {
+                        projection.tool_lookup(request_id, call_id, None);
+                    }
+                    self.send(Update::Notice(format!("Tool origin: {error}")));
+                }
             }
             self.changed();
             return Ok(());
@@ -482,9 +552,14 @@ impl Worker {
             .map_err(|error| format!("Invalid history reply: {error}"))?;
             history.window.push(page).map_err(|error| error.to_string())
         });
+        let window_ready = matches!(result, Ok(true));
+        let earlier = history.earlier == EarlierRead::Reading;
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
+                if history.earlier == EarlierRead::Reading {
+                    history.earlier = EarlierRead::Failed;
+                }
                 let fatal = request.branch_id == "main" && !history.done;
                 let report = crate::report::Captured::observed(
                     crate::report::Operation::SessionRead,
@@ -495,13 +570,13 @@ impl Worker {
                     return Err(format!("Main branch history: {error}").into());
                 }
             }
-            Ok(false) => self.task_history_queue.push_back(request.branch_id),
+            Ok(false) => self.task_history_queue.push_back(request.branch_id.clone()),
             Ok(true) => {
                 let events = history.window.take();
                 let missing_prefix = history.window.before.is_some();
                 history.window_complete = true;
-                if history.earlier {
-                    history.earlier = false;
+                if history.earlier == EarlierRead::Reading {
+                    history.earlier = EarlierRead::None;
                     let mut older = Projection::for_branch(&request.branch_id);
                     for event in events {
                         older.replay(&request.branch_id, &event);
@@ -515,7 +590,9 @@ impl Worker {
                     for event in events {
                         self.replay(&request.branch_id, event);
                     }
-                    self.task_history_queue.push_back(request.branch_id.clone());
+                    if !self.task_history[&request.branch_id].ended {
+                        self.task_history_queue.push_back(request.branch_id.clone());
+                    }
                 }
                 if missing_prefix {
                     self.send(Update::Notice(
@@ -525,6 +602,12 @@ impl Worker {
             }
         }
         self.changed();
+        if window_ready {
+            if !earlier && self.task_history[&request.branch_id].ended {
+                self.finish_window(&request.branch_id);
+            }
+            self.publish();
+        }
         Ok(())
     }
 
@@ -561,7 +644,7 @@ impl Worker {
             projection.set_running(running);
         }
         for event in live {
-            if event.sequence > through {
+            if event.sequence > through || matches!(event.content, EventContent::Configuration(_)) {
                 self.task_event(branch, event);
             }
         }
@@ -716,5 +799,309 @@ impl Worker {
             self.task_stops.as_mut().expect("stop batch").errors += 1;
             self.send(Update::Notice(format!("Stop-all {target}: {error}")));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::client::Message;
+
+    /// One `step/text` event, as the daemon sends it on the wire and in a page.
+    fn text(sequence: u64, request: &str, delta: &str) -> serde_json::Value {
+        json!({
+            "id": format!("text-{sequence}"), "sequence": sequence, "create_at": 2000,
+            "type": "step", "name": "text",
+            "data": {"turn_id": "t2", "request_id": request, "delta": delta}
+        })
+    }
+
+    /// The same event, decoded as the live stream decodes it.
+    fn event(sequence: u64, request: &str, delta: &str) -> Event {
+        serde_json::from_value(text(sequence, request, delta)).expect("a text event")
+    }
+
+    /// Answers the outstanding history read with the daemon's failure.
+    async fn fail(worker: &mut Worker, what: &str) {
+        let id = worker
+            .task_history_request
+            .as_ref()
+            .unwrap_or_else(|| panic!("{what} was sent"))
+            .id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Err(client::RpcError {
+                    code: -32603,
+                    message: "the daemon dropped the read".into(),
+                    data: None,
+                }),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Answers the outstanding history read with a page.
+    async fn answer(worker: &mut Worker, page: serde_json::Value) {
+        let id = worker
+            .task_history_request
+            .as_ref()
+            .expect("the read in flight")
+            .id;
+        worker
+            .message(Message::Response {
+                id,
+                result: Ok(page),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// A branch whose earlier read failed reports `Unread` and reads again on
+    /// the next press. A failure that kept the read recorded as in flight makes
+    /// `earlier_view` report `Reading` with nothing sent, and `earlier` returns
+    /// at its own state: PageUp, the load-more row and `/earlier` never read
+    /// that line again.
+    #[tokio::test]
+    async fn a_failed_earlier_read_returns_the_branch_to_unread_and_reads_again() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.focus = "main".into();
+        worker.discover_branch("main");
+        let history = worker.task_history.get_mut("main").unwrap();
+        history.done = true;
+        history.window.before = Some(7);
+        history.window.through = Some(9);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "the loaded window has older history"
+        );
+
+        worker.earlier();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read is in flight"
+        );
+        worker.poll_task_history().await.unwrap();
+        fail(&mut worker, "the earlier read").await;
+
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "a failed earlier read leaves the older history to read"
+        );
+        worker.earlier();
+        assert_eq!(
+            worker.task_history["main"].earlier,
+            EarlierRead::Reading,
+            "the next press records another earlier read"
+        );
+        assert!(
+            worker.task_history_queue.contains(&"main".to_owned()),
+            "the next press queues a read"
+        );
+    }
+
+    /// A `/tasks` retry of a failed earlier read reads the same older request
+    /// the window still holds, and the rows it brings go ahead of the ones
+    /// already loaded. A retry that records no earlier read folds the page as a
+    /// first window instead: every event in it is at or below the line's
+    /// cutoff, so none of them reach the transcript.
+    #[tokio::test]
+    async fn a_retried_earlier_read_prepends_the_rows_it_reads() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        worker
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
+            .await
+            .unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(200);
+            history.window.through = Some(300);
+        }
+        worker.apply("b-7c", event(300, "r-loaded", "the answer loaded first"));
+
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        fail(&mut worker, "the earlier read").await;
+
+        worker
+            .command(crate::model::session::Command::TaskHistory {
+                projection_id: worker.projection_id,
+            })
+            .await
+            .unwrap();
+        worker.poll_task_history().await.unwrap();
+        assert!(
+            worker.task_history_request.is_some(),
+            "the retried read is in flight"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].window.before,
+            Some(200),
+            "the retry is the older request the window still holds"
+        );
+        worker.task_history_queue.clear();
+        let older: Vec<_> = (2..=101)
+            .map(|sequence| text(sequence, &format!("r-older-{sequence}"), "older "))
+            .collect();
+        answer(
+            &mut worker,
+            json!({"events": older, "through": 300, "nextBefore": 2, "nextAfter": 101}),
+        )
+        .await;
+
+        let rows = worker.lines["b-7c"].projection.rows();
+        assert_eq!(rows.len(), 101, "every row of the page joined the line");
+        assert_eq!(
+            rows[0].text, "older ",
+            "the page's first row is ahead of everything loaded"
+        );
+        assert_eq!(
+            rows[100].text, "the answer loaded first",
+            "the loaded rows follow the older page"
+        );
+        assert!(
+            !worker.task_history_queue.contains(&"b-7c".to_owned()),
+            "the page was an older page, not a first window"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "the window still starts after the event before the page"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].window.before,
+            Some(2),
+            "the window holds the older request the page ended at"
+        );
+    }
+
+    /// A branch that ends while its older page is in flight does not finish
+    /// its window on that page: the page is history the window has not read
+    /// yet, not the branch's first window. Only a reply that answered no
+    /// earlier read finishes an ended branch.
+    #[tokio::test]
+    async fn an_ended_branch_does_not_finish_on_an_earlier_page() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        worker
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
+            .await
+            .unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(200);
+            history.window.through = Some(300);
+        }
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = false;
+            history.ended = true;
+        }
+        let older: Vec<_> = (2..=101)
+            .map(|sequence| text(sequence, &format!("r-older-{sequence}"), "older "))
+            .collect();
+        answer(
+            &mut worker,
+            json!({"events": older, "through": 300, "nextBefore": 2, "nextAfter": 101}),
+        )
+        .await;
+
+        assert!(
+            !worker.task_history["b-7c"].done,
+            "an earlier page leaves the ended branch's window unfinished"
+        );
+        assert_eq!(
+            worker.task_history["b-7c"].earlier,
+            EarlierRead::None,
+            "the earlier page settled the read it answered"
+        );
+    }
+
+    /// Opening a branch's line after its earlier read failed starts the line
+    /// over: the window that read was asked for is gone with the reset. A
+    /// failure left in place outlives the window it belonged to, and a retry
+    /// from the tasks panel then folds the line's first window as an older
+    /// page, which prepends rows below the cutoff and never reads it on.
+    #[tokio::test]
+    async fn a_line_opened_after_a_failed_earlier_read_records_no_read() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.discover_branch("b-7c");
+        {
+            let history = worker.task_history.get_mut("b-7c").unwrap();
+            history.done = true;
+            history.window.before = Some(7);
+            history.window.through = Some(9);
+            history.earlier = EarlierRead::Failed;
+        }
+
+        worker
+            .command(crate::model::session::Command::FocusLine("b-7c".into()))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            worker.task_history["b-7c"].earlier,
+            EarlierRead::None,
+            "the line starts over, so nothing earlier is recorded against it"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "the line's window starts from nothing, so it reports its start"
+        );
+    }
+
+    /// A retried earlier read is an earlier read again: the line reports
+    /// `Reading` while it is in flight, and a press during it queues nothing.
+    #[tokio::test]
+    async fn a_tasks_retry_of_an_earlier_read_reports_reading() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        worker.session_id = "s1".into();
+        worker.focus = "main".into();
+        worker.discover_branch("main");
+        {
+            let history = worker.task_history.get_mut("main").unwrap();
+            history.done = true;
+            history.window.before = Some(7);
+            history.window.through = Some(9);
+        }
+        worker.earlier();
+        worker.poll_task_history().await.unwrap();
+        fail(&mut worker, "the earlier read").await;
+
+        worker
+            .command(crate::model::session::Command::TaskHistory {
+                projection_id: worker.projection_id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the retried read is the earlier read the window still holds"
+        );
+        worker.task_history_queue.clear();
+        worker.earlier();
+        assert!(
+            worker.task_history_queue.is_empty(),
+            "a press during the retried read queues nothing"
+        );
     }
 }

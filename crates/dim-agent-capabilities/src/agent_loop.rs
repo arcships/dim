@@ -44,6 +44,11 @@ struct Request {
     /// A steer was consumed while this Loop still owned the request, before
     /// its `context/prepare`: it ends Cancelled instead of being handed over.
     replaced: bool,
+    /// The failed request this one continues, when it is the turn's one
+    /// continuation: its `context/prepare` carries the attempts and the wait
+    /// already spent, so both requests share one retry budget
+    /// (model-retry-recovery §6.2).
+    chain: Option<FailureChain>,
 }
 struct Turn {
     id: String,
@@ -56,6 +61,17 @@ struct Turn {
     /// Set for a turn rebuilt after a reload: it ends Failed once its
     /// outstanding operations have terminals, and starts no new work.
     failed: Option<String>,
+    /// The turn's one automatic continuation is spent. ModelRecovery's
+    /// handover continuation and this Loop's continuation for calls that
+    /// were never executed are both §6.2 continuations, so they spend the
+    /// same slot (model-retry-recovery §6.2). Budget recovery is a separate
+    /// contract and does not read it.
+    continued: bool,
+    /// The chain of a continuation that yielded to a compaction step: the
+    /// step's resumption passes it to the request it starts, so the request
+    /// the step deferred still spends one retry budget with the request that
+    /// failed.
+    deferred: Option<FailureChain>,
 }
 /// An applied input waiting for this Loop to consume it.
 struct Applied {
@@ -125,6 +141,7 @@ pub struct AgentLoop {
     /// turn ends.
     binding: Arc<ToolBinding>,
     history: Arc<HistoryRenderer>,
+    preparation: Arc<crate::context_preparation::ContextPreparation>,
     /// The Session's guide entries, for the host-prepared path.
     guide: Arc<crate::prompt_guide::GuideEntries>,
     /// This branch's timeline id, which selects the entries in force.
@@ -219,6 +236,8 @@ impl AgentLoop {
             ending: false,
             interrupted: None,
             failed: None,
+            continued: false,
+            deferred: None,
         });
         self.timeline
             .append(EventKind::TurnStart(TurnStartData { turn_id: id }).into())?;
@@ -290,11 +309,13 @@ impl AgentLoop {
         Ok(())
     }
     /// A step boundary unless `source` retries a request: a pending
-    /// compaction step runs before the next request, which waits for it.
+    /// compaction step runs before the next request, which waits for it and
+    /// keeps the chain it was started with.
     fn next_model(
         self: &Arc<Self>,
         turn: &mut Turn,
         source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
         at: u64,
     ) -> Result<()> {
         if let Some(error) = turn.failed.clone() {
@@ -312,15 +333,17 @@ impl AgentLoop {
             let mut compaction = self.compaction.lock().unwrap();
             if compaction.running() {
                 turn.request = None;
+                turn.deferred = chain;
                 return Ok(());
             }
             if compaction.waiting() {
                 turn.request = None;
+                turn.deferred = chain;
                 self.start_step(&mut compaction, Some(turn.id.clone()), at);
                 return Ok(());
             }
         }
-        self.start_request(turn, source)
+        self.start_request(turn, source, chain)
     }
     /// Starts the waiting step in a tracked task; its result resumes the Loop.
     fn start_step(
@@ -450,7 +473,12 @@ impl AgentLoop {
         Ok(())
     }
     /// Writes the inputs the next request consumes, then its `step/model-start`.
-    fn start_request(&self, turn: &mut Turn, source: Option<ContextPrepareData>) -> Result<()> {
+    fn start_request(
+        &self,
+        turn: &mut Turn,
+        source: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
+    ) -> Result<()> {
         let chosen: Vec<String> = match source {
             Some(_) => Vec::new(),
             None => {
@@ -494,6 +522,7 @@ impl AgentLoop {
             preparation: None,
             started: Vec::new(),
             replaced: false,
+            chain,
         });
         Ok(())
     }
@@ -536,40 +565,59 @@ impl AgentLoop {
             comparison: QueryComparison::Eq,
             right: QueryOperand::Outer { path: outer.into() },
         };
+        let current = |handover| QueryFilter::And {
+            conditions: vec![
+                equal("kind", "input/message".into()),
+                if handover {
+                    QueryFilter::Present {
+                        value: QueryOperand::Field {
+                            path: "data.handover".into(),
+                        },
+                    }
+                } else {
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Present {
+                            value: QueryOperand::Field {
+                                path: "data.handover".into(),
+                            },
+                        }),
+                    }
+                },
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Exists {
+                        condition: Box::new(QueryFilter::And {
+                            conditions: vec![
+                                QueryFilter::In {
+                                    value: QueryOperand::Field {
+                                        path: "kind".into(),
+                                    },
+                                    values: vec!["input/consumed".into(), "input/deleted".into()],
+                                },
+                                related("data.input_id", "id"),
+                            ],
+                        }),
+                    }),
+                },
+            ],
+        };
         let mut query = TimelineQuery {
             scope: TimelineQueryScope::Branch,
             from: None,
             through: Some(through),
             include_publishing: true,
             query: QuerySpec {
-                filter: Some(QueryFilter::And {
-                    conditions: vec![
-                        equal("kind", "input/applied".into()),
-                        QueryFilter::Not {
-                            condition: Box::new(QueryFilter::Exists {
-                                condition: Box::new(QueryFilter::And {
-                                    conditions: vec![
-                                        equal("kind", "input/consumed".into()),
-                                        related("data.input_id", "data.input_id"),
-                                    ],
-                                }),
-                            }),
-                        },
-                    ],
+                filter: Some(QueryFilter::Or {
+                    conditions: vec![current(false), current(true)],
                 }),
                 select: QuerySelect::Fields {
-                    fields: vec![
-                        "data.input_id".into(),
-                        "data.mode".into(),
-                        "position.sequence".into(),
-                    ],
+                    fields: vec!["id".into()],
                 },
-                group_by: Vec::new(),
+                group_by: vec![],
                 pick: None,
-                order_by: Vec::new(),
+                order_by: vec![],
             },
             page: Some(QueryPage {
-                limit: NonZeroU64::new(256).expect("a page contains control fields"),
+                limit: NonZeroU64::new(256).unwrap(),
                 after: None,
             }),
         };
@@ -578,6 +626,45 @@ impl AgentLoop {
             let reply = self.timeline.query(query.clone()).await?;
             let QueryOutput::Rows { rows } = reply.result else {
                 unreachable!("Loop selects applied input fields")
+            };
+            let ids = rows
+                .into_iter()
+                .map(|row| {
+                    let [QueryValue::Value { value }] = <[_; 1]>::try_from(row.values).unwrap()
+                    else {
+                        unreachable!("current input identity")
+                    };
+                    value
+                })
+                .collect::<Vec<_>>();
+            let no_inputs = ids.is_empty();
+            let mut applied = query.clone();
+            applied.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    equal("kind", "input/applied".into()),
+                    QueryFilter::In {
+                        value: QueryOperand::Field {
+                            path: "data.input_id".into(),
+                        },
+                        values: ids,
+                    },
+                ],
+            });
+            applied.query.select = QuerySelect::Fields {
+                fields: vec![
+                    "data.input_id".into(),
+                    "data.mode".into(),
+                    "position.sequence".into(),
+                ],
+            };
+            applied.page.as_mut().unwrap().after = None;
+            let rows = if no_inputs {
+                Vec::new()
+            } else {
+                let QueryOutput::Rows { rows } = self.timeline.query(applied).await?.result else {
+                    unreachable!("applied input fields")
+                };
+                rows
             };
             for row in rows {
                 let Ok(
@@ -616,6 +703,7 @@ impl AgentLoop {
             };
             query.page.as_mut().expect("pending inputs are paged").after = Some(next);
         }
+        pending.sort_by_key(|input| input.sequence);
         *self.pending.lock().unwrap() = pending;
         query
             .page
@@ -849,6 +937,8 @@ impl AgentLoop {
                     ending: false,
                     interrupted: None,
                     failed: Some(CAPABILITY_RELOADING.into()),
+                    continued: false,
+                    deferred: None,
                 });
                 query.from = Some(TimelinePosition {
                     branch_id: self.branch.clone(),
@@ -861,6 +951,34 @@ impl AgentLoop {
         let mut handed_over = false;
         let mut completed = Vec::<String>::new();
         if let Some(turn) = restored.as_mut() {
+            let mut latest = query.clone();
+            latest.query.filter = Some(QueryFilter::And {
+                conditions: vec![
+                    equal("kind", "step/model-start".into()),
+                    equal("data.turn_id", turn.id.clone().into()),
+                    QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Present {
+                            value: QueryOperand::Field {
+                                path: "parent_call_id".into(),
+                            },
+                        }),
+                    },
+                ],
+            });
+            latest.query.select = QuerySelect::Fields {
+                fields: vec!["position.sequence".into()],
+            };
+            let QueryOutput::Rows { rows } = self.timeline.query(latest).await?.result else {
+                unreachable!("latest request position")
+            };
+            let sequence = match rows.first().and_then(|row| row.values.first()) {
+                Some(QueryValue::Value { value }) => value.as_u64().expect("request sequence"),
+                _ => through,
+            };
+            query.from = Some(TimelinePosition {
+                branch_id: self.branch.clone(),
+                sequence,
+            });
             query.query.pick = None;
             query.query.filter = Some(QueryFilter::In {
                 value: QueryOperand::Field {
@@ -960,6 +1078,7 @@ impl AgentLoop {
                             preparation: None,
                             started: Vec::new(),
                             replaced: false,
+                            chain: None,
                         });
                         handed_over = false;
                         completed.clear();
@@ -1078,6 +1197,7 @@ impl AgentLoop {
         turn_id: String,
         request_id: String,
         recovery: Option<ContextPrepareData>,
+        chain: Option<FailureChain>,
     ) -> CancellationToken {
         let cancel = self.lifecycle.child_token();
         let result_cancel = cancel.clone();
@@ -1091,7 +1211,7 @@ impl AgentLoop {
                         .map_err(AgentError::InvalidInput)?;
                     source.turn_id = turn_id.clone();
                     source.request_id = request_id.clone();
-                    return Ok(source);
+                    return Ok((source, None));
                 }
                 let streamed = owner
                     .history
@@ -1099,11 +1219,11 @@ impl AgentLoop {
                     .await?;
                 let (prefix, entries, configuration, prompt) = (
                     crate::context_policy::PolicyContext::from_stream(&streamed),
-                    streamed.history,
-                    streamed.configuration,
-                    streamed.prompt,
+                    &streamed.history,
+                    &streamed.configuration,
+                    streamed.prompt.clone(),
                 );
-                let history = prefix.messages(&entries);
+                let history = prefix.messages(entries);
                 let settings = match &configuration {
                     Some(data) => crate::host::ModelSettings {
                         provider_id: data.settings.provider_id.clone(),
@@ -1144,26 +1264,26 @@ impl AgentLoop {
                         settings
                     }
                 };
-                Ok(ContextPrepareData {
+                Ok((ContextPrepareData {
                     turn_id: turn_id.clone(),
                     request_id: request_id.clone(),
                     through,
                     request: Arc::new(settings.request(history)),
-                    configuration: configuration.map(|data| PromptReference {
-                        timeline: data.timeline,
-                        revision: data.revision,
+                    configuration: configuration.as_ref().map(|data| PromptReference {
+                        timeline: data.timeline.clone(),
+                        revision: data.revision.clone(),
                     }),
                     prompt,
                     recovery: None,
-                    failure_chain: None,
-                })
+                    failure_chain: chain,
+                }, Some(streamed)))
             }).catch_unwind();
             let result = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => Ok(Err(AgentError::Cancelled("Context read cancelled".into()))),
                 result = work => result,
             };
-            let result: Result<ContextPrepareData> = match result {
+            let result: Result<(ContextPrepareData, Option<crate::history::StreamedContext>)> = match result {
                 Ok(result) => result,
                 Err(panic) => {
                     owner.dispatcher.fail(AgentError::fault(
@@ -1206,7 +1326,10 @@ impl AgentLoop {
                         outcome: ModelOutputOutcome::Cancelled { reason },
                     }),
                     None => match result {
-                        Ok(source) => {
+                        Ok((source, projection)) => {
+                            if let Some(projection) = projection {
+                                owner.preparation.provide_projection(&source, projection);
+                            }
                             request.source = Some(source.clone());
                             EventKind::ContextPrepare(source)
                         }
@@ -1312,7 +1435,7 @@ impl AgentLoop {
                     })
                     .ok_or_else(|| AgentError::fault("Loop", "invalid turn/start"))?;
                 turn.open = true;
-                let result = self.next_model(turn, None, event.sequence);
+                let result = self.next_model(turn, None, None, event.sequence);
                 self.publish(&slot);
                 return result;
             }
@@ -1405,7 +1528,8 @@ impl AgentLoop {
                 }
                 return match slot.as_mut() {
                     Some(turn) if turn.open && !turn.ending => {
-                        self.next_model(turn, None, event.sequence)
+                        let deferred = turn.deferred.take();
+                        self.next_model(turn, None, deferred, event.sequence)
                     }
                     Some(_) => Ok(()),
                     None => self.try_start(&mut slot),
@@ -1473,6 +1597,7 @@ impl AgentLoop {
                     turn.id.clone(),
                     request.id.clone(),
                     request.source.clone(),
+                    request.chain.clone(),
                 ));
             }
             EventKind::ToolUseStart(data) if request.stage == Stage::Model => {
@@ -1483,7 +1608,34 @@ impl AgentLoop {
             }
             EventKind::ModelOutputEnd(data) if request.stage == Stage::Model => {
                 match &data.outcome {
-                    ModelOutputOutcome::Failed { error, budget, .. } => {
+                    ModelOutputOutcome::Failed {
+                        error,
+                        budget,
+                        failure,
+                        ..
+                    } => {
+                        // In order: the context-budget recovery keeps its own
+                        // contract and reads neither the turn's continuation nor
+                        // its slot; then one §6.2 continuation for a step whose
+                        // calls were announced and never executed, when a new
+                        // request can settle the failure at all; then an
+                        // output-limit stop, which ends the turn Completed because
+                        // no answer can be completed rather than because one
+                        // failed; then a failure.
+                        let limit = failure
+                            .as_deref()
+                            .is_some_and(|failure| failure.kind == ModelFailureKind::OutputLimit);
+                        // A continuation is worth one request only when the
+                        // provider did not veto retrying the failure and a new
+                        // request can settle it at all.
+                        let continues = failure.as_deref().is_some_and(|failure| {
+                            !failure.retry_forbidden && a_new_request_can_help(failure.kind)
+                        });
+                        let chain = failure.as_deref().map(|failure| FailureChain {
+                            from_request_id: request.id.clone(),
+                            attempts: failure.attempts,
+                            waited_ms: failure.waited_ms,
+                        });
                         if self.policy.is_some()
                             && budget.is_some()
                             && request
@@ -1493,7 +1645,23 @@ impl AgentLoop {
                         {
                             let mut source = request.source.clone().expect("checked source");
                             source.recovery = budget.clone();
-                            self.next_model(turn, Some(source), event.sequence)?;
+                            self.next_model(turn, Some(source), None, event.sequence)?;
+                        } else if continues
+                            && !request.started.is_empty()
+                            && !turn.continued
+                            && turn.interrupted.is_none()
+                            && !self.driven()
+                        {
+                            turn.continued = true;
+                            self.binding.release(&request.id);
+                            self.next_model(turn, None, chain, event.sequence)?;
+                        } else if limit && turn.interrupted.is_none() {
+                            self.end(
+                                turn,
+                                TurnOutcome::Completed {
+                                    reason: "output_limit".into(),
+                                },
+                            )?;
                         } else {
                             self.end(
                                 turn,
@@ -1509,7 +1677,7 @@ impl AgentLoop {
                             && self.driven()
                         {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             if reason == CAPABILITY_RELOADING {
                                 turn.failed = Some(CAPABILITY_RELOADING.into());
@@ -1536,7 +1704,7 @@ impl AgentLoop {
                             request.call_event_id = Some(event.id.clone());
                         } else if self.driven() {
                             self.binding.release(&request.id);
-                            self.next_model(turn, None, event.sequence)?;
+                            self.next_model(turn, None, None, event.sequence)?;
                         } else {
                             let reason = match finish_reason {
                                 FinishReason::EndTurn => "end_turn",
@@ -1572,7 +1740,7 @@ impl AgentLoop {
                     turn.failed = Some(CAPABILITY_RELOADING.into());
                 }
                 self.binding.release(&request.id);
-                self.next_model(turn, None, event.sequence)?;
+                self.next_model(turn, None, None, event.sequence)?;
             }
             _ => {
                 return Err(AgentError::fault(
@@ -1602,6 +1770,7 @@ pub struct LoopPlugin {
     prepare: Key<PrepareModelHost>,
     binding: Key<ToolBinding>,
     history: Key<HistoryRenderer>,
+    preparation: Key<crate::context_preparation::ContextPreparation>,
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
     guide: Key<crate::prompt_guide::GuideEntries>,
@@ -1618,6 +1787,7 @@ impl LoopPlugin {
             prepare: names.key()?,
             binding: names.key()?,
             history: names.key()?,
+            preparation: names.key()?,
             context: names.key()?,
             strategy: names.key()?,
             guide: names.key()?,
@@ -1636,6 +1806,7 @@ impl DynPlugin for LoopPlugin {
             self.prepare.erase(),
             self.binding.erase(),
             self.history.erase(),
+            self.preparation.erase(),
             self.context.erase(),
             self.strategy.erase(),
             self.guide.erase(),
@@ -1666,6 +1837,7 @@ impl DynPlugin for LoopPlugin {
                 prepare,
                 binding,
                 history,
+                preparation: ctx.require_at(&self.preparation)?,
                 guide,
                 branch: identity.branch_id.clone(),
                 policy,
@@ -1719,5 +1891,26 @@ impl DynPlugin for LoopPlugin {
             ctx.provide_at(self.loop_state.clone(), service as Arc<dyn LoopState>)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+/// Whether a new request can settle a failure that announced calls. The kinds
+/// that need the user or the provider's owner to act first are excluded: the
+/// same context fails the same way, and an unrecoverable rejection is not
+/// repeated behind the user's back.
+fn a_new_request_can_help(kind: ModelFailureKind) -> bool {
+    match kind {
+        ModelFailureKind::Network
+        | ModelFailureKind::RateLimited
+        | ModelFailureKind::ServerError
+        | ModelFailureKind::MalformedResponse
+        | ModelFailureKind::OutputLimit
+        | ModelFailureKind::Unknown => true,
+        ModelFailureKind::AuthRejected
+        | ModelFailureKind::QuotaExhausted
+        | ModelFailureKind::NotFound
+        | ModelFailureKind::InvalidRequest
+        | ModelFailureKind::ContentFiltered
+        | ModelFailureKind::ContextTooLong => false,
     }
 }

@@ -86,11 +86,11 @@ wait.wait(taskId: string | null, timeoutMs: number, cancelled: () => void | Prom
 ```
 
 It is the same wait the tool call makes. `cancelled` is the call's own
-cancellation and ends it as `interrupted`; a caller that goes away without
-cancelling — its row unloads or the process ends — drops the call, so no answer
-is produced and the branch's single wait slot is released. Only the `wait`
-tool caps `timeoutMs` at 300,000; the service waits as long as it is told and
-the caller cancels.
+cancellation and ends it as `interrupted`, releasing the single-wait slot.
+Dropping the native Rust future also releases the slot. Bridge callers must
+signal `cancelled` before abandoning the reply; dropping the bridge reply alone
+does not cancel the wait. Only the tool caps `timeoutMs` at 300,000; the service
+uses the supplied timeout.
 
 ### Events and lifetime
 

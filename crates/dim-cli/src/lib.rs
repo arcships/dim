@@ -14,6 +14,8 @@ mod input;
 mod leaf;
 mod locale;
 mod login;
+mod loop_command;
+mod loop_view;
 mod maintenance;
 mod management;
 mod management_command;
@@ -43,6 +45,7 @@ mod usage;
 mod version;
 mod web_install;
 mod wire;
+mod worktree_command;
 
 use args::{Action, Options};
 use rutis::host::CtxHost;
@@ -51,6 +54,13 @@ use std::sync::Arc;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
+
+/// Registers the calling process as a live user of its package installation,
+/// so `update` refuses while it runs. The host calls it before starting the
+/// App Server.
+pub fn hold_installation() -> std::result::Result<(), String> {
+    update::hold_installation()
+}
 
 /// Runs the CLI with the process arguments and returns its exit code. The
 /// host binary must answer `app-server` with the App Server command line,
@@ -133,6 +143,7 @@ async fn open_tui(
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
         initial,
+        resume: options.resume.is_some(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
     let (leaf_end, leaf_ended) = tokio::sync::oneshot::channel();
@@ -144,11 +155,11 @@ async fn open_tui(
         leaf_end: std::sync::Mutex::new(Some(leaf_end)),
     });
     (&tui).await.map_err(plugin_error)?;
-    let leave = tokio::select! {
-        leave = &mut left => leave,
+    let code = tokio::select! {
+        code = &mut left => code,
         ended = leaf_ended => {
             if ended.is_ok() {
-                Ok(ui::tui::Leave::Exit(0))
+                Ok(0)
             } else {
                 left.await
             }
@@ -157,70 +168,7 @@ async fn open_tui(
     .map_err(|_| "the terminal interface ended without a result")?;
     tui.dispose().await?;
     link.dispose().await?;
-    match leave {
-        ui::tui::Leave::Exit(code) => Ok(code),
-        ui::tui::Leave::Restart(restart) => relaunch(root, options, restart, locale).await,
-    }
-}
-
-/// Starts the updated CLI on the session the interface left. The daemon
-/// still runs the old executable, so it stops first and the new CLI starts
-/// its own. The original arguments carry over except the interface mode,
-/// which follows the one in use, the session, which is the one left, and
-/// the first message (`--prompt` with its `--image`), which was already
-/// sent; a resumed session keeps its model, so the model flags drop with it.
-async fn relaunch(
-    root: &rutis::Ctx,
-    options: &Options,
-    restart: ui::tui::Restart,
-    locale: locale::Locale,
-) -> Result<i32> {
-    let (link, connection) = daemon_link(root, options, false, locale).await?;
-    if let Some(client) = connection.take() {
-        client::shutdown(client).await?;
-    }
-    link.dispose().await?;
-    let mut args = Vec::new();
-    let mut original = std::env::args_os().skip(1);
-    while let Some(arg) = original.next() {
-        let resumed = restart.session_id.is_some();
-        match arg.to_str() {
-            Some("--fullscreen" | "--scrollback") => {}
-            Some("--resume" | "--prompt" | "-p" | "--image") => {
-                original.next();
-            }
-            Some("--provider" | "--model") if resumed => {
-                original.next();
-            }
-            _ => args.push(arg),
-        }
-    }
-    args.push(
-        (if restart.fullscreen {
-            "--fullscreen"
-        } else {
-            "--scrollback"
-        })
-        .into(),
-    );
-    if let Some(session_id) = restart.session_id {
-        args.extend(["--resume".into(), session_id.into()]);
-    }
-    let mut command = std::process::Command::new(&restart.relaunch);
-    command.args(args);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        Err(format!("Cannot start {}: {error}", restart.relaunch.display()).into())
-    }
-    #[cfg(not(unix))]
-    {
-        let status = command
-            .status()
-            .map_err(|error| format!("Cannot start {}: {error}", restart.relaunch.display()))?;
-        Ok(status.code().unwrap_or(1))
-    }
+    Ok(code)
 }
 
 /// Links the daemon and loads `WebHold`; returns when the hold ends.
@@ -287,6 +235,12 @@ fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
 pub(crate) const DAEMON_BUSY: &str = "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 /// [`DAEMON_BUSY`] with the counts a `daemon_busy` refusal carried.
 pub(crate) const DAEMON_BUSY_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// The line a start prints when the daemon it reached cannot serve a Session:
+/// its protocol is older than this client's, and it could not be replaced
+/// because other clients use it.
+pub(crate) const DAEMON_TOO_OLD: &str = "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// [`DAEMON_TOO_OLD`] with the counts a `daemon_busy` refusal carried.
+pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 
 /// The line a client prints once when a daemon reports a store upgrade while
 /// it starts; both waits then follow the daemon's progress instead of a fixed
@@ -328,6 +282,47 @@ pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
     }
 }
 
+/// The line a start fails with when the kept daemon of another build or of a
+/// lower protocol cannot serve a Session, in `locale`, naming the protocol it
+/// speaks and with the refusal's counts when it sent them.
+pub(crate) fn daemon_too_old(
+    locale: locale::Locale,
+    notice: &client::DaemonNotice,
+    protocol: u32,
+) -> String {
+    let server = sanitize::safe(&notice.server);
+    let client_version = env!("CARGO_PKG_VERSION");
+    let protocol = protocol.to_string();
+    match &notice.counts {
+        Some(counts) => {
+            let connections = counts.connections.to_string();
+            let attached = counts.attached_sessions.to_string();
+            let running = counts.running.to_string();
+            crate::ui::i18n::tf_in(
+                locale,
+                DAEMON_TOO_OLD_COUNTS,
+                &[
+                    ("server", &server),
+                    ("client", client_version),
+                    ("protocol", &protocol),
+                    ("connections", &connections),
+                    ("attached", &attached),
+                    ("running", &running),
+                ],
+            )
+        }
+        None => crate::ui::i18n::tf_in(
+            locale,
+            DAEMON_TOO_OLD,
+            &[
+                ("server", &server),
+                ("client", client_version),
+                ("protocol", &protocol),
+            ],
+        ),
+    }
+}
+
 /// Session creation parameters without a startup model selection.
 pub(crate) fn session_create_params(options: &Options) -> serde_json::Value {
     let mut params = serde_json::json!({"cwd": options.workspace().as_str()});
@@ -344,6 +339,7 @@ pub(crate) async fn session_create_from_options(
 ) -> Result<serde_json::Value> {
     let mut params = session_create_params(options);
     options.creation_startup(&mut params);
+    add_creation_worktree(client, options, &mut params)?;
     let saved = if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
         session_host::saved_model_preferences(client, provider, model).await?
     } else {
@@ -353,6 +349,29 @@ pub(crate) async fn session_create_from_options(
         params["modelPreferences"] = preferences;
     }
     Ok(params)
+}
+
+/// The daemon a `--worktree` creation needs: one without
+/// `session.create.worktree` refuses the member as an unknown field.
+const WORKTREE_UNSUPPORTED: &str = "This daemon cannot create a Session in a managed worktree; upgrade it or start the Session without --worktree";
+
+/// Adds the `worktree` member `--worktree` asks for. It is sent only when the
+/// request asks for one, and only to a daemon whose `hello.features` names
+/// `session.create.worktree`, because an older daemon rejects it as an
+/// unknown field (#1451).
+pub(crate) fn add_creation_worktree(
+    client: &client::Client,
+    options: &Options,
+    params: &mut serde_json::Value,
+) -> Result<()> {
+    let Some(worktree) = options.creation_worktree() else {
+        return Ok(());
+    };
+    if !client.offers("session.create.worktree") {
+        return Err(WORKTREE_UNSUPPORTED.into());
+    }
+    params["worktree"] = worktree;
+    Ok(())
 }
 
 /// The failure of adopting `target` into a Session. When the target's
@@ -552,6 +571,10 @@ async fn run_acp(
 }
 
 async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
+    if let Action::Update { legacy_exited } = options.action {
+        return update::run(legacy_exited).await;
+    }
+    update::hold_installation()?;
     // `block_on` polls `act` on this thread, so the thread-local language
     // holds; the connection code may run on another thread, so it carries the
     // same language as a value.
@@ -913,10 +936,14 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             let blocks = images.images.iter().map(|image| image.block()).collect();
             session::chat(&mut client, &options, blocks, images.notes).await
         }
+        Action::Worktree(command) => {
+            worktree_command::run(&mut client, command, options.json).await
+        }
         Action::Acp { .. }
         | Action::Migration(_)
         | Action::Help
         | Action::Version
+        | Action::Update { .. }
         | Action::DaemonStop
         | Action::DaemonVacuum { .. }
         | Action::Timeline { .. }

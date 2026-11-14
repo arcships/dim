@@ -13,6 +13,7 @@ Lines share facts, not context:
 - Each line assembles its own context from its own facts.
 - Each line compacts on its own.
 - A line influences another line by writing input to that line's Timeline, and it learns about another line from its own reads of that line.
+- A rule or state change an ancestor appended without its delivery input consumed in the inherited prefix is not part of the line's inherited state: the line adopts the source's current value itself, and that block is its own event after the cut ([Prompt](../architecture/rust-agent/prompt.md)).
 
 The parent–child relation records where a history came from. It is also the only relation along which lines talk and read. It does not mean control, and it does not mean that a result is owed.
 
@@ -65,7 +66,7 @@ These needs are not branches:
   - A **tool line** was opened by the `branch` tool.
   - A **host line** was opened by a plugin (`TreeCommands.create`) or a client (`session.branch_create`). Its creator owns its protocol.
 
-  The source can be read as `TimelineInfo.source`, returned by `TreeCommands.list` and `info` and absent on `main` (§5). For a host line it is `{kind: "host", operation_id}`: the opener's opaque tag, which the core never interprets. An opener finds its own lines by its own operation-id convention, for example Goal's `goal:evaluate:` prefix. Clients' lines carry App Server's ids.
+  The source can be read as `TimelineInfo.source`, returned for active lines by `TreeCommands.list` and `info` and absent on `main` (§5). Ended directory entries may omit it; opening their display detail reads the creation source at its known position. For a host line it is `{kind: "host", operation_id}`: the opener's opaque tag, which the core never interprets. An opener finds its own lines by its own operation-id convention, for example Goal's `goal:evaluate:` prefix. Clients' lines carry App Server's ids.
 - **Reach of the tool.** The tool's `read` action reads the line the caller was cut from, and `main` reads the tool lines it opened; a host line reads the line it was cut from too. `message` and `end` work only between `main` and the tool lines it opened. A host line is not on main's roster, and the tool neither messages it nor ends it.
 - **The parent block.** A line's BranchLine writes one keyed `<dim-branch-parent>` block on the line itself when the line it was cut from ends a turn and has new activity past the line's last read, the last head the line was told and the line's opening (§7.1.1, §12.1). The block reports positions and is state, not a request; the content stays in the pages a read returns.
 
@@ -92,12 +93,15 @@ BranchLine injects `B:Dispatcher`, `B:TimelineIdentity`, `B:BranchLifecycle` and
 
 It decides the way Goal does: from consumed state, through an owned write task that rechecks before writing, and only on live events after its load cutoff. A reload therefore writes nothing twice, with one exception: a load whose own history ends with a live roster key the fold does not match writes the roster once, because a restart that completed an ended line (§20.7) recorded `branch/ended` before `main`'s replay, so no live event follows it (§6.2).
 
-**Line sources.** TimelineTree fills `TimelineInfo.source` from the parent's `branch/create`:
+**Line sources and restore.** At creation TimelineTree uses the accepted parent branch/create. At restore it first reads lifecycle kind/positions through existing indexes. An ended line retains its directory identity, parent, head and end position without loading creation or end bodies. Only an unfinished close reads its own branch/end data to complete the required parent confirmation. Only a line that will mount reads its creation source and verifies the opening input. Parent-child adjacency orders the directory once; restore does not repeatedly search all remaining lines. An ancestor's completed end closes its started descendants without mounting them. No branch-state snapshot or new native format is added.
 
-- at creation, from the create itself;
-- at restore, from the resumed parent's history read.
+An explicit creation API `at` is a fixed sequence, including when it equals the
+parent's current head. Its fact records `at={kind: "sequence", sequence: at}`;
+parent activity while validation awaits cannot widen the inherited prefix.
+A `before` producer may still explicitly choose `at={kind: "create"}`, whose
+existing meaning is the creation fact's own position.
 
-That read already exists. A resumed parent's build reads its history up to its head and reports the creates it recorded as failed (`Opening::Resume`'s `failed_creates` in [timeline_tree.rs](../../crates/dim-agent-capabilities/src/timeline_tree.rs)). It now also reports each create's source, and each `branch/ended`, which the restore rule uses (§10). The stored directory row does not change ([storage format](appserver/native-storage-format.md#427-v20-格式决定)).
+Ended display details read purpose/source and end data at their recorded positions. The optional historical cut message count is omitted; displaying a branch does not count all preceding user inputs.
 
 ## 6. Messages between lines
 
@@ -117,11 +121,11 @@ These are Collaboration's message modes and words (`append`, `steer`), with the 
 - **Read.** `read {branch, after?, limit?}` returns one page of the target's committed history, open or ended, read from the store through `TreeCommands.page` and rendered the way Collaboration's `read` renders a member's page: inputs, text, tool calls and results, and turn ends, with `nextCursor`; a tool result item carries the effects its tool declared on that result (session boundary A.6), present only when the result declared at least one, a path verbatim and a command cut at its 200th character with the cut marked. The target is the line the caller was cut from, or, on `main`, a tool line it opened. One cursor rule covers both directions:
   - With no `after`, a read continues after the caller's last successful read of that line: the `nextCursor` of the latest read that returned a page. With no earlier read, a line's first read of its parent starts at its cut, and `main`'s first read of a line starts at the line's first event.
   - An explicit `after` reads from that point. For a parent read, a value below the cut is raised to the cut, because the events up to the cut are already the line's own history. `main`'s values are used as given, so `after: 0` re-reads a line from its start.
-  - Every successful read moves the cursor to its `nextCursor`, an explicit-after read included; the latest read wins. The cursor is a fact of the caller's own line: BranchLine folds it from the caller's own `step/tool-use` and `step/tool-result`, so a reload and a compaction rebuild it.
+  - Every successful read moves the cursor to its `nextCursor`, an explicit-after read included; the latest read wins. The cursor is a fact of the caller's own line: BranchLine retains live read results in memory; after a reload it locates the latest successful read for the requested target only when a cursor is used, then reads that request's result fields. Resume does not replay tool history.
   - A page may end in the middle of the target's turn: it reads up to the target's published head, and the next read continues after that page.
 - **Knowing when to read.** A read is on demand, so a line also needs to know its parent moved. The keyed `<dim-branch-parent>` block (§4, §7.1.1) states the parent's head and the line's cursor; the line decides which pages to read from it. The block never carries content, and reading it is not reading the parent.
 - **No caps.** There is no limit on the number of lines, messages or steers. A message loop ends through the prompt rules (§12), through a line ending itself, or through the user (interrupt or end). Why this is safe, and who would own limits, is in §6.1.
-- **Idle notice.** When a tool line's turn ends, BranchLine on that line writes one steer to `main` (`<dim-branch-idle>`, §12.1), unless one of the following holds:
+- **Idle notice.** When a tool line's turn started in this generation ends, BranchLine on that line writes one steer to `main` (`<dim-branch-idle>`, §12.1), unless one of the following holds:
   - the line was created with `idleNotice: none`;
   - the turn already sent `main` a steer message;
   - the turn called `end`;
@@ -181,7 +185,7 @@ Every line answers "which line am I, and which lines are mine" with blocks under
   - that it works in parallel from here on;
   - that messages above addressed to the parent, such as the roster, belong to the parent.
 
-  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. For `idleNotice: none`, TimelineTree includes `idle-notice="none"` on that opening identity. BranchLine reads it from the line's own opening input when running or restoring the line. A missing attribute selects `steer`, including histories written before the option existed. The setting controls only automatic idle notices. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
+  A tool line's identity also carries its purpose (the `create` prompt) and the line protocol. For `idleNotice: none`, TimelineTree includes `idle-notice="none"` on that opening identity. BranchLine reads it from the line's own opening input when an idle notice is considered; resume does not replay inputs. A missing attribute selects `steer`, including histories written before the option existed. The setting controls only automatic idle notices. On a host line, the creator's prompt stays the opening input's `user` content, after the block.
 - **On `main`: the roster.** BranchLine on `main` writes a keyed Append from `main`'s own facts:
   - `branch/create` with a tool source;
   - `branch/create-failed`;
@@ -348,7 +352,7 @@ Clients show "ended itself" for a `tool` source and no `ancestor`, and otherwise
 
 **Restore.** A child is inactive when its parent has a `branch/ended` for it. The resumed parent's history read reports these (§5). This joins the existing rules: the parent is inactive, the parent has a `branch/create-failed` for the child, or the child's creation never completed.
 
-A line that has `branch/end` but whose parent has no `branch/ended` for it is not opened. Restore completes such ends deepest line first, writing each missing `branch/ended` on the parent with `source` and `ancestor` taken from `branch/end`, and a line's own result last. For a line below it, that parent is not opened either, so the record joins its stored history and its fixed head follows. A line below one of them whose own end never started gets no `branch/ended`: the parent is closed and never replays, so nothing would read it. Restore records each such line as ended at the head it stopped at, with the `source` its parent's `branch/create` gave it, and its history stays readable (§1, "After the end").
+A line that has `branch/end` but whose parent has no `branch/ended` for it is not opened. Restore completes such ends deepest line first, writing each missing `branch/ended` on the parent with `source` and `ancestor` taken from `branch/end`, and a line's own result last. For a line below it, that parent is not opened either, so the record joins its stored history and its fixed head follows. A line below one of them whose own end never started gets no `branch/ended`: the parent is closed and never replays, so nothing would read it. Restore records each started descendant as ended at the head it stopped at; creation source is read only by an explicit detail request, and its history stays readable (§1, "After the end").
 
 **After the end:**
 
@@ -530,11 +534,10 @@ the number of lines, which a Session bounds by its own use, not with history. `T
 The directory read performs no history I/O. Its display fields are null or absent.
 `session.branch.get {sessionId, branchId}` (v3, separately listed in
 `hello.features`) reads one line's directory record and display fields:
-`purpose` (the trimmed first prompt line, null for main), `cutMessages` (the
-number of user inputs in the inherited prefix at its branch point, excluding
-inputs deleted by that cutoff; null for main), and `end` (the existing
-`BranchEndData`, null without an available end fact). It reads point facts and
-counts the fixed inherited prefix through TimelineTree. A read failure is
+`purpose` (the trimmed first prompt line, null for main), creation `source`, and
+`end` (the existing `BranchEndData`, null without an available end fact).
+`cutMessages` remains an optional compatibility field and is not calculated.
+The call reads only the identified creation and end facts. A read failure is
 reported on this detail call and does not prevent directory listing; an unknown
 branch is an error. This read writes no facts and does not reopen an ended line. An ended line inherited by a Session fork can
 have no own history; its fixed directory end identity remains even when the
@@ -680,7 +683,7 @@ Line end and sources:
 
 14. `TreeCommands.end` ends any open line except `main`, whoever calls it, for example a plugin part with a `host` source on a tool line, which gives `main` the ended notice. It refuses `main`, an unknown line and an ended line, and writes nothing.
 15. Ending a host line that has a child ends the child first, with `ancestor` set and `source` copied, then the line.
-16. `TreeCommands.list` and `info` return `source` for a new child and for a restored one, and none for `main`. The stored directory rows are byte-for-byte unchanged.
+16. `TreeCommands.list` and `info` return `source` for a new child and for a restored active one, and none for `main`. Ended directory entries load their source only in display detail. The stored directory rows are byte-for-byte unchanged.
 
 The branch directory:
 
@@ -728,3 +731,9 @@ Removed:
 - **Fewer tools:** refusal at call time, as `create` on a child is refused now. The tool definitions and the cache prefix stay identical.
 - **Lower permission:** a per-line policy intersected with the Session's. It needs the per-branch Permission narrowing that [Pursuit §10](plugins/Pursuit.md#10-later-options) already names.
 - **Cheaper model:** per-line configuration set at create, before the first input. A different model shares no cache with its parent, so it trades the inherited prefix for cost.
+
+### Resume reads
+
+BranchLine mounts at the committed cutoff with no historical event query. It does not restore old turn counters, steering progress or a table of held inputs. A recovery terminal for a turn whose start was not consumed by this generation produces no idle notice. After the Session is published, roster reconciliation uses the currently open child directory and reads a missing purpose at its known creation position. It compares only the last roster block. Parent notification reads the last parent block and the cursor of that parent when needed. Read cursors are not eagerly loaded for other targets. No recovery fact is added.
+
+TimelineTree locates each child's terminal kind and end position by identity, without creation or end body decoding for an already ended child. Only a line that will mount reads its creation source at its known position. It does not page through all parent lifecycle facts. Existing cuts were accepted on creation and are immutable; restoration uses their directory values without rendering the inherited context to validate them again. New cuts retain their creation-time validation.

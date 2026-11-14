@@ -128,7 +128,7 @@ The Timeline's points are its user messages. Tab walks them one at a time from t
 - `Enter` opens a bordered action list naming the selected message: Jump to message, Edit as a new draft, Quote message, Create branch from here, Fork session. The fork choice states that its cut is before the selected message. Up/Down and Enter select an action; numbers 1–5 select directly. Existing `e`, `q`, `b` and `f` shortcuts work in both lists. Esc returns to the message list with its selection and list position intact, then closes it. Fullscreen shows the lists as overlays; scrollback shows them in the live interaction region without committing them to history.
 - Jump closes the panel. Fullscreen picks the message, as Tab would, and the pick keys apply. Scrollback cannot move up: a message it has not drawn yet is drawn from there on as an earlier-history page; one already drawn gets a notice that `/tui` can jump to it.
 
-A resume draws the newest 100 messages. Fullscreen tops the transcript with a load-more row (`↑ 130 earlier messages · Enter or click to load`): a click, or Tab up to it and `Enter`, draws the previous 100 above and keeps the oldest drawn message at the top of the view. Scrollback has no such row; its earlier history comes from `/timeline` jumps. This replaces `/history`, which paged earlier messages in after the newest ones.
+A resume draws the newest 100 messages. Fullscreen tops the transcript with a load-more row (`↑ 130 earlier messages · Enter or click to load`). Activating it (a click, or Tab up to it and `Enter`), PageUp at the drawn top, and `/earlier` all draw the previous 100 messages above the drawn ones, reading them from the daemon when none are loaded, and keep the oldest drawn message at the top of the view. Scrollback has no such row; its earlier history comes from `/timeline` jumps. This replaces `/history`, which paged earlier messages in after the newest ones.
 
 ### 4.7 `/branch <prompt>` and the side panel
 
@@ -178,7 +178,7 @@ A user message is written, applied and then consumed. The client draws the row f
 | State | Fact | The model has read it | Drawn as |
 | --- | --- | --- | --- |
 | queued | `input/message`, InputQueue holds it | no | the queue strip above the composer, labelled `Held` |
-| applied | `input/applied`, waiting for Loop's next request | no | a pending message row and the queue strip, labelled `Incorporating` while running, or `Unread` while idle |
+| applied | `input/applied`, waiting for Loop's next request | no | a pending message row only; no queue entry |
 | consumed | `input/consumed`, in the request that carries it | yes | a user message row |
 
 A pending row keeps its text and its cut, and draws in the muted colour without the band. In fullscreen the row is committed where the message was said, and `input/consumed` redraws that block in place; leaving fullscreen settles a committed pending row first, because scrollback cannot take the hint back. Scrollback is append-only, so there a row that can still change stays in the live tail (as a streaming answer and a running tool group do) and enters scrollback once it settles, in the user colour. The tail is drawn after everything committed, so a pending row stays there only while it is the newest: when a later row settles first — an applied input that outlives a stop — the message is committed in Timeline order in the user colour, and scrollback cannot take the hint back. A message waiting for the next request therefore reads as unanswered wherever the drawing can still change it:
@@ -188,13 +188,15 @@ A pending row keeps its text and its cut, and draws in the muted colour without 
  › add the missing test too                          still muted: not read yet
 ```
 
-An applied input can stay pending across a stop, which is the state the next turn consumes ([interrupt](../architecture/rust-agent/interrupt.md)). While idle, the queue explains that it waits for the next message; it does not imply that incorporation is still running. The stopped row remains historical transcript, not a live activity indicator.
+An applied input can stay pending across a stop, which is the state the next turn consumes ([interrupt](../architecture/rust-agent/interrupt.md)). It uses only the existing transcript styling above, without a queue entry or an additional unread hint. The stopped row remains historical transcript, not a live activity indicator. These are presentation rules only: the applied and consumed facts and the pending-input projection are unchanged.
 
 A row the interface commits itself, outside the transcript rows — a notice, a `!!` run, the failure line, the boundary of a resume — is not part of that ordering, and can stand above a pending message.
 
 A user message's row carries the operator's words. Context the runtime appended after them for the model is not theirs, and a client may draw it as a row of its own directly under the message: the CLI draws a hook's context that way, one muted `Hook context · N lines` row per `dim-hooks` block, its body behind the detail setting. Such a row is not a message: it takes no part in this ordering, carries no cut, and is not counted by the message rail, `/timeline` or the earlier-history page. It never wears the user colour or bar.
 
 A context row belongs to its message's group rather than to the transcript in general, so it never says anything about that message on its own. While the message is pending in the scrollback tail, its context rows stay there directly after it, and append-only scrollback commits neither: the row is not a settled row, so it cannot force the message out of the tail. Once the message settles — the model consumed it, or a later settled row forced the commit — its context rows commit with it, in the content's order, right after it. Whatever settles the message therefore settles its context rows; there is no second flag for a client to keep in step. Fullscreen keeps its own rule: the message is committed where it was said, so its context rows are too, and a pending message redrawn in place does not move them.
+
+A `Stop` hook's follow-up is one muted row too: `Stop hook follow-up · N lines`, pushed where the input was written rather than under any message. Its body is the hook's words for the model, so only `/tools` expanded or a click opens it. It is not a message either — no cut, no rail, no count — and it never joins a message's group: a follow-up is a later input, so it is a settled row of its own and stands after the message it followed even when that message was still pending when the follow-up landed.
 
 The pending style is the terminal UI's: Web's v1 `session.event` filters `input/consumed` ([event-driven flows](../architecture/rust-agent/event-driven-flows.md)), so a Web message still reads as sent.
 

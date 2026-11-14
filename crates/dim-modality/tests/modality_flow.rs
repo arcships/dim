@@ -1,6 +1,7 @@
 //! Modality image slice through the management methods: the owner's snapshot,
 //! resolution order and CAS, with a fixture adapter in the process.
 #![cfg(unix)]
+use dim_agent_capabilities::file_storage::{FileStorage, FileStoragePlugin};
 use dim_agent_capabilities::host::ModalityConnection;
 use dim_agent_capabilities::{adapters::MockTools, defaults, host::ToolDriver};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
@@ -2648,6 +2649,7 @@ async fn a_result_that_is_a_link_fails_the_task() {
 async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     let fixture = Arc::new(FixtureAdapter::default());
     let gate = CancellationToken::new();
+    let submit_gate = CancellationToken::new();
     let progress: Vec<AdapterProgress> = (0..10)
         .map(|index| AdapterProgress {
             fraction: Some(index as f64 / 10.0),
@@ -2657,6 +2659,7 @@ async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     fixture.set_behavior(Behavior {
         handles: Handles::None,
         progress,
+        submit_gate: Some(submit_gate.clone()),
         gate: Some(gate.clone()),
         ..Default::default()
     });
@@ -2669,12 +2672,24 @@ async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
     )
     .await;
     let task_id = task["task_id"].as_str().unwrap().to_owned();
+    wait_state(&mut client, &task_id, &["running"]).await;
+    let storage = server.service::<FileStorage>().unwrap();
+    let cancel = CancellationToken::new();
+    let root = storage
+        .register_root(home.canonicalize().unwrap(), &cancel)
+        .await
+        .unwrap();
+    let path = storage
+        .path(root, format!("modality/tasks/{task_id}/task.json"))
+        .unwrap();
+    let lease = storage.lock(&path, &cancel).await.unwrap();
     let id = client
         .send(
             "modality.task.wait",
             json!({"task_id": task_id, "timeout_ms": 400}),
         )
         .await;
+    submit_gate.cancel();
     let mut notices = Vec::new();
     loop {
         let value = client.read("wait progress").await;
@@ -2699,11 +2714,23 @@ async fn progress_is_streamed_to_wait_and_written_at_most_once_per_second() {
         "running",
         "a timeout is not an error and the task keeps running"
     );
-    let record = task_status(&mut client, &task_id).await;
     assert!(
-        record["progress"].is_object(),
-        "progress is persisted: {record}"
+        reply["result"]["task"]["progress"].is_null(),
+        "live progress does not wait for the record lock: {reply}"
     );
+    drop(lease);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let record = loop {
+        let record = task_status(&mut client, &task_id).await;
+        if record["progress"].is_object() {
+            break record;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "progress was not persisted after releasing the record lock: {record}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
     assert!(
         record["revision"].as_u64().unwrap() <= 3,
         "ten reports in 200 ms are written once: {record}"
@@ -3652,9 +3679,36 @@ async fn retention_keeps_the_newest_two_hundred_terminal_tasks() {
         &seed_record(crashed, "queued", "2026-11-05T23:59:30.000000000Z"),
     );
 
+    let root = Ctx::root().unwrap();
+    let view = root.plugin(FileStoragePlugin::new(vec![home.canonicalize().unwrap()]));
+    let cancel = CancellationToken::new();
+    dim_agent_runtime::wait_active(&root, &[view], Duration::from_secs(30), &cancel)
+        .await
+        .unwrap();
+    let storage = root.get::<FileStorage>().unwrap();
+    let mut leases = Vec::new();
+    for index in [0, 100, 199] {
+        let path = storage
+            .path(0, format!("modality/tasks/{}/task.json", ids[index]))
+            .unwrap();
+        leases.push(storage.lock(&path, &cancel).await.unwrap());
+    }
+    let started = std::time::Instant::now();
+    let release = tokio::spawn(async move {
+        for lease in leases {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            drop(lease);
+        }
+    });
     let fixture = Arc::new(FixtureAdapter::default());
     let server =
         start_in_with_clock(home.clone(), Some(fixture.clone()), FixedClock::new(now)).await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(18),
+        "recovery waits for all records beyond one startup inactivity interval"
+    );
+    release.await.unwrap();
+    root.shutdown().await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     create_task_provider(&mut client).await;
     // 200 terminal tasks plus the one startup interrupted: the oldest goes.

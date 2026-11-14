@@ -13,6 +13,8 @@ pub struct PendingExec {
     pub request_id: String,
     pub call_id: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

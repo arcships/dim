@@ -21,28 +21,14 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "Y 退出 · N 留下 · ←→ 移动 · Enter 确认"
         }
-        "Restart dimcode?" => "重启 dimcode？",
-        "Restart" => "重启",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "Y 重启 · N 留下 · ←→ 移动 · Enter 确认"
-        }
         "Update available" => "有新版本",
         "Version {latest} is available (you have {current})." => {
             "{latest} 已发布（当前 {current}）。"
         }
-        "Will run: {command}" => "将执行：{command}",
         "To update, run: {command}" => "升级请执行：{command}",
-        "Update now" => "立即升级",
         "Skip this version" => "跳过此版本",
         "Skipped {version}." => "已跳过 {version}。",
-        "Later" => "稍后",
         "Close" => "关闭",
-        "Restart now" => "立即重启",
-        "Updating to {version}..." => "正在升级到 {version}...",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "已升级到 {version}，重启 DimCode 后生效。"
-        }
-        "Update failed: {error}" => "升级失败：{error}",
         "←→ move · Enter confirm · Esc close" => "←→ 移动 · Enter 确认 · Esc 关闭",
         "Permission required" => "需要授权",
         "Subagent tool approval" => "子智能体工具审批",
@@ -56,6 +42,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "智能权限",
         "Full access" => "完全访问权限",
         "Run {tool}" => "运行 {tool}",
+        "edit {count} replacement in {path}" => "在 {path} 中 edit {count} 处替换",
+        "edit {count} replacements in {path}" => "在 {path} 中 edit {count} 处替换",
         "Changing the approvals mode from here is not yet available" => {
             "暂不支持在此处更改 approvals 模式"
         }
@@ -72,6 +60,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 选择 · Tab 下一题 · / 命令 · Esc 拒答"
         }
         "Question" => "问题",
+        "↑↓ scroll" => "↑↓ 滚动",
+        "replacements {from}-{to} of {count}" => "替换 {from}-{to}，共 {count} 处",
         "Question on branch {branch}" => "来自分支 {branch} 的问题",
         "Permission on branch {branch}" => "来自分支 {branch} 的授权请求",
         "Sending answer…" => "正在发送回答…",

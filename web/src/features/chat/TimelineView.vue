@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComponentPublicInstance } from "vue"
 import { useI18n } from "vue-i18n"
 import { useVirtualizer } from "@tanstack/vue-virtual"
-import { ChevronDown, GitBranch, LoaderCircle } from "lucide-vue-next"
 import type { TimelineRow } from "../../projection"
 import ChatMarkdown from "./ChatMarkdown.vue"
 import TimelineUserMessage from "./TimelineUserMessage.vue"
@@ -60,7 +59,13 @@ const retryText = computed(() => props.retry === undefined ? "" : retryStatus(pr
 const retryLive = computed(() => retryAnnouncement(props.retry))
 
 function toggleDetails(key: string): void {
+  following.value = false
   expandedDetails.value[key] = expandedDetails.value[key] !== true
+}
+
+function toggleWork(expanded: Record<string, boolean>, key: string): void {
+  following.value = false
+  expanded[key] = expanded[key] !== true
 }
 
 function shortId(id: string): string {
@@ -91,7 +96,7 @@ virtualizer.value.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, in
   const start = instance.measurementsCache[item.index]?.start ?? item.start
   // The list sits below the viewport's top padding; offsetTop is relative to the
   // positioned viewport.
-  return start < element.scrollTop - list.value.offsetTop
+  return start + item.size <= element.scrollTop - list.value.offsetTop
 }
 const virtualRows = computed(() => virtualizer.value.getVirtualItems())
 const totalSize = computed(() => virtualizer.value.getTotalSize())
@@ -127,7 +132,7 @@ function onScroll(): void {
 async function toEnd(): Promise<void> {
   await nextTick()
   const element = viewport.value
-  if (element !== undefined) element.scrollTop = element.scrollHeight
+  if (following.value && element !== undefined) element.scrollTop = element.scrollHeight
 }
 
 function jumpToLatest(): void {
@@ -145,7 +150,7 @@ onMounted(() => void toEnd())
 <template>
   <div class="timeline-shell" :data-variant="variant ?? 'main'">
     <div ref="viewport" class="timeline app-scroll-viewport" @scroll.passive="onScroll">
-      <button v-if="earlier" type="button" class="ui-button" :disabled="loadingEarlier" @click="following = false; emit('earlier')">{{ loadingEarlier ? t("timeline.loadingEarlier") : t("timeline.loadEarlier") }}</button>
+      <UButton v-if="earlier" color="neutral" variant="soft" size="sm" :loading="loadingEarlier" :disabled="loadingEarlier" @click="following = false; emit('earlier')">{{ loadingEarlier ? t("timeline.loadingEarlier") : t("timeline.loadEarlier") }}</UButton>
       <p v-if="historyError" role="alert">{{ historyError }}</p>
       <p v-if="display.length === 0 && !running" class="timeline-empty">{{ empty ?? t("chat.emptyTimeline") }}</p>
       <div ref="list" class="virtual-timeline" :style="{ height: `${totalSize}px`, position: 'relative' }">
@@ -164,8 +169,8 @@ onMounted(() => void toEnd())
               :items="entry.items"
               :expanded="expandedGroups[entry.key] === true"
               :expanded-item-ids="expandedItems"
-              @toggle="expandedGroups[entry.key] = !expandedGroups[entry.key]"
-              @toggle-item="expandedItems[$event] = !expandedItems[$event]"
+              @toggle="toggleWork(expandedGroups, entry.key)"
+              @toggle-item="toggleWork(expandedItems, $event)"
             />
             <TimelineUserMessage v-else-if="entry.row.kind === 'user'" :text="entry.row.text" :skills="entry.row.skills" :hooks="entry.row.hooks" :at="entry.row.at" :quotable="quotable" :branchable="branchable === true" @branch="onBranch(entry.row, $event)" @quote="emit('quote', $event)" />
             <article v-else-if="entry.row.kind === 'assistant'" class="timeline-row" data-role="assistant">
@@ -180,7 +185,7 @@ onMounted(() => void toEnd())
               :aria-label="t('lines.openLine', { name: entry.row.purpose || shortId(entry.row.branchId) })"
               @click="entry.row.failed !== true && emit('openLine', entry.row.branchId)"
             >
-              <GitBranch :size="14" aria-hidden="true" />
+              <UIcon name="i-lucide-git-branch" class="size-3.5 shrink-0" aria-hidden="true" />
               <span class="timeline-line-name">{{ entry.row.purpose || shortId(entry.row.branchId) }}</span>
               <code>{{ shortId(entry.row.branchId) }}</code>
               <span v-if="entry.row.failed" class="timeline-line-failed">{{ t("lines.state.creationFailed") }}</span>
@@ -195,6 +200,15 @@ onMounted(() => void toEnd())
             </p>
             <p v-else-if="entry.row.kind === 'source-idle'" class="timeline-line-notice">{{ t("timeline.lineWaiting", { id: entry.row.branch, status: entry.row.status }) }}</p>
             <p v-else-if="entry.row.kind === 'source-ended'" class="timeline-line-notice">{{ t("timeline.lineEnded", { id: entry.row.branch }) }}</p>
+            <div v-else-if="entry.row.kind === 'hook-follow-up'" class="timeline-hook">
+              <button type="button" class="timeline-hook-row" :aria-expanded="expandedDetails[entry.row.key] === true" @click="toggleDetails(entry.row.key)">
+                <span>{{ t("timeline.hookFollowUp", { count: entry.row.lines }, entry.row.lines) }}</span>
+                <UIcon name="i-lucide-chevron-down" class="size-3.5 timeline-hook-chevron" :class="{ 'is-expanded': expandedDetails[entry.row.key] === true }" aria-hidden="true" />
+              </button>
+              <div v-if="expandedDetails[entry.row.key]" class="timeline-hook-body">
+                <div v-for="(line, index) in entry.row.body.split('\n')" :key="index">{{ line }}</div>
+              </div>
+            </div>
             <div v-else-if="entry.row.kind === 'error'" class="notice-row error-row" role="alert">
               <span>{{ entry.row.text }}</span>
               <template v-if="entry.row.details">
@@ -209,7 +223,7 @@ onMounted(() => void toEnd())
         </div>
       </div>
       <div v-if="running" class="processing-row" role="status">
-        <LoaderCircle :size="14" class="is-spinning" aria-hidden="true" />
+        <UIcon name="i-lucide-loader-circle" class="size-3.5 animate-spin shrink-0" aria-hidden="true" />
         <span :aria-hidden="retry === undefined ? false : 'true'">{{ retry === undefined ? t("work.processing") : retryText }}</span>
         <span class="sr-only">{{ retryLive }}</span>
       </div>
@@ -231,9 +245,11 @@ onMounted(() => void toEnd())
       </button>
     </nav>
     <Transition name="jump-latest">
-      <button v-if="!following" class="ui-icon-button jump-latest" data-variant="secondary" data-size="md" type="button" :aria-label="t('timeline.scrollToBottom')" v-tooltip="t('timeline.scrollToBottom')" @click="jumpToLatest">
-        <ChevronDown aria-hidden="true" />
-      </button>
+      <div v-if="!following" class="jump-latest">
+        <UTooltip :text="t('timeline.scrollToBottom')">
+          <UButton color="neutral" variant="soft" size="md" square icon="i-lucide-chevron-down" :aria-label="t('timeline.scrollToBottom')" @click="jumpToLatest" />
+        </UTooltip>
+      </div>
     </Transition>
   </div>
 </template>
@@ -250,6 +266,12 @@ onMounted(() => void toEnd())
 .error-details-toggle { justify-self: start; padding: 0; border: 0; background: none; color: var(--muted-foreground); font-size: var(--text-xs); text-decoration: underline; cursor: pointer; }
 .error-details-toggle:hover, .error-details-toggle:focus-visible { color: var(--foreground); }
 .error-details { display: grid; gap: 2px; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.timeline-hook { display: grid; gap: var(--space-1); color: var(--muted-foreground); font-size: var(--text-sm); }
+.timeline-hook-row { justify-self: start; display: flex; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none; color: var(--muted-foreground); font: inherit; cursor: pointer; }
+.timeline-hook-row:hover, .timeline-hook-row:focus-visible { color: var(--foreground); }
+.timeline-hook-row svg { transition: transform var(--duration-hover) ease; }
+.timeline-hook-row svg.is-expanded { transform: rotate(180deg); }
+.timeline-hook-body { display: grid; gap: 2px; padding-left: var(--space-4); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
 
 .jump-latest-enter-from { opacity: 0; transform: translateY(4px); }
 @media (prefers-reduced-motion: reduce) {

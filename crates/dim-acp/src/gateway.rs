@@ -8,7 +8,7 @@ use agent_client_protocol::{Client, ConnectionTo, Error, UntypedMessage, schema:
 use dim_agent_types::TurnOutcome;
 use dim_client::window::Window;
 use dim_client::wire::{
-    Attached, Configuration, DisplayNotice, DisplayPage, Event, EventContent, EventNotice, History,
+    Attached, Configuration, DisplayNotice, DisplayPage, Event, EventContent, EventNotice,
     HistoryWindow, PendingDelegations, PendingInputs, PendingQuestions, PendingTasks, Progress,
     TurnRead,
 };
@@ -43,6 +43,13 @@ pub(crate) enum Work {
         cwd: String,
         servers: crate::mcp::Servers,
         result: Result<Created, Error>,
+    },
+    History {
+        id: String,
+        reply: Responder,
+        before: Option<u64>,
+        through: Option<u64>,
+        result: Result<HistoryWindow, Error>,
     },
     Prepared {
         id: String,
@@ -84,7 +91,7 @@ pub(crate) enum Work {
     },
     Recovered {
         id: String,
-        result: Box<Result<(Prepared, Option<Event>), Error>>,
+        result: Box<Result<RecoveredSession, Error>>,
     },
     Listed {
         reply: Responder,
@@ -110,16 +117,21 @@ pub(crate) struct SessionInfo {
     cwd: String,
     title: Option<String>,
     updated_at: Option<u64>,
-    title_revision: Option<u64>,
+}
+
+pub(crate) struct RecoveredSession {
+    prepared: Prepared,
+    input: Option<Event>,
+    prompt_turn: Option<TurnRead>,
 }
 
 pub(crate) struct Prepared {
     history: Vec<Event>,
-    tool_origins: Vec<dim_agent_types::ToolUseData>,
     before: Option<u64>,
     through: u64,
     config: Config,
-    metadata: Option<SessionInfo>,
+    title: Option<String>,
+    title_revision: u64,
     questions: HashMap<String, (u64, Vec<dim_agent_types::PendingQuestionBatch>)>,
     tasks: Vec<dim_agent_types::PendingExec>,
     delegations: Vec<dim_agent_types::PendingDelegation>,
@@ -138,7 +150,6 @@ enum Preparation {
     New,
     Load,
     Resume,
-    History,
 }
 struct Loading {
     preparation: u64,
@@ -160,7 +171,6 @@ struct Prompt {
     cancel_uncertain: bool,
     consumed: HashMap<String, String>,
     ended: HashMap<String, TurnOutcome>,
-    max_tokens: HashSet<String>,
     deleted: HashSet<String>,
 }
 impl Prompt {
@@ -174,31 +184,26 @@ impl Prompt {
         self.consumed.clear();
         let outcome = self.turn.as_ref().and_then(|turn| self.ended.remove(turn));
         self.ended.clear();
-        self.max_tokens
-            .retain(|turn| Some(turn) == self.turn.as_ref());
         if deleted {
             Some(Ok(json!({"stopReason":"cancelled"})))
         } else {
-            let max_tokens = self
-                .turn
-                .as_ref()
-                .is_some_and(|turn| self.max_tokens.contains(turn));
-            outcome.map(|outcome| prompt_outcome(self.cancelled, max_tokens, &outcome))
+            outcome.map(|outcome| prompt_outcome(self.cancelled, &outcome))
         }
     }
 }
-fn prompt_outcome(
-    cancelled: bool,
-    max_tokens: bool,
-    outcome: &TurnOutcome,
-) -> Result<Value, Error> {
+fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<Value, Error> {
     if cancelled {
         return Ok(json!({"stopReason":"cancelled"}));
     }
+    // The turn's own end decides: an output-limit stop completes with that
+    // reason, and a turn whose earlier step hit the limit but then continued
+    // to a normal end did not stop at its limit.
     match outcome {
+        TurnOutcome::Completed { reason } if reason == "output_limit" => {
+            Ok(json!({"stopReason":"max_tokens"}))
+        }
         TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
         TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
-        TurnOutcome::Failed { .. } if max_tokens => Ok(json!({"stopReason":"max_tokens"})),
         TurnOutcome::Failed { error } => {
             Err(Error::new(-32001, error.clone()).data(json!({"code":"turn_failed"})))
         }
@@ -356,7 +361,6 @@ impl Gateway {
         let rpc = self.rpc.clone();
         let expected_cwd = (!matches!(waiter.kind, Preparation::New)).then(|| cwd.clone());
         let mcp = self.mcp.clone();
-        let bind_mcp = !matches!(waiter.kind, Preparation::History);
         let previous = match self.sessions.remove(&id) {
             Some(Slot::Ready(session)) => Some(session),
             None => None,
@@ -375,11 +379,8 @@ impl Gateway {
         );
         self.spawn(async move {
             let result = async {
-                let prepared =
-                    read_history(&rpc, &id, expected_cwd, (!bind_mcp).then_some(0)).await?;
-                if bind_mcp {
-                    mcp.ensure(&id).await?;
-                }
+                let prepared = read_history(&rpc, &id, expected_cwd).await?;
+                mcp.ensure(&id).await?;
                 Ok(prepared)
             }
             .await;
@@ -662,14 +663,28 @@ impl Gateway {
             }
             "_lody/session/history/read" => {
                 #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase")]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct Request {
                     session_id: String,
+                    version: Option<u32>,
+                    before: Option<u64>,
+                    through: Option<u64>,
+                    limit: Option<u64>,
                 }
                 let args: Request = match params(request.params) {
                     Ok(args) => args,
                     Err(error) => return reply.respond_with_error(error),
                 };
+                if args.version != Some(2) {
+                    return reply.respond_with_error(
+                        Error::new(-32602, "History requires paged version 2")
+                            .data(json!({"code":"unsupported_history_version","version":2})),
+                    );
+                }
+                let limit = args.limit.unwrap_or(64);
+                if !(1..=256).contains(&limit) || args.before.is_some() && args.through.is_none() {
+                    return reply.respond_with_error(Error::invalid_params());
+                }
                 let Some(Slot::Ready(session)) = self.sessions.get(&args.session_id) else {
                     return reply
                         .respond_with_error(Error::resource_not_found(Some(args.session_id)));
@@ -681,16 +696,41 @@ impl Gateway {
                 {
                     return reply.respond_with_error(busy());
                 }
-                let cwd = session.cwd.clone();
-                self.prepare(
-                    args.session_id,
-                    cwd,
-                    Waiter {
+                let rpc = self.rpc.clone();
+                self.spawn(async move {
+                    let mut query =
+                        json!({"sessionId":args.session_id,"branchId":"main","limit":limit});
+                    if rpc.supports("session.history.display.transcript") {
+                        query["tail"] = json!(true);
+                        query["transcript"] = json!(true);
+                    } else if rpc.supports("session.history.display.tail") {
+                        query["tail"] = json!(true);
+                    } else if args.before.is_none() {
+                        query["latestTurn"] = json!(true);
+                    }
+                    if let Some(before) = args.before {
+                        query["before"] = json!(before);
+                    }
+                    if let Some(through) = args.through {
+                        query["through"] = json!(through);
+                    }
+                    let result = if rpc.supports("session.history.display")
+                        && rpc.supports("session.history.detail")
+                    {
+                        rpc.typed::<DisplayPage>("session.history.display", query)
+                            .await
+                            .map(Into::into)
+                    } else {
+                        rpc.typed("session.history", query).await
+                    };
+                    Work::History {
+                        id: args.session_id,
                         reply,
-                        kind: Preparation::History,
-                    },
-                    false,
-                );
+                        before: args.before,
+                        through: args.through,
+                        result,
+                    }
+                });
             }
             "session/fork" if self.rpc.supports("session.fork") => {
                 if !self.rpc.supports("session.turn.get") {
@@ -812,7 +852,6 @@ impl Gateway {
                     cancel_uncertain: false,
                     consumed: HashMap::new(),
                     ended: HashMap::new(),
-                    max_tokens: HashSet::new(),
                     deleted: HashSet::new(),
                 });
                 let mcp = self.mcp.clone();
@@ -1085,6 +1124,7 @@ impl Gateway {
                     return reply.respond_with_error(rpc::unavailable());
                 }
                 Work::Listed { reply, .. }
+                | Work::History { reply, .. }
                 | Work::Removed { reply, .. }
                 | Work::Configured { reply, .. } => {
                     return reply.respond_with_error(rpc::unavailable());
@@ -1150,6 +1190,37 @@ impl Gateway {
                     Err(error) => reply.respond_with_error(error)?,
                 }
             }
+            Work::History {
+                id,
+                reply,
+                before,
+                through,
+                result,
+            } => {
+                if reply.cancellation().is_cancelled() {
+                    return reply.respond_with_error(Error::request_cancelled());
+                }
+                if !matches!(self.sessions.get(&id), Some(Slot::Ready(_))) {
+                    return reply.respond_with_error(Error::resource_not_found(Some(id)));
+                }
+                match result {
+                    Ok(page) => {
+                        let next = page
+                            .next(before, through)
+                            .map_err(|_| Error::internal_error())?;
+                        let mut projection = Projection::default();
+                        for event in page.events {
+                            for update in projection.event(&decode_native(event)?) {
+                                self.update(&id, update)?;
+                            }
+                        }
+                        reply.respond(
+                            json!({"through":page.through,"before":next,"complete":next.is_none()}),
+                        )?;
+                    }
+                    Err(error) => reply.respond_with_error(error)?,
+                }
+            }
             Work::Prepared {
                 id,
                 preparation,
@@ -1173,7 +1244,7 @@ impl Gateway {
                 match result {
                     Ok(prepared) => {
                         let replay = loading.waiters.iter().any(|waiter| {
-                            matches!(waiter.kind, Preparation::Load | Preparation::History)
+                            matches!(waiter.kind, Preparation::Load)
                                 && !waiter.reply.cancellation().is_cancelled()
                         });
                         let mut session = Session {
@@ -1198,13 +1269,6 @@ impl Gateway {
                                 .map(|previous| std::mem::take(&mut previous.subagents))
                                 .unwrap_or_default(),
                         };
-                        for origin in prepared.tool_origins {
-                            for update in session.projection.tool_origin(&origin) {
-                                if replay {
-                                    self.update(&id, update)?;
-                                }
-                            }
-                        }
                         for (index, event) in prepared.history.into_iter().enumerate() {
                             if index % 32 == 0 {
                                 tokio::task::yield_now().await;
@@ -1269,10 +1333,8 @@ impl Gateway {
                         let state = session.config.response();
                         self.sessions
                             .insert(id.clone(), Slot::Ready(Box::new(session)));
-                        if let Some(metadata) = prepared.metadata
-                            && let Some(revision) = metadata.title_revision
-                        {
-                            self.title(&id, metadata.title, revision)?;
+                        if prepared.title_revision > 0 {
+                            self.title(&id, prepared.title, prepared.title_revision)?;
                         }
                         for waiter in loading.waiters {
                             if !matches!(waiter.kind, Preparation::New)
@@ -1283,11 +1345,7 @@ impl Gateway {
                                     .respond_with_error(Error::request_cancelled())?;
                                 continue;
                             }
-                            let mut response = if matches!(waiter.kind, Preparation::History) {
-                                json!({})
-                            } else {
-                                state.clone()
-                            };
+                            let mut response = state.clone();
                             if matches!(waiter.kind, Preparation::New) {
                                 response["sessionId"] = json!(id);
                             }
@@ -1603,8 +1661,17 @@ impl Gateway {
                 };
                 let buffered = session.recovery.take().unwrap_or_default();
                 match *result {
-                    Ok((prepared, input)) => {
-                        let metadata = prepared.metadata;
+                    Ok(RecoveredSession {
+                        prepared,
+                        input,
+                        prompt_turn,
+                    }) => {
+                        let previous_through = session.projection.through;
+                        session.projection = Projection::default();
+                        session.questions = dim_client::question::Pending::default();
+                        session.question_through.clear();
+                        let title = prepared.title;
+                        let title_revision = prepared.title_revision;
                         session.config = prepared.config;
                         session.model_through = prepared.model_through;
                         for (branch, (cut, batches)) in prepared.questions {
@@ -1632,6 +1699,21 @@ impl Gateway {
                                 prompt.terminal = Some(finish);
                             }
                         }
+                        if let Some(prompt) = &mut session.prompt
+                            && let Some(read) = prompt_turn
+                        {
+                            if read.input_deleted {
+                                prompt.terminal = Some(Ok(json!({"stopReason":"cancelled"})));
+                            } else if let Some(turn) = read.turn {
+                                prompt.turn = Some(turn.turn_id.clone());
+                                if let Some(outcome) = turn.outcome {
+                                    prompt.terminal =
+                                        Some(prompt_outcome(prompt.cancelled, &outcome));
+                                } else if turn.ended {
+                                    prompt.terminal = Some(Err(Error::new(-32001,"The accepted input's turn outcome is unavailable").data(json!({"code":"turn_outcome_unavailable","inputId":prompt.input,"turnId":turn.turn_id}))));
+                                }
+                            }
+                        }
                         let mut snapshots = Vec::new();
                         for event in &prepared.history {
                             snapshots.extend(session.subagents.event(&id, event));
@@ -1645,20 +1727,19 @@ impl Gateway {
                                     .notify(&self.cx, "_lody/subagents/event", snapshot)?;
                             }
                         }
-                        let origin_updates: Vec<_> = prepared
-                            .tool_origins
-                            .iter()
-                            .flat_map(|origin| session.projection.tool_origin(origin))
-                            .collect();
-                        for update in origin_updates {
-                            self.update(&id, update)?;
-                        }
                         for event in prepared.history {
-                            self.event_notice(EventNotice {
-                                session_id: id.clone(),
-                                branch_id: "main".into(),
-                                event,
-                            })?;
+                            if event.sequence <= previous_through {
+                                if let Some(Slot::Ready(session)) = self.sessions.get_mut(&id) {
+                                    session.projection.event(&event);
+                                    session.projection.through = event.sequence;
+                                }
+                            } else {
+                                self.event_notice(EventNotice {
+                                    session_id: id.clone(),
+                                    branch_id: "main".into(),
+                                    event,
+                                })?;
+                            }
                         }
                         if let Some(Slot::Ready(session)) = self.sessions.get_mut(&id) {
                             session.projection.turn = prepared.turn;
@@ -1704,10 +1785,9 @@ impl Gateway {
                                 prompt.reply.respond(json!({"stopReason":"cancelled","_meta":{"dim":{"nativeCancellation":"unconfirmed"}}}))?;
                             }
                         }
-                        if let Some(metadata) = metadata
-                            && let Some(revision) = metadata.title_revision
-                        {
-                            self.title(&id, metadata.title, revision)?;
+                        self.title(&id, title, title_revision)?;
+                        if let Some(Slot::Ready(session)) = self.sessions.get(&id) {
+                            self.update(&id,json!({"sessionUpdate":"config_option_update","configOptions":session.config.options(),"_meta":{"dim/history":{"through":prepared.through,"before":prepared.before,"complete":prepared.before.is_none(),"replace":true}}}))?;
                         }
                     }
                     Err(error) => {
@@ -1725,6 +1805,7 @@ impl Gateway {
                 for (method, params) in buffered {
                     self.notice(method, params)?;
                 }
+                self.questions(&id);
                 if self.recovering_sessions == 0 {
                     self.recovering = false;
                     let cancelled: Vec<_> = self
@@ -2101,12 +2182,19 @@ impl Gateway {
                 Slot::Ready(session) => Some((
                     id.clone(),
                     session.cwd.clone(),
-                    session.projection.through,
                     session
                         .prompt
                         .as_ref()
                         .filter(|prompt| prompt.input.is_none())
                         .map(|prompt| prompt.submission.clone()),
+                    session
+                        .prompt
+                        .as_ref()
+                        .and_then(|prompt| prompt.input.clone()),
+                    session
+                        .prompt
+                        .as_ref()
+                        .and_then(|prompt| prompt.turn.clone()),
                 )),
                 _ => None,
             })
@@ -2115,7 +2203,7 @@ impl Gateway {
         if sessions.is_empty() {
             self.recovering = false;
         }
-        for (id, cwd, after, submission) in sessions {
+        for (id, cwd, submission, accepted_input, turn_id) in sessions {
             let rpc = self.rpc.clone();
             let mcp = self.mcp.clone();
             self.spawn_generation(generation,async move {
@@ -2132,9 +2220,21 @@ impl Gateway {
                             }
                         }
                     }
-                    let prepared = read_history(&rpc,&id,Some(cwd),Some(after)).await?;
+                    let prepared = read_history(&rpc,&id,Some(cwd)).await?;
+                    let input_id = input.as_ref().map(|event| event.id.clone()).or(accepted_input);
+                    let prompt_turn = if turn_id.is_some() || input_id.is_some() {
+                        let mut query = json!({"sessionId":id,"branchId":"main","through":prepared.through});
+                        if let Some(turn) = turn_id { query["turnId"] = json!(turn); }
+                        else if let Some(input) = input_id {
+                            if !rpc.supports("session.turn.get.inputId") {
+                                return Err(Error::new(-32001,"App Server lacks selected input turn lookup").data(json!({"code":"input_turn_lookup_unavailable"})));
+                            }
+                            query["inputId"] = json!(input);
+                        }
+                        Some(rpc.typed("session.turn.get",query).await?)
+                    } else { None };
                     mcp.ensure(&id).await?;
-                    Ok((prepared,input))
+                    Ok(RecoveredSession { prepared,input,prompt_turn })
                 }).await.unwrap_or_else(|_|Err(rpc::unavailable()));
                 Work::Recovered { id,result: Box::new(result) }
             });
@@ -2215,30 +2315,8 @@ impl Gateway {
                 EventContent::InputDeleted(data) if prompt.input.is_none() => {
                     prompt.deleted.insert(data.input_id.clone());
                 }
-                EventContent::ModelEnd(data)
-                    if prompt.input.is_none() || prompt.turn.as_deref() == Some(&data.turn_id) =>
-                {
-                    let output_limit = match &data.outcome {
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            failure: Some(failure),
-                            ..
-                        } => failure.kind == dim_agent_types::ModelFailureKind::OutputLimit,
-                        dim_agent_types::ModelOutputOutcome::Failed {
-                            presentation: Some(presentation),
-                            ..
-                        } => presentation.reason == "max_tokens",
-                        _ => false,
-                    };
-                    if output_limit {
-                        prompt.max_tokens.insert(data.turn_id.clone());
-                    }
-                }
                 EventContent::TurnEnd(data) if prompt.turn.as_deref() == Some(&data.turn_id) => {
-                    finish = Some(prompt_outcome(
-                        prompt.cancelled,
-                        prompt.max_tokens.contains(&data.turn_id),
-                        &data.outcome,
-                    ));
+                    finish = Some(prompt_outcome(prompt.cancelled, &data.outcome));
                 }
                 EventContent::TurnEnd(data) if prompt.input.is_none() => {
                     prompt
@@ -2403,18 +2481,49 @@ impl Gateway {
                 message = incoming.recv() => match message {
                     Some(Incoming::Request(request, reply)) => self.request(request, *reply)?,
                     Some(Incoming::Notification(notification)) => self.cancel(notification)?,
-                    Some(Incoming::Work(generation,work)) => self.work(generation,*work).await?,
+                    Some(Incoming::Work(generation,work)) => {
+                        // The App Server publishes a command's facts before it
+                        // replies, so a notice queued here happened first.
+                        // Applying the result before it would read a
+                        // configuration the owner has already replaced.
+                        for _ in 0..native.len() {
+                            let Ok(message) = native.try_recv() else { break };
+                            if self.handle_native(Some(message)).await? {
+                                return Ok(());
+                            }
+                        }
+                        self.work(generation,*work).await?;
+                    }
                     None => return Ok(()),
                 },
-                message = native.recv() => match message {
-                    Some(Native::Notice { method, params }) => self.notice(method, params)?,
-                    Some(Native::Lost) => self.lost()?,
-                    Some(Native::Restored { same_instance,generation,deadline }) if generation == self.rpc.generation() && self.rpc.ready() => self.restore(same_instance,generation,deadline),
-                    Some(Native::Restored { .. })=>{},
-                    Some(Native::Closed) | None => return self.fail_connection().await,
+                message = native.recv() => {
+                    if self.handle_native(message).await? {
+                        return Ok(());
+                    }
                 },
             }
         }
+    }
+
+    /// Handles one native message, and reports whether the connection ends.
+    async fn handle_native(&mut self, message: Option<Native>) -> Result<bool, Error> {
+        match message {
+            Some(Native::Notice { method, params }) => self.notice(method, params)?,
+            Some(Native::Lost) => self.lost()?,
+            Some(Native::Restored {
+                same_instance,
+                generation,
+                deadline,
+            }) if generation == self.rpc.generation() && self.rpc.ready() => {
+                self.restore(same_instance, generation, deadline)
+            }
+            Some(Native::Restored { .. }) => {}
+            Some(Native::Closed) | None => {
+                self.fail_connection().await?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -2444,38 +2553,36 @@ async fn read_history(
     rpc: &Rpc,
     id: &str,
     expected_cwd: Option<String>,
-    after: Option<u64>,
 ) -> Result<Prepared, Error> {
-    let metadata = if let Some(cwd) = expected_cwd {
-        let method = if rpc.supports("session.summaries") {
-            "session.summaries"
-        } else {
-            "session.list"
-        };
-        let sessions: Vec<SessionInfo> = rpc.typed(method, json!({})).await?;
-        let session = sessions
-            .into_iter()
-            .find(|session| session.session_id == id)
-            .ok_or_else(|| Error::resource_not_found(Some(id.to_owned())))?;
-        let requested = tokio::fs::canonicalize(cwd)
-            .await
-            .map_err(|_| Error::invalid_params())?;
-        if Path::new(&session.cwd) != requested {
-            return Err(Error::invalid_params());
-        }
-        Some(session)
-    } else {
-        None
-    };
+    if expected_cwd.is_some() && !rpc.supports("session.attach.expectedCwd") {
+        return Err(
+            Error::new(-32001, "App Server lacks checked Session attachment")
+                .data(json!({"code":"checked_attach_unavailable"})),
+        );
+    }
     let attached: Attached = rpc
         .typed("session.attach", {
             let mut params = json!({"sessionId":id});
+            if let Some(cwd) = expected_cwd {
+                params["expectedCwd"] = json!(cwd);
+            }
             if rpc.supports("session.history.display") && rpc.supports("session.history.detail") {
                 params["display"] = json!(true);
             }
             params
         })
-        .await?;
+        .await
+        .map_err(|error| {
+            if error
+                .data
+                .as_ref()
+                .is_some_and(|data| data["nativeAppError"] == "session_closed")
+            {
+                Error::resource_not_found(Some(id.to_owned()))
+            } else {
+                error
+            }
+        })?;
     let model = attached.model.map(|model| Configuration {
         provider_id: model.provider_id,
         model_id: model.model_id,
@@ -2483,43 +2590,18 @@ async fn read_history(
         model_preferences: attached.model_preferences,
     });
 
-    let (history, through, before) = if let Some(mut after) = after {
-        let mut history = Vec::new();
-        let mut through = None;
-        loop {
-            let mut args = json!({"sessionId":id,"branchId":"main","after":after,"limit":256});
-            if let Some(through) = through {
-                args["through"] = json!(through);
-            }
-            let page: History = if rpc.supports("session.history.display")
-                && rpc.supports("session.history.detail")
-            {
-                rpc.typed::<DisplayPage>("session.history.display", args)
-                    .await?
-                    .into()
-            } else {
-                rpc.typed("session.history", args).await?
-            };
-            let next = page.next(after, through).map_err(|_| {
-                Error::internal_error().data(json!({"code":"invalid_history_cursor"}))
-            })?;
-            through = Some(page.through);
-            for event in page.events {
-                history.push(decode_native(event)?);
-            }
-            if let Some(next) = next {
-                after = next;
-            } else {
-                break (history, page.through, None);
-            }
-        }
-    } else {
+    let (history, through, before) = {
         if !rpc.supports("session.history.latestTurn") {
             return Err(Error::internal_error().data(json!({"code":"bounded_history_unavailable"})));
         }
         let mut window = Window::default();
         loop {
-            let args = window.params(id, "main");
+            let args = window.params_with_display(
+                id,
+                "main",
+                rpc.supports("session.history.display.tail"),
+                rpc.supports("session.history.display.transcript"),
+            );
             let page: HistoryWindow = if rpc.supports("session.history.display")
                 && rpc.supports("session.history.detail")
             {
@@ -2543,66 +2625,17 @@ async fn read_history(
         )
     };
     let config = Config::read(rpc, id, model).await?;
-    let mut tool_origins = Vec::new();
-    if config.methods.contains("session.tool.get") {
-        let known: HashSet<_> = history
-            .iter()
-            .filter_map(|event| match &event.content {
-                EventContent::ToolUse(data) => {
-                    Some((data.request_id.clone(), data.call.id.clone()))
-                }
-                _ => None,
-            })
-            .collect();
-        let mut missing = HashSet::new();
-        for event in &history {
-            match &event.content {
-                EventContent::ToolResult(data) => {
-                    for result in &data.results {
-                        missing.insert((data.request_id.clone(), result.call_id.clone()));
-                    }
-                }
-                EventContent::ToolCompleted(data) => {
-                    missing.insert((data.request_id.clone(), data.call_id.clone()));
-                }
-                _ => {}
-            }
-        }
-        for (request, call) in missing.difference(&known) {
-            let read:dim_agent_types::ToolRead=rpc.typed("session.tool.get",json!({"sessionId":id,"branchId":"main","requestId":request,"callId":call,"through":through})).await?;
-            if read.branch_id != "main"
-                || read.through != through
-                || read
-                    .call
-                    .as_ref()
-                    .is_some_and(|origin| origin.request_id != *request || origin.call.id != *call)
-            {
-                return Err(Error::internal_error());
-            }
-            if let Some(origin) = read.call {
-                tool_origins.push(origin);
-            }
-        }
-    }
     let mut questions = HashMap::new();
     if config.methods.contains("session.question.pending") {
         let mut branches = vec!["main".to_owned()];
         if rpc.supports("session.branches") {
-            #[derive(Deserialize)]
-            struct Directory {
-                branches: Vec<Branch>,
-            }
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase")]
-            struct Branch {
-                branch_id: String,
-            }
-            let directory: Directory = rpc
+            let directory: dim_client::wire::BranchDirectory = rpc
                 .typed("session.branches", json!({"sessionId":id}))
                 .await?;
             branches = directory
                 .branches
                 .into_iter()
+                .filter(|branch| branch.state != "ended")
                 .map(|branch| branch.branch_id)
                 .collect();
         }
@@ -2690,11 +2723,11 @@ async fn read_history(
         .map(|turn| turn.turn_id);
     Ok(Prepared {
         history,
-        tool_origins,
         before,
         through,
         config,
-        metadata,
+        title: attached.title,
+        title_revision: attached.title_revision,
         questions,
         tasks,
         delegations,

@@ -6,6 +6,7 @@ import { HistoryWindow } from "../history-window"
 import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
+import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
 import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
 import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
@@ -458,9 +459,10 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function window(channel: Channel, branchId: string, before?: number, through?: number) {
-    const window = new HistoryWindow(before, through)
+    const connection = useConnectionStore()
+    const display = connection.supports("session.history.display") && connection.supports("session.history.detail")
+    const window = new HistoryWindow(before, through, display && connection.supports("session.history.display.tail"), display && connection.supports("session.history.display.transcript"))
     for (;;) {
-      const display = (useConnectionStore().supports("session.history.display") && useConnectionStore().supports("session.history.detail"))
       const page = await client().call(display ? "session.history.display" : "session.history", window.params(channel.view.sessionId, branchId), display ? readDisplayHistory : readHistory, HISTORY_TIMEOUT_MS)
       if (window.push(page)) break
     }
@@ -744,6 +746,26 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Starts a loop on the main line and returns its id. */
+  async function startLoop(sessionId: string, prompt: string, everySeconds: number | undefined): Promise<string> {
+    return await client().call("session.loop.start", {
+      sessionId,
+      branchId: MAIN_BRANCH,
+      prompt,
+      ...(everySeconds === undefined ? {} : { everySeconds }),
+    }, readStartedLoop)
+  }
+
+  /** The main line's loops, newest first. */
+  async function readLoops(sessionId: string): Promise<Loop[]> {
+    return [...await client().call("session.loop.list", { sessionId, branchId: MAIN_BRANCH }, readLoopsReply)]
+  }
+
+  /** Stops one loop of the main line. */
+  async function stopLoop(sessionId: string, loopId: string): Promise<void> {
+    await client().call("session.loop.stop", { sessionId, loopId }, readAck)
+  }
+
   /** Reads the main line's context window usage. */
   async function usage(sessionId: string) {
     return client().call("session.context.usage", { sessionId, branchId: MAIN_BRANCH }, readContextUsage)
@@ -814,5 +836,5 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, setEffort, setPermission, withdrawInput, searchFiles, memberApproval, setModel }
+  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, withdrawInput, searchFiles, memberApproval, setModel }
 })

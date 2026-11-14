@@ -162,6 +162,10 @@ Exec retains its `cwd` argument resolution, POSIX `&` refusal, heavy-search
 refusal, timeouts and background ownership. Its existing `exec_shell_unavailable`
 tool-result code is preserved, with instructions to fix the file and retry.
 
+Exec's schema requires a `title` string for newly generated calls: a short task-specific label for the background task list, independent of the shell `command`. Runtime admission still accepts omission for existing callers. The external tool boundary rejects a supplied title that is not a string, is blank after checking whitespace, or contains CR, LF, NEL, LINE SEPARATOR or PARAGRAPH SEPARATOR, with `exec_invalid_request` before starting a process. An accepted title is passed verbatim to BackgroundExec on either immediate or automatic handoff; consumers do not normalize it. The command-derived `description` retains its existing meaning. Omitting the title keeps existing callers working and creates no inferred title. The title schema and its description are protocol under [model-facing prompts §4](../../../design/model-prompts.md#4-protocol-and-policy); execution policy is unchanged.
+
+For provider compatibility, the title schema uses `type: string` and `minLength: 1` without a regular expression; admission enforces the nonblank, single-line contract.
+
 Exec takes no input that selects a boundary. The user's `Process isolation` control in
 `/permissions` or `/settings` selects the existing `sandbox` and `network` settings
 ([process isolation](../../../design/host-platform-isolation.md#process-isolation));
@@ -282,6 +286,47 @@ is written to.
 - `read`, `glob` and `grep` declare nothing else: they neither change a
   workspace file nor run a command.
 
+### File mutation display results
+
+A successful `write` returns `path`, `bytesWritten`, `revision` and `diff` in
+structured content. The display-only `diff` compares the revision-validated old
+bytes decoded with the read binding against the text actually encoded for the
+replacement, folding CRLF to LF and excluding the BOM. It begins with
+`--- /dev/null\n+++ <path>\n` for creation, or
+`--- <path>\n+++ <path>\n` for overwrite, including empty files and unchanged
+text. Its hunks use the same three context lines as `edit`; `edit` retains its
+existing hunk-only format. These display diffs are not byte patches.
+
+A successful `edit` returns `path`, `replacementCount`, `revision` and `diff` in
+structured content. `replacementCount` is the total over every replacement the
+call applied. The call takes `{path, edits: [{oldText, newText, replaceAll?}]}`
+and applies the replacements in order, each matched against the text the
+previous one produced, so the later entries can depend on the earlier ones and
+no overlap between them needs a rule. One read, one revision check, one path
+lock and one write carry the whole list: a failure in any entry writes nothing
+and returns that entry's `index`, in the structured result and as the
+`edits[<index>]:` prefix of the message; a parse-time failure for an entry
+carries the same `index` and prefix. The failure codes are the single
+replacement's (`oldtext_not_found`, `multiple_matches`, `no_change`).
+`EDIT_INPUT_MAX_CHARS` bounds the sum over the entries, and that total does not
+bound what the entries produce: an entry whose result would pass
+`EDIT_TARGET_MAX_BYTES` is refused from its match count before the result is
+built, so a `replaceAll` of one byte by many cannot multiply the text past the
+limit. Cancellation is observed between entries. `parse` folds a recorded call
+that carries the top-level `oldText` and `newText` instead into a one-entry
+list, so a resumed history still replays; a call that carries both shapes, or
+an empty list, is `invalid_input`. `diff` stays one whole-file comparison.
+
+Write comparisons have a 64 KiB budget: an old file larger than that is not
+decoded for display, the combined decoded old and replacement text must fit
+before diff generation, and the complete resulting diff, including headers,
+must fit before it enters the result. Exceeding any budget does not limit the
+write: `diff` is null and the text result explicitly says the comparison was
+omitted because of the size limit. `path`, `bytesWritten` and `revision` remain
+available. No partial diff or misleading complete change count is returned.
+Consumers use the recorded diff rather than rereading the current file; null
+or missing diffs do not provide a comparison.
+
 ### Rule check
 
 The read-only [`session.exec.output`](../../../design/background-task-output.md)
@@ -327,8 +372,9 @@ how to use it is policy. A name that a policy sentence states stays protocol.
 - `write` — protocol throughout: it states what the call writes, that it creates
   the file and that it overwrites the whole content.
 - `edit` — protocol: "Edit an existing file by replacing exact text matches."
-  and "Supports single replacement (default) or replacing all matches with
-  replaceAll."; policy: "Read the file first, then derive oldText and newText
+  and "`edits` holds the replacements for one file; they apply in order, each
+  against the text the previous one produced, and nothing is written if any of
+  them fails."; policy: "Read the file first, then derive oldText and newText
   from the latest read result." and "Use this tool for ordinary incremental text
   edits instead of shell commands or Python."
 - `glob` — protocol: "Find files with a safe case-insensitive git-style glob."
@@ -386,6 +432,17 @@ tool that starts writing one into `content` moves that text into this section.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs),
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs),
 [local_product.rs](../../../../tests/integration/tests/local_product.rs).
+
+[workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
+drives `edit` over its replacement list:
+`edit_applies_every_replacement_in_order_in_one_call`,
+`a_later_replacement_matches_the_text_the_previous_one_produced`,
+`a_failed_replacement_writes_nothing_and_names_its_index`,
+`a_replacement_that_does_not_parse_names_its_index`,
+`an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built`,
+`edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once` and
+`the_replacement_list_is_bounded_by_one_total`. [local_product.rs](../../../../tests/integration/tests/local_product.rs)
+asserts the declaration the model reads.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of
@@ -473,6 +530,38 @@ Owner: [workspace_tools/background.rs](../../../../crates/dim-agent-capabilities
 Owns commands transferred from foreground execution, their terminal records and
 bounded completion notices on the calling branch.
 
+`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v48](../../../design/appserver/native-storage-format.md#v48-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
+
+### Data face
+
+`backgroundExec` is the branch's data face ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id));
+the typed `BackgroundExec` serves it and stays the Rust binding.
+
+| Method | Positional arguments | Reply | Errors |
+| --- | --- | --- | --- |
+| `output` | `(taskId)` | `string`: the live tail preview | `unknown`, `closed` |
+| `outputPage` | `(taskId, cursor, limit)` | `{text, bytes, nextCursor?, truncated}` | `unknown`, `unavailable`, `closed`, `invalidLimit`, `read` |
+| `wait` | `(taskId, timeoutMs)` | the `exec/ended` record `{task_id, status, result}` | `unknown`, `closed`, `timeout`, `read` |
+| `stop` | `(taskId)` | the `exec/ended` record | `unknown`, `closed`, `read` |
+
+`taskId` is a task this branch started. `output` reads the live capture; it is
+`unknown` for an ended or replayed task, whose registered file stays readable by
+`outputPage`. `outputPage` reads that file by byte cursor: `limit` rejects 0 and
+clamps to 4 MiB, `bytes` is what the page consumed, and the next cursor is
+`cursor + bytes`; `nextCursor` is present only for a full page. `wait` answers an
+ended task at once and otherwise waits for its dispatch until `timeoutMs` elapses.
+For a running task, `timeoutMs = 0` answers `timeout`. `stop` is kill: it cancels
+a running task so it ends `cancelled`
+and does not wake, and answers an already ended task's record without changing
+its wake. Cancellation is the caller dropping the call: a dropped `outputPage`
+drops the read and a dropped `wait` releases the watch. `start` needs the live
+process, so it is the `exec` tool's own operation and is not on the face.
+
+Historical `outputPage`, `wait` and `stop` calls use the owner's bounded task-fact reads, without rebuilding a historical task cache. `wait` returns a historical terminal record without waiting for execution; `timeoutMs` governs the completion wait for a live task. Failed reads or inconsistent required facts answer `read`, not `unknown`. Dropping a historical call cancels its read.
+
+Errors cross as `{code, message}`; the codes are the variants above. The owner
+releases no lock across a read: the page opens the registered file itself.
+
 ### Dependencies
 
 | Service | Purpose |
@@ -494,11 +583,9 @@ Session from `start`, before `exec/started`, until its supervisor has appended
 `exec/ended`; that end keeps the branch busy until its wake is posted. A start
 that gets no hold (the Session is closing) is refused as in a closing branch,
 and a refused start stops its command. Tracked tasks are joined on unload.
-Recovery pages through task lifecycle properties at one committed cutoff. It reads
-only tags from inputs, keeping the task directory, terminal results and outstanding
-notices; it does not collect historical input bodies or events. Ended tasks remain
-in the directory for the task APIs. Recovery reposts unreported non-cancelled ends
-but never restarts a historical process. The notice is not the full command output; output files carry large
+Recovery queries unfinished exec/started members and eligible, unposted exec/ended members at one committed cutoff. Only those objects are loaded; completed task history, all input tags and old closing state are not replayed. An end after the last branch close is suppressed until a later opening; an eligible end before a close remains owed until its tagged input commits. Recovery writes failed terminals for unfinished processes and posts owed notices, but never restarts a historical process. A copied Session's fork boundary prevents its copied tasks from becoming owned I/O.
+
+The notice is not the full command output; output files carry large
 results. The `exec/ended` result carries the final `preview` and
 `previewTruncated` in its `structuredContent`, from the same settled capture
 as the live read. Its escaped result preview uses the existing context-block
@@ -533,13 +620,19 @@ branch-scoped, and a request on that branch after the notice carries the entry
 `a_turn_stop_keeps_background_work_and_its_wake_starts_a_turn`,
 `idle_unload_waits_for_tasks_and_a_restart_wakes_for_every_unreported_end`,
 `running_tasks_hold_the_session_until_the_last_one_ends`,
-`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`.
+`a_reload_or_a_closing_session_refuses_a_start_and_leaves_no_hold`,
+`background_exec_face_answers_as_the_typed_service` (the `backgroundExec` face
+against the typed service: tail, page, wait, stop and the error codes).
+The `transport_flow/shell_input.rs` flow
+`node_object_faces_use_session_and_branch_owners_across_the_bridge` resolves
+`backgroundExec` through the real Node loader and verifies owner operations
+and Session isolation.
 
 <!-- generated:plugin BackgroundExec — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle` |
-| 提供 | `B:BackgroundExec` |
+| 提供 | `B:BackgroundExec`、`B:dyn HostDispatch#backgroundExec` |
 | 被注入于 | — |
 <!-- /generated -->

@@ -8,7 +8,7 @@ use super::{
     failed, field, hex, invalid_input, js_len, not_regular, refused, resolve_path, revision, wrote,
 };
 use crate::host::HostError;
-use dim_agent_types::{JsonObject, ToolResult};
+use dim_agent_types::{JsonObject, ToolContent, ToolResult};
 use serde_json::{Value, json};
 use std::{
     io::{ErrorKind, Read},
@@ -16,7 +16,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-/// Max combined UTF-16 length of oldText + newText.
+/// Max combined UTF-16 length of oldText + newText over every replacement.
 const EDIT_INPUT_MAX_CHARS: usize = 10_000;
 /// TS limit: min(1 GiB, V8 `MAX_STRING_LENGTH`).
 const EDIT_TARGET_MAX_BYTES: u64 = 536_870_888;
@@ -28,16 +28,27 @@ const EDIT_DIFF_CONTEXT: usize = 3;
 pub(super) fn definition() -> Value {
     json!({
         "name": "edit",
-        "description": "Edit an existing file by replacing exact text matches. Read the file first, then derive oldText and newText from the latest read result. Use this tool for ordinary incremental text edits instead of shell commands or Python. Supports single replacement (default) or replacing all matches with replaceAll.",
+        "description": "Edit an existing file by replacing exact text matches. Read the file first, then derive oldText and newText from the latest read result. Use this tool for ordinary incremental text edits instead of shell commands or Python. `edits` holds the replacements for one file; they apply in order, each against the text the previous one produced, and nothing is written if any of them fails.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "File path to edit." },
-                "oldText": { "type": "string", "description": "Text to find and replace (exact match)." },
-                "newText": { "type": "string", "description": "Replacement text." },
-                "replaceAll": { "type": "boolean", "description": "Replace all occurrences (default: false)." },
+                "edits": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "The replacements to apply, in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "oldText": { "type": "string", "description": "Text to find and replace (exact match)." },
+                            "newText": { "type": "string", "description": "Replacement text." },
+                            "replaceAll": { "type": "boolean", "description": "Replace every match in this replacement instead of requiring exactly one (default: false)." },
+                        },
+                        "required": ["oldText", "newText"],
+                    },
+                },
             },
-            "required": ["path", "oldText", "newText"],
+            "required": ["path", "edits"],
         },
         "source": "builtin",
         "risk": "write_filesystem",
@@ -48,32 +59,74 @@ pub(super) fn definition() -> Value {
     })
 }
 
-struct Input {
-    path: String,
+struct Replacement {
     old_text: String,
     new_text: String,
     replace_all: bool,
 }
 
+struct Input {
+    path: String,
+    edits: Vec<Replacement>,
+}
+
+/// Reads the replacement list. A recorded call that carries the top-level
+/// `oldText` and `newText` instead is read as one replacement; a call that
+/// carries both shapes, or an empty list, is refused.
 fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
     let Some(Value::String(path)) = field(input, "path").filter(|path| path.as_str() != Some(""))
     else {
         return Err(invalid_input("edit requires a non-empty string path."));
     };
-    let Some(Value::String(old_text)) = field(input, "oldText") else {
+    let edits = match field(input, "edits") {
+        Some(value) => {
+            if field(input, "oldText").is_some() || field(input, "newText").is_some() {
+                return Err(invalid_input(
+                    "edit takes a list of replacements: pass edits: [{oldText, newText}], without oldText and newText beside it.",
+                ));
+            }
+            let Some(items) = value.as_array().filter(|items| !items.is_empty()) else {
+                return Err(invalid_input(
+                    "edit requires a non-empty edits array: pass edits: [{oldText, newText}].",
+                ));
+            };
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| match item.as_object() {
+                    Some(item) => replacement(item).map_err(|result| for_index(result, index)),
+                    None => Err(for_index(
+                        invalid_input("a replacement must be an object with oldText and newText."),
+                        index,
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        None => vec![replacement(input).map_err(|result| for_index(result, 0))?],
+    };
+    Ok(Input {
+        path: path.clone(),
+        edits,
+    })
+}
+
+/// One replacement read from `fields`; a failure names its entry through
+/// [`for_index`] at the caller, so a parse failure and an apply failure carry
+/// the same field.
+fn replacement(fields: &JsonObject) -> Result<Replacement, ToolResult> {
+    let Some(Value::String(old_text)) = field(fields, "oldText") else {
         return Err(invalid_input("edit requires a string oldText."));
     };
     if old_text.is_empty() {
         return Err(invalid_input("oldText must not be empty."));
     }
-    let Some(Value::String(new_text)) = field(input, "newText") else {
+    let Some(Value::String(new_text)) = field(fields, "newText") else {
         return Err(invalid_input("edit requires a string newText."));
     };
-    Ok(Input {
-        path: path.clone(),
+    Ok(Replacement {
         old_text: old_text.clone(),
         new_text: new_text.clone(),
-        replace_all: field(input, "replaceAll") == Some(&Value::Bool(true)),
+        replace_all: field(fields, "replaceAll") == Some(&Value::Bool(true)),
     })
 }
 
@@ -88,19 +141,30 @@ pub(super) async fn run(
         Err(result) => return Ok(result),
     };
     let established = reads.established();
-    let chars = js_len(&input.old_text) + js_len(&input.new_text);
+    let chars = input
+        .edits
+        .iter()
+        .map(|replacement| js_len(&replacement.old_text) + js_len(&replacement.new_text))
+        .sum::<usize>();
     if chars > EDIT_INPUT_MAX_CHARS {
         return Ok(failed(
             format!(
-                "edit input too large: oldText + newText is {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
+                "edit input too large: the replacements' oldText and newText total {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
             ),
             json!({ "code": "input_too_large", "chars": chars, "limit": EDIT_INPUT_MAX_CHARS }),
         ));
     }
-    if input.old_text == input.new_text {
-        return Ok(failed(
-            "oldText and newText are identical; no change needed.",
-            json!({ "code": "no_change" }),
+    if let Some(index) = input
+        .edits
+        .iter()
+        .position(|replacement| replacement.old_text == replacement.new_text)
+    {
+        return Ok(for_index(
+            failed(
+                "oldText and newText are identical; no change needed.",
+                json!({ "code": "no_change" }),
+            ),
+            index,
         ));
     }
     let (cwd, home, requested, boundary) = (
@@ -252,9 +316,9 @@ fn edit_locked(
         Eol::None => Eol::Lf,
         eol => eol,
     };
-    let (after, count) = match replace(&before, input, eol) {
+    let (after, count) = match apply(&before, &input.edits, eol, cancel)? {
         Ok(replaced) => replaced,
-        Err(result) => return done(result),
+        Err((index, result)) => return done(for_index(result, index)),
     };
     Cancelled::check(cancel)?;
     let diff = unified_diff(&to_lf(&before), &to_lf(&after));
@@ -319,6 +383,77 @@ fn multiple_matches(matches: usize) -> ToolResult {
     )
 }
 
+/// A replacement's failure names where it sits: `index` in the structured
+/// result, and `edits[<index>]:` before the message the model reads.
+fn for_index(mut result: ToolResult, index: usize) -> ToolResult {
+    if let ToolContent::Text(text) = &mut result.content {
+        *text = format!("edits[{index}]: {text}");
+    }
+    result
+        .structured_content
+        .as_mut()
+        .expect("a replacement failure carries structured content")
+        .insert("index".into(), json!(index));
+    result
+}
+
+/// The first failing entry: its 0-based index and the refusal it produced.
+type EntryFailure = (usize, ToolResult);
+
+/// Applies every replacement in order, each against the text the previous one
+/// produced, and returns the text and the total number of replacements. The
+/// first failure names its index and leaves the caller nothing to write.
+///
+/// Cancellation is observed between entries, before the next one runs, so a
+/// cancelled call stops at an entry boundary and writes nothing.
+fn apply(
+    file: &str,
+    edits: &[Replacement],
+    eol: Eol,
+    cancel: &CancellationToken,
+) -> Result<Result<(String, usize), EntryFailure>, Cancelled> {
+    let mut text = file.to_owned();
+    let mut count = 0;
+    for (index, replacement) in edits.iter().enumerate() {
+        Cancelled::check(cancel)?;
+        match replace(&text, replacement, eol) {
+            Ok((next, replaced)) => {
+                text = next;
+                count += replaced;
+            }
+            Err(result) => return Ok(Err((index, result))),
+        }
+    }
+    Ok(Ok((text, count)))
+}
+
+/// Refuses an entry whose result would pass [`EDIT_TARGET_MAX_BYTES`] before
+/// the result is built. [`EDIT_INPUT_MAX_CHARS`] bounds the submitted texts,
+/// not what they produce: a `replaceAll` of one byte by many multiplies the
+/// whole text at every entry, so a small input can ask for a terabyte.
+///
+/// Counted on the decoded text in LF space, the same space the match count
+/// comes from.
+fn bound_growth(
+    file: &str,
+    old_text: &str,
+    new_text: &str,
+    replaced: usize,
+) -> Result<(), ToolResult> {
+    let size = (file.len() as u64)
+        .saturating_sub((old_text.len() as u64).saturating_mul(replaced as u64))
+        .saturating_add((new_text.len() as u64).saturating_mul(replaced as u64));
+    if size > EDIT_TARGET_MAX_BYTES {
+        return Err(failed(
+            format!(
+                "the replacements would grow the text to {size} bytes, limit is {EDIT_TARGET_MAX_BYTES} bytes."
+            ),
+            json!({ "code": "edit_target_file_too_large", "bytes": size, "limit": EDIT_TARGET_MAX_BYTES }),
+        ));
+    }
+    Ok(())
+}
+
 /// Exact match in LF space first, then the Unicode/trailing-whitespace
 /// fallback. `eol` is never `None` here.
 ///
@@ -327,22 +462,30 @@ fn multiple_matches(matches: usize) -> ToolResult {
 /// replacement, while its `replaceAll` and fuzzy paths do not; that is a JS
 /// API accident, not a tool contract, and it corrupts code that contains
 /// `$$` or `$&` (shell, PHP, regex docs), so Rust keeps every path literal.
-fn replace(file: &str, input: &Input, eol: Eol) -> Result<(String, usize), ToolResult> {
+fn replace(file: &str, replacement: &Replacement, eol: Eol) -> Result<(String, usize), ToolResult> {
     let lf_file = to_lf(file);
-    let lf_old = to_lf(&input.old_text);
-    let lf_new = to_lf(&input.new_text);
+    let lf_old = to_lf(&replacement.old_text);
+    let lf_new = to_lf(&replacement.new_text);
     let exact = lf_file.matches(lf_old.as_str()).count();
     if exact > 0 {
-        if !input.replace_all && exact > 1 {
+        if !replacement.replace_all && exact > 1 {
             return Err(multiple_matches(exact));
         }
-        let limit = if input.replace_all { usize::MAX } else { 1 };
+        let replaced = if replacement.replace_all { exact } else { 1 };
+        bound_growth(&lf_file, &lf_old, &lf_new, replaced)?;
+        let limit = if replacement.replace_all {
+            usize::MAX
+        } else {
+            1
+        };
         let content = match eol {
-            Eol::Mixed => replace_lf_matches_in_raw(file, &lf_old, &lf_new, input.replace_all),
+            Eol::Mixed => {
+                replace_lf_matches_in_raw(file, &lf_old, &lf_new, replacement.replace_all)
+            }
             Eol::Crlf => to_crlf(&lf_file.replacen(lf_old.as_str(), &lf_new, limit)),
             _ => lf_file.replacen(lf_old.as_str(), &lf_new, limit),
         };
-        return Ok((content, if input.replace_all { exact } else { 1 }));
+        return Ok((content, replaced));
     }
 
     let normalized_file = normalize(&lf_file);
@@ -353,18 +496,20 @@ fn replace(file: &str, input: &Input, eol: Eol) -> Result<(String, usize), ToolR
         normalized_file.matches(normalized_old.as_str()).count()
     };
     if matches > 0 {
-        if !input.replace_all && matches > 1 {
+        if !replacement.replace_all && matches > 1 {
             return Err(multiple_matches(matches));
         }
+        let replaced = if replacement.replace_all { matches } else { 1 };
+        bound_growth(&lf_file, &normalized_old, &lf_new, replaced)?;
         let content = replace_by_normalized_positions(
             file,
             &normalized_file,
             &normalized_old,
             &lf_new,
-            input.replace_all,
+            replacement.replace_all,
             eol,
         );
-        return Ok((content, if input.replace_all { matches } else { 1 }));
+        return Ok((content, replaced));
     }
     Err(failed(
         "oldText was not found in the target file.",
@@ -566,7 +711,7 @@ fn nearest_eol(text: &str, start: usize, end: usize) -> Option<Eol> {
 }
 
 /// Display-only unified diff hunks in LF space.
-fn unified_diff(before: &str, after: &str) -> String {
+pub(super) fn unified_diff(before: &str, after: &str) -> String {
     let diff = similar::TextDiff::from_lines(before, after);
     let mut lines = Vec::new();
     for hunk in diff

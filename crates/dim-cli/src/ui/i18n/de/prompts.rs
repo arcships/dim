@@ -24,29 +24,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "y exit · n stay · ←→ move · enter confirm" => {
             "y beenden · n bleiben · ←→ bewegen · enter bestätigen"
         }
-        "Restart dimcode?" => "dimcode neu starten?",
-        "Restart" => "Neu starten",
-        "y restart · n stay · ←→ move · enter confirm" => {
-            "y neu starten · n bleiben · ←→ bewegen · enter bestätigen"
-        }
         // upgrade_dialog.rs
         "Update available" => "Update verfügbar",
         "Version {latest} is available (you have {current})." => {
             "Version {latest} verfügbar (installiert: {current})."
         }
-        "Will run: {command}" => "Ausführen: {command}",
         "To update, run: {command}" => "Update mit: {command}",
-        "Update now" => "Jetzt aktualisieren",
         "Skip this version" => "Version überspringen",
         "Skipped {version}." => "{version} übersprungen.",
-        "Later" => "Später",
         "Close" => "Schließen",
-        "Restart now" => "Jetzt neu starten",
-        "Updating to {version}..." => "Aktualisiere auf {version}…",
-        "Updated to {version}. Restart DimCode to use it." => {
-            "Auf {version} aktualisiert. DimCode neu starten."
-        }
-        "Update failed: {error}" => "Update fehlgeschlagen: {error}",
         "←→ move · Enter confirm · Esc close" => {
             "←→ bewegen · Enter bestätigen · Esc schließen"
         }
@@ -59,6 +45,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Approve for me" => "Für mich freigeben",
         "Full access" => "Vollzugriff",
         "Run {tool}" => "{tool} ausführen",
+        "edit {count} replacement in {path}" => "edit {count} Ersetzung in {path}",
+        "edit {count} replacements in {path}" => "edit {count} Ersetzungen in {path}",
         "Changing the approvals mode from here is not yet available" => {
             "Freigabemodus hier noch nicht änderbar"
         }
@@ -75,6 +63,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "1-9 wählen · Tab weiter · / Befehle · Esc ablehnen"
         }
         "Question" => "Frage",
+        "↑↓ scroll" => "↑↓ scrollen",
+        "replacements {from}-{to} of {count}" => "Ersetzungen {from}-{to} von {count}",
         "Question on branch {branch}" => "Frage aus Zweig {branch}",
         "Permission on branch {branch}" => "Berechtigung für Zweig {branch}",
         "Sending answer…" => "Sende Antwort…",

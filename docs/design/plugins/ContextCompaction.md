@@ -415,8 +415,9 @@ own flat record type in the v1 module (§12).
 its own retries and the shared failure policy's attempts (§5.2). `durationMs` is measured around the strategy call,
 so it is the summarizer's duration; the policy's own work is local. `modelUsage` is the `Usage`
 the strategy's replies reported, summed over them — `promptTokens`, `completionTokens`,
-`totalTokens` and the cache read and write tokens; `cost` and `currency` stay absent, and a
-strategy that sent no request reports none. `insufficientSpace` is present exactly on a
+`totalTokens`, the cache read and write tokens and the reasoning tokens; a count no reply
+reported stays absent in the sum, `cost` and `currency` do too, and a strategy that sent no
+request reports none. `insufficientSpace` is present exactly on a
 completed compaction whose total — the projected request's size, which the record reports as
 `estimatedOutputTokens` — exceeds `0.5 × B`; its excess is that total minus `0.5 × B`, and
 `parts` names the resident parts that cover it, largest first, each with its `count_tokens`
@@ -531,7 +532,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | Method | Value |
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`, the catalog value with its existing overrides |
-| `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten |
+| `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten. The allowance bounds the whole reply, not only its answer: a request that thinks keeps `answer_tokens` of it for the answer ([model configuration](model-configuration.md#model-parameters)), so compaction plans against the cap the request may spend in total |
 | `threshold_tokens` | `B − reserve`, where `B = context_window − output_tokens` (the input budget) and `reserve = min(max(0.10 × B, 16,000), 0.20 × B)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
 | `count_tokens` | UTF-8 bytes of the serialized system prompt, messages and tool declarations divided by 4; each image part counts a fixed 1,600 tokens. Provisional (#128). Used for deltas over the provider's `prompt_tokens`, the first request, `validate` and the reduction check |
 
@@ -1201,6 +1202,7 @@ ran with their exit status, and nothing else.
 | `session_invalid_input` | both | Unknown branch | No |
 | `session_closed` | both | Session or branch closing | No |
 | `context_not_configured` | usage | No `context/configured` in the branch's history | After a model is adopted |
+| `context_usage_unavailable` | usage | Current statistics have not been established; the model is configured | After the next actual model request; do not reselect the model |
 | `context_model_failed` | usage | `resolve` failed (no capability snapshot) | After selecting the model again |
 | `compaction_failed` | compact | Fact `failed`: strategy error after the shared failure policy, a reply with no text, a `retain_from` that fails validation, a compaction that reaches its summarizer retry limit, no reduction, no `context/configured`, or no snapshot | User's choice |
 | `compaction_cancelled` | compact | Fact `cancelled`: `stop/interrupt` or reload | User's choice |
@@ -2126,3 +2128,21 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
+
+### Request-local projection handoff
+
+Loop passes the projection it already read to ContextPreparation before publishing
+`context/prepare`. ContextPreparation retains at most one pending projection, bound
+to the request ID, fixed cutoff and the original request object. Delivery transfers
+it into the preparation task; cancellation, failure and closing discard it. It is
+not serialized, retained across requests or used to resume old execution. A request
+without a matching local handoff uses the existing fixed-cutoff projection path.
+The event remains the execution handoff; supplying projection data starts no work.
+
+Policy uses this same projection for budgeting and compaction. When Usage needs
+initialization and the host preserved the exact history prefix, Usage computes
+initial contributions and the request estimate once. Policy uses that estimate,
+and Usage saves the computed contributions only if the final request still uses
+the original projection cutoff and no later compaction was adopted. Unsupported
+counters and request-specific appended messages keep the actual-request counting
+path. The final request validation continues to reuse matching prepared estimates.

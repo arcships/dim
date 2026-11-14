@@ -58,7 +58,7 @@ Dashed boxes are outside this repository (Desktop) or not implemented (remote de
 | Provider management for every client | [Provider management](appserver/provider-management.md) |
 | Child tool batches: v4 envelope, v3 visibility and client grouping | [Child tool batches](appserver/child-tool-batches.md) |
 
-The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
+The CLI and web client require protocol v4; the ACP gateway remains on v3 until its projection can group child batches. The CLI asks a daemon for its own version and accepts the highest one below it, down to v3, only to replace the daemon this executable runs or to stop the home's daemon; it never runs a Session over a connection below its own version. The client requires the `session.create` and `session.history` features; the web client and its assets require an exact protocol match ([web workspace §2.4](web-workspace.md)). The child-batch contract is specified in [child tool batches](appserver/child-tool-batches.md).
 
 ### Member tool approval
 
@@ -103,22 +103,28 @@ the directory usable and reports the failure for that selection.
 
 ### Opening a conversation with a bounded window
 
-CLI main, line mode, branch side panels, member conversations, Web and ACP load/resume
-open with `session.history {latestTurn: true, limit: 256}`, then use
-`{before: nextBefore, through, limit: 256}` without `latestTurn`. The capability
-name is `session.history.latestTurn`; it is not a separate RPC method. Every page
-keeps the first reply's `through`. They stop after
-the page that reaches 100 transcript rows, after four pages, or at the branch
-start, whichever comes first. A transcript row is a user input, an assistant
+CLI main, line mode, branch side panels, member conversations and ACP load/resume
+prefer `session.history.display {tail: true, limit: 64}` when the daemon advertises
+`session.history.display.tail`. Older daemons keep the existing bounded `latestTurn` window.
+The display tail has no whole-turn or atomic-batch expansion requirement. They show the first page
+containing transcript rows, keeping that wire page and its fixed `through`.
+If a page has no visible transcript rows, they continue backwards at the same head,
+up to four pages total. They do not fetch older messages to fill a 100-message quota.
+The capability name is `session.history.latestTurn`; it is not a separate RPC method.
+The native TUI publishes the completed transcript window immediately. Owner inventories
+continue at that same head; their loading, errors and guarded actions keep their own readiness.
+A transcript ready for layout does not declare all controls ready.
+An explicit earlier read uses 256 positions per page and stops at 100 transcript rows
+or four pages. Web keeps its existing 256-position, 100-row, four-page window.
+A transcript row is a user input, an assistant
 response or a tool call that the client actually renders, not a text delta or a
 hidden runtime input. Counting uses the projection's rules and stable identities.
 After reading stops, the view applies a separate retention budget of 300 rows by
 dropping older whole wire pages. It always keeps the newest page and, when any
 transcript rows were found, the newest page containing them. These required pages
 remain whole even when they exceed 300 rows. The retention budget does not cause
-more pages to be read to reach 300 rows. Atomic batches remain whole; the view
-never invents a cursor inside a batch. An oversized batch follows the
-history protocol's byte limit and error contract.
+more pages to be read to reach 300 rows. The display tail may start or stop inside a committed batch; it never exposes uncommitted facts.
+Legacy raw history and export retain their own atomic-batch contract.
 
 The pages progress backwards; events within each page remain ascending. Clients
 prepend each older page, then project the collected window once in event order. Live events received
@@ -128,20 +134,34 @@ advances. `done` from `latestTurn` ends that turn window, not the branch's histo
 JSON exec emits live wire notifications and has no historical transcript; it reads
 one window page to pin the cursor without decoding historical event bodies.
 Earlier transcript is loaded only on user request. Export keeps its full fixed
-prefix. CLI/ACP reconnect catch-up starts from the last consumed cursor; Web replaces each opened transcript with a fresh bounded window.
+prefix. ACP reconnect replaces its internal projection with a fresh bounded window and
+reloads current owner inventories; it does not accumulate the missed suffix. It emits
+`_meta["dim/history"]` with `replace: true` on a configuration update so supporting
+clients can replace their loaded window. Standard ACP has no history-reset operation;
+the client's previously displayed messages remain client-owned. Web replaces each opened
+transcript with a fresh bounded window. A lost submit acknowledgement is resolved by
+submission id; reconnecting does not resubmit an input or recreate old execution state.
+The line CLI's live idle/configuration settlement reads events after its current cursor;
+this is execution-time catch-up, not cold history restoration.
 
 ```text
-attach -> latest page -> older page(s), at most 4 total -> draw -> live
-                         stop at 100 transcript rows
-user asks for earlier -> before(cursor) -> prepend older content
+attach -> transcript: latest 32 selected events -> draw -> editable
+          | no visible row: subsequent 64-event pages, at most 4 pages total
+          | legacy tail: existing 64-position pages
+       -> owner inventories -> enable their own controls
+/earlier -> 256-position page(s), at most 4 -> prepend older content
 ```
 
 The client retains only the initial window, its oldest `nextBefore` and its fixed
 head. It does not keep a second list of raw events after projection. A missing
 prefix is displayed as “earlier content not loaded”; it does not turn a partial
 reply into a complete reply. Tool results keep their call identity even when the
-start is outside the window; [ToolExecution’s origin read](tool-origin-read.md) supplies that call by identity instead
-of extending the transcript to find it. Neither an unresolved identity nor a
+start is outside the window. A missing origin renders as a tool result with that identity;
+[ToolExecution’s origin read](tool-origin-read.md) supplies complete arguments only when the user
+requests tool details. Native committed tool blocks retain their existing three rendered
+formats so previously displayed blocks can still switch detail after their source rows
+leave the current window; this change does not reduce that rendering or retained-block cost.
+Neither initial display nor owner-state readiness waits for origins. Neither an unresolved identity nor a
 single very long turn removes the four-page initial-read bound.
 
 A transcript window is not an inventory of running work. Before enabling controls,
@@ -157,6 +177,11 @@ absence from a missing start event in the window:
 | Background execution | Task identities, statuses and display fields required by the task panel; a completed task in the transcript is historical, an open task remains controllable even if its start is older. |
 | Delegations and branches | Current member/branch identities and unfinished delegations; read a selected member's transcript with its own window. |
 | Pending inputs | Unconsumed Queue/Steer input identities, modes and display content, excluding deleted inputs. |
+
+Ended branches remain directory entries but have no actionable inventories; clients read their
+transcript and details only when selected. Configuration updates use the attach configuration
+position independently of the transcript cursor, so a buffered configuration between attach and
+the window head is still adopted.
 
 The active-turn row and the last four rows raise requirements to InputQueue, Questions, BackgroundExec
 and Collaboration, plus Loop for current execution state, through the App Server. Each read must identify the branch and
@@ -188,9 +213,19 @@ The changes apply to every entry, not just the main TUI:
 | CLI `question/line.rs` | Questions on other branches come from the unanswered-question read, not a complete branch replay. |
 | ACP `gateway.rs::read_history` | Load/resume returns only the window; model/configuration comes from attach and public current-state reads. A `forkAtTurn` lookup must resolve the requested terminal turn outside the window; full-history/export APIs keep their explicit full-prefix semantics. |
 
+Negotiated `session.history.display.transcript` uses the kind-filtered page contract in
+[display reads](appserver/session-display-read.md). CLI, ACP and Web initial pages request
+32 selected events; if no transcript row is found, subsequent pages request 64. They stop
+on the first page with transcript rows, or after four pages (at most 224 selected events).
+This smaller first page applies to initial load, switching and reconnect. Earlier reads request
+256 selected events. The four-page and retention limits below still apply; they do not
+trigger full-history discovery. Servers without that capability retain the existing
+bounded raw-position windows. ACP's explicit history extension returns one selected page.
+
 Acceptance opens histories differing by at least ten times with the same visible
-tail. Reading stops after the page reaching 100 transcript rows, after four
-pages, or at the branch start, whichever comes first. After that stop, the
+tail. Native initial reading stops at the first page with visible transcript rows, after
+four empty pages, or at the branch start. Explicit earlier reads and the legacy Web window
+retain the 100-row/four-page budget. After that stop, the
 300-row retention budget drops only older whole pages, subject to the required
 newest-page and visible-page exceptions above. It never causes another read.
 Include a turn longer than the page budget, an empty visible page,
@@ -226,12 +261,12 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| New, resume, Session list | done; `/resume` opens on the local scope — the launch workspace, or its repository's worktrees once git answers — and `Ctrl+S` toggles it with every workspace; two states, never three. It labels each row by creation origin and hides ACP Sessions unless the preference says otherwise | done (grouped by directory) | [Session classification](appserver/session-classification.md), [CLI commands](cli-commands.md#the-resume-picker) |
+| New, resume, Session list | done; `/resume` opens on the local scope — the launch workspace, or its repository's worktrees once git answers — and `Ctrl+S` toggles it with every workspace; two states, never three. It labels each row by creation origin and hides ACP Sessions unless the preference says otherwise; a Scheduler launch is a fourth origin class, listable through `session.catalog`'s `withAutomationSessions`, which `/resume` does not send yet | done (grouped by directory; it hides the internal and automation classes and has no ACP preference yet) | [Session classification](appserver/session-classification.md), [CLI commands](cli-commands.md#the-resume-picker) |
 | Export conversation | done in the line client, both terminal UIs and `dimcode session export` | — | [CLI commands](cli-commands.md) |
 | `/timeline` and message actions | done in the TUI; it also replaces `/history`'s paging | — | [Timeline UI §4.6](timeline-ui.md#46-timeline-jumping-to-a-message) |
 | Titles | automatic: done (optional SessionTitle package); manual rename: designed | — | [SessionTitle](plugins/SessionTitle.md) |
 | Fork | designed in the CLI (server `session.fork` done) | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
-| Deletion and cleanup | designed in the CLI (server `session.delete` done) | later phase | same |
+| Deletion and cleanup | done: `dimcode session delete`/`cleanup`, and one row at a time in `/resume` | later phase | [Session deletion and fork](appserver/session-deletion-and-fork.md) |
 | File rollback, file and conversation rollback | out | out | [overview](overview.md) App. A |
 | Request snapshot export | done (`dimcode export`); filters: designed | — | [Timeline export](appserver/timeline-export.md) |
 

@@ -20,10 +20,10 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 /// What InputQueue writes for an input it decided on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Decision {
     Apply(String, InputMode),
-    Delete(String),
+    Delete(String, Option<InputMessageData>),
 }
 /// InputQueue's answer to one `input/withdraw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -43,15 +43,7 @@ pub struct InputRef {
     pub sequence: u64,
 }
 
-/// What one `withdraw` answers: the queue's decision, and the Steer input
-/// the same batch wrote when the caller asked for one.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct WithdrawReply {
-    #[serde(flatten)]
-    pub withdrawal: Withdrawal,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub steer: Option<InputRef>,
-}
+type WithdrawalAnswer = (Withdrawal, Option<Arc<AgentEvent>>);
 
 /// One committed input until Loop consumes it.
 struct Entry {
@@ -109,14 +101,14 @@ impl QueueState {
                 }
                 Vec::new()
             }
-            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id),
+            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id, data.steer.clone()),
             _ => Vec::new(),
         }
     }
     fn input(&mut self, id: &str, mode: InputMode, handover: Option<&str>) -> Vec<Decision> {
         if let Some(turn_id) = handover {
             if self.turn.as_deref() != Some(turn_id) {
-                return vec![Decision::Delete(id.to_owned())];
+                return vec![Decision::Delete(id.to_owned(), None)];
             }
             self.entries.push(Entry {
                 id: id.to_owned(),
@@ -154,7 +146,7 @@ impl QueueState {
         self.entries.retain(|entry| {
             let ended = matches!(&entry.kind, EntryKind::Handover { turn_id } if turn_id == turn);
             if ended {
-                decisions.push(Decision::Delete(entry.id.clone()));
+                decisions.push(Decision::Delete(entry.id.clone(), None));
             }
             !ended
         });
@@ -172,14 +164,14 @@ impl QueueState {
         }
         decisions
     }
-    fn withdraw(&mut self, id: &str) -> Vec<Decision> {
+    fn withdraw(&mut self, id: &str, steer: Option<InputMessageData>) -> Vec<Decision> {
         match self.entries.iter().position(|entry| {
             entry.id == id && !matches!(entry.kind, EntryKind::Input { released: true, .. })
         }) {
             Some(index) => {
                 let entry = self.entries.remove(index);
                 self.queued -= usize::from(matches!(entry.kind, EntryKind::Input { .. }));
-                vec![Decision::Delete(id.to_owned())]
+                vec![Decision::Delete(id.to_owned(), steer)]
             }
             None => Vec::new(),
         }
@@ -215,12 +207,11 @@ pub struct InputQueue {
     observable: Arc<StateCell<InputSnapshot>>,
     pending_snapshot: Mutex<Option<(u64, usize)>>,
     timeline: Arc<Timeline>,
-    /// The Session entry that commits an input the `submit` operation writes.
     tree: Arc<TreeCommands>,
     branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
-    answers: Mutex<HashMap<u64, Option<(u64, Withdrawal)>>>,
+    answers: Mutex<HashMap<u64, Option<(u64, WithdrawalAnswer)>>>,
     answered: tokio::sync::Notify,
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
@@ -239,9 +230,7 @@ impl Drop for WithdrawalWaiter<'_> {
 
 #[rutis::service]
 impl InputQueue {
-    /// Commits `input` on this branch through the branch's validating input
-    /// entry, which accepts each submission id once, and answers with the
-    /// committed event's identity: the `inputQueue` face's `submit`.
+    /// Commits an input through the branch entry, accepting each submission id once.
     pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
         let event = self.tree.get(&self.branch_id)?.input(input).await?;
         Ok(InputRef {
@@ -250,22 +239,17 @@ impl InputQueue {
         })
     }
 
-    /// Withdraws `command` and answers with this queue's decision: the
-    /// `inputQueue` face's `withdraw`. With `steer`, the withdrawal and that
-    /// Steer input are one batch, as [`Self::withdraw_batch`] writes them.
-    pub async fn withdraw(
-        &self,
-        command: InputWithdrawData,
-        steer: Option<InputMessageData>,
-    ) -> Result<WithdrawReply> {
-        let (withdrawal, replacement) = self.withdraw_batch(command, steer).await?;
-        Ok(WithdrawReply {
-            withdrawal,
-            steer: replacement.map(|event| InputRef {
-                input_id: event.id.clone(),
-                sequence: event.sequence,
-            }),
-        })
+    /// Withdraws a held input without replacing it. Steer candidates must enter
+    /// through `session.input.withdraw`, which validates and checks them first.
+    pub async fn withdraw(&self, command: InputWithdrawData) -> Result<Withdrawal> {
+        if command.steer.is_some() {
+            return Err(AgentError::InvalidInput(
+                "Steer must use session.input.withdraw".into(),
+            ));
+        }
+        self.withdraw_checked(command)
+            .await
+            .map(|(answer, _)| answer)
     }
 
     fn publish(&self, through: u64, queued: usize) {
@@ -295,12 +279,9 @@ impl InputQueue {
         }
         let mut state = self.state.lock().unwrap();
         let decisions = state.step(&event);
-        let (published, deleted) = self.write(decisions, event.sequence)?;
+        let (published, answer) = self.write(decisions, event.sequence)?;
         self.publish(published, state.queued);
         if matches!(event.kind, EventKind::InputWithdraw(_)) {
-            let answer = deleted.map_or(Withdrawal::NotHeld, |sequence| Withdrawal::Deleted {
-                sequence,
-            });
             if let Some(waiter) = self.answers.lock().unwrap().get_mut(&event.sequence) {
                 *waiter = Some((published, answer));
             }
@@ -308,30 +289,31 @@ impl InputQueue {
         }
         Ok(())
     }
+    /// Whether `input_id` is still pending: held by this queue and neither
+    /// consumed nor deleted (session-access §2). An id this queue does not
+    /// hold is not pending. The answer is this queue's state at the published
+    /// head, so a caller that asks after a write sees what it wrote.
+    #[service(skip)]
+    pub fn pending(&self, input_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.id == input_id)
+    }
+
     /// Withdraws an input by its `input_id` and replies with this queue's
-    /// decision for the command. With `steer`, the command and the new Steer
-    /// input are one batch: the withdrawal takes effect only if the old
-    /// input is still held, the new input is written either way.
-    async fn withdraw_batch(
-        &self,
-        command: InputWithdrawData,
-        steer: Option<InputMessageData>,
-    ) -> Result<(Withdrawal, Option<Arc<AgentEvent>>)> {
+    /// decision for the command. Only an accepted withdrawal adopts its
+    /// optional checked Steer candidate, atomically with the deletion.
+    /// A Steer result is committed; callers confirm publication before exposing a receipt.
+    /// Plain withdrawals wait for publication here.
+    #[service(skip)]
+    pub async fn withdraw_checked(&self, command: InputWithdrawData) -> Result<WithdrawalAnswer> {
         command
             .validate_external()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-        let mut drafts = vec![EventKind::InputWithdraw(command).into()];
-        if let Some(input) = steer {
-            if input.mode != Some(InputMode::Steer) {
-                return Err(AgentError::InvalidInput(
-                    "a replacement input must be Steer".into(),
-                ));
-            }
-            input
-                .validate()
-                .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-            drafts.push(EventKind::InputMessage(input).into());
-        }
+        let drafts = vec![EventKind::InputWithdraw(command).into()];
         let mut waiter = None;
         let appended = self.timeline.append_batch_registered(drafts, |events| {
             self.answers
@@ -345,8 +327,7 @@ impl InputQueue {
             Ok(())
         });
         let _waiter = waiter;
-        let mut events = appended?;
-        let replacement = (events.len() > 1).then(|| events.remove(1));
+        let events = appended?;
         let sequence = events[0].sequence;
         let unknown = || {
             AgentError::PublicationUnknown(format!(
@@ -359,9 +340,9 @@ impl InputQueue {
             {
                 let answers = self.answers.lock().unwrap();
                 if let Some(Some((published, answer))) = answers.get(&sequence)
-                    && self.timeline.sequence() >= *published
+                    && (answer.1.is_some() || self.timeline.sequence() >= *published)
                 {
-                    return Ok((*answer, replacement));
+                    return Ok(answer.clone());
                 }
             }
             if self.timeline.failure().is_some() {
@@ -503,8 +484,26 @@ pub struct SubmitCheckRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitCheckReply {
     /// The input may be written; these contexts go after the operator's own
-    /// content, in name order.
-    Proceed { blocks: Vec<String> },
+    /// content, in name order. `warnings` are for the caller to show, never
+    /// for the model: work the check did not do, which is not a block.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// The input must not be written; the message is the caller's error.
+    Block { message: String },
+}
+
+/// What the table decided for the input (Hooks A.6.2): every check that ran,
+/// combined in name order. A block ends the table's work and carries neither
+/// blocks nor warnings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmitDecision {
+    /// The input may be written.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<SubmitWarning>,
+    },
     /// The input must not be written; the message is the caller's error.
     Block { message: String },
 }
@@ -545,15 +544,16 @@ impl SubmitChecks {
     }
 
     /// Calls each registered check in name order. The first block in name
-    /// order is the answer; otherwise every check's blocks are returned in
-    /// name order. `Err` means the entry's own call was interrupted while a
-    /// check ran, and nothing may be written.
+    /// order is the answer; otherwise every check's blocks and warnings are
+    /// returned in name order. `Err` means the entry's own call was
+    /// interrupted while a check ran, and nothing may be written.
     pub async fn check(
         &self,
         request: &SubmitCheckRequest,
         cancel: &CancellationToken,
-    ) -> std::result::Result<SubmitCheckReply, CheckInterrupted> {
+    ) -> std::result::Result<SubmitDecision, CheckInterrupted> {
         let mut blocks = Vec::new();
+        let mut warnings = Vec::new();
         for registration in self.checks.all() {
             if cancel.is_cancelled() {
                 return Err(CheckInterrupted);
@@ -563,9 +563,30 @@ impl SubmitChecks {
                 .check(request.clone(), cancel.clone())
                 .await
             {
-                Ok(SubmitCheckReply::Proceed { blocks: added }) => blocks.extend(added),
+                Ok(SubmitCheckReply::Proceed {
+                    blocks: added,
+                    warnings: raised,
+                }) => {
+                    for block in added {
+                        // A context lands after the operator's own content, so
+                        // index 1 is the first place one may go; anything else
+                        // would be read as the operator's words (A.6.2).
+                        if !markup::runtime_context(1, &block) {
+                            tracing::warn!(
+                                check = %registration.name,
+                                "submit check context dropped: it is not a runtime marker element"
+                            );
+                            continue;
+                        }
+                        blocks.push(block);
+                    }
+                    warnings.extend(raised.into_iter().map(|message| SubmitWarning {
+                        check: registration.name.clone(),
+                        message,
+                    }));
+                }
                 Ok(SubmitCheckReply::Block { message }) => {
-                    return Ok(SubmitCheckReply::Block { message });
+                    return Ok(SubmitDecision::Block { message });
                 }
                 Err(_) if cancel.is_cancelled() => return Err(CheckInterrupted),
                 Err(_) => {}
@@ -574,7 +595,7 @@ impl SubmitChecks {
         if cancel.is_cancelled() {
             return Err(CheckInterrupted);
         }
-        Ok(SubmitCheckReply::Proceed { blocks })
+        Ok(SubmitDecision::Proceed { blocks, warnings })
     }
 }
 
@@ -595,6 +616,9 @@ pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
         return;
     };
     for text in blocks {
+        // The submit-check table decides this drop for every in-tree entry;
+        // the gate here guards a caller that appends blocks without going
+        // through the table.
         if !markup::runtime_context(user.content.len(), &text) {
             tracing::warn!("submit check context dropped: it is not a runtime marker element");
             continue;
@@ -613,7 +637,7 @@ struct WithdrawParams {
     input_id: String,
     #[serde(default)]
     reason: Option<String>,
-    /// Re-submits the content as Steer in the same batch as the withdrawal.
+    /// Replacement content adopted only when withdrawal is accepted.
     #[serde(default)]
     steer: Option<UserInput>,
 }
@@ -655,11 +679,7 @@ impl DynPlugin for InputMethodsPlugin {
                     MethodDecl::new("session.input.pending", false, Interruption::Report),
                 ],
                 Arc::new(move |call, cancel, _| {
-                    let MethodCall {
-                        method,
-                        params: value,
-                        ..
-                    } = call;
+                    let MethodCall { method, params: value, .. } = call;
                     let tree = tree.clone();
                     let checks = checks.clone();
                     Box::pin(async move {
@@ -667,20 +687,22 @@ impl DynPlugin for InputMethodsPlugin {
                             return pending::read(&tree, value, &cancel).await;
                         }
                         let p: WithdrawParams = params(value)?;
-                        let queue = tree.get(&p.branch_id)?.service::<InputQueue>()?;
+                        let branch = tree.get(&p.branch_id)?;
+                        let queue = branch.service::<InputQueue>()?;
                         let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
                             ..Default::default()
                         });
+                        let mut checks_warnings = Vec::new();
                         if let Some(input) = &steer {
                             // The operator's own content is validated before
                             // the checks run: a check's context must never be
                             // what makes an input valid, and a refusal here
                             // writes neither the withdrawal nor a replacement.
-                            input.validate().map_err(|reason| {
-                                RpcError::from(AgentError::InvalidInput(reason.into()))
-                            })?;
+                            input
+                                .validate()
+                                .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
                             // A blocked steer writes neither the withdrawal nor
                             // the new input (Hooks A.6.2).
                             match checks
@@ -696,26 +718,60 @@ impl DynPlugin for InputMethodsPlugin {
                                 .await
                             {
                                 Err(CheckInterrupted) => return Err(RpcError::interrupted()),
-                                Ok(SubmitCheckReply::Block { message }) => {
+                                Ok(SubmitDecision::Block { message }) => {
                                     return Err(RpcError::app(-32000, "input_blocked", message));
                                 }
-                                Ok(SubmitCheckReply::Proceed { blocks }) => {
+                                Ok(SubmitDecision::Proceed {
+                                    blocks,
+                                    warnings,
+                                }) => {
                                     if let Some(steer) = &mut steer {
                                         append_blocks(&mut steer.user, blocks);
                                     }
+                                    checks_warnings = warnings;
                                 }
                             }
                         }
-                        let answer = queue
-                            .withdraw(
+                        let (answer, replacement) = queue
+                            .withdraw_checked(
                                 InputWithdrawData {
                                     input_id: p.input_id,
                                     reason: p.reason,
+                                    steer,
                                 },
-                                steer,
                             )
                             .await?;
-                        reply(answer)
+                        let mut result = match answer {
+                            Withdrawal::Deleted { sequence } => {
+                                if replacement.is_some() {
+                                    let publication = branch.publication();
+                                    let mut progress = publication.watch();
+                                    tokio::select! {
+                                        _ = progress.wait_for(|&(published, closed)| published >= sequence || closed) => {}
+                                        _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                                    }
+                                    if publication.sequence() < sequence {
+                                        return Err(RpcError::app(
+                                            -32000,
+                                            "publication_unknown",
+                                            "committed, but publication was not confirmed; query history after recovery",
+                                        ));
+                                    }
+                                }
+                                serde_json::json!({"status": "deleted", "sequence": sequence})
+                            }
+                            Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),
+                        };
+                        if let Some(event) = replacement {
+                            result["steer"] = serde_json::json!({"inputId": event.id, "sequence": event.sequence});
+                            // A warning describes the replacement this call
+                            // wrote; a withdrawal that wrote none carries
+                            // neither.
+                            if !checks_warnings.is_empty() {
+                                result["warnings"] = serde_json::json!(checks_warnings);
+                            }
+                        }
+                        reply(result)
                     })
                 }),
             )?;
@@ -737,6 +793,10 @@ mod tests {
     /// waits for the token it was handed and reports that the token fired.
     enum Answer {
         Proceed(Vec<String>),
+        ProceedWith {
+            blocks: Vec<String>,
+            warnings: Vec<String>,
+        },
         Block(String),
         Fail,
         Gate {
@@ -763,7 +823,16 @@ mod tests {
             match &self.answer {
                 Answer::Proceed(blocks) => {
                     let blocks = blocks.clone();
-                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks }) })
+                    Box::pin(async move {
+                        Ok(SubmitCheckReply::Proceed {
+                            blocks,
+                            warnings: Vec::new(),
+                        })
+                    })
+                }
+                Answer::ProceedWith { blocks, warnings } => {
+                    let (blocks, warnings) = (blocks.clone(), warnings.clone());
+                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks, warnings }) })
                 }
                 Answer::Block(message) => {
                     let message = message.clone();
@@ -803,8 +872,29 @@ mod tests {
             answer,
         })
     }
+    /// A check that proceeds with one runtime marker context per text, as a
+    /// producer builds them (A.6.2).
     fn proceed(blocks: &[&str]) -> Answer {
-        Answer::Proceed(blocks.iter().map(|block| (*block).to_owned()).collect())
+        Answer::Proceed(blocks.iter().map(|block| marker(block)).collect())
+    }
+    /// The same, with the check's own work that failed reported as warnings.
+    fn proceed_with(blocks: &[&str], warnings: &[&str]) -> Answer {
+        Answer::ProceedWith {
+            blocks: blocks.iter().map(|block| marker(block)).collect(),
+            warnings: warnings
+                .iter()
+                .map(|warning| (*warning).to_owned())
+                .collect(),
+        }
+    }
+    /// One context block, as a producer returns it: a single runtime marker
+    /// element (A.6.2).
+    fn marker(text: &str) -> String {
+        format!("<dim-hooks kind=\"prompt-submit\">{text}</dim-hooks>")
+    }
+    /// The contexts of `blocks`, in the form a producer returns them.
+    fn marked(blocks: &[&str]) -> Vec<String> {
+        blocks.iter().map(|block| marker(block)).collect()
     }
 
     /// A part that registers its checks on apply, as an owner does.
@@ -861,7 +951,7 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
@@ -889,11 +979,89 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["1".into(), "2".into(), "3".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1", "2", "3"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "mid", "zeta"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: each warning names the check that raised it, and the table keeps
+    /// them in name order beside the contexts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warnings_name_their_check_in_name_order() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                (
+                    "zeta",
+                    check(&log, "zeta", proceed_with(&[], &["zeta failed"])),
+                ),
+                (
+                    "alpha",
+                    check(&log, "alpha", proceed_with(&["1"], &["alpha failed"])),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1"]),
+                warnings: vec![
+                    SubmitWarning {
+                        check: "alpha".into(),
+                        message: "alpha failed".into(),
+                    },
+                    SubmitWarning {
+                        check: "zeta".into(),
+                        message: "zeta failed".into(),
+                    },
+                ],
+            })
+        );
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a block that is not one runtime marker element is dropped here,
+    /// where the registration name is known, and is not a warning: it is a
+    /// producer defect, not work the check did not do.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_block_that_is_not_a_marker_is_dropped_and_is_no_warning() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![(
+                "alpha",
+                check(
+                    &log,
+                    "alpha",
+                    Answer::ProceedWith {
+                        blocks: vec!["bare text".into(), marker("kept")],
+                        warnings: Vec::new(),
+                    },
+                ),
+            )],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["kept"]),
+                warnings: Vec::new(),
+            })
+        );
         part.shutdown().await.unwrap();
         root.shutdown().await.unwrap();
     }
@@ -916,8 +1084,9 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["b".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["b"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "beta"]);
@@ -1044,7 +1213,10 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(*log.lock().unwrap(), ["dup"]);
         again.shutdown().await.unwrap();
@@ -1069,14 +1241,17 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
         part.shutdown().await.unwrap();
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(
             *log.lock().unwrap(),

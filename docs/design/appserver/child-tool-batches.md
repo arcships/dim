@@ -86,13 +86,14 @@ no orphan rows.
 ### 2.3 UI shape and the current renderer
 
 The current CLI draws one `ToolGroup` per model request. Collapsed is one row; `summary` adds one
-row per call; `expanded` adds the call rows and their details. The disclosure is `▸` or `▾`; the
+row per call; `expanded` adds the call rows and their details. Fullscreen disclosures are `▸` or `▾`;
+scrollback omits them, following the [CLI presentation contract](../cli-commands.md#transcript-detail-settings). The
 outcome marks are `✓`, `✗` and the running mark; sections already use a header at indent 2 and
 their rows at indent 3. A child batch currently has no parent in `ViewRow`, so an unchanged client
 would open a second top-level group. That is the rendering bug this design removes.
 
 The v4 shape adds child rows to the existing group. It does not show the code body and does not add
-a second group or a second disclosure:
+a second group. These sketches use fullscreen disclosures:
 
 ```text
 ✓ Ran code · 4 tool calls ...................................... ▸
@@ -174,6 +175,16 @@ protocol 4 must not see the `codemode` tool. This is a tool-exposure rule, not a
 A v3 client must not be able to start a Code Mode program whose child `ask_user` it cannot answer
 and whose child tool cards it cannot group. Keeping the tool out of v3 Sessions is the smallest
 enforcement point.
+
+The exclusion belongs to the Session, not to the connection that opens it: a Session created
+below 4 keeps `codemode` in its stored `excluded_tools`, so a v4 connection that opens it still
+does not get Code Mode, and a fork of it records the source's version and keeps the exclusion.
+
+That is one case of the rule the lower bound relies on: a connection may write to a Session
+recorded at an older version only facts that version's projection can carry, and anything else
+it writes must also raise the recorded version. Code Mode satisfies it because the exclusion is
+recorded in the Session's configuration, not projected to the client; an event shape the older
+version cannot read does not, which is why a new event kind needs a protocol version.
 
 ### 2.7 npm client protocol
 

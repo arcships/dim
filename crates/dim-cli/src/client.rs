@@ -133,6 +133,26 @@ pub fn web_hint(error: &crate::Error, executable: &Path, home: &Path) -> Option<
     }
 }
 
+/// Why a startup step of a resumed Session failed. A Session the daemon
+/// refuses for its protocol version is returned unchanged: its text names the
+/// recorded and the connection's versions when both are known, and no startup
+/// step is what refused it. Every other failure keeps `context` before the
+/// daemon's text.
+pub fn resume_failure(context: &str, error: crate::Error) -> crate::Error {
+    match app_error(&error) {
+        Some("session_protocol_version") => error,
+        _ => format!("{context}: {error}").into(),
+    }
+}
+
+/// Whether running the same command again could open the resumed Session:
+/// false when the daemon refuses it for its protocol version, which fails the
+/// same way for as long as the Session exists. The refusal arrives both
+/// through [`resume_failure`] and directly from `session.attach`.
+pub fn resume_can_succeed(error: &crate::Error) -> bool {
+    app_error(error) != Some("session_protocol_version")
+}
+
 /// The name the daemon shows in process lists.
 pub const SERVER_NAME: &str = if cfg!(windows) {
     "dimcode-server.exe"
@@ -156,8 +176,11 @@ const START_LOCK_TIMEOUT: Duration =
     Duration::from_secs(DAEMON_SHUTDOWN_TIMEOUT.as_secs() + DAEMON_START_TIMEOUT.as_secs() + 10);
 /// The bypass note a starting daemon writes beside its store.
 const STARTUP_NOTE: &str = "dimcode.sqlite.startup";
-/// How long every startup wait sleeps between polls.
 const STARTUP_POLL: Duration = Duration::from_millis(50);
+/// The oldest protocol this client can hand-shake with. A daemon's `hello`
+/// reply below v3 carries no `features` at all, and this client requires
+/// `session.create` and `session.history` from it.
+const CLIENT_PROTOCOL_FLOOR: u32 = 3;
 
 /// The startup bound a spawned daemon is given.
 fn daemon_start_timeout() -> Duration {
@@ -592,55 +615,111 @@ async fn daemon_in_use(client: &mut Client) -> bool {
     })
 }
 
-/// Uses the daemon behind `client` when it is this build, stops it when it is
-/// another build and idle, and keeps it with a notice when it is in use.
-/// `None` means the daemon stopped and the caller may start its own. Every
-/// client that reaches a serving daemon goes through here, whether the first
-/// attempt found it or a startup wait connected to it.
+/// Uses the daemon behind `client` when it is this build at this protocol,
+/// stops it when it is another build or a lower protocol and idle, and keeps
+/// it with a notice when it is in use. `None` means the daemon stopped and the
+/// caller may start its own. Every client that reaches a serving daemon goes
+/// through here, whether the first attempt found it or a startup wait
+/// connected to it, and it has already greeted the daemon.
 async fn adopt(
     mut client: Client,
     start: bool,
     server: &Server,
     startup_note: &Path,
+    desired: u32,
+    locale: crate::locale::Locale,
 ) -> Result<Option<Link>> {
-    let version = client.hello().await?;
-    if !(start && server.embedded && version != env!("CARGO_PKG_VERSION")) {
+    let version = client.server_version().to_owned();
+    let protocol = client.connection_config().protocol_version;
+    if !(start && server.embedded && (version != env!("CARGO_PKG_VERSION") || protocol < desired)) {
         let _ = std::fs::remove_file(startup_note);
         return Ok(Some(Link {
             client,
             notice: None,
         }));
     }
-    // A daemon of another build is replaced only while it is idle: one that
-    // serves other clients is kept, and the client says so. `hello` already
-    // proved the protocol and the required methods, so the stale build is
-    // usable; the restart happens on a later start that finds it idle.
-    if client.offers("daemon.shutdown.ifIdle") {
-        if let IdleShutdown::Busy(counts) = shutdown_if_idle(&mut client).await? {
-            let _ = std::fs::remove_file(startup_note);
-            return Ok(Some(Link {
-                client,
-                notice: Some(DaemonNotice {
-                    server: version.clone(),
-                    counts,
-                }),
-            }));
+    // A daemon of another build or of a lower protocol is replaced only while
+    // it is idle: one that serves other clients is kept, and the client says
+    // so. `hello` proved that this negotiated version is usable and offered
+    // the required methods, which is not the same as the daemon being ours;
+    // the restart happens on a later start that finds it idle.
+    let counts = if client.offers("daemon.shutdown.ifIdle") {
+        match shutdown_if_idle(&mut client).await? {
+            IdleShutdown::Busy(counts) => counts,
+            IdleShutdown::Stopped => return Ok(None),
         }
     } else if client.offers("daemon.shutdown.completed") && daemon_in_use(&mut client).await {
-        let _ = std::fs::remove_file(startup_note);
-        return Ok(Some(Link {
-            client,
-            notice: Some(DaemonNotice {
-                server: version.clone(),
-                counts: None,
-            }),
-        }));
+        None
     } else {
         // A daemon without verified shutdown is reported by `shutdown` as
         // before.
         shutdown(client).await?;
+        return Ok(None);
+    };
+    let _ = std::fs::remove_file(startup_note);
+    let notice = DaemonNotice {
+        server: version,
+        counts,
+    };
+    // The daemon is still there: it refused the idle replacement, or it cannot
+    // be asked as well as this client needs. A Session created over it would
+    // be stored at its protocol and hidden from builds of this one, so a start
+    // that agreed on a lower protocol ends here instead.
+    if protocol < desired {
+        return Err(crate::daemon_too_old(locale, &notice, protocol).into());
     }
-    Ok(None)
+    Ok(Some(Link {
+        client,
+        notice: Some(notice),
+    }))
+}
+
+/// Opens the endpoint and greets the daemon; `None` when no daemon answers at
+/// the endpoint, which `WouldBlock` counts as only during the startup wait.
+/// With `negotiate`, a typed `protocol_version` refusal steps one version
+/// down, no lower than [`CLIENT_PROTOCOL_FLOOR`], and every attempt opens a
+/// new connection; any other failure is final, as is a refusal at the floor.
+async fn connect_negotiating(
+    config: &ConnectionConfig,
+    starting: bool,
+    negotiate: bool,
+) -> Result<Option<Client>> {
+    let mut config = config.clone();
+    // One discarded connection per version from this client's protocol down to
+    // CLIENT_PROTOCOL_FLOOR, each only after the daemon's typed refusal, so the
+    // floor sets the bound.
+    loop {
+        let mut client = match Client::open(&config, starting).await {
+            Ok(client) => client,
+            Err(error)
+                if missing(&error)
+                    || starting && cfg!(unix) && error.kind() == io::ErrorKind::WouldBlock =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        match client.hello().await {
+            Ok(_) => return Ok(Some(client)),
+            Err(error)
+                if negotiate
+                    && protocol_refused(&error)
+                    && config.protocol_version > CLIENT_PROTOCOL_FLOOR =>
+            {
+                config.protocol_version -= 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Whether a `hello` failure is the daemon's typed refusal of this client's
+/// protocol version: the only failure another version may answer.
+fn protocol_refused(error: &crate::Error) -> bool {
+    error
+        .downcast_ref::<RpcError>()
+        .is_some_and(|refusal| refusal.code == -32000)
+        && app_error(error) == Some("protocol_version")
 }
 
 /// The connection to the daemon of `options.home` after `hello`. Without a
@@ -722,6 +801,14 @@ pub async fn connect_inner(
             4
         },
     };
+    // `daemon stop` addresses the home's daemon whatever binary runs it, and a
+    // start reuses a `--server` daemon as it is and never replaces it, so it
+    // greets that daemon once.
+    let desired = connection.protocol_version;
+    let negotiate = match options.action {
+        crate::args::Action::DaemonStop => true,
+        _ => start && server.embedded,
+    };
     // One client at a time decides whether to reuse, replace or start the
     // daemon; everyone else waits here and then runs the same decision, which
     // normally finds the successor at its own version. `--server` daemons are
@@ -732,14 +819,10 @@ pub async fn connect_inner(
     } else {
         None
     };
-    match Client::open(&connection, false).await {
-        Ok(client) => {
-            if let Some(link) = adopt(client, start, &server, &startup_note).await? {
-                return Ok(Some(link));
-            }
-        }
-        Err(error) if missing(&error) => {}
-        Err(error) => return Err(error.into()),
+    if let Some(client) = connect_negotiating(&connection, false, negotiate).await?
+        && let Some(link) = adopt(client, start, &server, &startup_note, desired, locale).await?
+    {
+        return Ok(Some(link));
     }
     if !start {
         return Ok(None);
@@ -847,9 +930,10 @@ pub async fn connect_inner(
     let mut waiting = another_daemon_starting(&startup_note);
     wait.rebind(daemon_start_timeout());
     let mut child: Option<std::process::Child> = None;
+    let mut poll = Duration::from_millis(5);
     loop {
-        match Client::open(&connection, true).await {
-            Ok(client) => match adopt(client, start, &server, &startup_note).await? {
+        if let Some(client) = connect_negotiating(&connection, true, negotiate).await? {
+            match adopt(client, start, &server, &startup_note, desired, locale).await? {
                 Some(link) => return Ok(Some(link)),
                 // The daemon behind the endpoint was another build's; it is
                 // stopped now. A child this client already spawned may have
@@ -862,10 +946,7 @@ pub async fn connect_inner(
                     }
                     waiting = None;
                 }
-            },
-            Err(error)
-                if missing(&error) || cfg!(unix) && error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error.into()),
+            }
         }
         if let Some(pid) = waiting {
             if pid_alive(pid) {
@@ -883,7 +964,8 @@ pub async fn connect_inner(
             let _ = std::fs::remove_file(&startup_note);
             wait.rebind(daemon_start_timeout());
             child = Some(command.spawn()?);
-            tokio::time::sleep(STARTUP_POLL).await;
+            poll = Duration::from_millis(5);
+            tokio::time::sleep(poll).await;
             continue;
         }
         let child = child.as_mut().expect("the loop spawned a child");
@@ -914,7 +996,8 @@ pub async fn connect_inner(
             }
             .into());
         }
-        tokio::time::sleep(STARTUP_POLL).await;
+        poll = (poll * 2).min(STARTUP_POLL);
+        tokio::time::sleep(poll).await;
     }
 }
 

@@ -2,7 +2,6 @@
 import { computed, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import { Check, ChevronDown, Folder } from "lucide-vue-next"
 import BrandMark from "../../components/BrandMark.vue"
 import ComposerPanel from "./ComposerPanel.vue"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
@@ -22,7 +21,7 @@ const router = useRouter()
 const sessions = useSessionsStore()
 const chat = useChatStore()
 const models = useModelsStore()
-const menu = ref<HTMLDetailsElement>()
+const menuOpen = ref(false)
 
 /** The directory the session will run in, seeded from `?cwd=` or the latest workspace. */
 const cwd = ref(typeof route.query.cwd === "string" ? route.query.cwd : "")
@@ -44,7 +43,7 @@ const model = computed(() => picked.value ?? fallback.value)
 
 function choose(dir: string): void {
   cwd.value = dir
-  if (menu.value) menu.value.open = false
+  menuOpen.value = false
 }
 
 function useTyped(): void {
@@ -72,36 +71,63 @@ async function send(text: string): Promise<void> {
     </div>
     <ComposerPanel class="is-new-thread" :running="false" :model="model" :model-selectable="true" :send="send" :attachments="false" :select-model="(next) => { picked = next }">
       <template #status>
-        <details ref="menu" class="composer-popover workspace-menu">
-          <summary class="ui-button" data-variant="ghost" data-size="xs" data-trailing v-tooltip="cwd || undefined">
-            <Folder aria-hidden="true" />
-            <span class="workspace-trigger-label">{{ cwd ? workspaceName(cwd) : t("newThread.selectWorkspace") }}</span>
-            <ChevronDown class="workspace-chevron" aria-hidden="true" />
-          </summary>
-          <div class="composer-popover-content workspace-menu-content ui-popover" data-width="lg">
-            <form class="workspace-path-form" @submit.prevent="useTyped">
-              <input v-model="typed" class="ui-field" data-size="sm" type="text" spellcheck="false" autocapitalize="off" :placeholder="t('newThread.pathPlaceholder')" :aria-label="t('newThread.pathLabel')">
-              <button type="submit" class="ui-button" data-variant="secondary" data-size="sm" :disabled="typed.trim() === ''">{{ t("newThread.usePath") }}</button>
-            </form>
-            <hr v-if="sessions.workspaces.length" class="ui-menu-separator">
-            <div class="workspace-list" role="listbox" :aria-label="t('sidebar.workspaces')">
-              <button
-                v-for="workspace in sessions.workspaces"
-                :key="workspace.cwd"
-                type="button"
-                role="option"
-                class="ui-menu-item"
-                data-two-line
-                :aria-selected="workspace.cwd === cwd"
-                @click="choose(workspace.cwd)"
-              >
-                <Folder aria-hidden="true" />
-                <span>{{ workspace.name }}<span class="ui-menu-desc workspace-path">{{ workspace.cwd }}</span></span>
-                <Check v-if="workspace.cwd === cwd" class="ui-menu-check" aria-hidden="true" />
-              </button>
+        <UPopover v-model:open="menuOpen" :content="{ side: 'top', align: 'start' }">
+          <UTooltip :text="cwd || undefined" :disabled="!cwd">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              icon="i-lucide-folder"
+              trailing-icon="i-lucide-chevron-down"
+              :ui="{ trailingIcon: menuOpen ? 'rotate-180 transition-transform duration-150' : 'transition-transform duration-150' }"
+            >
+              <span class="workspace-trigger-label">{{ cwd ? workspaceName(cwd) : t("newThread.selectWorkspace") }}</span>
+            </UButton>
+          </UTooltip>
+          <template #content>
+            <div class="workspace-menu-content">
+              <form class="workspace-path-form" @submit.prevent="useTyped">
+                <UInput
+                  v-model="typed"
+                  size="sm"
+                  class="workspace-path-input"
+                  :ui="{ base: 'font-mono' }"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  :placeholder="t('newThread.pathPlaceholder')"
+                  :aria-label="t('newThread.pathLabel')"
+                />
+                <UButton type="submit" color="neutral" variant="soft" size="sm" :disabled="typed.trim() === ''">{{ t("newThread.usePath") }}</UButton>
+              </form>
+              <hr v-if="sessions.workspaces.length" class="workspace-separator">
+              <div class="workspace-list" role="listbox" :aria-label="t('sidebar.workspaces')">
+                <UButton
+                  v-for="workspace in sessions.workspaces"
+                  :key="workspace.cwd"
+                  color="neutral"
+                  variant="ghost"
+                  size="sm"
+                  block
+                  role="option"
+                  class="workspace-option"
+                  :aria-selected="workspace.cwd === cwd"
+                  @click="choose(workspace.cwd)"
+                >
+                  <template #leading>
+                    <UIcon name="i-lucide-folder" class="size-4 shrink-0 text-muted" aria-hidden="true" />
+                  </template>
+                  <span class="workspace-option-text">
+                    <span>{{ workspace.name }}</span>
+                    <span class="workspace-path">{{ workspace.cwd }}</span>
+                  </span>
+                  <template #trailing>
+                    <UIcon v-if="workspace.cwd === cwd" name="i-lucide-check" class="size-4 shrink-0 text-primary" aria-hidden="true" />
+                  </template>
+                </UButton>
+              </div>
             </div>
-          </div>
-        </details>
+          </template>
+        </UPopover>
       </template>
     </ComposerPanel>
   </section>
@@ -109,11 +135,12 @@ async function send(text: string): Promise<void> {
 
 <style scoped>
 .workspace-trigger-label { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-chevron { transition: transform var(--duration-press) var(--ease-out); }
-.workspace-menu[open] .workspace-chevron { transform: rotate(180deg); }
-.workspace-menu-content { display: flex; flex-direction: column; }
+.workspace-menu-content { display: flex; width: min(360px, calc(100vw - 24px)); flex-direction: column; padding: var(--space-1); }
 .workspace-path-form { display: flex; gap: var(--space-1); padding: var(--space-1); }
-.workspace-path-form > .ui-field { min-width: 0; flex: 1; font-family: var(--font-mono); }
-.workspace-list { min-height: 0; max-height: 240px; overflow-x: hidden; overflow-y: auto; }
-.workspace-path { overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-path-input { min-width: 0; flex: 1; }
+.workspace-separator { margin: var(--space-1) 0; border: 0; border-top: 1px solid var(--border); }
+.workspace-list { display: flex; min-height: 0; max-height: 240px; flex-direction: column; gap: 2px; overflow-x: hidden; overflow-y: auto; }
+.workspace-option { justify-content: flex-start; text-align: left; }
+.workspace-option-text { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; }
+.workspace-path { max-width: 100%; overflow: hidden; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 </style>

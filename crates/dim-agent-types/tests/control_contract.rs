@@ -95,6 +95,8 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
         json!({"type":"stop","name":"resume","data":{"reason":"resume"}}),
         json!({"type":"stop","name":"resume","data":Value::Null}),
         json!({"type":"stop","name":"resume"}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","steer":null}}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","steer":{"user":{"content":[{"type":"text","text":"replacement"}]},"mode":"steer","extra":true}}}),
         json!({"type":"approval","name":"respond","data":{"approval_id":"a","decision":"always"}}),
         json!({"type":"approval","name":"request","data":{"approval_id":"a"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"t","status":"running","result":{"content":"output"}}}),
@@ -111,10 +113,24 @@ fn controls_reject_ambiguous_or_unknown_payloads() {
 }
 
 #[test]
+fn withdrawal_commands_preserve_optional_checked_candidates() {
+    for payload in [
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i"}}),
+        json!({"type":"input","name":"withdraw","data":{"input_id":"i","reason":"changed my mind","steer":{"user":{"content":[{"type":"text","text":"replacement"}]},"mode":"steer"}}}),
+    ] {
+        let draft: EventDraft = serde_json::from_value(payload.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&draft).unwrap(), payload);
+    }
+}
+
+#[test]
 fn native_product_events_round_trip_without_a_v1_view() {
     for payload in [
         json!({"type":"permission","name":"changed","data":{"policy":{"preset":"workspace-write","allowedTools":["read"],"disallowedTools":["exec"]}}}),
         json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","output_path":"/tmp/output.log"}}),
+        json!({"type":"exec","name":"started","data":{"turn_id":"t","request_id":"r","call_id":"c","task_id":"exec-id","description":"cargo test","title":"Run tests","output_path":"/tmp/output.log"}}),
+        json!({"type":"collaboration","name":"request","data":{"turn_id":"t","request_id":"r","call_id":"c","target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Review the implementation"}}),
+        json!({"type":"collaboration","name":"request","data":{"turn_id":"t","request_id":"r","call_id":"c","target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Review the implementation","title":"Review change"}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"completed","result":{"content":"Output path: /tmp/output.log"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"failed","result":{"content":"exit code 1"}}}),
         json!({"type":"exec","name":"ended","data":{"task_id":"exec-id","status":"cancelled","result":{"content":"stopped"}}}),
@@ -169,14 +185,42 @@ fn prompt_and_context_contract_uses_the_shared_wire_shape() {
         changes: vec![PromptChange::Set {
             entry: entry.clone(),
         }],
+        inputs: Vec::new(),
     }));
     let value = serde_json::to_value(&changed).unwrap();
     assert_eq!(value["type"], "prompt");
     assert_eq!(value["name"], "changed");
     assert_eq!(value["data"]["changes"][0]["entry"]["delivery"], "system");
+    assert!(
+        value["data"].get("inputs").is_none(),
+        "a change that delivers no input omits the list"
+    );
     assert_eq!(
         serde_json::from_value::<EventDraft>(value).unwrap(),
         changed
+    );
+    let delivered = json!({
+        "timeline": "main",
+        "revision": "prompt-3",
+        "reason": "refresh",
+        "changes": [],
+        "inputs": ["input-1", "input-2"]
+    });
+    let decoded: PromptChangedData = serde_json::from_value(delivered.clone()).unwrap();
+    assert_eq!(decoded.inputs, ["input-1", "input-2"]);
+    assert_eq!(serde_json::to_value(decoded).unwrap(), delivered);
+    let older = json!({
+        "timeline": "main",
+        "revision": "prompt-4",
+        "reason": "refresh",
+        "changes": []
+    });
+    assert!(
+        serde_json::from_value::<PromptChangedData>(older)
+            .unwrap()
+            .inputs
+            .is_empty(),
+        "a fact written before the field reads as no inputs"
     );
 
     let input: InputMessageData = serde_json::from_value(json!({
@@ -225,6 +269,7 @@ fn v1_boundary_rejects_new_fields_and_hides_new_events() {
             previous: None,
             reason: PromptChangeReason::Initialize,
             changes: Vec::new(),
+            inputs: Vec::new(),
         }),
     };
     assert!(v1::EventRef::new(&event).is_none());

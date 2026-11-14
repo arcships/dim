@@ -21,8 +21,8 @@ mod subscriptions;
 mod text;
 
 use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope};
-use dim_app_server::methods::ManagementMethods;
 use dim_app_server::plugin_files::PluginFileTransactions;
+use dim_app_server::{ProcessActivity, methods::ManagementMethods};
 use hub::Shared;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -38,7 +38,7 @@ pub use model::{
 };
 pub use state::InstanceState;
 pub use store::{GuideRecord, LastFailure, SUBSCRIPTIONS_FILE, Subscription};
-pub use subscriptions::EventSubscriptions;
+pub use subscriptions::{EventSubscriptions, ListCall, SubscriptionCall, UnsubscribeCall};
 pub use text::{ENTRY, EventHubTexts};
 
 /// The process bus event that says the `eventHub` service is provided and
@@ -95,10 +95,9 @@ pub fn install(builder: &mut AgentBuilder) {
 /// code keeps no second copy (design A.4, A.6, model-prompts §8.1).
 pub fn install_with(builder: &mut AgentBuilder, texts: EventHubTexts) {
     dim_agent_runtime::names::register::<EventHub>(builder.catalog_mut(), None);
-    // The `events` tool's subscription core (design §6, Appendix F): a Rust
-    // type only, with no shared name, so no row of another language reaches
-    // it and `eventHub` stays producer-only.
-    dim_agent_runtime::names::register::<EventSubscriptions>(builder.catalog_mut(), None);
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<EventSubscriptions>());
     // Producers of every language read the service (design Appendix F): the
     // shared name lets a row of another runtime be leased the dispatcher this
     // part provides at `host_key("eventHub")`.
@@ -124,6 +123,7 @@ pub struct EventHubPlugin {
     sessions: Key<dyn HostDispatch>,
     parts: Key<PartRegistry>,
     hub: Key<EventHub>,
+    activity: Key<ProcessActivity>,
     /// The install's state, captured by the factory (design §2.1): nothing
     /// install-lifetime is created in `new` or `apply`.
     state: Arc<InstanceState>,
@@ -144,6 +144,7 @@ impl EventHubPlugin {
             sessions: host_key("sessions"),
             parts: names.key()?,
             hub: names.key()?,
+            activity: names.key()?,
             state,
             texts,
         })
@@ -160,6 +161,7 @@ impl DynPlugin for EventHubPlugin {
             self.methods.erase(),
             self.sessions.erase(),
             self.parts.erase(),
+            self.activity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -176,6 +178,7 @@ impl DynPlugin for EventHubPlugin {
             })?;
             let shared = Arc::new(Shared {
                 ctx: ctx.clone(),
+                activity: ctx.require_at(&self.activity)?,
                 sessions: sessions.clone(),
                 state: self.state.clone(),
                 store,
@@ -184,27 +187,31 @@ impl DynPlugin for EventHubPlugin {
             ctx.provide_as::<EventHub>(Arc::new(EventHub {
                 shared: shared.clone(),
             }))?;
-            // Beside `eventHub`: the `events` tool's core, scoped per call to
-            // the caller's own Session (design §6).
-            ctx.provide_as::<EventSubscriptions>(Arc::new(EventSubscriptions::new(
-                shared.clone(),
-            )))?;
+            let subscriptions = Arc::new(EventSubscriptions::new(shared.clone()));
+            ctx.provide_as::<EventSubscriptions>(subscriptions.clone())?;
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key("eventSubscriptions"),
+                Arc::new(bridge::ForeignEventSubscriptions {
+                    service: subscriptions,
+                }),
+            )?;
             ctx.provide_at::<dyn HostDispatch>(
                 host_key("eventHub"),
                 Arc::new(bridge::ForeignEventHub {
                     shared: shared.clone(),
                 }),
             )?;
-            // A notice missed while EventHub was off is repaired once the
-            // service exists: a stored subscription whose Session Agents says
-            // is gone is removed now, in a task of this generation that its
-            // cancellation ends (design §3.4).
             {
                 let shared = shared.clone();
-                let stop = shared.stop.clone();
-                tokio::spawn(async move {
-                    stop.run_until_cancelled(publish::reconcile(shared)).await;
-                });
+                let reconciliation = tokio::spawn(publish::reconcile(shared));
+                ctx.effect(move || async move {
+                    reconciliation.await.map_err(|error| {
+                        rutis::Error::from(rutis::host::ErrorKind::PluginFailed(
+                            error.to_string().into(),
+                        ))
+                    })?;
+                    Ok(())
+                })?;
             }
             ctx.require_at(&self.methods)?.register(
                 ctx,

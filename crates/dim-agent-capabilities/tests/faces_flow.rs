@@ -1,7 +1,3 @@
-//! The data faces of `toolHost`, `approval`, `permission`, `inputQueue` and
-//! `wait` ([service faces §3.4](../../docs/design/service-faces.md#34-对象句柄拆成操作加id)):
-//! the call another language makes and the typed service a Rust part reads
-//! answer the same.
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel, MockTools},
     approval::{AdmitCall, Approval},
@@ -25,8 +21,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-/// A part that hands the test its own context, which reads a service by the
-/// instance key the catalog names.
 struct HandsItsContext {
     name: &'static str,
     slot: Arc<Mutex<Option<Ctx>>>,
@@ -55,7 +49,6 @@ struct Fixture {
     branch_instance: InstanceId,
 }
 
-/// The instance a group's parts run in: the one its scope part runs in.
 fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
     let scope = diagnostics
         .plugins
@@ -142,8 +135,6 @@ async fn fixture(tools: Arc<dyn ToolDriver>) -> Fixture {
     }
 }
 
-/// The call another language makes: the instance's `HostDispatch` for `name`,
-/// its method and the arguments, each data or a function the caller passes.
 async fn call(
     ctx: &Ctx,
     instance: InstanceId,
@@ -160,7 +151,6 @@ async fn call(
     decode_value(settle(reply).await.unwrap()).unwrap()
 }
 
-/// The cancellation function of a caller that never cancels.
 fn never() -> BridgeValue {
     BridgeValue::callback(|_| Ok(BridgeValue::future(std::future::pending())))
 }
@@ -169,8 +159,6 @@ fn never_cancelled() -> CancelledFn {
     Arc::new(|| Box::pin(std::future::pending()))
 }
 
-/// The `approval` face answers the request the typed `admit` wrote, and both
-/// callers list the same pending requests.
 #[tokio::test]
 async fn approval_decide_answers_the_admission_the_typed_service_started() {
     let Fixture {
@@ -250,7 +238,6 @@ async fn approval_decide_answers_the_admission_the_typed_service_started() {
     host.close().await.unwrap();
 }
 
-/// `permission.check` decides as the typed `decide` does.
 #[tokio::test]
 async fn permission_check_returns_the_typed_decision() {
     let Fixture {
@@ -281,8 +268,6 @@ async fn permission_check_returns_the_typed_decision() {
     host.close().await.unwrap();
 }
 
-/// `inputQueue.submit` reaches the branch entry the typed call uses, and
-/// `withdraw` answers as the typed service does.
 #[tokio::test]
 async fn input_queue_submits_and_withdraws_as_the_typed_service_does() {
     let Fixture {
@@ -322,26 +307,55 @@ async fn input_queue_submits_and_withdraws_as_the_typed_service_does() {
     let missing = InputWithdrawData {
         input_id: "not-held".into(),
         reason: None,
+        steer: None,
     };
-    let typed = queue.withdraw(missing.clone(), None).await.unwrap();
+    let typed = queue.withdraw(missing.clone()).await.unwrap();
     let wire = call(
         &branch_ctx,
         branch_instance,
         "inputQueue",
         "withdraw",
-        vec![json!(&missing).into(), json!(null).into()],
+        vec![json!(&missing).into()],
     )
     .await;
     assert_eq!(
-        serde_json::to_value(&typed).unwrap(),
+        serde_json::to_value(typed).unwrap(),
         wire,
         "neither call writes for an input the queue does not hold"
     );
     assert_eq!(wire, json!({"status": "notHeld"}));
+    for submission_id in ["faces-submit", "rejected-steer"] {
+        let mut replacement = InputMessageData::text("unchecked", Some(InputMode::Steer));
+        replacement.submission_id = Some(submission_id.into());
+        let command = InputWithdrawData {
+            steer: Some(replacement),
+            ..missing.clone()
+        };
+        assert!(matches!(
+            queue.withdraw(command.clone()).await,
+            Err(AgentError::InvalidInput(_))
+        ));
+        let dispatch = branch_ctx
+            .get_at::<dyn HostDispatch>(&host_key("inputQueue").instance(branch_instance))
+            .unwrap();
+        let reply = dispatch
+            .invoke("withdraw", BridgeValue::List(vec![json!(command).into()]))
+            .unwrap();
+        assert!(
+            settle(reply).await.is_err(),
+            "unchecked Steer must be rejected by the wire face"
+        );
+    }
+    assert!(
+        session
+            .lookup("main", "rejected-steer")
+            .await
+            .unwrap()
+            .is_none()
+    );
     host.close().await.unwrap();
 }
 
-/// `wait` ends on its timeout for either caller.
 #[tokio::test]
 async fn wait_returns_the_typed_result() {
     let Fixture {
@@ -370,10 +384,27 @@ async fn wait_returns_the_typed_result() {
         "both callers read the same end"
     );
     assert!(wire["waitedMs"].is_number(), "{wire}");
+    let cancelled =
+        BridgeValue::callback(|_| Ok(BridgeValue::future(async { Ok(json!(null).into()) })));
+    let interrupted = call(
+        &branch_ctx,
+        branch_instance,
+        "wait",
+        "wait",
+        vec![json!(null).into(), json!(300_000).into(), cancelled],
+    )
+    .await;
+    assert_eq!(interrupted["reason"], "interrupted");
+    assert!(
+        matches!(
+            wait.wait(None, 1, never_cancelled()).await.unwrap(),
+            WaitResult::Timeout { .. }
+        ),
+        "wire cancellation must release the single-wait slot"
+    );
     host.close().await.unwrap();
 }
 
-/// `toolHost.execute` runs the same call the typed host port runs.
 #[tokio::test]
 async fn tool_host_executes_as_the_typed_port_does() {
     let tools = Arc::new(MockTools);

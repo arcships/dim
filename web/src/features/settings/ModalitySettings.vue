@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
-import { RefreshCw } from "lucide-vue-next"
 import { useSettingsText } from "../../i18n/settings-general"
 import { readModalitySnapshot, type ModalityOperation, type ModalitySnapshot } from "../../rpc/general-settings"
 import type { ModelId } from "../../rpc/protocol"
@@ -10,6 +9,7 @@ import { useModelsStore } from "../../stores/models"
 import GeneralSettingsStatus from "./GeneralSettingsStatus.vue"
 import { bindSettingsDirty, messageFrom, reloadSettingsOnReconnect } from "./context"
 
+const AUTOMATIC = "__auto__"
 const s = useSettingsText()
 const connection = useConnectionStore()
 const models = useModelsStore()
@@ -53,13 +53,24 @@ function effective(operation: ModalityOperation): string {
   const name = label(operation.effective)
   return operation.effective.source === "automatic" ? `${name} (${s('automatic', '自动')})` : `${name} (${s('configured', '已配置')})`
 }
+function optionsFor(row: ModalityOperation): Array<{ label: string; value: string; disabled?: boolean }> {
+  return [
+    { label: s('Automatic', '自动'), value: AUTOMATIC },
+    ...row.options.map((option) => ({
+      label: `${label(option)}${option.available ? "" : ` (${s('unavailable', '不可用')})`}`,
+      value: keyOf(option),
+      disabled: !option.available,
+    })),
+  ]
+}
 function modelFrom(draft: string): ModelId | null {
   if (draft === "") return null
   const [providerId, modelId] = JSON.parse(draft) as [string, string]
   return { providerId, modelId }
 }
-function choose(key: string, event: Event): void {
-  drafts.value[key] = (event.target as HTMLSelectElement).value
+function choose(key: string, value: unknown): void {
+  const next = String(value ?? "")
+  drafts.value[key] = next === AUTOMATIC ? "" : next
 }
 function fill(next: ModalitySnapshot): void {
   const operations = next.categories.find((category) => category.category === "image")?.operations ?? []
@@ -105,24 +116,28 @@ onMounted(load)
 <template>
   <article class="settings-page">
     <header><h2 data-route-heading tabindex="-1">{{ s('Modality', '多模态') }}</h2><p>{{ s('Choose the default model for each image operation. Clearing a default restores automatic resolution; an unavailable default is never replaced by another model.', '为每个图像操作选择默认模型。清除默认值即恢复自动解析；不可用的默认值不会被其他模型替代。') }}</p></header>
-    <button class="ui-button" data-size="md" data-variant="secondary" type="button" :disabled="busy" @click="load"><RefreshCw :size="14" aria-hidden="true" />{{ s('Reload models', '重新加载模型') }}</button>
+    <UButton color="neutral" variant="outline" icon="i-lucide-refresh-cw" :disabled="busy" class="mb-6" @click="load">{{ s('Reload models', '重新加载模型') }}</UButton>
     <GeneralSettingsStatus :busy="busy" :error="error" :saved="saved && !dirty" @reload="load" />
     <form v-if="snapshot" class="settings-form" @submit.prevent="save">
       <section v-for="row in rows" :key="row.operation" class="settings-card">
         <h3>{{ title(row.operation) }}</h3>
-        <p v-if="row.reasons.length" class="ui-banner settings-banner" data-tone="warning">{{ reasons(row) }}</p>
-        <label>
-          <span>{{ s('Default model', '默认模型') }}</span>
-          <select :value="drafts[row.key!] ?? ''" class="ui-field" data-size="md" :aria-label="`${title(row.operation)}: ${s('Default model', '默认模型')}`" :disabled="busy || conflict || !connection.supports('modality.configure')" @change="choose(row.key!, $event)">
-            <option value="">{{ s('Automatic', '自动') }}</option>
-            <option v-for="option in row.options" :key="keyOf(option)" :value="keyOf(option)" :disabled="!option.available">{{ label(option) }}{{ option.available ? '' : ` (${s('unavailable', '不可用')})` }}</option>
-          </select>
-        </label>
+        <UAlert v-if="row.reasons.length" color="warning" variant="subtle" icon="i-lucide-alert-triangle" :description="reasons(row)" class="settings-banner" />
+        <UFormField :label="s('Default model', '默认模型')" :error="row.default && !row.default.available ? row.default.reason?.detail : undefined">
+          <USelect
+            :model-value="drafts[row.key!] || AUTOMATIC"
+            :items="optionsFor(row)"
+            :aria-label="`${title(row.operation)}: ${s('Default model', '默认模型')}`"
+            :disabled="busy || conflict || !connection.supports('modality.configure')"
+            class="w-full"
+            @update:model-value="choose(row.key!, $event)"
+          />
+        </UFormField>
         <p>{{ s('Currently effective', '当前生效') }}: {{ effective(row) }}</p>
-        <p v-if="row.default && !row.default.available" class="ui-field-hint" data-tone="danger">{{ row.default.reason?.detail }}</p>
         <p v-if="row.operation === 'understand'">{{ s('Selection only for now: the Session image-understanding path does not read this default yet, so it does not change the model a Session uses.', '目前仅用于选择：会话的图像理解路径尚未读取此默认值，因此不会改变会话使用的模型。') }}</p>
       </section>
-      <footer class="settings-actions"><button class="ui-button" data-size="md" data-variant="primary" :disabled="busy || !dirty || conflict || !connection.supports('modality.configure')">{{ s('Save defaults', '保存默认设置') }}</button></footer>
+      <footer class="settings-actions">
+        <UButton color="primary" type="submit" :disabled="busy || !dirty || conflict || !connection.supports('modality.configure')">{{ s('Save defaults', '保存默认设置') }}</UButton>
+      </footer>
     </form>
   </article>
 </template>

@@ -2,7 +2,7 @@
 //! write once (feature `testing`).
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::sync::Notify;
 
@@ -10,8 +10,16 @@ use tokio::sync::Notify;
 #[derive(Default)]
 pub struct Holds {
     disable: Mutex<Option<Arc<DisableHold>>>,
+    launch: Mutex<Option<Arc<Notify>>>,
     fail_release: AtomicBool,
     lose_input_reply: AtomicBool,
+    /// Notified after a wakeup create acquires process admission.
+    pub wakeup_create: Notify,
+    /// Notified after a loop start acquires process admission.
+    pub loop_start: Notify,
+    /// Fails the armed number of `sessions.lookup` replies with a transient
+    /// transport error, so a lookup pass can meet one that answers nothing.
+    lookup_failures: AtomicUsize,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable
@@ -41,6 +49,21 @@ impl DisableHold {
 }
 
 impl Holds {
+    /// Holds the next accepted launch before it calls the Session service.
+    /// Notify the returned handle to let the launch proceed.
+    pub fn hold_next_launch(&self) -> Arc<Notify> {
+        let release = Arc::new(Notify::new());
+        *self.launch.lock().unwrap() = Some(release.clone());
+        release
+    }
+
+    pub(crate) async fn before_launch(&self) {
+        let release = self.launch.lock().unwrap().take();
+        if let Some(release) = release {
+            release.notified().await;
+        }
+    }
+
     /// Holds the next disables between their read and their write until the
     /// returned hold is released.
     pub fn hold_next_disable(&self) -> Arc<DisableHold> {
@@ -60,6 +83,21 @@ impl Holds {
     /// input was in fact accepted (A.5, A.6).
     pub fn lose_next_input_reply(&self) {
         self.lose_input_reply.store(true, Ordering::SeqCst);
+    }
+
+    /// Fails the next `count` `sessions.lookup` replies with a transient
+    /// transport error, so a lookup pass meets one that answers nothing.
+    pub fn fail_lookups(&self, count: usize) {
+        self.lookup_failures.store(count, Ordering::SeqCst);
+    }
+
+    /// Whether this lookup reply is to fail, counting down to zero.
+    pub(crate) fn take_lookup_failure(&self) -> bool {
+        self.lookup_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
     }
 
     pub(crate) async fn before_disable_write(&self) {
