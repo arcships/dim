@@ -5895,6 +5895,19 @@ impl App {
                 cols.saturating_sub(4).min(OVERLAY_LIST_WIDTH)
             };
             frame.overlay = match &self.prompt {
+                Some(Prompt::Tasks(prompt)) if prompt.shows_member() && !palette_overlay => {
+                    Some(Overlay {
+                        rows: prompt.render_member_screen(
+                            cols,
+                            size.1 as usize,
+                            p,
+                            &self.markdown,
+                            self.tool_detail,
+                        ),
+                        cursor: None,
+                        screen: true,
+                    })
+                }
                 _ if palette_overlay => {
                     let width = cols.saturating_sub(4).min(OVERLAY_PALETTE_WIDTH);
                     self.composer.palette_overlay(width, budget, p)
@@ -5947,7 +5960,11 @@ impl App {
                     let cursor = panel_cursor(list_width, budget)
                         .flatten()
                         .map(|(row, column)| (row as u16, column as u16));
-                    rows.map(|rows| Overlay { rows, cursor })
+                    rows.map(|rows| Overlay {
+                        rows,
+                        cursor,
+                        screen: false,
+                    })
                 }
             };
         }
@@ -6878,6 +6895,7 @@ impl App {
             Some(
                 Block::Thinking { expanded, .. }
                 | Block::Hook { expanded, .. }
+                | Block::MemberResult { expanded, .. }
                 | Block::Error { expanded, .. },
             ) => *expanded = !*expanded,
             _ => return false,
@@ -10030,6 +10048,7 @@ mod tests {
             agent: None,
             agent_id: None,
             started_at: 0,
+            dispatch: None,
             finished: None,
         }
     }
@@ -10289,10 +10308,9 @@ mod tests {
             if size.0 >= 80 {
                 assert!(rendered.contains("Audit cancellation"), "{rendered}");
             }
-            assert!(
-                rendered.contains("Member Session: audit-session"),
-                "{rendered}"
-            );
+            assert!(rendered.contains("Read-only"), "{rendered}");
+            assert!(rendered.contains("Esc back"), "{rendered}");
+            assert!(!rendered.contains("keep this draft"), "{rendered}");
             assert_eq!(
                 screen.mouse(event(MouseKind::Press), &app),
                 MouseOutcome::Ignored

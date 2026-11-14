@@ -54,6 +54,13 @@ pub enum Block {
         expanded: bool,
     },
     Assistant(String),
+    /// A member's completed result: its header, and its Markdown body as a
+    /// preview, or whole when expanded.
+    MemberResult {
+        label: Option<String>,
+        body: String,
+        expanded: bool,
+    },
     /// A settled thought: one summary row, or the whole text when expanded.
     Thinking {
         text: String,
@@ -140,6 +147,11 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             expanded: detail == Detail::Expanded,
         },
         RowKind::AssistantMessage => Block::Assistant(row.text.clone()),
+        RowKind::MemberResult => Block::MemberResult {
+            label: row.display.clone(),
+            body: row.text.clone(),
+            expanded: false,
+        },
         RowKind::Thinking => Block::Thinking {
             text: row.text.clone(),
             elapsed_ms: row.elapsed_ms,

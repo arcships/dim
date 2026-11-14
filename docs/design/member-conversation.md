@@ -77,11 +77,46 @@ cards to leader facts and any leader-side activity the provider publishes.
 +----------------------------------------------------------------+
 ```
 
-The detail is a modal read-only view using the existing conversation row
+In the scrollback TUI the detail is a modal read-only view using the existing conversation row
 renderers, wrapping, scrolling, theme and localization. It opens at the tail;
 Up/Down, PageUp/PageDown and Home/End navigate the conversation. The existing
 minimum-size screen applies. Sanitize externally supplied text before styling;
 keep the identity, state and key hints within the overlay's width.
+
+The fullscreen TUI shows the member the way it shows a line: the member's
+conversation takes the whole transcript area, drawn by the fullscreen transcript
+renderer at the Tool details and Thinking details settings, with its disclosures
+and scrolling, and the leader's transcript is hidden while it is shown. A
+boundary row names the task title, the agent and `read-only`. The composer is
+replaced by a read-only bar: its title names the agent, the observed model and
+the state from §4; its body says the view is read-only and lists the keys the
+view accepts, `Esc` first. `x stop agent` is listed only while the member can be
+stopped and is gone once the delegation is terminal or the Session closed; `x`
+then does nothing. The bar truncates at the terminal width and keeps `Esc back`.
+
+```text
+ ─────────── Task alpha · alpha · read-only ───────────
+ ┃ MEMBER_TASK alpha
+ ▸ ✓ Explored 2 files
+ alpha done.
+
+╭─ alpha · local / mock-model ───────────────────── Running ─╮
+│ Read-only: you can watch this agent or stop it.            │
+│ Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End   │
+╰────────────────────────────────────────────────────────────╯
+```
+
+`Esc` returns to the surface the view was opened from: the task list, or the
+leader transcript at the position it had. The member Session ID is not drawn in
+the body; the delegation's own outcome is the bar's state, and its result text
+is not appended again under the member's own final reply.
+
+A completed delegation's result in the leader transcript is one row headed
+`agent result · <task title> · <agent>`, its text drawn by the assistant
+Markdown renderer. The first six rendered rows are shown, then `… N more lines`.
+Scrollback has no expand for it; fullscreen marks a longer result with a
+disclosure that shows the whole result. Failed and cancelled results remain one
+status line with their reason.
 
 Enter and typed text in the detail never submit input. Esc is consumed by the
 detail and returns to the task list; it must not fall through to the leader's

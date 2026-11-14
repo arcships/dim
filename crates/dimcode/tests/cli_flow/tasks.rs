@@ -1397,12 +1397,14 @@ fn tui_task_inventory_keeps_fifty_terminal_facts_and_their_original_results() {
     );
     terminal.signal(libc::SIGWINCH);
     terminal.write(b"/tasks\r");
-    terminal.until("row-51");
+    terminal.until("row-03");
     terminal.write(b"row-02");
     terminal.until("No matching tasks.");
+    terminal.write(b"\x1b[27u/tasks\rrow-51");
+    terminal.until("row-51");
     terminal.write(b"\x1b[27urow-03\r");
     terminal.until("original result without an exit code");
-    terminal.write(b"x\x1b[27u\x1b[27uequal timestamp\r");
+    terminal.write(b"x\x1b[27u\x1b[27uequal timestamp delivery\r");
     terminal.until("agent_not_found");
     assert!(!terminal.transcript.contains("\"agent_not_found\""));
     assert!(!terminal.transcript.contains(" in background"));
@@ -1485,7 +1487,7 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         "{task_row}"
     );
     terminal.write(b"\x1b[<0;5;17M\x1b[<0;5;17m");
-    terminal.until("Member Session: member");
+    terminal.until("Read-only: you can watch this agent or stop it.");
     terminal.until("member original + live");
     terminal.until("live member thought");
     let size = libc::winsize {
@@ -1504,17 +1506,19 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         },
         0
     );
-    terminal.until("Member Session: member");
-    terminal.write(b"\x1b[H");
-    terminal.until("member user");
-    terminal.write(b"\x1b[F");
     terminal.until("live member thought");
+    terminal.write(b"\x1b[H\x1b[F");
+    assert!(terminal.transcript.contains("member user"));
     terminal.write(b"readonly typing\r");
     terminal.write(b"\x1b[200~hidden detail paste\x1b[201~");
     terminal.write(b"x");
-    terminal.until("real cancelled delegation result");
-    terminal.write(b"\x1b[A");
-    terminal.until("Delegation result: Cancelled");
+    terminal.until("Read-only: this agent has finished.");
+    assert!(
+        !terminal
+            .transcript
+            .contains("real cancelled delegation result"),
+        "the member view does not repeat the delegation result"
+    );
     assert!(!terminal.transcript.contains("never-copy"));
     assert!(!terminal.transcript.contains("wrong member branch"));
     assert!(!terminal.transcript.contains("wrong leader branch thought"));
@@ -2285,19 +2289,21 @@ fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
             .contains("Provider member: external-agent:node:agent")
     );
     terminal.write(b"\t\t\t\r");
-    terminal.until("Member Session: member-b");
-    terminal.until("Member model: No model observed");
+    terminal.until("inspect tests · No model observed");
     terminal.write(b"\x1b[27u");
     terminal.write(b"\x1b[A\x1b[A\x1b[A\r");
-    terminal.until("Member Session: member-a");
-    terminal.until("Member model: member-provider / member-model-2");
+    terminal.until("Code Reviewer · member-provider / member-model-2");
     terminal.write(b"\x1b[27u");
     opened.send(()).unwrap();
     terminal.until("Completed");
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();
-    assert!(!terminal.transcript.contains("Member Session: member-c"));
+    assert!(
+        !terminal
+            .transcript
+            .contains("external-agent:node:agent · read-only")
+    );
 }
 
 #[test]
@@ -2583,7 +2589,8 @@ fn tui_member_cards_keep_the_id_when_the_shared_agent_list_read_fails() {
     terminal.until("Agent: reviewer");
     terminal.write(b"/tools\r");
     terminal.until("Second review");
-    terminal.until("agent result: second review is complete");
+    terminal.until("agent result · Second review · reviewer");
+    terminal.until("second review is complete");
     drawn.send(()).unwrap();
     daemon.join().unwrap();
     home.kill(&terminal);
@@ -3057,4 +3064,100 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
         "earlier content was not retained: {}",
         strip_ansi(&terminal.transcript)
     );
+}
+
+/// A parallel batch whose requests committed out of call order, resumed with
+/// a window that holds only one request: the owner's finished read restores
+/// the settled delegations the window left out, and `/tasks` lists the batch
+/// in the model's call order however the results arrived.
+#[test]
+fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order() {
+    let home = Home::new();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.methods"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let methods = wire.read("session.methods");
+        wire.reply(&methods, json!({"methods":[
+            {"name":"session.input.pending","mutating":false},
+            {"name":"session.collaboration.finished","mutating":false},
+            {"name":"session.collaboration.pending","mutating":false},
+            {"name":"session.turn.get","mutating":false}
+        ]}));
+        let request = |id: &str, sequence: u64, call: &str, title: &str| {
+            fact(id, sequence, sequence * 1000, "collaboration", "request", json!({
+                "turn_id":"turn","request_id":"batch","call_id":call,
+                "target":{"kind":"agent","agent_id":"reviewer"},"prompt":title,"title":title,
+            }))
+        };
+        let result = |id: &str, of: &str| {
+            json!({"request_event_id":of,"agent_id":"reviewer","session_id":format!("member-{id}"),
+                "status":"completed","text":format!("{id} done")})
+        };
+        let delivered = |of: &str| {
+            json!({"status":"ok","agent_id":"reviewer","session_id":format!("member-{of}")})
+        };
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[
+            request("req-c", 59, "call-1", "Task beta"),
+            fact("res-a", 70, 70_000, "collaboration", "result", result("alpha", "req-a")),
+        ],"through":70,"nextAfter":70,"done":true}));
+        let mut finished = false;
+        let mut context = false;
+        let mut accounts = false;
+        while !finished || !context || !accounts {
+            let request = wire.read_any();
+            let branch = request["params"]["branchId"].as_str().unwrap_or("main");
+            match request["method"].as_str().unwrap() {
+                "session.context.usage" => {
+                    context = true;
+                    wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}}));
+                }
+                "account.providers" => { accounts = true; wire.reply(&request, json!([])); }
+                "agent.list" => wire.reply(&request, json!([{"agentId":"reviewer","name":"reviewer"}])),
+                "session.collaboration.finished" => {
+                    finished = true;
+                    assert_eq!(request["params"]["through"], 70);
+                    wire.reply(&request, json!({"branchId":branch,"through":70,"requests":[
+                        {"start":{"eventId":"req-a","sequence":56,"startedAt":56_000,"position":0,
+                            "request":{"turn_id":"turn","request_id":"batch","call_id":"call-0",
+                                "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task alpha","title":"Task alpha"},
+                            "delivery":delivered("a")},
+                         "endedAt":70_000,"result":result("alpha", "req-a")},
+                        {"start":{"eventId":"req-g","sequence":53,"startedAt":53_000,"position":2,
+                            "request":{"turn_id":"turn","request_id":"batch","call_id":"call-2",
+                                "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task gamma","title":"Task gamma"},
+                            "delivery":delivered("g")},
+                         "endedAt":65_000,"result":result("gamma", "req-g")},
+                    ]}));
+                }
+                "session.collaboration.pending" => wire.reply(&request, json!({"branchId":branch,"through":70,"requests":[
+                    {"eventId":"req-c","sequence":59,"startedAt":59_000,"position":1,
+                     "request":{"turn_id":"turn","request_id":"batch","call_id":"call-1",
+                        "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task beta","title":"Task beta"},
+                     "delivery":delivered("c")}
+                ],"next":null})),
+                "session.input.pending" => wire.reply(&request, json!({"branchId":branch,"through":70,"inputs":[],"next":null})),
+                "session.turn.get" => wire.reply(&request, json!({"branchId":branch,"through":70,"turn":null,"output":null})),
+                "session.attach" => wire.reply(&request, attach_record(&request)),
+                "session.history" => wire.reply(&request, json!({"events":[],"through":1,"nextAfter":1,"done":true})),
+                "session.detach" => wire.reply(&request, json!({})),
+                method => panic!("unexpected request {method}"),
+            }
+        }
+        wire.quiet(Duration::from_millis(300));
+    });
+    let mut terminal = Terminal::resume_tui(home.command());
+    terminal.until("test / model");
+    terminal.write(b"/tasks\r");
+    terminal.until("Task gamma");
+    let start = terminal.transcript.rfind("Background tasks").unwrap();
+    let list = &terminal.transcript[start..];
+    let alpha = list.rfind("Task alpha").expect("alpha restored");
+    let beta = list.rfind("Task beta").expect("beta pending");
+    let gamma = list.rfind("Task gamma").expect("gamma restored");
+    assert!(alpha < beta && beta < gamma, "dispatch order: {list}");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
 }

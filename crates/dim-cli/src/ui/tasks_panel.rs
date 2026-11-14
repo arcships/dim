@@ -302,7 +302,8 @@ impl TasksPanel {
                         state: MemberConversationState::Closed,
                         ..
                     }
-                ) {
+                ) || detail.task.finished.is_some()
+                {
                     return Effect::None;
                 }
                 return self.stop(&detail.task);
@@ -716,6 +717,130 @@ impl TasksPanel {
             Some(&title_plain(&title, inner, p)),
             Some(&key_hints(t(hint), p)),
         )
+    }
+}
+
+impl TasksPanel {
+    /// Whether the panel shows a member's conversation: fullscreen draws it
+    /// over the whole screen with [`TasksPanel::render_member_screen`].
+    pub fn shows_member(&self) -> bool {
+        matches!(
+            self.detail.as_deref(),
+            Some(Detail {
+                body: DetailBody::Member { .. },
+                ..
+            })
+        )
+    }
+
+    /// The member conversation as fullscreen draws it: the member's rows at
+    /// the transcript's detail setting under a boundary naming the task, and
+    /// a read-only bar in the composer's place listing the keys it accepts.
+    /// `width` and `rows` are the whole terminal.
+    pub fn render_member_screen(
+        &self,
+        width: usize,
+        rows: usize,
+        p: &Palette,
+        markdown: &MarkdownRenderer,
+        tool_detail: ToolDetail,
+    ) -> Vec<String> {
+        let Some(Detail {
+            task,
+            body:
+                DetailBody::Member {
+                    snapshot,
+                    state,
+                    model,
+                },
+            scroll,
+            page,
+            ..
+        }) = self.detail.as_deref()
+        else {
+            unreachable!("shows_member")
+        };
+        let content = width.saturating_sub(2).max(1);
+        let stoppable =
+            task.finished.is_none() && !matches!(state, MemberConversationState::Closed);
+        let status = match (state, &task.finished) {
+            (MemberConversationState::ReadError(error), _) => {
+                format!("{}: {}", t("Conversation unavailable"), safe(error))
+            }
+            (MemberConversationState::Closed, _) => t("Session closed").to_owned(),
+            (_, Some(finish)) => t(finish.status).to_owned(),
+            (MemberConversationState::Loading, None) => t("Loading conversation...").to_owned(),
+            (MemberConversationState::Live, None) if snapshot.running => t("Running").to_owned(),
+            (MemberConversationState::Live, None) => t("Observing conversation").to_owned(),
+        };
+        let agent = task.agent.as_deref().map_or_else(String::new, safe);
+        let model = model
+            .as_deref()
+            .map_or_else(|| t("No model observed").to_owned(), safe);
+        let note = if stoppable {
+            t("Read-only: you can watch this agent or stop it.")
+        } else {
+            t("Read-only: this agent has finished.")
+        };
+        let keys = if stoppable {
+            t("Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump")
+        } else {
+            t("Esc back · ↑↓ PgUp PgDn scroll · Home/End jump")
+        };
+        let bar = bordered(
+            &[
+                fg(&truncate_cells(note, content), &p.muted),
+                key_hints(&truncate_cells(keys, content), p),
+            ],
+            width,
+            None,
+            &p.border,
+            Some(&title_plain(&format!("{agent} · {model}"), content, p)),
+            Some(&fg(&truncate_cells(&status, content), &p.muted)),
+        );
+        let mut title = safe(&task.label);
+        if !agent.is_empty() {
+            title.push_str(&format!(" · {agent}"));
+        }
+        title.push_str(&format!(" · {}", t("read-only")));
+        let mut lines = Vec::new();
+        if snapshot.rows.is_empty() {
+            lines.push(fg(
+                match state {
+                    MemberConversationState::Loading => t("Loading conversation..."),
+                    _ => t("No conversation yet"),
+                },
+                &p.muted,
+            ));
+        }
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if row.kind == RowKind::ToolCall && !opens_group(&snapshot.rows, index) {
+                continue;
+            }
+            let block = project_row(&snapshot.rows, index, tool_detail);
+            lines.extend(crate::ui::transcript::blocks::render_block(
+                &block, content, p, markdown, false,
+            ));
+            lines.push(String::new());
+        }
+        let view = rows.saturating_sub(bar.len() + 1).max(1);
+        page.set(view);
+        let offset = scroll.get().min(lines.len().saturating_sub(view));
+        scroll.set(offset);
+        let end = lines.len().saturating_sub(offset);
+        let mut screen = vec![fg(
+            &crate::ui::transcript::blocks::boundary_line(&title, width),
+            &p.muted,
+        )];
+        screen.extend(
+            lines[end.saturating_sub(view)..end]
+                .iter()
+                .map(|line| format!(" {line}")),
+        );
+        screen.resize(rows.saturating_sub(bar.len()), String::new());
+        screen.extend(bar);
+        screen.truncate(rows);
+        screen
     }
 }
 

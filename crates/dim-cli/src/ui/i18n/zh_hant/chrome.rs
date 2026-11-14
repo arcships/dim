@@ -104,6 +104,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Delete failed" => "刪除失敗",
         "This daemon does not support deleting Sessions" => "此守護進程不支援刪除工作階段",
         "Starting" => "啟動中",
+        "agent result" => "子 agent 結果",
+        "Read-only: you can watch this agent or stop it." => "唯讀：可以查看這個 agent，或終止它。",
+        "Read-only: this agent has finished." => "唯讀：這個 agent 已結束。",
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · x 終止 agent · ↑↓ PgUp PgDn 捲動 · Home/End 跳轉"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · ↑↓ PgUp PgDn 捲動 · Home/End 跳轉"
+        }
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
             "Enter 詳細資料 · x 停止所選 · Ctrl+X 全部停止 · Esc 關閉"

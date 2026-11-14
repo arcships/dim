@@ -345,6 +345,7 @@ pub fn render_overlay(
         },
     );
     Overlay {
+        screen: false,
         rows: bordered(&content, width, None, &p.border, Some(&title), None),
         cursor: Some((
             if query_in_border {

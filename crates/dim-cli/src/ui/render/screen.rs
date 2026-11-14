@@ -64,6 +64,9 @@ pub struct Overlay {
     pub rows: Vec<String>,
     /// Cursor inside the box (row, column); `None` keeps the composer's.
     pub cursor: Option<(u16, u16)>,
+    /// The rows are the whole screen, drawn in place of the transcript and
+    /// the dock rather than centred over them.
+    pub screen: bool,
 }
 
 pub struct Screen {

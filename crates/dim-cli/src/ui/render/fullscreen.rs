@@ -1210,7 +1210,16 @@ impl FullScreen {
             let row = (row as usize).checked_sub(split + dock_skip)?;
             Some((column, (self.view_rows + row).min(rows - 1) as u16))
         });
-        if let Some(overlay) = &frame.overlay {
+        if let Some(overlay) = &frame.overlay
+            && overlay.screen
+        {
+            screen = overlay.rows.iter().map(|row| clip(row, cols).0).collect();
+            screen.resize(rows, String::new());
+            for row in &mut screen {
+                *row = scrub(row).into_owned();
+            }
+            cursor = None;
+        } else if let Some(overlay) = &frame.overlay {
             let (x, y) = overlay_origin(overlay, cols, rows, self.view_rows);
             for (offset, row) in overlay.rows.iter().enumerate() {
                 if let Some(base) = screen.get_mut(y + offset) {
@@ -2289,6 +2298,7 @@ mod tests {
         ));
         screen.mouse(at(MouseKind::Press), &doc);
         f.overlay = Some(Overlay {
+            screen: false,
             rows: vec!["picker".into()],
             cursor: None,
         });
@@ -2626,6 +2636,7 @@ mod tests {
         doc.say(&["", "", "", "", "behind the box"]);
         let mut f = frame(&[], &DOCK);
         f.overlay = Some(Overlay {
+            screen: false,
             rows: vec!["┌──┐".into(), "│> │".into(), "└──┘".into()],
             cursor: Some((1, 2)),
         });
@@ -2665,6 +2676,7 @@ mod tests {
         draw(&mut screen, &mut emu, &f, &doc);
         let before = emu.rows_text();
         f.overlay = Some(Overlay {
+            screen: false,
             rows: vec!["┌──┐".into(), "│> │".into(), "└──┘".into()],
             cursor: Some((1, 2)),
         });
@@ -3063,6 +3075,7 @@ mod tests {
                             live.push(String::new());
                         }
                         let overlay = (rng.below(4) == 0).then(|| Overlay {
+                            screen: false,
                             rows: rng.rows(u64::from(size.1) + 4, size.0),
                             cursor: (rng.below(2) == 0).then(|| {
                                 (

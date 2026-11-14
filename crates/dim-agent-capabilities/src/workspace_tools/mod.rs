@@ -15,6 +15,7 @@ pub mod file_reads;
 pub mod files;
 pub mod mentions;
 mod pending;
+pub use pending::call_positions;
 
 use crate::{
     host::{HostError, HostFuture, SessionFilesHost, ToolDriver, ToolExecutionContext, ToolHost},
@@ -448,6 +449,20 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 Arc::new(move |call, cancel, _| {
                     let tree = pending_tree.clone();
                     Box::pin(async move { pending::read(&tree, call.params, &cancel).await })
+                }),
+            )?;
+            let finished_tree = tools.tree.clone();
+            methods.register(
+                ctx,
+                "session.exec.finished",
+                vec![MethodDecl::new(
+                    "session.exec.finished",
+                    false,
+                    Interruption::Report,
+                )],
+                Arc::new(move |call, cancel, _| {
+                    let tree = finished_tree.clone();
+                    Box::pin(async move { pending::finished(&tree, call.params, &cancel).await })
                 }),
             )?;
             let tree = tools.tree.clone();
