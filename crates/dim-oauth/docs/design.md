@@ -10,10 +10,11 @@ dim-app-server process tree (account build `dimcode`, product home set)
   FileStorage ──▶ DimOAuth ──provides──▶ Arc<dyn ManagedProvider>
                                                │
   ManagedProviders ◀── ManagedProviderBinding ─┘
+  (private key)
         │
         ├── account.* RPC (management)
         ├── Provider service: catalog cache, model credentials
-        └── webSearch (rutis service for Web plugin)
+        └── managedSearch.search (data face for Web plugin)
 
 DimOAuth independently provides `sessionTitleGenerator` for SessionTitle. That optional named
 service and its cancellation protocol are defined by [SessionTitle](../../../docs/design/plugins/SessionTitle.md#33-generation-routing-and-optional-service).
@@ -24,9 +25,9 @@ It neither extends `ManagedProvider` nor introduces routing in Provider or Auxil
 | Part | Owns |
 | --- | --- |
 | `DimOAuth` (this repository) | Login attempts, `auth.json` account record, token refresh, relay catalog projection, usage and referral projections, credit-reset operations, relay web search, credential leases; its accepted work |
-| `ManagedProvider` (dim `managed_provider.rs`) | The typed service contract and its DTOs |
-| `ManagedProviderBinding` | Publishing the provider to `ManagedProviders` while both are active; quiesce on unload |
-| `ManagedProviders` | Process access for RPC, the provider service and `webSearch`; public error mapping |
+| `ManagedProvider` (dim `managed_provider.rs`) | The provider implementation contract and its DTOs |
+| `ManagedProviderBinding` | Publishing the provider to the private keyed `ManagedProviders` implementation while both are active; quiesce on unload |
+| `ManagedProviders` plugin | Registers `account` methods and the `managedSearch` face; keeps the implementation under an unnamed key for the provider binding and model provider |
 
 ## 2. Decisions
 
@@ -41,9 +42,9 @@ It neither extends `ManagedProvider` nor introduces routing in Provider or Auxil
 | Rule | How this design complies |
 | --- | --- |
 | Principles §4 rules 1–6, 9 | No Timeline events, handovers, before callbacks or context changes; account state is process state outside the Timeline. |
-| Principles §4 rule 7 | Uses FileStorage and the public ManagedProviders/Provider services only. |
+| Principles §4 rule 7 | Uses FileStorage; the provider binding accesses the private keyed ManagedProviders implementation. Public search uses the `managedSearch` face. |
 | Principles §4 rule 8 | No new mechanism requirement (§4). |
-| Principles §1 | A process plugin of the App Server; RPC methods only dispatch to `ManagedProviders`. |
+| Principles §1 | A process plugin of the App Server; the ManagedProviders plugin registers its own account methods and search face. |
 | ADR 002 D1–D3 | Process scope; its only dependency, FileStorage, is a declared process service. |
 | ADR 002 D4 | Registration is structural (build inputs and product home); there are no business settings. |
 | ADR 002 D5 | `ManagedProvider` retains its accepted Rust-only deviation. The independent `sessionTitleGenerator` service uses a language-neutral request/reply contract and the existing HostDispatch binding. |

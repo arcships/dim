@@ -80,7 +80,7 @@ impl AgentBuilder {
 
 ## 3. 盘点（#1300）
 
-catalog 现在 119 个名字：27 data、90 internal、2 shared-no-dispatcher（这两个数还没算 #1396：`scheduleJobs`、`wakeups` 合入后是 29 data、88 internal）。§3 表覆盖这 90 个 internal 名字（#1396 后 88）；§3.2 的 `scheduleJobs`、`wakeups` 目前还是 internal(owner-api)，#1292 转成数据面；`sessionFiles`、`managedSearch` 已在 #1292 加入 catalog 并成为数据面。`workflowRuns` 不在其中：它是 optional Workflow 包自己的 provides 目录，已经是数据面。每个名字在分类表里恰好一行；说明句和“数据兄弟”列是引用，不算第二行。
+服务名字及其 face 分类以[生成的 catalog](../architecture/rust-agent/generated/catalog.md) 为准，由 `xtask check` 校验。下表按迁移形状分组；`workflowRuns` 属于 optional Workflow 包自己的 provides 目录，不在 Rust product-profile 的 catalog 中。
 
 ### 3.1 已经可以跨，但 catalog 列没体现
 
@@ -99,7 +99,7 @@ catalog 现在 119 个名字：27 data、90 internal、2 shared-no-dispatcher（
 | `sessionFiles` | 已转 data：`sessionFiles.put/register/owns/owned_paths` | 名字、base64 `content`、`owned_paths`、取消都按 [Session files](appserver/session-files.md) §9.1；`SessionFilesHost` 是同一契约的进程内绑定（String 路径、同一组 error code），不另立 API |
 | `managedSearch` | 已转 data：`managedSearch.search` | `managedProviders` 不再是服务；实现 `ManagedProviders` 留在 `managedSearch` 之后，账号操作走 `account` 方法命名空间 |
 
-`workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 119 个名字里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
+`workflowRuns` 已经是数据面：optional Workflow 包（`runtime/plugins/workflow`）提供 `workflowRuns`，`call: async`，`RunRequest`/`RunReply` 与 [Workflow](plugins/Workflow.md) 一致。它不在 Rust product-profile 的 catalog 里，而在该包自己的 provides 目录里；#1292 不新增 provider，只核对形状。
 
 两个 owner API **不进第一批**：它们保留类型化调用。`settings.read` 会新建取消 token、并返回 `SettingsResult` 信封；GoalBranch 需要自己的 stop token，改成数据面会丢取消。`auxiliaryModel.complete` 没有 tools、config 和 cached prefix；PromptSuggestion 克隆的是整轮 `ModelRequest`，换过去是行为变化，不只是形状。它们已有数据兄弟给其他消费者；有 leaf 消费者时再按 §4 的规则扩展。
 
@@ -299,7 +299,7 @@ managedSearch.search {query, count}
 - 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
 - 实现 `ManagedProviders` 不再是 catalog 名字或可注入的服务：账号、登录、token、租约留在实现内，账号操作仍走 `account` 方法命名空间；实现只对 App Server 自己的部件暴露进程内键。
 - Web 的搜索改调 `managedSearch`；Web 的 settings 仍走 `settings`。
-- 新名字使 catalog 多一行（`managedProviders` 同时不再是服务）；它不在当前 90 个 internal 名字里。
+- 新名字使 catalog 多一行（`managedProviders` 同时不再是服务）；它不在 internal 名字里。
 
 ### 4.7 `wakeups`
 
@@ -330,7 +330,7 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 2. **secret**：`providerService`、`mcpAuth`、OAuth 服务保持 internal；managed provider 的实现不占名字，只有 `managedSearch` 这一个数据面，数据面只暴露操作，不暴露值。
 3. **`workflowRuns` 已经是数据面**：optional Workflow 包已提供；#1292 只核对形状，不新增 provider。
 4. **`Faces` 的传播**：`Names`、`PartRegistry`、`SessionResolver` 都要拿到同一份原因表；独立 host / 测试用空表，检查只在装配和 leaf 加载处生效。
-5. **legacy 标记**：当前 90 个 internal 名字里 18 个是“数据内容、无消费者”，标 `legacy-no-consumer`；不是永久 internal。
+5. **legacy 标记**：“数据内容、无消费者”的名字标 `legacy-no-consumer`；不是永久 internal。
 6. **shared 与 dispatcher 不一致**：`managementMethods`、`localId` 已在 #1289 变成 `data`；`loaderService`、`pluginMounter` 是仅有的两个 `shared-no-dispatcher` 例外，检查不放行其他 shared-without-dispatcher。
 
 ## 7. 交付顺序

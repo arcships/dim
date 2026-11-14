@@ -800,16 +800,13 @@ impl SessionStore {
     /// Prepare step of a fork: copies the rows of §6.3 in bounded
     /// transactions, the session row last.
     pub async fn fork_session(&self, source: &str, fork: &str, at: u64) -> Result<()>;
-    /// `sessionFiles.register` (ADR 013 D2): records `path` as output owned
-    /// by `session_id`; a missing Session fails.
-    pub async fn register(&self, session_id: &str, path: PathBuf) -> Result<()>;
-    /// `sessionFiles.owns` and `owned_paths` (ADR 013 D3).
-    pub async fn owns(&self, session_id: &str, path: PathBuf) -> Result<bool>;
-    pub async fn owned_paths(&self, session_id: &str) -> Result<Vec<PathBuf>>;
+
 }
 /// In `storage`: the output root's name below the database directory.
 pub const COMMAND_OUTPUT_DIRECTORY: &str = "command-output";
 ```
+
+Session-file ownership operations use the [Session files binding](session-files.md#appendix-a-rust-binding): `register` and `owns` take string paths, and `owned_paths` returns string paths.
 
 `SessionStorePlugin` already takes the database directory's root index (S5a). SessionStore removes `command-output/<id>`
 under that root, the directory the daemon gives WorkspaceTools as its output root

@@ -103,7 +103,7 @@ sequenceDiagram
   X->>W: execute(ToolCall: query, filters)
   W->>S: read searchService
   alt absent (default) or dim-oauth
-    W->>M: webSearch(query, count)
+    W->>M: search(query, count)
     alt signed in and available
       M->>Q: authenticated POST /web-search
       Q-->>M: hits

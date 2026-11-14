@@ -103,7 +103,7 @@ sequenceDiagram
   X->>W: execute(ToolCall：query、filters)
   W->>S: 读取 searchService
   alt 缺省（默认）或 dim-oauth
-    W->>M: webSearch(query, count)
+    W->>M: search(query, count)
     alt 已登录且可用
       M->>Q: 带认证 POST /web-search
       Q-->>M: 命中结果

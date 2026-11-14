@@ -36,7 +36,7 @@ sessionFiles.put(own Session, name, UTF-8 bytes, call token)
 ```
 
 Every code except `invalid_params` is `-32000`. SessionStore owns the name
-rule and its 16 MiB cap; Attachments checks only its content rules.
+rule and [file size limit](../../../design/appserver/session-files.md#10-errors-limits-and-immutability); Attachments checks only its content rules.
 
 ## Events and lifetime
 

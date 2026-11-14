@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 /// The `sessionMethods` namespace Attachments provides.
 const NAMESPACE: &str = "attachment";
-/// The content limit of one put (A2); SessionStore's own cap is 16 MiB.
+/// The attachment content limit (Attachments A2).
 const MAX_TEXT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Installs Attachments in the profile. A host calls this only where
