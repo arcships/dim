@@ -121,7 +121,7 @@ function noModel(): void {
       </UButton>
     </div>
     <template v-else>
-      <TimelineView
+      <TimelineView :session-id="sessionId"
         :rows="rows"
         :earlier="branch.earlier"
         :loading-earlier="branch.loadingEarlier"

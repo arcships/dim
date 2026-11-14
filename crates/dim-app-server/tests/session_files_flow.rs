@@ -463,3 +463,210 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
     agent.close().await.unwrap();
     store.root.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn path_import_is_immutable_bounded_and_session_owned() {
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("owner").await;
+    store.session("other").await;
+    let source = home.0.join("source.bin");
+    let bytes = vec![0x5a; 16 * 1024 * 1024];
+    std::fs::write(&source, &bytes).unwrap();
+    use rutis_bridge::session::{HostDispatch, Value, host_key};
+    let face = store
+        .root
+        .get_at::<dyn HostDispatch>(&host_key("sessionFiles"))
+        .unwrap();
+    let call = face
+        .invoke(
+            "import",
+            Value::List(vec![
+                serde_json::json!({"sessionId":"owner", "name":"file.bin", "source":source}).into(),
+            ]),
+        )
+        .unwrap();
+    let Value::Reference(reply) = call else {
+        panic!("Import is asynchronous")
+    };
+    let stored: StoredSessionFile =
+        serde_json::from_value(reply.wait_async().await.unwrap().json().unwrap()).unwrap();
+    let call = face
+        .invoke(
+            "read",
+            Value::List(vec![
+                serde_json::json!({"sessionId":"owner", "fileId":stored.file_id, "offset":0})
+                    .into(),
+            ]),
+        )
+        .unwrap();
+    let Value::Reference(reply) = call else {
+        panic!("Read is asynchronous")
+    };
+    let chunk = reply.wait_async().await.unwrap().json().unwrap();
+    use base64::Engine;
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(chunk["data"].as_str().unwrap())
+            .unwrap(),
+        bytes[..64 * 1024]
+    );
+    assert_eq!(stored.bytes, bytes.len() as u64);
+    std::fs::write(&source, b"changed source").unwrap();
+    let mut received = Vec::new();
+    loop {
+        let block = store
+            .files
+            .0
+            .read(
+                "owner".into(),
+                stored.file_id.clone(),
+                received.len() as u64,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            block.len() <= 64 * 1024,
+            "Each file read must fit the data-face budget"
+        );
+        if block.is_empty() {
+            break;
+        }
+        received.extend(block);
+    }
+    assert_eq!(
+        received, bytes,
+        "Import preserves its accepted bytes after the source changes"
+    );
+    assert!(
+        store
+            .files
+            .0
+            .read(
+                "other".into(),
+                stored.file_id.clone(),
+                0,
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    std::fs::write(&source, vec![0; bytes.len() + 1]).unwrap();
+    let failure = store
+        .files
+        .0
+        .import(
+            "owner".into(),
+            "large.bin".into(),
+            source.to_str().unwrap().into(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, SessionFileErrorCode::TooLarge);
+    assert_eq!(home.entries(), vec![stored.file_id]);
+    store.consumer.shutdown().await.unwrap();
+    store.root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn model_materializes_user_and_tool_images_without_mutating_history() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use dim_agent_types::*;
+    let home = Home::new();
+    let store = Store::mount(&home, true).await;
+    store.session("owner").await;
+    let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==").unwrap();
+    let stored = store
+        .files
+        .0
+        .put(
+            "owner".into(),
+            "image.png".into(),
+            bytes.clone(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let source = ImageSource {
+        source_type: ImageSourceType::File,
+        media_type: "image/png".into(),
+        file_id: Some(stored.file_id.clone()),
+        data: None,
+        url: None,
+    };
+    let mut request = ModelRequest::new(
+        "provider",
+        "model",
+        vec![Message {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                MessagePart::Image {
+                    source: source.clone(),
+                },
+                MessagePart::ToolResult {
+                    tool_use_id: "tool-1".into(),
+                    content: ToolContent::Blocks(vec![
+                        ContentBlock::Text {
+                            text: "caption".into(),
+                        },
+                        ContentBlock::Image { source },
+                    ]),
+                    structured_content: None,
+                    is_error: None,
+                },
+            ]),
+        }],
+    );
+    request.metadata = Some(RequestMetadata {
+        session_id: Some("owner".into()),
+        ..Default::default()
+    });
+    let request = Arc::new(request);
+    let original = serde_json::to_value(&request).unwrap();
+    let rendered = dim_agent_capabilities::session_files::materialize(
+        &request,
+        Some(&store.files),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let rendered = serde_json::to_value(rendered).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), original);
+    let parts = rendered["messages"][0]["content"].as_array().unwrap();
+    for image in [&parts[0]["source"], &parts[1]["content"][1]["source"]] {
+        assert_eq!(image["type"], "base64");
+        assert_eq!(
+            STANDARD.decode(image["data"].as_str().unwrap()).unwrap(),
+            bytes
+        );
+        assert!(image.get("fileId").is_none());
+    }
+    assert_eq!(parts[1]["tool_use_id"], "tool-1");
+    assert_eq!(parts[1]["content"][0]["text"], "caption");
+    store.consumer.shutdown().await.unwrap();
+    store.root.shutdown().await.unwrap();
+    drop(store);
+    let restored_home = Home::new();
+    std::fs::copy(home.database(), restored_home.database()).unwrap();
+    let directory = restored_home.files().join(&stored.file_id);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::copy(&stored.path, directory.join("image.png")).unwrap();
+    let restored = Store::mount(&restored_home, true).await;
+    let request: Arc<ModelRequest> = serde_json::from_value(original).unwrap();
+    let recovered = dim_agent_capabilities::session_files::materialize(
+        &request,
+        Some(&restored.files),
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(recovered).unwrap(),
+        rendered,
+        "A closed native store and its owned files restore the same images in a new home"
+    );
+    restored.consumer.shutdown().await.unwrap();
+    restored.root.shutdown().await.unwrap();
+}

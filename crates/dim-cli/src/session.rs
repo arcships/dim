@@ -650,7 +650,8 @@ async fn wait_turn(
             }
             None
         }
-        Some(Submission::Message(user)) => {
+        Some(Submission::Message(mut user)) => {
+            crate::images::import(client, session_id, &mut user.content).await?;
             let mut params = json!({"sessionId":session_id,"branchId":"main","submissionId":uuid::Uuid::new_v4().to_string(),"mode":"queue"});
             match user.content.as_slice() {
                 [ContentBlock::Text { text }] => params["text"] = json!(text),

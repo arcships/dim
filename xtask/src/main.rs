@@ -214,7 +214,7 @@ async fn configured_agent()
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))));
         dim_agent_aimux::install(&mut builder);
-        builder.plugin(|_| Ok(Box::new(AimuxPlugin)));
+        builder.plugin(|_| Ok(Box::new(AimuxPlugin::default())));
         builder.plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
         (
             MinimalHost::start(&builder).await?,

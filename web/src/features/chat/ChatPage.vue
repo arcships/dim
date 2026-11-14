@@ -351,7 +351,7 @@ async function fork(): Promise<void> {
         </UCollapsible>
       </div>
     </div>
-    <TimelineView
+    <TimelineView :session-id="sessionId"
       :rows="view.rows"
       :earlier="view.earlier"
       :loading-earlier="view.loadingEarlier"

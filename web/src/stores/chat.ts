@@ -7,6 +7,7 @@ import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
 import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
+import { readUploadedImage } from "../rpc/read"
 import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
 import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
@@ -652,12 +653,25 @@ export const useChatStore = defineStore("chat", () => {
   async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }): Promise<void> {
     let body = text
     for (const paste of attachments.pastes) {
-      const path = await client().call("attachment.put", { sessionId, text: paste }, readAttachmentPath)
+      const form = new FormData()
+      form.append("file", new Blob([paste], { type: "text/plain" }), "paste.txt")
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files`, { method: "POST", body: form })
+      if (!response.ok) throw new Error(`Attachment upload failed (${response.status})`)
+      const path = readAttachmentPath(await response.json())
       body = `${body}${body === "" ? "" : "\n"}[Pasted text: ${path} (${paste.split("\n").length} lines)]`
+    }
+    const images = []
+    for (const file of attachments.images) {
+      const form = new FormData()
+      form.append("file", file)
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/files?image=true`, { method: "POST", body: form })
+      if (!response.ok) throw new Error(`Image upload failed (${response.status})`)
+      const uploaded: unknown = await response.json()
+      images.push({ type: "image", source: readUploadedImage(uploaded) })
     }
     const params: Record<string, unknown> = { sessionId, branchId, submissionId: crypto.randomUUID(), mode: "queue" }
     if (attachments.images.length === 0) params.text = body
-    else params.user = { content: [...(body === "" ? [] : [{ type: "text", text: body }]), ...attachments.images] }
+    else params.user = { content: [...(body === "" ? [] : [{ type: "text", text: body }]), ...images] }
     await client().call("session.submit", params, readAck)
   }
 

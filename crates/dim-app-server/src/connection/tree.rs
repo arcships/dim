@@ -53,6 +53,45 @@ impl Connection {
         // it made valid would be written and titled after all.
         data.validate()
             .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
+        if let Some(user) = &data.user {
+            let count = user
+                .content
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image { .. }))
+                .count();
+            if count > 20 {
+                return Err(RpcError::invalid("At most 20 images may be submitted"));
+            }
+            for block in &user.content {
+                if let ContentBlock::Image { source } = block
+                    && source.source_type == dim_agent_types::ImageSourceType::File
+                {
+                    let file_id = source
+                        .file_id
+                        .clone()
+                        .ok_or_else(|| RpcError::invalid("Image file id is missing"))?;
+                    if source.data.is_some() || source.url.is_some() {
+                        return Err(RpcError::invalid(
+                            "A file image carries only a file reference",
+                        ));
+                    }
+                    let files = rpc
+                        .ctx
+                        .get::<dim_agent_capabilities::host::SessionFilesHost>()
+                        .ok_or_else(|| RpcError::invalid("Session file service is unavailable"))?;
+                    files
+                        .0
+                        .read(
+                            params.session_id.clone(),
+                            file_id,
+                            0,
+                            rpc.unloading.child_token(),
+                        )
+                        .await
+                        .map_err(|e| RpcError::invalid(e.to_string()))?;
+                }
+            }
+        }
         let checked = self
             .submit_check(
                 rpc,

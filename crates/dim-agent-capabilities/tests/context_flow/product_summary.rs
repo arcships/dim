@@ -256,6 +256,7 @@ fn product_contributions_preserve_the_complete_request_counting_contract() {
     request.system = Some(Arc::new(SystemPrompt::Text("system 中\n\"".into())));
     request.tools = Some(Arc::new(vec![tool]));
     let image = ImageSource {
+        file_id: None,
         source_type: ImageSourceType::Base64,
         media_type: "image/png".into(),
         data: Some("payload".repeat(10_000)),

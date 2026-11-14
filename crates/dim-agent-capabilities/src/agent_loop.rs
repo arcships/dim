@@ -148,6 +148,7 @@ pub struct AgentLoop {
     guide: Arc<crate::prompt_guide::GuideEntries>,
     /// This branch's timeline id, which selects the entries in force.
     branch: String,
+    session_id: String,
     /// Compaction is bound: budget recovery and manual steps run.
     policy: Option<ContextPolicy>,
     tasks: TaskTracker,
@@ -1226,7 +1227,7 @@ impl AgentLoop {
                     streamed.prompt.clone(),
                 );
                 let history = prefix.messages(entries);
-                let settings = match &configuration {
+                let mut settings = match &configuration {
                     Some(data) => crate::host::ModelSettings {
                         provider_id: data.settings.provider_id.clone(),
                         model_id: data.settings.model_id.clone(),
@@ -1266,6 +1267,7 @@ impl AgentLoop {
                         settings
                     }
                 };
+                settings.metadata.get_or_insert_default().session_id = Some(owner.session_id.clone());
                 Ok((ContextPrepareData {
                     turn_id: turn_id.clone(),
                     request_id: request_id.clone(),
@@ -1852,6 +1854,7 @@ impl DynPlugin for LoopPlugin {
                 preparation: ctx.require_at(&self.preparation)?,
                 guide,
                 branch: identity.branch_id.clone(),
+                session_id: identity.session_id.clone(),
                 policy,
                 tasks: TaskTracker::new(),
                 lifecycle: ctx.cancellation_token(),

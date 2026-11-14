@@ -826,6 +826,7 @@ impl McpServer {
                     rmcp::model::ContentBlock::Text(text) => ContentBlock::Text { text: text.text },
                     rmcp::model::ContentBlock::Image(image) => ContentBlock::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: image.mime_type,
                             data: Some(image.data),

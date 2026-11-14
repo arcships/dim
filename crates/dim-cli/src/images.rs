@@ -14,10 +14,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The most base64-encoded image data one submission may carry: the
-/// transport frame, not an image limit.
-const MAX_ENCODED_FRAME: usize = 16 * 1024 * 1024;
-
 /// An image made acceptable to a model: the block to send and the sizes its
 /// marker names.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +40,7 @@ impl Attached {
     ) -> Self {
         Self {
             source: ImageSource {
+                file_id: None,
                 source_type: ImageSourceType::Base64,
                 media_type: image.media_type.into(),
                 data: Some(STANDARD.encode(&image.bytes)),
@@ -122,7 +119,9 @@ pub fn load(paths: &[PathBuf]) -> Result<Loaded> {
         images: Vec::new(),
         notes: Vec::new(),
     };
-    let mut encoded_size = 0;
+    if paths.len() > 20 {
+        return Err("At most 20 images are allowed per submission".into());
+    }
     for path in paths {
         let item =
             file(path).map_err(|error| format!("Cannot use image {}: {error}", path.display()))?;
@@ -135,10 +134,6 @@ pub fn load(paths: &[PathBuf]) -> Result<Loaded> {
         };
         if let Some(note) = scaled_note(path, &image) {
             loaded.notes.push(note);
-        }
-        encoded_size += image.source.data.as_ref().expect("local image data").len();
-        if encoded_size > MAX_ENCODED_FRAME {
-            return Err("Images exceed 16 MiB after base64 encoding".into());
         }
         loaded.images.push(image);
     }
@@ -315,4 +310,35 @@ fn image_extension(path: &Path) -> bool {
                 .to_str()
                 .is_some_and(|s| matches!(s.to_ascii_lowercase().as_str(), "svg" | "heic" | "heif"))
     })
+}
+
+/// Imports the accepted draft image bytes before submitting their references.
+pub async fn import(
+    client: &mut crate::client::Client,
+    session: &str,
+    blocks: &mut [ContentBlock],
+) -> crate::Result<()> {
+    for block in blocks {
+        let ContentBlock::Image { source } = block else {
+            continue;
+        };
+        if source.source_type != ImageSourceType::Base64 {
+            continue;
+        }
+        let bytes = STANDARD.decode(source.data.as_deref().ok_or("Image data is missing")?)?;
+        let mut file = tempfile::NamedTempFile::new()?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        #[derive(serde::Deserialize)]
+        struct Imported {
+            image: ImageSource,
+        }
+        let imported: Imported = client
+            .typed(
+                "attachment.import",
+                serde_json::json!({"sessionId":session,"path":file.path(),"image":true}),
+            )
+            .await?;
+        *source = imported.image;
+    }
+    Ok(())
 }

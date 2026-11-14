@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, useId, watch } from "vue"
+import { computed, nextTick, onMounted, onUnmounted, ref, useId, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import type { DraftAttachments, FileCandidate, ImageBlock, ModelId, PermissionPreset, PermissionPolicy } from "../../rpc/protocol"
+import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy } from "../../rpc/protocol"
 import { linkMentions, mentionTrigger, type FileMention, type MentionTrigger } from "../../mentions"
 import { useModelsStore } from "../../stores/models"
 import { useSessionsStore } from "../../stores/sessions"
@@ -90,7 +90,7 @@ const activeIndex = ref(0)
 const INLINE_PASTE = 16 * 1024
 const MAX_PASTE = 10 * 1024 * 1024
 const MAX_IMAGES = 20
-const images = ref<Array<{ id: number; url: string; block: ImageBlock }>>([])
+const images = ref<Array<{ id: number; url: string; file: File }>>([])
 const pastes = ref<Array<{ id: number; text: string }>>([])
 let attachmentSeq = 0
 
@@ -131,23 +131,18 @@ function resize(): void {
   element.style.height = `${Math.min(element.scrollHeight, 300)}px`
 }
 
-function readImage(file: File): Promise<{ url: string; block: ImageBlock }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const url = String(reader.result)
-      resolve({ url, block: { type: "image", source: { type: "base64", mediaType: file.type, data: url.slice(url.indexOf(",") + 1) } } })
-    }
-    reader.onerror = () => reject(reader.error ?? new Error(t("composer.imageReadFailed")))
-    reader.readAsDataURL(file)
-  })
+function readImage(file: File): { url: string; file: File } {
+  return { url: URL.createObjectURL(file), file }
 }
+
+onUnmounted(() => images.value.forEach((image) => URL.revokeObjectURL(image.url)))
 
 async function addImages(files: File[]): Promise<void> {
   for (const file of files) {
     try {
-      const image = await readImage(file)
+      const image = readImage(file)
       if (images.value.length >= MAX_IMAGES) {
+        URL.revokeObjectURL(image.url)
         error.value = t("composer.imageLimit")
         return
       }
@@ -191,6 +186,7 @@ function onDrop(event: DragEvent): void {
 }
 
 function removeImage(id: number): void {
+  images.value.filter((image) => image.id === id).forEach((image) => URL.revokeObjectURL(image.url))
   images.value = images.value.filter((image) => image.id !== id)
 }
 
@@ -296,8 +292,9 @@ async function submit(): Promise<void> {
       const sentMentions = fileMentions.value
       const sentImages = images.value
       const sentPastes = pastes.value
-      await props.send(linkMentions(message, sentMentions), { images: sentImages.map((image) => image.block), pastes: sentPastes.map((paste) => paste.text) })
+      await props.send(linkMentions(message, sentMentions), { images: sentImages.map((image) => image.file), pastes: sentPastes.map((paste) => paste.text) })
       fileMentions.value = fileMentions.value.filter((mention) => !sentMentions.includes(mention))
+      sentImages.forEach((image) => URL.revokeObjectURL(image.url))
       images.value = images.value.filter((image) => !sentImages.includes(image))
       pastes.value = pastes.value.filter((paste) => !sentPastes.includes(paste))
     }

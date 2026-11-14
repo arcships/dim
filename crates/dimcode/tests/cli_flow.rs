@@ -2091,6 +2091,19 @@ fn image_fixture(format: image::ImageFormat, width: u32, height: u32) -> Vec<u8>
     bytes.into_inner()
 }
 
+fn import_image(wire: &mut Wire, media: &str) -> (Value, Vec<u8>) {
+    let request = wire.read("attachment.import");
+    assert_eq!(request["params"]["image"], true);
+    let bytes = fs::read(request["params"]["path"].as_str().unwrap()).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let source = json!({"type":"file","fileId":id,"mediaType":media});
+    wire.reply(
+        &request,
+        json!({"attachmentId":id,"path":"/owned/image","bytes":bytes.len(),"image":source}),
+    );
+    (source, bytes)
+}
+
 /// Deterministic RGB noise of `width`×`height` pixels.
 fn noise_rgb(width: u32, height: u32) -> Vec<u8> {
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
@@ -2160,7 +2173,6 @@ fn noise_png(width: u32, height: u32) -> Vec<u8> {
 
 #[test]
 fn exec_scales_a_large_photo_and_reports_both_sizes() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     // Quality-100 noise over the raw bytes that fit the base64 limit, while a
     // debug-build decode and scale stay well inside the harness patience.
@@ -2174,16 +2186,16 @@ fn exec_scales_a_large_photo_and_reports_both_sizes() {
     fs::write(&photo, &bytes).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
+        assert_eq!(image["source"], source);
         assert_eq!(image["source"]["mediaType"], "image/jpeg");
-        let sent = STANDARD
-            .decode(image["source"]["data"].as_str().unwrap())
-            .unwrap();
+
         assert_eq!(&sent[..3], b"\xff\xd8\xff");
         assert!(
             base64_len(sent.len() as u64) <= MAX_BASE64_BYTES,
@@ -2236,7 +2248,6 @@ fn exec_scales_a_large_photo_and_reports_both_sizes() {
 /// screenshot is now lossy, so exec says the type changed.
 #[test]
 fn exec_reports_a_reencode_that_keeps_the_size() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let bytes = noise_png(1500, 1500);
     assert!(
@@ -2248,16 +2259,16 @@ fn exec_reports_a_reencode_that_keeps_the_size() {
     fs::write(&shot, &bytes).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
+        assert_eq!(image["source"], source);
         assert_eq!(image["source"]["mediaType"], "image/jpeg");
-        let sent = STANDARD
-            .decode(image["source"]["data"].as_str().unwrap())
-            .unwrap();
+
         assert_eq!(&sent[..3], b"\xff\xd8\xff");
         let sent = image::load_from_memory(&sent).unwrap();
         assert_eq!((sent.width(), sent.height()), (1500, 1500));
@@ -2298,13 +2309,16 @@ fn exec_reports_a_photo_turned_upright_at_the_same_size() {
     fs::write(&photo, oriented_jpeg(40, 20, 3)).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
+        assert_eq!(image["source"], source);
         assert_eq!(image["source"]["mediaType"], "image/jpeg");
+        assert!(image::load_from_memory(&sent).is_ok());
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
         wire.reply(&idle, json!({"sequence":30}));
@@ -2336,21 +2350,20 @@ fn exec_reports_a_photo_turned_upright_at_the_same_size() {
 /// result keeps the size too: exec still says the encoding changed.
 #[test]
 fn exec_reports_a_quarter_turn_at_the_same_size() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let photo = home.0.join("photo.jpg");
     fs::write(&photo, oriented_jpeg(40, 20, 6)).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
-        let sent = STANDARD
-            .decode(image["source"]["data"].as_str().unwrap())
-            .unwrap();
+        assert_eq!(image["source"], source);
+
         let sent = image::load_from_memory(&sent).unwrap();
         assert_eq!((sent.width(), sent.height()), (20, 40));
         wire.reply(&submit, json!({"event":{}}));
@@ -2384,7 +2397,6 @@ fn exec_reports_a_quarter_turn_at_the_same_size() {
 /// it is re-encoded at quality 85, again without a size or type change.
 #[test]
 fn exec_reports_a_jpeg_that_fits_only_after_the_reencode() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let bytes = noise_jpeg(1500, 1500);
     assert!(
@@ -2396,16 +2408,16 @@ fn exec_reports_a_jpeg_that_fits_only_after_the_reencode() {
     fs::write(&photo, &bytes).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
+        assert_eq!(image["source"], source);
         assert_eq!(image["source"]["mediaType"], "image/jpeg");
-        let sent = STANDARD
-            .decode(image["source"]["data"].as_str().unwrap())
-            .unwrap();
+
         let sent = image::load_from_memory(&sent).unwrap();
         assert_eq!((sent.width(), sent.height()), (1500, 1500));
         wire.reply(&submit, json!({"event":{}}));
@@ -2460,13 +2472,16 @@ fn exec_reports_the_first_frame_of_an_animation() {
     fs::write(&animation, &gif).unwrap();
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let (source, sent) = import_image(wire, "image/jpeg");
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
         let image = content
             .iter()
             .find(|block| block["type"] == "image")
             .expect("the request carries the image");
+        assert_eq!(image["source"], source);
         assert_eq!(image["source"]["mediaType"], "image/jpeg");
+        assert!(image::load_from_memory(&sent).is_ok());
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
         wire.reply(&idle, json!({"sequence":30}));
@@ -2551,6 +2566,14 @@ fn exec_images_preserve_format_bytes_order_and_invoking_directory() {
         expected.extend(images);
         let daemon = home.daemon(move |wire| {
             wire.start(source == "prompt");
+            for block in &mut expected {
+                if block["type"] == "image" {
+                    let (source, bytes) =
+                        import_image(wire, block["source"]["mediaType"].as_str().unwrap());
+                    assert_eq!(STANDARD.encode(bytes), block["source"]["data"]);
+                    block["source"] = source;
+                }
+            }
             let submit = wire.read("session.submit");
             assert_eq!(submit["params"]["user"]["content"], json!(expected));
             assert!(submit["params"].get("text").is_none());
@@ -2684,53 +2707,43 @@ fn invalid_exec_images_fail_before_connecting_or_creating_home() {
 }
 
 #[test]
-fn exec_images_check_the_combined_encoded_frame_before_sending() {
-    // A kept image encodes to at most MAX_BASE64_BYTES, so four of them
-    // exceed the 16 MiB request frame; one raw byte over the fit is
-    // re-encoded and fits.
+fn exec_images_over_the_old_frame_limit_submit_as_references() {
     let fits_raw = (MAX_BASE64_BYTES / 4 * 3) as usize;
-    assert_eq!(base64_len(fits_raw as u64), MAX_BASE64_BYTES);
-    for (size, refused) in [(fits_raw, true), (fits_raw + 1024 * 1024, false)] {
+    for size in [fits_raw, fits_raw + 1024 * 1024] {
         let home = Home::new();
         let mut png = image_fixture(image::ImageFormat::Png, 1, 1);
         png.resize(size, 0);
         let image = home.0.join("large.png");
         fs::write(&image, png).unwrap();
-        let daemon = if refused {
-            fs::remove_dir_all(home.0.join("rust")).unwrap();
-            None
-        } else {
-            Some(home.daemon(|wire| {
-                wire.start(false);
-                let submit = wire.read("session.submit");
-                wire.reply(&submit, json!({"event":{}}));
-                let idle = wire.read("session.idle");
-                wire.reply(&idle, json!({"sequence":30}));
-                wire.detach();
-            }))
-        };
+        let daemon = home.daemon(|wire| {
+            wire.start(false);
+            let expected: Vec<_> = (0..4)
+                .map(|_| {
+                    let (source, bytes) = import_image(wire, "image/png");
+                    assert!(base64_len(bytes.len() as u64) <= MAX_BASE64_BYTES);
+                    json!({"type":"image","source":source})
+                })
+                .collect();
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["user"]["content"], json!(expected));
+            assert!(submit.to_string().len() < 2048);
+            wire.reply(&submit, json!({"event":{}}));
+            let idle = wire.read("session.idle");
+            wire.reply(&idle, json!({"sequence":30}));
+            wire.detach();
+        });
         let mut command = home.command();
         command.arg("exec").stdin(Stdio::null());
         for _ in 0..4 {
             command.arg("--image").arg(&image);
         }
         let output = command.output().unwrap();
-        if let Some(daemon) = daemon {
-            daemon.join().unwrap();
-        } else {
-            assert!(!home.0.join("rust").exists());
-        }
-        if refused {
-            assert_eq!(output.status.code(), Some(1));
-            assert!(String::from_utf8_lossy(&output.stderr).contains("16 MiB"));
-            assert!(output.stdout.is_empty());
-        } else {
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        daemon.join().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
@@ -4101,7 +4114,6 @@ fi
 
 #[test]
 fn interactive_file_sources_preserve_order_bytes_and_the_local_resume_base() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let local = home.0.join("local");
     let invoking = home.0.join("invoking");
@@ -4119,21 +4131,35 @@ fn interactive_file_sources_preserve_order_bytes_and_the_local_resume_base() {
     let other = second.clone();
     let daemon = home.daemon(move |wire| {
         wire.start(true);
+        let (first_image, first_bytes) = import_image(wire, "image/png");
+        let (second_image, second_bytes) = import_image(wire, "image/jpeg");
+        assert_eq!(first_bytes, png);
+        assert_eq!(second_bytes, jpeg);
         let submit = wire.read("session.submit");
-        assert_eq!(submit["params"]["user"]["content"], json!([
-            {"type":"text","text":"Compare "},
-            {"type":"image","source":{"type":"base64","mediaType":"image/png","data":STANDARD.encode(png)}},
-            {"type":"text","text":expected_note.to_str().unwrap()},
-            {"type":"image","source":{"type":"base64","mediaType":"image/jpeg","data":STANDARD.encode(jpeg)}},
-            {"type":"text","text":" done"}
-        ]));
+        assert_eq!(
+            submit["params"]["user"]["content"],
+            json!([
+                {"type":"text","text":"Compare "},
+                {"type":"image","source":first_image},
+                {"type":"text","text":expected_note.to_str().unwrap()},
+                {"type":"image","source":second_image},
+                {"type":"text","text":" done"}
+            ])
+        );
         wire.reply(&submit, json!({"event":{}}));
-        let idle = wire.read("session.idle"); wire.reply(&idle, json!({"sequence":25}));
-        for text in [expected_note.to_str().unwrap().to_owned(), "prefix wrong.txt suffix".into(), "https://example.invalid/image.png".into(), "file://remote/tmp/photo.png".into()] {
+        let idle = wire.read("session.idle");
+        wire.reply(&idle, json!({"sequence":25}));
+        for text in [
+            expected_note.to_str().unwrap().to_owned(),
+            "prefix wrong.txt suffix".into(),
+            "https://example.invalid/image.png".into(),
+            "file://remote/tmp/photo.png".into(),
+        ] {
             let submit = wire.read("session.submit");
             assert_eq!(submit["params"]["text"], text);
             wire.reply(&submit, json!({"event":{}}));
-            let idle = wire.read("session.idle"); wire.reply(&idle, json!({"sequence":25}));
+            let idle = wire.read("session.idle");
+            wire.reply(&idle, json!({"sequence":25}));
         }
         assert!(other.exists());
         wire.detach();
@@ -4178,7 +4204,6 @@ fn interactive_file_sources_preserve_order_bytes_and_the_local_resume_base() {
 
 #[test]
 fn interactive_file_groups_reject_atomically_and_marker_removal_releases_capacity() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     fs::write(home.0.join("note.md"), "note").unwrap();
     let broken = format!("broken-{}.png", "x".repeat(100));
@@ -4194,14 +4219,22 @@ fn interactive_file_groups_reject_atomically_and_marker_removal_releases_capacit
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
         wire.reply(&idle, json!({"sequence":25}));
+        let expected: Vec<_> = (0..20)
+            .map(|index| {
+                let (source, bytes) = import_image(
+                    wire,
+                    if index == 19 {
+                        "image/gif"
+                    } else {
+                        "image/png"
+                    },
+                );
+                assert_eq!(bytes, if index == 19 { &gif } else { &png }.clone());
+                json!({"type":"image","source":source})
+            })
+            .collect();
         let submit = wire.read("session.submit");
-        let content = submit["params"]["user"]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 20);
-        for part in &content[..19] {
-            assert_eq!(part["source"]["data"], STANDARD.encode(&png));
-        }
-        assert_eq!(content[19]["source"]["mediaType"], "image/gif");
-        assert_eq!(content[19]["source"]["data"], STANDARD.encode(gif));
+        assert_eq!(submit["params"]["user"]["content"], json!(expected));
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
         wire.reply(&idle, json!({"sequence":25}));
@@ -4697,9 +4730,7 @@ fn interactive_paste_encoding_rejection_keeps_confirmed_items_editable() {
 }
 
 #[test]
-fn a_line_draft_of_images_over_the_frame_is_refused_and_kept() {
-    // A kept image encodes to at most MAX_BASE64_BYTES; four exceed the
-    // 16 MiB request frame, and deleting one leaves three that fit.
+fn a_line_draft_of_images_over_the_old_frame_submits_as_references() {
     let fits_raw = (MAX_BASE64_BYTES / 4 * 3) as usize;
     assert_eq!(base64_len(fits_raw as u64), MAX_BASE64_BYTES);
     let home = Home::new();
@@ -4713,9 +4744,16 @@ fn a_line_draft_of_images_over_the_frame_is_refused_and_kept() {
     }
     let daemon = home.daemon(|wire| {
         wire.start(false);
+        let expected: Vec<_> = (0..4)
+            .map(|_| {
+                let (source, bytes) = import_image(wire, "image/png");
+                assert_eq!(bytes.len(), (MAX_BASE64_BYTES / 4 * 3) as usize);
+                json!({"type":"image","source":source})
+            })
+            .collect();
         let submit = wire.read("session.submit");
         let content = submit["params"]["user"]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 3, "{content:?}");
+        assert_eq!(content, &expected);
         assert!(content.iter().all(|block| block["type"] == "image"));
         wire.reply(&submit, json!({"event":{}}));
         let idle = wire.read("session.idle");
@@ -4729,8 +4767,6 @@ fn a_line_draft_of_images_over_the_frame_is_refused_and_kept() {
     }
     terminal.until("[Image 4: large3.png]");
     terminal.write(b"\n");
-    terminal.until("Draft retained");
-    terminal.write(b"\x7f\n");
     terminal.editor();
     terminal.write(b"/exit\n");
     assert!(terminal.wait().success());
@@ -6415,7 +6451,6 @@ fn tui_shell_session_creation_failure_settles_with_the_no_session_notice() {
 
 #[test]
 fn tui_pasted_images_and_long_text_submit_as_user_content() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let image = home.0.join("shot.png");
     let bytes = image_fixture(image::ImageFormat::Png, 3, 2);
@@ -6436,11 +6471,13 @@ fn tui_pasted_images_and_long_text_submit_as_user_content() {
         let put = wire.read("attachment.put");
         assert_eq!(put["params"], json!({"sessionId":"session","text":expected_long}));
         wire.reply(&put, json!({"attachmentId":"stored","path":"/files/paste.txt","bytes":16*1024+1}));
+        let (source, imported) = import_image(wire, "image/png");
+        assert_eq!(imported, bytes);
         let submit = wire.read("session.submit");
         assert!(submit["params"].get("text").is_none());
         assert_eq!(submit["params"]["user"]["content"], json!([
             {"type":"text","text":"look "},
-            {"type":"image","source":{"type":"base64","mediaType":"image/png","data":STANDARD.encode(&bytes)}},
+            {"type":"image","source":source},
             {"type":"text","text":" [Pasted text: /files/paste.txt (1 lines)]"},
         ]));
         wire.reply(&submit, json!({"event":{}}));
@@ -7701,13 +7738,22 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
     let conversation: Value = serde_json::from_slice(&exported.stdout).unwrap();
     assert_eq!(conversation["sessionId"], session);
     assert_eq!(conversation["branchId"], "main");
-    assert!(conversation["events"].as_array().unwrap().iter().any(|event| {
-        event["type"] == "input" && event["name"] == "message"
-            && event["data"]["user"]["content"] == json!([
-                {"type":"text","text":"continue"},
-                {"type":"image","source":{"type":"base64","mediaType":"image/png","data":image_data}}
-            ])
-    }));
+    assert!(
+        conversation["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["type"] == "input"
+                    && event["name"] == "message"
+                    && event["data"]["user"]["content"][0]
+                        == json!({"type":"text","text":"continue"})
+                    && event["data"]["user"]["content"][1]["source"]["type"] == "file"
+                    && event["data"]["user"]["content"][1]["source"]["fileId"]
+                        .as_str()
+                        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+            })
+    );
     assert!(
         conversation["events"]
             .as_array()
@@ -7737,11 +7783,23 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
         1
     );
     assert!(!conversation.to_string().contains("cli-private-marker"));
-    assert!(conversation["events"].as_array().unwrap().iter().any(|event| event["type"] == "input" && event["name"] == "message" && event["data"]["user"]["content"] == json!([
-        {"type":"text","text":"selected "},
-        {"type":"image","source":{"type":"base64","mediaType":"image/png","data":image_data}},
-        {"type":"text","text":reference.to_str().unwrap()}
-    ])));
+    assert!(
+        conversation["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                let content = &event["data"]["user"]["content"];
+                event["type"] == "input"
+                    && event["name"] == "message"
+                    && content[0] == json!({"type":"text","text":"selected "})
+                    && content[1]["source"]["type"] == "file"
+                    && content[1]["source"]["fileId"]
+                        .as_str()
+                        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+                    && content[2] == json!({"type":"text","text":reference.to_str().unwrap()})
+            })
+    );
     assert!(
         conversation["events"]
             .as_array()

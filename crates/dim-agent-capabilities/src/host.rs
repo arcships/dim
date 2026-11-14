@@ -1036,7 +1036,8 @@ pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 
 /// A Session file SessionStore stored. `path` is absolute on the Session's
 /// resource node and names the same bytes for the file's whole life.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoredSessionFile {
     pub file_id: String,
     pub path: std::path::PathBuf,
@@ -1062,6 +1063,40 @@ pub struct SessionFileError {
 /// The process service `sessionFiles`, provided by SessionStore: it stores a
 /// Session file and answers which artifacts a Session owns (ADR 013 D1).
 pub trait SessionFilesService: Send + Sync + 'static {
+    /// Imports an authorized local source into an immutable Session file.
+    fn import(
+        &self,
+        session_id: String,
+        name: String,
+        source: String,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>
+    {
+        let _ = (session_id, name, source, cancel);
+        Box::pin(async {
+            Err(SessionFileError {
+                code: SessionFileErrorCode::Invalid,
+                message: "File import is unavailable".into(),
+            })
+        })
+    }
+    /// Reads at most 64 KiB from an immutable file owned by the Session.
+    fn read(
+        &self,
+        session_id: String,
+        file_id: String,
+        offset: u64,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SessionFileError>> + Send + '_>> {
+        let _ = (session_id, file_id, offset, cancel);
+        Box::pin(async {
+            Err(SessionFileError {
+                code: SessionFileErrorCode::Invalid,
+                message: "File reading is unavailable".into(),
+            })
+        })
+    }
+
     /// Stores `content` once, read-only, as the file `name` owned by
     /// `session_id`. Cancellation takes effect until the file is committed;
     /// afterwards the reply stands.

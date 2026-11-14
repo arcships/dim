@@ -123,12 +123,14 @@ fn placeholder(source: &ImageSource, vision: bool) -> Option<&'static str> {
 
 /// A URL source, undecodable data or a format adapters do not accept (A10).
 fn sendable(source: &ImageSource) -> bool {
-    source.source_type == ImageSourceType::Base64
-        && FORMATS.contains(&source.media_type.as_str())
-        && source.data.as_deref().is_some_and(|data| {
-            !data.is_empty()
-                && base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .is_ok()
-        })
+    (source.source_type == ImageSourceType::File
+        && source.file_id.as_ref().is_some_and(|id| !id.is_empty()))
+        || source.source_type == ImageSourceType::Base64
+            && FORMATS.contains(&source.media_type.as_str())
+            && source.data.as_deref().is_some_and(|data| {
+                !data.is_empty()
+                    && base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .is_ok()
+            })
 }

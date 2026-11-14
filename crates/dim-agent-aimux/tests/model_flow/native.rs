@@ -78,7 +78,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
             .mount(&server)
             .await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         let connection = || {
             ModelConnection::Bedrock(BedrockModelConnection {
@@ -102,6 +102,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
                     },
                     MessagePart::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: "image/png".into(),
                             data: Some(IMAGE.into()),
@@ -318,6 +319,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
                     },
                     MessagePart::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Url,
                             media_type: "image/png".into(),
                             data: None,
@@ -416,7 +418,7 @@ async fn bedrock_unreadable_tool_delta_fails_the_turn_without_a_call() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new(
         "bedrock",
@@ -530,7 +532,7 @@ async fn bedrock_finishes_at_metadata_while_the_body_stays_open() {
             std::future::pending::<()>().await;
         });
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         let request = ModelRequest::new(
             "bedrock",
@@ -639,7 +641,7 @@ async fn xai_native_continuation_roundtrips_and_owner_releases_streams() {
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"visible\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
         .mount(&server).await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let connection = |protocol| {
         ModelConnection::Http(HttpModelConnection {
@@ -866,7 +868,7 @@ async fn xai_responses_content_parts_keep_their_blocks() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = ModelRequest::new("xai", "alias", vec![Message::text(Role::User, "start")]);
     let mut output = host
@@ -976,7 +978,7 @@ async fn explicit_preferences_reach_chat_and_responses_for_model_aliases() {
     ] {
         let server = NativeServer::start(kind).await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         for (tier, effort) in [
             (Some("priority"), Some("high")),
@@ -1048,7 +1050,7 @@ async fn explicit_preferences_reach_chat_and_responses_for_model_aliases() {
 async fn codex_request_profile_is_isolated_to_responses() {
     let server = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = || {
         let mut request = ModelRequest::new(
@@ -1173,7 +1175,7 @@ async fn codex_request_profile_is_isolated_to_responses() {
 async fn openai_chat_protocols_send_reasoning_models_the_rules_they_accept() {
     let server = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiCompatible] {
         for model_id in ["gpt-4o", "gpt-5", "o3"] {
@@ -1447,7 +1449,7 @@ async fn malformed_native_block_lifecycle_is_a_classified_failure() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let server = MockServer::start().await;
     let text_start =
@@ -1553,7 +1555,7 @@ async fn chat_reasoning_can_reopen_a_completed_segment_identity() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -1676,7 +1678,7 @@ async fn native_failures_carry_their_kind_and_a_safe_reason() {
     let responses = NativeServer::start("openai-responses").await;
     let anthropic = NativeServer::start("anthropic").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let error = invoke_failure(
@@ -1821,7 +1823,7 @@ async fn native_failures_carry_their_kind_and_a_safe_reason() {
 async fn native_http_statuses_and_codes_classify() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     for (prompt, status, kind) in [
@@ -1909,7 +1911,7 @@ async fn native_http_statuses_and_codes_classify() {
 async fn a_malformed_stream_body_is_a_malformed_response() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let error = invoke_failure(
@@ -1971,7 +1973,7 @@ async fn a_reset_after_headers_is_a_network_failure() {
     });
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let error = invoke_failure(
         &host,
@@ -2001,7 +2003,7 @@ async fn a_reset_after_headers_is_a_network_failure() {
 async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
     let responses = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let error = invoke_failure(
         &host,
@@ -2384,7 +2386,8 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
             session.input(InputMessageData {
                 user: Some(UserInput { content: vec![
                     ContentBlock::Text { text: "tool".into() },
-                    ContentBlock::Image { source: ImageSource { source_type: ImageSourceType::Base64, media_type: "image/png".into(), data: Some(IMAGE.into()), url: None } },
+                    ContentBlock::Image { source: ImageSource {
+            file_id: None, source_type: ImageSourceType::Base64, media_type: "image/png".into(), data: Some(IMAGE.into()), url: None } },
                 ] }),
                 mode: Some(InputMode::Queue),
                 ..Default::default()
@@ -2956,7 +2959,7 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
                 .mount(&server)
                 .await;
             let root = rutis::Ctx::root().unwrap();
-            root.plugin(AimuxPlugin).await.unwrap();
+            root.plugin(AimuxPlugin::default()).await.unwrap();
             let host = root.get::<ModelHost>().unwrap();
             let request = Arc::new(ModelRequest::new(
                 "local",
@@ -3367,7 +3370,7 @@ async fn native_bedrock_leaves_stored_chat_thinking_out_of_the_turn() {
             .mount(&server)
             .await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         // The history a Chat model leaves behind: thinking without data.
         let request = ModelRequest::new(
@@ -3456,6 +3459,7 @@ impl ToolDriver for ImageEcho {
                     },
                     ContentBlock::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: "image/png".into(),
                             data: Some(IMAGE.into()),
@@ -3651,6 +3655,7 @@ fn error_tool_result_request() -> ModelRequest {
                         },
                         ContentBlock::Image {
                             source: ImageSource {
+                                file_id: None,
                                 source_type: ImageSourceType::Base64,
                                 media_type: "image/png".into(),
                                 data: Some(IMAGE.into()),
@@ -3676,7 +3681,7 @@ async fn an_error_tool_result_image_keeps_the_flag_and_the_image() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let server = MockServer::start().await;
@@ -3820,7 +3825,7 @@ async fn a_native_stream_without_its_terminal_is_classified_and_not_retried() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let failure =
         invoke_failure(&host, ModelProtocol::Anthropic, server.uri(), "no-terminal").await;
@@ -3906,7 +3911,7 @@ async fn a_stored_summary_index_loads_and_continues() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = ModelRequest::new(
         "local",
@@ -3978,7 +3983,7 @@ async fn an_xai_chat_request_uses_the_compatible_chat_path() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new(
         "xai",
@@ -4041,7 +4046,7 @@ async fn an_alias_with_explicit_reasoning_and_temperature_is_unsupported() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new("local", "alias", vec![Message::text(Role::User, "hello")]);
     request.config = Some(
@@ -4104,7 +4109,7 @@ async fn chat_refusal_delta_is_visible_text() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -4167,7 +4172,7 @@ async fn responses_refusal_deltas_are_visible_text() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -4623,7 +4628,7 @@ async fn a_connection_reuses_one_tcp_connection_for_its_query_and_timeout() {
         .unwrap();
     let proxy = CountingProxy::start(target).await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     for _ in 0..2 {

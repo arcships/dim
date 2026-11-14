@@ -12,6 +12,7 @@ import TimelineWorkItemView from "./TimelineWorkItem.vue"
  * that expands into a left-railed list; a single item shows on its own.
  */
 const props = defineProps<{
+  sessionId?: string
   items: WorkItem[]
   expanded: boolean
   expandedItemIds: Record<string, boolean>
@@ -76,6 +77,7 @@ const activeLabel = computed(() => {
       </button>
       <div v-if="expanded" class="timeline-work-group-content">
         <TimelineWorkItemView
+          :session-id="sessionId"
           v-for="item in items"
           :key="item.id"
           :item="item"
@@ -85,6 +87,7 @@ const activeLabel = computed(() => {
       </div>
     </template>
     <TimelineWorkItemView
+          :session-id="sessionId"
       v-else-if="items[0]"
       :item="items[0]"
       :expanded="expandedItemIds[items[0].id] === true"

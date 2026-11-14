@@ -61,6 +61,10 @@
   },
   {
     "from": "dim-agent-attachments",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-agent-attachments",
     "to": "rutis"
   },
   {

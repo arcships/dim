@@ -470,6 +470,7 @@ fn build_model(
 }
 
 pub(crate) struct AimuxDriver {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
     /// The transport every connection without a proxy reuses, so their
     /// clients share one connection pool.
     transport: ReqwestFetch,
@@ -479,9 +480,13 @@ pub(crate) struct AimuxDriver {
     streams: Mutex<Vec<Weak<Mutex<Option<ModelStream>>>>>,
 }
 impl AimuxDriver {
-    pub fn new(generation: CancellationToken) -> Result<Arc<Self>, HostError> {
+    pub fn with_files(
+        generation: CancellationToken,
+        files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
+    ) -> Result<Arc<Self>, HostError> {
         let transport = ReqwestFetch::default();
         Ok(Arc::new(Self {
+            files,
             fetch: Arc::new(DimFetch {
                 transport: transport.clone(),
                 timeout: None,
@@ -577,6 +582,16 @@ impl ModelDriver for AimuxDriver {
                     "openai-codex requires the OpenAI Responses protocol",
                 ));
             }
+            let request = tokio::select! {
+                biased;
+                _ = self.generation.cancelled() => return Err(HostError::classified(
+                    HostErrorKind::OwnerClosed, "Aimux owner is closed",
+                )),
+                _ = cancel.cancelled() => return Err(HostError::Cancelled("Model invocation cancelled".into())),
+                result = dim_agent_capabilities::session_files::materialize(
+                    &request, self.files.as_deref(), &cancel,
+                ) => result?,
+            };
             let request::PreparedRequest {
                 mut options,
                 tool_names,

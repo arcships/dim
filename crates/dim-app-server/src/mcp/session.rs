@@ -185,6 +185,8 @@ fn usable(state: McpServerState) -> bool {
 
 /// Management view, without credentials, transport handles or registry access.
 pub struct McpSession {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
+    session_id: String,
     connections: super::McpOwner,
     entries: Mutex<BTreeMap<String, Published>>,
     names: Mutex<BTreeMap<String, PublishedTool>>,
@@ -427,6 +429,8 @@ impl ToolProvider for Sources {
 }
 
 pub struct McpSessionPlugin {
+    files: Key<dim_agent_capabilities::host::SessionFilesHost>,
+    identity: Key<dim_agent_runtime::SessionIdentity>,
     session: InstanceId,
     mcp: Key<McpSession>,
     directory: Key<McpService>,
@@ -438,6 +442,8 @@ pub struct McpSessionPlugin {
 impl McpSessionPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
+            files: names.key()?,
+            identity: names.key()?,
             session: names.instance(SESSION_GROUP)?,
             mcp: names.key()?,
             directory: names.key()?,
@@ -455,6 +461,7 @@ impl DynPlugin for McpSessionPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.directory.erase(),
+            self.identity.erase(),
             self.config.erase(),
             self.loader.erase(),
             self.lifecycle.erase(),
@@ -473,6 +480,8 @@ impl DynPlugin for McpSessionPlugin {
             let applied = directory.publication.applied();
             let stopped = ctx.cancellation_token();
             let owner = Arc::new(McpSession {
+                files: ctx.get_at(&self.files),
+                session_id: ctx.require_at(&self.identity)?.session_id.clone(),
                 connections: super::McpOwner::in_session(
                     ctx.clone(),
                     loader,
@@ -780,7 +789,7 @@ async fn discover(
                         let version = uuid::Uuid::new_v4().to_string();
                         let set = Arc::new(ToolSourceSet {
                             key: format!("mcp:{id}"), version: version.clone(),
-                            tools: tools.iter().filter(|tool| model_visible(tool)).map(|tool| contribution(&id, tool, connection.clone(), owner.stopped.clone())).collect(),
+                            tools: tools.iter().filter(|tool| model_visible(tool)).map(|tool| contribution(&id, tool, connection.clone(), owner.stopped.clone(), owner.files.clone(), owner.session_id.clone())).collect(),
                         });
                         owner.publish(&id, Some((set.clone(), connection.clone())), McpSourceState::Ready { version }, &cancel);
                         published = Some(set);
@@ -952,6 +961,8 @@ pub(super) fn contribution(
     tool: &McpTool,
     connection: Arc<McpConnection>,
     stopped: CancellationToken,
+    files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
+    session_id: String,
 ) -> Arc<ToolContribution> {
     let mut hash = Sha256::new();
     hash.update((id.len() as u64).to_be_bytes());
@@ -978,6 +989,8 @@ pub(super) fn contribution(
             }),
         },
         handler: Arc::new(McpToolHandler {
+            files,
+            session_id,
             server: id.to_owned(),
             connection,
             original: tool.name.clone(),
@@ -987,6 +1000,8 @@ pub(super) fn contribution(
 }
 
 struct McpToolHandler {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
+    session_id: String,
     server: String,
     connection: Arc<McpConnection>,
     original: String,
@@ -1037,7 +1052,18 @@ impl ToolHandler for McpToolHandler {
                     Err(HostError::Cancelled(error.to_string()))
                 }
                 Err(other) => Err(HostError::failed(other.to_string())),
-                Ok(result) => Ok(result),
+                Ok(mut result) => {
+                    if let Some(files) = &self.files {
+                        dim_agent_capabilities::session_files::store_result(
+                            files,
+                            &self.session_id,
+                            &mut result,
+                            &cancel,
+                        )
+                        .await?;
+                    }
+                    Ok(result)
+                }
             }
         })
     }

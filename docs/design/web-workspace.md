@@ -934,3 +934,28 @@ Compact: [Modal title] [Close]
          [Bound line selector]
          [Plugin ShadowRoot]
 ```
+
+## Session file HTTP API
+
+`POST /api/sessions/{sessionId}/files` accepts one `multipart/form-data` field
+named `file`; `?image=true` requests image recognition. It requires the Web cookie
+and an admitted same-origin header. The entry streams into a private temporary
+directory, then invokes [Attachments import](plugins/Attachments.md#file-import-and-read)
+with the received path. The reply is the attachment import reply.
+
+The raw file limit is 16 MiB, the multipart body limit 17 MiB, and a site admits
+four concurrent uploads. Each body chunk has a 30-second timeout; the complete
+operation has a 120-second deadline. Completion, failure and request cancellation
+drop the temporary directory. The server selects staging names. Client-provided
+paths never enter this API. Direct Web RPC path import is rejected.
+
+`GET /api/sessions/{sessionId}/files/{fileId}` requires the Web cookie and checks
+an Origin header when supplied. Session files checks ownership before a bounded
+stream is returned. Missing or foreign files return 404; responses are private
+and not cached. The image content type is sniffed from the stored bytes.
+
+The composer retains browser `File` objects and object-URL previews until the
+submission is accepted. It uploads first and submits returned image references.
+Failures retain the draft; removing an image, accepting a submission and unmounting
+release its preview URL. User and tool images in live or restored history use the
+authenticated file endpoint.

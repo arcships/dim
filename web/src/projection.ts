@@ -16,7 +16,7 @@ import type { Goal } from "./goal"
 import type { AskQuestion, ModelFailure, ModelId, ModelProgress, ProviderPresentation, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
-  | { kind: "user"; key: string; text: string; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number }
+  | { kind: "user"; key: string; text: string; images?: import("./rpc/protocol").ImageBlock[]; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; elapsedMs?: number }
   | { kind: "tool"; key: string; callId: string; name: string; input: Record<string, unknown>; pending: boolean; result?: ToolResult }
@@ -122,6 +122,7 @@ export class Projection {
             kind: "user",
             key: `user-${event.sequence}`,
             text: content.text,
+            ...(content.images === undefined ? {} : { images: content.images }),
             skills: content.skills,
             ...(content.hooks === undefined ? {} : { hooks: content.hooks }),
             at: event.createAt,

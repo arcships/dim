@@ -1,5 +1,17 @@
 # Rust 会话存储格式
 
+## v49: durable image references
+
+Image sources in inputs, tool results and model request content may contain
+`{"type":"file","mediaType":"image/png","fileId":"<uuid>"}`. The file ID
+uses the ownership and lifecycle contract of [Session files](session-files.md#9-interface).
+Image bytes are held by that owner; the Timeline records the reference.
+
+The v48→v49 startup upgrade changes the format marker and its constraint atomically.
+Existing content addresses and facts stay valid: their inline/URL variants remain
+readable by the storage content decoder. Legacy database import writes file references
+for imported image artifacts. Older daemons reject v49 before business reads or writes.
+
 ## v48: task titles
 
 [#1496](https://github.com/arcships/dim/issues/1496) adds an optional `title`

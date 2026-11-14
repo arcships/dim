@@ -203,12 +203,16 @@ impl WorkspaceTools {
             result = work => result,
             _ = link => unreachable!("the link never completes"),
         };
-        let result = match result {
+        let mut result = match result {
             Err(HostError::Cancelled(_)) if self.lifecycle.is_cancelled() => {
                 return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
             }
             result => result?,
         };
+        if let Some(owner) = &self.owner {
+            crate::session_files::store_result(owner, &self.session_id, &mut result, &combined)
+                .await?;
+        }
         self.register_output(&result).await?;
         Ok(result)
     }

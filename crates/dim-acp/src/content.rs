@@ -36,6 +36,7 @@ pub(crate) fn parse(blocks: Vec<acp::ContentBlock>, attachments: bool) -> Result
                     }
                     ContentBlock::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: image.mime_type,
                             data: Some(image.data),
@@ -78,6 +79,30 @@ pub(crate) async fn upload(rpc: &Rpc, session: &str, parts: Vec<Part>) -> Result
     let mut content = Vec::new();
     for part in parts {
         content.push(match part {
+            Part::Inline(ContentBlock::Image { source })
+                if source.source_type == ImageSourceType::Base64 =>
+            {
+                let bytes = STANDARD
+                    .decode(source.data.as_deref().ok_or_else(Error::invalid_params)?)
+                    .map_err(|_| Error::invalid_params())?;
+                let mut file =
+                    tempfile::NamedTempFile::new().map_err(|_| Error::internal_error())?;
+                std::io::Write::write_all(&mut file, &bytes)
+                    .map_err(|_| Error::internal_error())?;
+                #[derive(Deserialize)]
+                struct Imported {
+                    image: ImageSource,
+                }
+                let reply: Imported = rpc
+                    .typed(
+                        "attachment.import",
+                        json!({"sessionId":session,"path":file.path(),"image":true}),
+                    )
+                    .await?;
+                ContentBlock::Image {
+                    source: reply.image,
+                }
+            }
             Part::Inline(block) => block,
             Part::Attachment { uri, text } => {
                 let uploaded: Uploaded = rpc

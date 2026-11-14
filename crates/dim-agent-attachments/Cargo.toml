@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
+dim-agent-types.workspace = true
+serde_json.workspace = true
 dim-agent-capabilities.workspace = true
 dim-agent-runtime.workspace = true
 rutis.workspace = true
 serde.workspace = true
+
+tempfile = "3"
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"

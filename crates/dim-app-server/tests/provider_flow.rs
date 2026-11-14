@@ -359,7 +359,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
         root.plugin(ManagedProvidersPlugin);
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-        active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+        active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
         active(&root.plugin(provider_part(ProviderPlugin::new))).await;
         let provider = root.get::<ProviderService>().unwrap();
         let resolver = root.get::<ProviderConnectionResolver>().unwrap();
@@ -735,7 +735,7 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+    active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
     let plain = root.plugin(provider_part(ProviderPlugin::new));
     active(&plain).await;
     let provider = root.get::<ProviderService>().unwrap();
@@ -1029,7 +1029,7 @@ async fn an_undeclared_model_limit_is_refused_until_a_source_declares_it() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -1217,7 +1217,7 @@ async fn a_declared_output_limit_at_or_above_the_window_adopts_a_derived_allowan
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -1317,7 +1317,7 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -1646,7 +1646,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -1905,7 +1905,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -2183,7 +2183,7 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -2924,7 +2924,7 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
         active(&root.plugin(provider_part(ProviderPlugin::new))),
@@ -3043,7 +3043,7 @@ async fn connection_updates_list_the_new_endpoint_and_keep_bundled_models() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -3406,7 +3406,7 @@ async fn a_listing_that_collides_with_a_user_model_names_it_and_writes_nothing()
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -3667,7 +3667,7 @@ async fn a_disabled_provider_can_refresh_its_catalog_after_a_connection_change()
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -3943,7 +3943,7 @@ async fn object_kind_listings_classify_their_models_as_chat() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    root.plugin(dim_agent_aimux::AimuxPlugin);
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
         .await
@@ -4100,7 +4100,7 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+    active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
     active(&root.plugin(provider_part(ProviderPlugin::new))).await;
     let provider = root.get::<ProviderService>().unwrap();
     let resolver = root.get::<ProviderConnectionResolver>().unwrap();
@@ -4481,7 +4481,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
         root.plugin(ManagedProvidersPlugin);
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-        active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+        active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
         active(&root.plugin(provider_part(ProviderPlugin::new))).await;
         let provider = root.get::<ProviderService>().unwrap();
         let resolver = root.get::<ProviderConnectionResolver>().unwrap();
@@ -4948,7 +4948,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
     let sqlite = root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
     let provider_plugin = root.plugin(provider_part(ProviderPlugin::new));
-    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin);
+    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let captured = Arc::new(OnceLock::new());
     let capture = root.plugin(Capture::new(&names(), captured.clone()).unwrap());
     for plugin in [&files, &oauth, &sqlite, &provider_plugin, &aimux, &capture] {
@@ -5937,7 +5937,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(provider_part(ProviderPlugin::new)),
-        restarted.plugin(dim_agent_aimux::AimuxPlugin),
+        restarted.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -6075,7 +6075,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         isolated.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         isolated.plugin(provider_part(ProviderPlugin::new)),
-        isolated.plugin(dim_agent_aimux::AimuxPlugin),
+        isolated.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -6313,7 +6313,7 @@ async fn legacy_import_preserves_sources_model_origins_and_scoped_choices() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -6533,7 +6533,7 @@ async fn legacy_import_declares_only_the_limits_the_source_does() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -6875,7 +6875,7 @@ async fn legacy_import_applies_one_frozen_rule_to_omitted_fields_builtins_and_sc
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -7087,7 +7087,7 @@ async fn legacy_import_applies_one_frozen_rule_to_omitted_fields_builtins_and_sc
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(provider_part(ProviderPlugin::new)),
-        restarted.plugin(dim_agent_aimux::AimuxPlugin),
+        restarted.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -7293,7 +7293,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+    active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
     let view = root.plugin(provider_part(ProviderPlugin::new));
     active(&view).await;
     let provider = root.get::<ProviderService>().unwrap();
@@ -7640,7 +7640,7 @@ async fn legacy_import_keeps_the_builtin_seed_through_a_restart() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -7727,7 +7727,7 @@ async fn legacy_import_keeps_the_builtin_seed_through_a_restart() {
             .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         restarted.plugin(provider_part(ProviderPlugin::new)),
-        restarted.plugin(dim_agent_aimux::AimuxPlugin),
+        restarted.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -7775,7 +7775,7 @@ async fn a_bundled_entry_without_limits_takes_the_identified_numbers_or_reports_
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -7943,7 +7943,7 @@ async fn a_refused_ambiguity_names_the_rows_that_disagree() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -8044,7 +8044,7 @@ async fn a_provider_states_the_prefix_its_ids_carry_and_that_statement_resolves_
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -8188,7 +8188,7 @@ async fn a_created_provider_states_the_prefix_its_ids_carry() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -8338,7 +8338,7 @@ async fn a_model_edit_sets_an_alias_on_the_record_and_creates_no_override() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;
@@ -8490,7 +8490,7 @@ async fn a_v25_seed_upgrades_to_the_fresh_bundle_record() {
             ),
             root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
             root.plugin(provider_part(ProviderPlugin::new)),
-            root.plugin(dim_agent_aimux::AimuxPlugin),
+            root.plugin(dim_agent_aimux::AimuxPlugin::default()),
         ];
         (root, plugins)
     };
@@ -8635,7 +8635,7 @@ async fn an_unreadable_recorded_protocol_rejects_a_preference_update() {
     root.plugin(ManagedProvidersPlugin);
     root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
     root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
-    active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+    active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
     active(&root.plugin(provider_part(ProviderPlugin::new))).await;
     let provider = root.get::<ProviderService>().unwrap();
     let cancel = CancellationToken::new();
@@ -8723,7 +8723,7 @@ async fn an_edited_merged_limit_stays_edited() {
         root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
         root.plugin(provider_part(ProviderPlugin::new)),
-        root.plugin(dim_agent_aimux::AimuxPlugin),
+        root.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;

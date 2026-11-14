@@ -91,6 +91,34 @@ fn loaded_skill(index: usize, text: &str) -> Option<String> {
     })
 }
 
+fn tool_content(content: &ToolContent) -> Vec<Value> {
+    match content {
+        ToolContent::Text(_) => {
+            vec![json!({"type":"content","content":{"type":"text","text":preview(content)}})]
+        }
+        ToolContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                let content = match block {
+                    ContentBlock::Text { text } => {
+                        json!({"type":"text","text":preview(&ToolContent::Text(text.clone()))})
+                    }
+                    ContentBlock::Image { source } => {
+                        if let Some(file_id) = &source.file_id {
+                            json!({"type":"image","mimeType":source.media_type,"fileId":file_id})
+                        } else if let Some(data) = &source.data {
+                            json!({"type":"image","mimeType":source.media_type,"data":data})
+                        } else {
+                            return None;
+                        }
+                    }
+                };
+                Some(json!({"type":"content","content":content}))
+            })
+            .collect(),
+    }
+}
+
 fn preview(content: &ToolContent) -> String {
     let text = match content {
         ToolContent::Text(text) => text.clone(),
@@ -205,7 +233,9 @@ impl Projection {
                                 None => chunk("user_message_chunk", text, &mut updates),
                             },
                             ContentBlock::Image { source } => {
-                                if let Some(data) = source.data {
+                                if let Some(file_id) = source.file_id {
+                                    updates.push(json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":source.media_type,"fileId":file_id}}));
+                                } else if let Some(data) = source.data {
                                     updates.push(json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":source.media_type,"data":data}}));
                                 }
                             }
@@ -229,10 +259,10 @@ impl Projection {
                 for call in &data.results {
                     let id=tool_id("main",&data.request_id,&call.call_id);
                     if !self.tools.contains(&id) { self.tool(id,&call.call_id,Value::Null,"pending",&mut updates); }
-                    updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &call.call_id),"status":if call.result.is_error == Some(true) {"failed"} else {"completed"},"content":[{"type":"content","content":{"type":"text","text":preview(&call.result.content)}}]}));
+                    updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &call.call_id),"status":if call.result.is_error == Some(true) {"failed"} else {"completed"},"content":tool_content(&call.result.content)}));
                 }
             }
-            EventContent::ToolCompleted(data) => updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &data.call_id),"status":"in_progress","content":[{"type":"content","content":{"type":"text","text":preview(&data.result.content)}}]})),
+            EventContent::ToolCompleted(data) => updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &data.call_id),"status":"in_progress","content":tool_content(&data.result.content)})),
             EventContent::ExecStarted(data) => {
                 let id = json!(["background",data.task_id]).to_string();
                 self.tool(id.clone(),&data.description,Value::Null,"in_progress",&mut updates);
