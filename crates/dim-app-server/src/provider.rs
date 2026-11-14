@@ -2418,27 +2418,63 @@ impl ProviderService {
         request: ModalityHttpRequest,
         cancel: &CancellationToken,
     ) -> Result<ModalityHttpResponse, HostError> {
-        let method = request.method.to_ascii_uppercase();
-        let mut builder = match method.as_str() {
-            "GET" => self.client.get(&request.url),
-            "POST" => self.client.post(&request.url),
-            "PUT" => self.client.put(&request.url),
-            "PATCH" => self.client.patch(&request.url),
-            "DELETE" => self.client.delete(&request.url),
-            other => {
-                return Err(HostError::classified(
-                    HostErrorKind::InvalidRequest,
-                    format!("Unsupported request method {other}"),
+        let invalid = |message| HostError::classified(HostErrorKind::InvalidRequest, message);
+        let url = reqwest::Url::parse(&request.url)
+            .map_err(|_| invalid("Invalid modality request URL"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(invalid("Modality URL must use HTTP(S) without userinfo"));
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in &request.headers {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| invalid("Invalid modality request header"))?;
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "authorization"
+                    | "proxy-authorization"
+                    | "cookie"
+                    | "x-api-key"
+                    | "api-key"
+            ) || call
+                .headers
+                .iter()
+                .any(|(owned, _)| name.as_str().eq_ignore_ascii_case(owned))
+            {
+                return Err(invalid(
+                    "Modality request cannot set owner or authentication headers",
                 ));
             }
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|_| invalid("Invalid modality request header"))?;
+            headers.append(name, value);
+        }
+        let client = if call.network.proxy.is_none() && call.network.timeout_ms.is_none() {
+            self.client.clone()
+        } else {
+            remote::client(&call.network)?
         };
-        if call.credentialed(&request.url) {
+        let credentialed = call
+            .origin
+            .as_ref()
+            .is_some_and(|origin| *origin == url.origin());
+        let method = request.method.to_ascii_uppercase();
+        let mut builder = match method.as_str() {
+            "GET" => client.get(url),
+            "POST" => client.post(url),
+            "PUT" => client.put(url),
+            "PATCH" => client.patch(url),
+            "DELETE" => client.delete(url),
+            _ => return Err(invalid("Unsupported modality request method")),
+        }
+        .headers(headers);
+        if credentialed {
             for (name, value) in &call.headers {
                 builder = builder.header(name.as_str(), value.as_str());
             }
-        }
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
         }
         if let Some(body) = &request.body {
             let body = base64::engine::general_purpose::STANDARD
@@ -2450,7 +2486,7 @@ impl ProviderService {
         }
         let response = tokio::select! {
             reply = builder.send() => {
-                reply.map_err(|error| HostError::failed(error.to_string()))?
+                reply.map_err(|_| HostError::classified(HostErrorKind::Transport, "Modality request failed"))?
             }
             _ = cancel.cancelled() => {
                 return Err(HostError::Cancelled("Modality request cancelled".into()));
@@ -2467,10 +2503,11 @@ impl ProviderService {
                 )
             })
             .collect();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| HostError::failed(error.to_string()))?;
+        let body = tokio::select! {
+            body = response.bytes() => body.map_err(|_| HostError::classified(
+                HostErrorKind::Transport, "Modality response failed"))?,
+            _ = cancel.cancelled() => return Err(HostError::Cancelled("Modality request cancelled".into())),
+        };
         Ok(ModalityHttpResponse {
             status,
             headers,
@@ -2800,10 +2837,21 @@ impl ModalityRequests for ProductResolver {
         Box::pin(async move {
             let owner = self.0.clone();
             let resolution = self
-                .resolve_modality(request.target.clone(), cancel.clone())
+                .resolve_modality(
+                    ModalityTarget {
+                        target: request.target.clone(),
+                        operation: request.operation.clone(),
+                    },
+                    cancel.clone(),
+                )
                 .await?;
-            let call = modality_call(&resolution);
-            owner.modality_http(call, request, &cancel).await
+            let call = modality_call(&resolution)?;
+            let service = owner.clone();
+            owner
+                .owned(&cancel, move |cancel| {
+                    Box::pin(async move { service.modality_http(call, request, &cancel).await })
+                })
+                .await
         })
     }
 }
@@ -2847,28 +2895,24 @@ fn endpoint_of(resolution: &Resolution, model: String) -> ModalityEndpoint {
     }
 }
 
-/// How one request carries the connection: the headers it is sent with, and
-/// the route they belong to.
 struct ModalityCall {
     headers: Vec<(String, String)>,
-    origin: Option<String>,
-}
-impl ModalityCall {
-    /// Whether `url` is on the connection's own route, and so carries its
-    /// headers and credential.
-    fn credentialed(&self, url: &str) -> bool {
-        self.origin
-            .as_deref()
-            .is_some_and(|origin| url.starts_with(origin))
-    }
+    origin: Option<url::Origin>,
+    network: ModelNetwork,
 }
 
-fn modality_call(resolution: &Resolution) -> ModalityCall {
+fn modality_call(resolution: &Resolution) -> Result<ModalityCall, HostError> {
     let mut headers: Vec<(String, String)> = Vec::new();
     let mut origin = None;
+    let mut network = ModelNetwork::default();
     match &resolution.connection.connection {
         ModelConnection::Http(http) => {
-            origin = Some(http.base_url.trim_end_matches('/').to_owned());
+            origin = Some(
+                reqwest::Url::parse(&http.base_url)
+                    .map_err(|_| HostError::failed("Invalid modality route URL"))?
+                    .origin(),
+            );
+            network = http.network.clone();
             headers.extend(
                 http.headers
                     .iter()
@@ -2885,7 +2929,12 @@ fn modality_call(resolution: &Resolution) -> ModalityCall {
             }
         }
         ModelConnection::Bedrock(bedrock) => {
-            origin = Some(bedrock.base_url.trim_end_matches('/').to_owned());
+            origin = Some(
+                reqwest::Url::parse(&bedrock.base_url)
+                    .map_err(|_| HostError::failed("Invalid modality route URL"))?
+                    .origin(),
+            );
+            network = bedrock.network.clone();
             headers.extend(
                 bedrock
                     .headers
@@ -2898,7 +2947,11 @@ fn modality_call(resolution: &Resolution) -> ModalityCall {
         }
         ModelConnection::Local => {}
     }
-    ModalityCall { headers, origin }
+    Ok(ModalityCall {
+        headers,
+        origin,
+        network,
+    })
 }
 
 struct ManagedRecovery {

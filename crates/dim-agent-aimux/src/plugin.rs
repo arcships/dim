@@ -238,7 +238,7 @@ impl ModalityRequests for ConfiguredConnection {
         _: CancellationToken,
     ) -> HostFuture<'_, ModalityEndpoint> {
         Box::pin(async move {
-            self.checked(&target)?;
+            self.checked(&target.target)?;
             // The model file declares no modality operation, so this profile's
             // `selectableForModality` read answers none and every target fails
             // the declaration rule before a connection is built.
@@ -252,7 +252,7 @@ impl ModalityRequests for ConfiguredConnection {
         _: CancellationToken,
     ) -> HostFuture<'_, ResolvedModelConnection> {
         Box::pin(async move {
-            self.checked(&target)?;
+            self.checked(&target.target)?;
             Err(undeclared_modality_operation(&target.operation))
         })
     }
@@ -264,7 +264,7 @@ impl ModalityRequests for ConfiguredConnection {
     ) -> HostFuture<'_, ModalityHttpResponse> {
         Box::pin(async move {
             self.checked(&request.target)?;
-            Err(undeclared_modality_operation(&request.target.operation))
+            Err(undeclared_modality_operation(&request.operation))
         })
     }
 }
@@ -272,15 +272,14 @@ impl ModalityRequests for ConfiguredConnection {
 impl ConfiguredConnection {
     /// The checks both non-conversational operations run before the
     /// declaration rule refuses the target.
-    fn checked(&self, target: &ModalityTarget) -> Result<(), HostError> {
+    fn checked(&self, target: &dim_agent_types::ModelId) -> Result<(), HostError> {
         if self.generation.is_cancelled() {
             return Err(HostError::classified(
                 HostErrorKind::OwnerClosed,
                 "Model catalog owner is closed",
             ));
         }
-        self.models
-            .get(&target.target.provider_id, &target.target.model_id)?;
+        self.models.get(&target.provider_id, &target.model_id)?;
         Ok(())
     }
 }

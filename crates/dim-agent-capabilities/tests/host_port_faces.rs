@@ -5,7 +5,7 @@
 //! binding calls the same operations. These tests pin that the binding and the
 //! wire answer the same, that a cancelled or abandoned call ends the owner's
 //! read, and that a failure keeps the code its caller acts on
-//! ([service faces §4.8](../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等五个)).
+//! ([service faces §4.8](../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等六个)).
 use dim_agent_capabilities::execution_settings::{
     ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost,
 };
@@ -112,6 +112,7 @@ async fn the_installed_runtimes_answer_the_same_through_the_binding_and_the_face
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_runtime_whose_path_cannot_cross_is_left_out_and_the_others_still_list() {
     use std::os::unix::ffi::OsStringExt;
@@ -312,9 +313,9 @@ fn watched(
             tokio::spawn(async move {
                 worker.cancelled().await;
                 *cancelled.lock().unwrap() = Some(true);
-                settled.notify_waiters();
+                settled.notify_one();
             });
-            started.notify_waiters();
+            started.notify_one();
             std::future::pending::<()>().await;
             unreachable!("the call's own future never answers")
         })
@@ -430,6 +431,22 @@ async fn the_modality_face_carries_no_credential_and_completes_a_request() {
     .await
     .unwrap();
     let endpoint: ModalityEndpoint = serde_json::from_value(reply.clone()).unwrap();
+    assert_eq!(
+        owner
+            .endpoint(
+                ModalityTarget {
+                    target: ModelId {
+                        provider_id: "provider".into(),
+                        model_id: "media".into()
+                    },
+                    operation: "image.generate".into(),
+                },
+                CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+        endpoint
+    );
     assert_eq!(endpoint.model, "media");
     assert_eq!(
         endpoint.base_url.as_deref(),
@@ -451,10 +468,8 @@ async fn the_modality_face_carries_no_credential_and_completes_a_request() {
     // credential; the answer is data.
     let body = base64::engine::general_purpose::STANDARD.encode(b"{\"prompt\":\"a cat\"}");
     let request = json!({
-        "target": {
-            "target": {"providerId": "provider", "modelId": "media"},
-            "operation": "image.generate",
-        },
+        "target": {"providerId": "provider", "modelId": "media"},
+        "operation": "image.generate",
         "method": "POST",
         "url": "https://provider.example/v1/images/generations",
         "headers": [["x-marker", "face"]],
@@ -463,10 +478,20 @@ async fn the_modality_face_carries_no_credential_and_completes_a_request() {
     let reply = call(
         &face(&root, "modalityConnectionHost"),
         "modalityRequest",
-        request,
+        request.clone(),
     )
     .await
     .unwrap();
+    assert_eq!(
+        owner
+            .request(
+                serde_json::from_value(request).unwrap(),
+                CancellationToken::new()
+            )
+            .await
+            .unwrap(),
+        serde_json::from_value::<ModalityHttpResponse>(reply.clone()).unwrap()
+    );
     let response: ModalityHttpResponse = serde_json::from_value(reply).unwrap();
     assert_eq!(response.status, 200);
     let served = response
@@ -477,7 +502,7 @@ async fn the_modality_face_carries_no_credential_and_completes_a_request() {
     assert_eq!(served, b"{\"ok\":true}");
     {
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1, "the owner performed the caller's request");
+        assert_eq!(seen.len(), 2, "binding and wire both reach the owner");
         assert_eq!(seen[0].method, "POST");
         assert_eq!(
             seen[0].url,

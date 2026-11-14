@@ -451,18 +451,21 @@ owner 实现是 `ProviderService::selectable_models` 与
 `selectableModelsHost`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
 消费方得到执行会选的同一批模型。
 
-**连接合同：`resolveModalityConnection`。** 同一个 owner 解析一次非对话调用所用的连接，
-适配器因此不持有 Provider 凭据，也不读取 Provider 记录。它是 `ProviderConnectionResolver`
-旁边的第二个进程 host 端口，不是管理方法：操作 `resolveModalityConnection`，异步，请求
-`{target: {providerId, modelId}, operation: string}`，回复 `{connection, protocol,
-model, realtime}`。
+**连接合同：`resolveModalityConnection` 与 `modalityRequest`。** 同一个 owner 解析非对话调用，
+作为 `ProviderConnectionResolver` 旁边的进程数据面；调用方无需读取 Provider 记录。
 
-`connection` 是同一模型的对话调用会取得的连接事实——路由的协议、base URL、网络事实、头，
-以及该次调用使用的凭据或租约——作为这次调用的能力交给适配器。失败策略与托管账号的凭据恢复
-留在对话路径：没有适配器使用它们，所以该面携带事实，不携带回调。`protocol` 是目录为该模型
-携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的读取、目录构建、
-选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的临时启动连接与
-已采用能力快照不适用；调用者传入目录标识与操作。
+- `resolveModalityConnection` 异步接受 `{target: {providerId, modelId}, operation}`，
+  回复 `{protocol, model, baseUrl?, realtime?}`，不包含任何 header、bearer、API key 或 Bedrock 凭据。
+- `modalityRequest` 异步接受 `{target, operation, method, url, headers?, body?}`，
+  `body` 为 base64，回复 `{status, headers, body?}`。owner 为目标重新解析连接，使用其代理与超时。
+  只有解析后的 scheme、host、有效端口相同才附加 owner 头与凭据；拒绝 URL userinfo 与非 HTTP(S) URL。
+  调用方不得设置 Host、认证、Cookie 或与 owner 头同名（忽略大小写）的头，其他内容头可以使用。
+  跨来源下载不携带 owner 头；重定向及 HTTP 拒绝作为数据返回，不跟随或重试。
+  取消覆盖发送与响应体读取，传输错误不包含 URL 或凭据。
+
+两个操作共用连接解析：静态或托管记录的读取、目录构建、选择与凭据租约都由 owner 完成。
+对话路径的临时启动连接与已采用能力快照不适用。现有可信的进程内 Rust 媒体适配器使用解析后的连接，
+包括自行完成实时 WebSocket 握手；这些适配器不使用 `modalityRequest`，该连接不经过数据面，也不序列化。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
 凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
@@ -484,11 +487,9 @@ base URL 之后。
 **凭据规则与生命周期。** 连接只活在那一次调用中。Provider 从不持久化它，从不把它返回给
 客户端，也从不写进任务记录、结果、诊断或错误。它的 `Debug` 打印模型、路由、base URL、头名
 以及是否存在凭据，从不打印头的值、bearer 或 key；`ModelConnection` 当前未实现 `Debug`，
-因此没有其他连接会格式化凭据。托管账号的连接携带与对话调用相同的
-`RecoverModelConnection`。`recovery::invoke` 是基于 `ModelHost`、`ModelRequest` 与
-`ModelStream` 的对话执行路径，适配器不能原样复用；它自行执行该规则：把 provider 的拒绝
-映射为恢复逻辑可解释的 `HostError`，以当前阶段询问 `rejection`，可恢复时 `recover` 一次并
-重试，终止时 `finish_rejected`。
+因此没有其他连接会格式化凭据。托管连接保留供可信进程内调用方使用的恢复 handle，但 `modalityRequest` 与现有媒体适配器
+都不调用托管凭据恢复；媒体拒绝会返回调用方，该端口不提供自动刷新与重试。
+对话恢复路径独立，不构成非对话调用的重试保证。
 
 **Rust binding。** 面是 `dim-agent-capabilities` 中的 `modalityConnectionHost`：端口类型
 持有 owner 的 `ModalityRequests`（endpoint、request，以及同进程的解析后连接），其 dispatcher

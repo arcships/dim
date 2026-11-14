@@ -703,18 +703,24 @@ caller names the route and what to send, and the owner performs the call.
   headers?, body?}` with `body` base64, reply `{status, headers, body?}`: the
   owner resolves the connection again for that target, applies the connection's
   own headers and credential when `url` is on the route's origin, and sends the
-  request. The caller's headers are applied last; they never replace the
-  credential. An answer is data, so a caller of any language completes the call
-  without ever holding the secret.
+  request using that connection's proxy and timeout. Origin means the parsed
+  scheme, host and effective port; URL userinfo and non-HTTP(S) URLs are refused.
+  Caller headers cannot set `Host`, authentication or cookies, or collide
+  case-insensitively with an owner header. Other content headers remain allowed.
+  Cross-origin downloads carry no owner headers. Redirects are returned as data,
+  never followed. Cancellation covers sending and reading the response body;
+  transport errors reveal neither request URLs nor credentials. An answer is
+  data, so a caller of any language completes the call without holding the secret.
+  HTTP rejection status and body are returned without retrying the request.
 
 Both operations run one resolution: it resolves the static or managed record,
 builds the catalog, selects and leases the managed credential in one place, and
 only the selectability rule and the request facts differ. The chat path's
 temporary startup connection and adopted capability snapshot do not apply; the
-caller passes a catalog identity and an operation. A realtime session, which
-performs its own WebSocket handshake, stays in this process: the Rust binding
-also hands an in-process adapter the resolved connection, and that handle is
-never served by name.
+caller passes a catalog identity and an operation. Existing trusted native media
+adapters, including realtime sessions performing their own WebSocket handshake,
+use the Rust binding's in-process resolved connection. That handle is never
+served by name; those adapters do not use `modalityRequest`.
 
 **Rules.** It applies exactly the rules of the `selectableForModality` read —
 provider, account, model, route, credential and status — and additionally
@@ -747,13 +753,12 @@ never persists it, never returns it to a client and never writes it to a task
 record, result, diagnostic or error. Its `Debug` prints the model, the route, the
 base URL, header names and whether a credential is present, and never a header
 value, bearer or key; `ModelConnection` implements no `Debug`, so no other
-connection formats one. A managed account's connection carries the same
-`RecoverModelConnection` a chat call gets. `recovery::invoke` is the chat
-execution path over `ModelHost`, a `ModelRequest` and a `ModelStream`, so an
-adapter cannot reuse it as is; it runs the rule itself: map a provider rejection
-into the `HostError` the recovery interprets, ask `rejection` with the current
-phase, then `recover` once and retry on a recoverable rejection, or
-`finish_rejected` on a terminal one.
+connection formats one. A managed connection retains its recovery handle for
+trusted in-process use,
+but neither `modalityRequest` nor the in-tree media adapters invoke managed
+credential recovery. A media rejection is returned to the caller; automatic
+refresh and retry are not provided by this port. The chat recovery path is
+separate and does not establish a retry guarantee for non-conversational calls.
 
 **Rust binding.** The face is `modalityConnectionHost` in
 `dim-agent-capabilities`: the port type holds the owner's `ModalityRequests`

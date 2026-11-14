@@ -641,12 +641,13 @@ pub struct ModalityEndpoint {
 }
 
 /// One request the owner performs on a non-conversational call's connection:
-/// the caller names the route and what to send, never a header or a key. A
+/// the caller names the route and content, never an owner credential. A
 /// `body` is base64, as every byte payload that crosses is.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModalityHttpRequest {
-    pub target: ModalityTarget,
+    pub target: ModelId,
+    pub operation: String,
     pub method: String,
     pub url: String,
     #[serde(default)]
@@ -673,10 +674,9 @@ pub struct ModalityHttpResponse {
     pub body: Option<String>,
 }
 
-/// A model's connection for one non-conversational call, as the Rust adapters
-/// hold it: the facts the face also serves, the owner that performs the
-/// requests the call needs, and — for an adapter in this process — the
-/// resolved connection, whose [`Debug`] prints no credential material.
+/// A trusted native adapter's connection for one non-conversational call:
+/// the route facts and resolved connection, whose [`Debug`] prints no
+/// credential material. This type is never served by the data face.
 pub struct ModalityConnection {
     /// The route the catalog carries for this model.
     pub protocol: ModelProtocol,
@@ -685,9 +685,8 @@ pub struct ModalityConnection {
     /// The realtime transport the model's catalog entry declares, for a
     /// `realtime.*` operation.
     pub realtime: Option<RealtimeDeclaration>,
-    /// The resolved connection, for an adapter in this process: a realtime
-    /// session performs its own handshake, which cannot cross as data. Its
-    /// `Debug` is redacted.
+    /// The resolved connection for trusted native media adapters, including
+    /// realtime handshakes. Its `Debug` is redacted.
     pub resolved: ResolvedModelConnection,
 }
 impl std::fmt::Debug for ModalityConnection {
@@ -746,10 +745,8 @@ pub trait ModalityRequests: Send + Sync + 'static {
         request: ModalityHttpRequest,
         cancel: CancellationToken,
     ) -> HostFuture<'_, ModalityHttpResponse>;
-    /// The resolved connection of that call. It stays with an adapter in this
-    /// process: a realtime session performs its own handshake, which cannot
-    /// cross as data, so the credential never reaches a caller of another
-    /// language.
+    /// The resolved connection for trusted native media adapters. It stays
+    /// in this process and is never served by name.
     fn resolved(
         &self,
         target: ModalityTarget,
@@ -762,7 +759,7 @@ pub trait ModalityRequests: Send + Sync + 'static {
 /// any language. Served beside `modalityRequest`: the endpoint reveals the
 /// route and the realtime declaration, and every request is performed by the
 /// owner, which is what keeps a credential out of the reply
-/// ([service faces §4.8](../../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等五个)).
+/// ([service faces §4.8](../../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等六个)).
 #[derive(Clone)]
 pub struct ModalityConnectionHost(pub Arc<dyn ModalityRequests>);
 
@@ -774,7 +771,15 @@ impl ModalityConnectionHost {
         target: ModalityTarget,
         cancel: CancellationToken,
     ) -> Result<ModalityEndpoint, HostError> {
-        self.0.endpoint(target, cancel).await
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled("Modality request cancelled".into()));
+        }
+        let cancel = cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::select! {
+            result = self.0.endpoint(target, cancel.clone()) => result,
+            _ = cancel.cancelled() => Err(HostError::Cancelled("Modality request cancelled".into())),
+        }
     }
 
     /// Performs one request on the call's connection with the owner's headers
@@ -784,12 +789,19 @@ impl ModalityConnectionHost {
         request: ModalityHttpRequest,
         cancel: CancellationToken,
     ) -> Result<ModalityHttpResponse, HostError> {
-        self.0.request(request, cancel).await
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled("Modality request cancelled".into()));
+        }
+        let cancel = cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::select! {
+            result = self.0.request(request, cancel.clone()) => result,
+            _ = cancel.cancelled() => Err(HostError::Cancelled("Modality request cancelled".into())),
+        }
     }
 
-    /// The connection as an adapter in this process holds it: the facts, the
-    /// owner that performs its requests, and the resolved connection for a
-    /// realtime handshake.
+    /// The route facts and resolved connection for a trusted native adapter.
+    /// This operation is not part of the data face.
     pub async fn connection(
         &self,
         target: ModalityTarget,
