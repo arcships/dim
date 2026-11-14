@@ -35,6 +35,9 @@ pub struct Palette {
     pub success: String,
     pub warning: String,
     pub danger: String,
+    pub permission_read: String,
+    pub permission_write: String,
+    pub permission_full: String,
     pub diff_add: Option<String>,
     pub diff_remove: Option<String>,
     pub tool_hover: Option<String>,
@@ -126,6 +129,21 @@ pub fn terminal_palette(mode: ColorMode, appearance: Appearance) -> Palette {
         success: slot("ansi:2", LIGHT_RAMP.green),
         warning: slot("ansi:3", LIGHT_RAMP.yellow),
         danger: slot("ansi:1", LIGHT_RAMP.red),
+        permission_read: own(match (mode, appearance) {
+            (ColorMode::TrueColor, Appearance::Dark) => "#75d8e3",
+            (_, Appearance::Light) if light => LIGHT_RAMP.cyan,
+            _ => "ansi:6",
+        }),
+        permission_write: own(match (mode, appearance) {
+            (ColorMode::TrueColor, Appearance::Dark) => "#b18bff",
+            (_, Appearance::Light) if light => "#6b21a8",
+            _ => "ansi:5",
+        }),
+        permission_full: own(match (mode, appearance) {
+            (ColorMode::TrueColor, Appearance::Dark) => "#ffcc00",
+            (_, Appearance::Light) if light => LIGHT_RAMP.yellow,
+            _ => "ansi:3",
+        }),
         diff_add: match (mode, appearance) {
             (ColorMode::Ansi16, _) => None,
             (ColorMode::Ansi256, Appearance::Dark) => Some(own("ansi:22")),

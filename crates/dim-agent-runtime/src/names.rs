@@ -88,24 +88,6 @@ pub fn register<T: ?Sized + Send + Sync + 'static>(
     };
 }
 
-/// Registers `T`'s name as shared across languages: the name a face is
-/// provided under (`host_key`), which Rust parts also read the value at. The
-/// data face itself is the `HostDispatch` the owner provides at that key.
-pub fn share<T: ?Sized + Send + Sync + 'static>(catalog: &mut ServiceCatalog) {
-    catalog.register_shared(name_of::<T>());
-}
-
-/// Whether the catalog holds an entry for `name`. [`registered_key`] cannot
-/// answer it: every name the catalog does not register is still shared by
-/// name, at the key a registered shared name has. A name outside this copy's
-/// instances is named too.
-fn named(catalog: &ServiceCatalog, name: &str) -> bool {
-    !matches!(
-        rutis_loader::resolve::ExprScope::new(None, catalog).has(name),
-        Err(LoaderError::UnknownService(_))
-    )
-}
-
 /// A catalog for an assembly, holding the runtime's own names. Every name it
 /// does not register is shared across languages.
 pub fn catalog() -> ServiceCatalog {
@@ -327,6 +309,17 @@ impl<'a> Names<'a> {
         )))
     }
 }
+/// Whether the catalog holds an entry for `name`. [`registered_key`] cannot
+/// answer it: every name the catalog does not register is still shared by
+/// name, at the key a registered shared name has. A name outside this copy's
+/// instances is named too.
+fn named(catalog: &ServiceCatalog, name: &str) -> bool {
+    !matches!(
+        rutis_loader::resolve::ExprScope::new(None, catalog).has(name),
+        Err(LoaderError::UnknownService(_))
+    )
+}
+
 /// The catalog's key for `name` outside any instance, or `UnknownService`
 /// when the host did not register the name: rutis shares every name it does
 /// not register, at `host_key(name)`, so that key alone says nothing was

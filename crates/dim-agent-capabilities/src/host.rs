@@ -1060,13 +1060,41 @@ impl HostDispatch for SelectionFace {
     }
 }
 
-/// The environment variable names the owner reads credentials from. The
-/// owner answers from its current state on every call, so a later owner can
-/// add a name without a consumer change.
-pub trait CredentialVariables: Send + Sync + 'static {
-    fn credential_variables(&self) -> std::collections::BTreeSet<String>;
+/// The environment variable names the owner reads credentials from, bound as
+/// the face's one operation. It answers from the owner's current state on
+/// every call, so a later owner can add a name without a consumer change.
+pub type CredentialVariableNames =
+    Arc<dyn Fn() -> std::collections::BTreeSet<String> + Send + Sync>;
+
+/// The `variables` reply: the names only, never a credential value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialVariablesReply {
+    pub variables: std::collections::BTreeSet<String>,
 }
-pub struct CredentialVariablesHost(pub Arc<dyn CredentialVariables>);
+
+/// The `credentialVariablesHost` face: the names of the environment variables
+/// the owner reads credentials from. The owner binds its read; a Rust reader
+/// calls [`Self::variables`] directly and a part of another language calls the
+/// same operation by name.
+pub struct CredentialVariablesHost(CredentialVariableNames);
+
+impl CredentialVariablesHost {
+    /// Binds an owner's read as the face's operation.
+    pub fn new(variables: CredentialVariableNames) -> Self {
+        Self(variables)
+    }
+}
+
+#[rutis::service]
+impl CredentialVariablesHost {
+    /// The names, in the owner's set order.
+    pub fn variables(&self) -> CredentialVariablesReply {
+        CredentialVariablesReply {
+            variables: (self.0)(),
+        }
+    }
+}
 
 /// The `selectableModels` reply: the models the owner would serve, with the
 /// rules execution applies.

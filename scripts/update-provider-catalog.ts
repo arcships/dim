@@ -8,100 +8,158 @@ import { isDeepStrictEqual } from "node:util"
 const resources = join(import.meta.dirname, "../crates/dim-app-server/resources")
 const catalogOutput = join(resources, "default-catalog.json")
 const reasoningOffOverridesFile = join(resources, "reasoning-off-overrides.json")
+const syncPolicyFile = join(resources, "provider-sync.json")
+const modelOverridesFile = join(resources, "model-overrides.json")
 const remoteBase = process.env.DIM_PROVIDER_REMOTE_BASE ?? "https://raw.githubusercontent.com/ThinkInAIXYZ/PublicProviderConf/refs/heads/dev/dist"
 
-type SyncPolicy = {
-  keepBaseUrl?: true
-  keepDefaultModel?: true
+type ProviderPolicy = {
+  source: "remote" | "local"
+  reason?: string
+  upstreamId?: string
+  keepBaseUrl?: boolean
+  keepDefaultModel?: boolean
   localModels?: string[]
   mediaModels?: string[]
+  keepBundledModels?: boolean
+  failClosedUpstreamModels?: boolean
 }
 
-const remoteProviders: Record<string, SyncPolicy> = {
-  aihubmix: { mediaModels: ["gpt-image-1", "minimax-h3", "veo-3.1", "tts-1", "whisper-1"] },
-  anthropic: { keepDefaultModel: true },
-  "custom-provider": { localModels: ["arcship-5.5", "arcship-5.4", "arcship-5.4-mini", "arcship-image"] },
-  deepseek: { keepDefaultModel: true },
-  fireworks: {},
-  google: { mediaModels: ["gemini-3.1-flash-image", "veo-3.1-generate-preview", "gemini-2.5-flash-preview-tts", "gemini-3.5-flash", "lyria-3-pro-preview"] },
-  huggingface: {},
-  jiekou: {},
-  "kimi-for-coding": { keepBaseUrl: true, keepDefaultModel: true },
-  longcat: { keepBaseUrl: true },
-  "minimax-cn-coding-plan": {},
-  "minimax-cn": { keepDefaultModel: true },
-  "minimax-coding-plan": {},
-  minimax: { keepDefaultModel: true, mediaModels: ["image-01", "video-01", "speech-02-hd", "music-01"] },
-  modelscope: { keepDefaultModel: true },
-  "moonshot-ai": { keepDefaultModel: true },
-  moonshot: {},
-  novita: {},
-  nvidia: {},
-  openai: { keepDefaultModel: true, mediaModels: ["gpt-image-2", "tts-1", "whisper-1"] },
-  "opencode-go": { keepBaseUrl: true, keepDefaultModel: true },
-  openrouter: { mediaModels: ["openai/gpt-5-image", "google/veo-3.1", "openai/tts-1", "openai/whisper-1"] },
-  ppinfra: { keepBaseUrl: true },
-  qiniu: {},
-  "siliconflow-com": {},
-  siliconflow: { mediaModels: ["Kwai-Kolors/Kolors", "Wan-AI/Wan2.2-T2V-A14B", "Wan-AI/Wan2.2-I2V-A14B", "FunAudioLLM/CosyVoice2-0.5B", "FunAudioLLM/SenseVoiceSmall"] },
-  stepfun: { mediaModels: ["step-image-edit-2", "step-2x-large", "stepaudio-2.5-tts", "step-tts-2", "step-tts-mini", "step-tts-vivid", "stepaudio-2.5-asr", "stepaudio-2-asr-pro", "step-asr"] },
-  "tencent-token-plan": { localModels: ["tc-code-latest"] },
-  upstage: {},
-  "vercel-ai-gateway": {},
-  xai: { keepDefaultModel: true, mediaModels: ["grok-2-image-1212", "grok-video-1"] },
-  "xiaomi-token-plan-ams": {},
-  "xiaomi-token-plan-cn": {},
-  "xiaomi-token-plan-sgp": {},
-  "zai-coding-plan": { keepDefaultModel: true },
-  zai: { keepDefaultModel: true },
-  zenmux: {},
-  "zhipuai-coding-plan": { keepDefaultModel: true },
-  zhipuai: {},
+/// Every bundled provider has a policy: `remote` ones are refreshed from
+/// PublicProviderConf, `local` ones are maintained in this repository and a
+/// sync never touches them. The reasons are facts read by a reviewer, and the
+/// coverage check below refuses a catalog and a table that disagree.
+async function loadPolicies(catalog): Promise<Record<string, ProviderPolicy>> {
+  const file = await readJson(syncPolicyFile)
+  const providers = isRecord(file?.providers) ? file.providers : undefined
+  if (providers === undefined) {
+    throw new Error(`${syncPolicyFile}: expected a providers object`)
+  }
+  const listed = new Set(catalog.providers.map((provider) => provider.providerId))
+  for (const id of Object.keys(providers)) {
+    if (!listed.has(id)) throw new Error(`Provider ${id} has a sync policy but the catalog does not list it`)
+  }
+  for (const id of listed) {
+    if (!Object.hasOwn(providers, id)) throw new Error(`Provider ${id} has no sync policy`)
+    validatePolicy(id, providers[id])
+  }
+  for (const provider of catalog.providers) {
+    const expected = sourceFor(providers[provider.providerId].source)
+    if (provider.metadata.source !== expected) {
+      throw new Error(`Provider ${provider.providerId}: metadata.source is ${provider.metadata.source ?? "absent"}, and its policy makes it ${expected}`)
+    }
+  }
+  return providers
 }
+
+/// The `metadata.source` a policy authors. A provider is refreshed from the
+/// public upstream or maintained in this repository, and the column says which.
+function sourceFor(source) {
+  return source === "remote" ? "public-provider-conf" : "local"
+}
+
+function validatePolicy(id, policy) {
+  if (!isRecord(policy)) throw new Error(`Provider ${id}: sync policy must be an object`)
+  const unknown = Object.keys(policy).filter((key) => !POLICY_FIELDS.includes(key))
+  if (unknown.length > 0) {
+    throw new Error(`Provider ${id}: unknown sync policy field ${unknown.join(", ")}`)
+  }
+  if (policy.source !== "remote" && policy.source !== "local") {
+    throw new Error(`Provider ${id}: sync policy source must be remote or local`)
+  }
+  if (policy.source === "local") {
+    if (normalizeString(policy.reason) === undefined) {
+      throw new Error(`Provider ${id}: a local provider needs a reason`)
+    }
+  } else if (policy.reason !== undefined) {
+    throw new Error(`Provider ${id}: only a local provider carries a reason`)
+  }
+  for (const key of ["keepBaseUrl", "keepDefaultModel", "keepBundledModels", "failClosedUpstreamModels"]) {
+    if (policy[key] !== undefined && policy[key] !== true) {
+      throw new Error(`Provider ${id}: ${key} is either absent or true`)
+    }
+  }
+  if (policy.upstreamId !== undefined && normalizeString(policy.upstreamId) === undefined) {
+    throw new Error(`Provider ${id}: upstreamId must be a non-empty string`)
+  }
+  for (const key of ["localModels", "mediaModels"]) {
+    if (policy[key] !== undefined && stringArray(policy[key]) === undefined) {
+      throw new Error(`Provider ${id}: ${key} must be a non-empty string array`)
+    }
+  }
+}
+
+const POLICY_FIELDS = [
+  "source",
+  "reason",
+  "upstreamId",
+  "keepBaseUrl",
+  "keepDefaultModel",
+  "localModels",
+  "mediaModels",
+  "keepBundledModels",
+  "failClosedUpstreamModels",
+]
 
 async function main() {
-  const [command, providerId, ...extra] = process.argv.slice(2)
+  const args = process.argv.slice(2)
+  const full = args.includes("--full")
+  const rest = args.filter((argument) => argument !== "--full")
+  const [command, providerId, ...extra] = rest
   if (extra.length || (command !== undefined && command !== "--sync")) {
-    throw new Error("Usage: node scripts/update-provider-catalog.ts [--sync [provider-id]]")
+    throw new Error("Usage: node scripts/update-provider-catalog.ts [--sync [provider-id]] [--full]")
   }
 
   const previous = await readFile(catalogOutput, "utf8")
   const catalog = JSON.parse(previous)
   validateCatalog(catalog)
+  const policies = await loadPolicies(catalog)
+  const remote = Object.keys(policies).filter((id) => policies[id].source === "remote")
+  const overrides = await loadModelOverrides(policies)
   if (command === undefined) {
     console.log(`Validated catalog: ${catalogOutput}`)
     return
   }
 
   const ids = new Set(catalog.providers.map((provider) => provider.providerId))
-  const requested = providerId === undefined ? Object.keys(remoteProviders) : [providerId]
+  const requested = providerId === undefined ? remote : [providerId]
   for (const id of requested) {
     if (!ids.has(id)) throw new Error(`Unknown provider: ${id}`)
-    if (!Object.hasOwn(remoteProviders, id)) throw new Error(`Provider ${id} has no remote catalog source`)
+    if (policies[id]?.source !== "remote") throw new Error(`Provider ${id} has no remote catalog source`)
   }
 
   const selected = new Set(requested)
-  const overrides = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile))
+  const reasoningOff = createReasoningOffOverrideState(await readJson(reasoningOffOverridesFile), policies)
+  const applied = loadSelectedOverrides(overrides, selected)
+  const notes = []
+  const kept = []
   const providers = []
   for (const provider of catalog.providers) {
     providers.push(selected.has(provider.providerId)
-      ? await syncProvider(provider, remoteProviders[provider.providerId], overrides.get(provider.providerId))
+      ? await syncProvider(provider, policies[provider.providerId], reasoningOff.get(provider.providerId), applied, notes, kept)
       : provider)
   }
+  for (const [providerId, pending] of applied) {
+    if (pending.size > 0) {
+      throw new Error(`Model overrides target missing models for provider ${providerId}: ${[...pending.keys()].join(", ")}`)
+    }
+  }
+  const report = [...overrideReport(notes), ...keptReport(kept)]
   if (isDeepStrictEqual(providers, catalog.providers)) {
     console.log("Catalog is up to date")
+    if (report.length > 0) console.log(report.join("\n"))
     return
   }
   const candidate = { ...catalog, updatedAt: new Date().toISOString(), providers }
   validateCatalog(candidate)
+  console.log(summarize(catalog.providers, providers, policies, selected, notes, report, full))
   await writeCatalog(previous, candidate)
   console.log(`Updated catalog: ${requested.join(", ")}`)
 }
 
-async function syncProvider(provider, policy: SyncPolicy, overrides) {
+async function syncProvider(provider, policy: ProviderPolicy, reasoningOff, patches, notes, kept) {
   const id = provider.providerId
   const raw = { ...provider.metadata.raw }
-  const sourceId = normalizeString(raw.providerDbSourceId) ?? id
+  const sourceId = policy.upstreamId ?? id
   const remote = await readRemoteJson(`${remoteBase}/${encodeURIComponent(sourceId)}.json`)
   if (!Array.isArray(remote?.models)) throw new Error(`${id}: expected a remote models array`)
   assertUniqueModelIds(remote.models, id, "id")
@@ -112,7 +170,7 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
     if (model === undefined) throw new Error(`Provider ${id}: missing local model ${modelId}`)
     return model
   }
-  const upstream = applyLocalModelOverrides(id, remote.models.filter((model) => !isFilteredModel(model)), previous)
+  const upstream = failClosed(policy, applyModelOverrides(id, fetchUpstream(policy, remote.models, previous), patchFor(id, patches), notes), previous)
   if (upstream.length === 0 && provider.models.some(({ modelId }) =>
     !policy.localModels?.includes(modelId) && !policy.mediaModels?.includes(modelId)
   )) {
@@ -132,11 +190,12 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
   }
 
   for (const modelId of policy.mediaModels ?? []) {
-    models.set(modelId, { ...models.get(modelId), ...mediaOverlay(id, local(modelId)) })
+    models.set(modelId, mediaOverlay(id, local(modelId), models.get(modelId)))
   }
   const metadata = { ...provider.metadata, defaultModelId, raw }
   if (defaultModelId === undefined) delete metadata.defaultModelId
-  const result = { ...provider, models: applyReasoningOffOverrides(id, [...models.values()], overrides).map(toCatalogModel), metadata }
+  const rows = carryCanonicalIds(id, [...models.values()], previous, kept)
+  const result = { ...provider, models: applyReasoningOffOverrides(id, rows, reasoningOff).map(toCatalogModel), metadata }
   if (!policy.keepBaseUrl) {
     const api = normalizeProviderApi(remote.api, metadata.adapter)
     if (api !== undefined) {
@@ -147,16 +206,412 @@ async function syncProvider(provider, policy: SyncPolicy, overrides) {
   return result
 }
 
-function mediaOverlay(providerId, model) {
-  if (providerId === "stepfun") return model
-  const fields = ["id", "display_name", "type", "modalities", "modalityCapabilities"]
-  if (providerId !== "google" || model.id !== "gemini-3.5-flash") {
-    fields.push("tool_call", "structured_output")
-  }
-  return Object.fromEntries(fields.filter((key) => Object.hasOwn(model, key)).map((key) => [key, model[key]]))
+/// The upstream rows a sync starts from, with the filtered entries removed.
+/// `keepBundledModels` keeps the bundled row wherever one exists, and adds an
+/// upstream row the bundle lacks.
+function fetchUpstream(policy, models, previous) {
+  const usable = models.filter((model) => !isFilteredModel(model))
+  if (!policy.keepBundledModels) return usable
+  return usable.map((model) => previous.get(model.id.trim()) ?? model)
 }
 
-function createReasoningOffOverrideState(overrides) {
+/// Where a `keepBundledModels` provider gets a model the bundle lacks, its
+/// upstream row is kept but declared unusable: no chat, no tools, text only.
+function failClosed(policy, models, previous) {
+  if (!policy.failClosedUpstreamModels) return models
+  return models.map((model) => previous.has(model.id.trim()) ? model : {
+    ...model,
+    type: "other",
+    chat: false,
+    tool_call: false,
+    structured_output: false,
+    modalities: { input: ["text"], output: ["text"] },
+  })
+}
+
+function patchFor(providerId, patches) {
+  const providerPatches = patches.get(providerId)
+  return providerPatches ?? new Map()
+}
+
+/// A patch merges into the upstream row field by field. Objects merge key by
+/// key, so a `limit` patch keeps the output cap upstream states; scalars and
+/// arrays replace the upstream value. Every leaf the patch sets is recorded
+/// with upstream's own value, so a reviewer sees what the table overrides and
+/// when upstream has caught up with it.
+function applyModelOverrides(providerId, models, patches, notes) {
+  if (patches.size === 0) return models
+  return models.map((model) => {
+    const id = model.id.trim()
+    const patch = patches.get(id)
+    if (patch === undefined) return model
+    patches.delete(id)
+    const differences = []
+    collectDifferences(model, patch, [], differences)
+    notes.push({ providerId, modelId: id, differences })
+    return mergePatch(model, patch)
+  })
+}
+
+/// Every scalar or array the patch sets that upstream states differently, as a
+/// dotted path with both values. A key upstream lacks counts as differing.
+function collectDifferences(upstream, patch, path, differences) {
+  for (const [key, value] of Object.entries(patch)) {
+    const next = [...path, key]
+    const current = isRecord(upstream) ? upstream[key] : undefined
+    if (isRecord(value)) {
+      collectDifferences(current, value, next, differences)
+    } else if (!isDeepStrictEqual(current, value)) {
+      differences.push({ path: next.join("."), patched: value, upstream: current })
+    }
+  }
+}
+
+function mergePatch(current, patch) {
+  if (!isRecord(current) || !isRecord(patch)) return patch
+  const merged = { ...current }
+  for (const [key, value] of Object.entries(patch)) {
+    merged[key] = isRecord(merged[key]) && isRecord(value)
+      ? mergePatch(merged[key], value)
+      : value
+  }
+  return merged
+}
+
+/// Every model override, checked on every run, offline included: a patch for a
+/// provider the catalog lacks or one whose policy is `local` would never be
+/// applied by a sync, so it fails here by name instead of being ignored.
+async function loadModelOverrides(policies) {
+  const file = await readJson(modelOverridesFile)
+  const providers = isRecord(file?.providers) ? file.providers : {}
+  const state = new Map()
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (!isRecord(providerConfig)) {
+      throw new Error(`Model override provider ${providerId} must be an object`)
+    }
+    if (policies[providerId] === undefined) {
+      throw new Error(`Model override provider ${providerId} is not a bundled provider`)
+    }
+    if (policies[providerId].source !== "remote") {
+      throw new Error(`Model override provider ${providerId} has no remote sync policy`)
+    }
+    const models = isRecord(providerConfig.models) ? providerConfig.models : undefined
+    if (models === undefined) {
+      throw new Error(`Model override provider ${providerId} models must be an object`)
+    }
+    const providerModels = new Map()
+    for (const [modelId, patch] of Object.entries(models)) {
+      if (!isRecord(patch) || Object.keys(patch).length === 0) {
+        throw new Error(`Model override ${providerId}/${modelId} must be a non-empty object`)
+      }
+      providerModels.set(modelId, patch)
+    }
+    state.set(providerId, providerModels)
+  }
+  return state
+}
+
+/// The copy a run applies its patches to, so the table a later report reads is
+/// the file, not what one sync consumed.
+function loadSelectedOverrides(overrides, synced) {
+  const state = new Map()
+  for (const [providerId, providerModels] of overrides) {
+    if (synced.has(providerId)) state.set(providerId, new Map(providerModels))
+  }
+  return state
+}
+
+const SUMMARY_FIELDS = [
+  ["contextWindow", "context"],
+  ["maxOutputTokens", "output"],
+]
+
+/// What a reviewer reads instead of the catalog diff. The changes a reviewer
+/// must judge come first: the model counts, the curated capability lines, the
+/// read paths with both values, and then the unread paths that moved one or
+/// two models. An unread path that moved more models than `FOLD_THRESHOLD` is
+/// one line with its count, since a value nothing reads only needs to be
+/// visible, not compared. `--full` prints every value. Every override follows
+/// with upstream's own value beside it, and the local providers come last,
+/// since nothing there changed. A provider counts as unchanged only when its
+/// whole entry is equal, so a change outside the curated fields cannot hide in
+/// the count.
+function summarize(before, after, policies, synced, notes, report, full) {
+  const changed = []
+  let changedProviders = 0
+  for (const provider of after) {
+    if (!synced.has(provider.providerId)) continue
+    const old = before.find((entry) => entry.providerId === provider.providerId)
+    if (isDeepStrictEqual(old, provider)) continue
+    const oldModels = new Map(old.models.map((model) => [model.modelId, model]))
+    const newModels = new Map(provider.models.map((model) => [model.modelId, model]))
+    const added = [...newModels.keys()].filter((id) => !oldModels.has(id))
+    const removed = [...oldModels.keys()].filter((id) => !newModels.has(id))
+    const details = []
+    let changedModels = 0
+    for (const [id, model] of newModels) {
+      const previous = oldModels.get(id)
+      if (previous === undefined) continue
+      const fields = changedFields(previous, model)
+      if (fields.length === 0) continue
+      changedModels += 1
+      const note = notes.find((entry) => entry.providerId === provider.providerId && entry.modelId === id)
+      const leaves = note?.differences.length
+        ? `  (override: ${note.differences.map((difference) => difference.path).join(", ")})`
+        : ""
+      details.push(`  ~ ${pad(id)} ${fields.join(", ")}${leaves}`)
+    }
+    const oldDefault = old.metadata.defaultModelId
+    const newDefault = provider.metadata.defaultModelId
+    if (oldDefault !== newDefault) {
+      details.push(`  ~ defaultModelId ${oldDefault ?? "none"} -> ${newDefault ?? "none"}`)
+    }
+    changedProviders += 1
+    changed.push(`${pad(provider.providerId, 24)} +${added.length} -${removed.length} ~${changedModels}`)
+    if (added.length > 0) changed.push(`  + ${listPreview(added)}`)
+    if (removed.length > 0) changed.push(`  - ${listPreview(removed)}`)
+    changed.push(...details)
+    for (const line of leafLines(old, provider, oldModels, newModels, full)) changed.push(line)
+  }
+  const locals = Object.entries(policies).filter(([, policy]) => policy.source === "local")
+  const head = [`Synced ${synced.size} providers (${synced.size - changedProviders} unchanged, ${changedProviders} changed)`]
+  const tail = [`local: ${locals.length} providers kept as written`]
+  for (const [id, policy] of locals) tail.push(`  ${pad(id)} ${policy.reason}`)
+  return [...head, "", ...changed, "", ...report, "", ...tail].join("\n")
+}
+
+/// The unread paths a sync folds into a count line. A path that moved on more
+/// models than this prints once, since no reader compares its values.
+const FOLD_THRESHOLD = 3
+
+/// Every leaf the curated lines above did not print, so the summary carries a
+/// change wherever it happens. A model only in the new or the old entry is
+/// already named by its `+` or `-` line, and its entry is not walked.
+function leafLines(before, after, oldModels, newModels, full) {
+  const lines = []
+  for (const leaf of changedLeaves(entryWithoutModels(before), entryWithoutModels(after), PROVIDER_REPORTED_LEAVES)) {
+    lines.push(`  ~ ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`)
+  }
+  const folded = new Map()
+  for (const id of [...newModels.keys()].filter((modelId) => oldModels.has(modelId)).sort()) {
+    for (const leaf of changedLeaves(oldModels.get(id), newModels.get(id), MODEL_REPORTED_LEAVES)) {
+      const line = `  ~ ${pad(id)} ${leaf.path} ${leafValue(leaf.before)} -> ${leafValue(leaf.after)}`
+      if (full || isReadPath(leaf.path)) {
+        lines.push(line)
+        continue
+      }
+      const entry = folded.get(leaf.path) ?? { count: 0, lines: [] }
+      entry.count += 1
+      entry.lines.push(line)
+      folded.set(leaf.path, entry)
+    }
+  }
+  for (const [path, entry] of [...folded].sort(([a], [b]) => a.localeCompare(b))) {
+    if (entry.count > FOLD_THRESHOLD) lines.push(`  ~ * ${path} changed on ${entry.count} models`)
+    else lines.push(...entry.lines)
+  }
+  return lines
+}
+
+/// The leaves the lines above already report, so the leaf list adds what is
+/// left rather than repeating them. This is not the unchanged test: that one
+/// compares the whole entry.
+const MODEL_REPORTED_LEAVES = new Set([
+  ...SUMMARY_FIELDS.map(([key]) => `capabilities.${key}`),
+  "status",
+  ...["reasoning", "toolCalling", "vision"].map((key) => `capabilities.${key}`),
+  "metadata.reasoning.effortOptions",
+])
+
+const PROVIDER_REPORTED_LEAVES = new Set(["metadata.defaultModelId", "metadata.raw.defaultModelId"])
+
+/// Every catalog path a Rust or `web/src` reader dereferences, so a change to
+/// one prints with both values. A path nothing reads only has to be visible,
+/// so it folds into a count once it moves more than `FOLD_THRESHOLD` models.
+/// The readers are listed in the pull request, not here: a reader moving is a
+/// change to this table, and the reason belongs where a reviewer reads it.
+const READ_PATHS = [
+  "modelId",
+  "displayName",
+  "status",
+  "modelGuidePrompt",
+  "capabilities",
+  "metadata.description",
+  "metadata.releaseDate",
+  "metadata.pricing",
+  "metadata.rateLimit",
+  "metadata.reasoning",
+  "metadata.serviceTier",
+  "metadata.capabilityOverrideFields",
+  "metadata.raw.type",
+  "metadata.raw.reasoning_options",
+  "metadata.raw.extra_capabilities",
+  "metadata.raw.serviceTier",
+  "metadata.raw.service_tier",
+  "metadata.raw.experimental",
+  "metadata.raw.pricing",
+  "metadata.raw.limit",
+  "metadata.raw.modalities",
+  "metadata.raw.modalityCapabilities",
+  "metadata.raw.modality_capabilities",
+  "metadata.raw.typeHints",
+  "metadata.raw.type_hints",
+  "metadata.raw.imageGeneration",
+  "metadata.raw.realtime",
+  "metadata.raw.canonical_model_id",
+]
+
+function isReadPath(path) {
+  return READ_PATHS.some((read) => path === read || path.startsWith(`${read}.`))
+}
+
+function entryWithoutModels(provider) {
+  const entry = { ...provider }
+  delete entry.models
+  return entry
+}
+
+/// The leaves of two values, by path. An array is one leaf: its indices are not
+/// a stable path, and a reviewer reads the whole list either way.
+function changedLeaves(before, after, reported) {
+  const olds = leafValues(before, [], new Map())
+  const news = leafValues(after, [], new Map())
+  const leaves = []
+  for (const key of new Set([...olds.keys(), ...news.keys()])) {
+    const path = olds.get(key)?.path ?? news.get(key).path
+    if (reported.has(path.join("."))) continue
+    if (isDeepStrictEqual(olds.get(key)?.value, news.get(key)?.value)) continue
+    leaves.push({ path: path.join("."), before: olds.get(key)?.value, after: news.get(key)?.value })
+  }
+  return leaves.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/// A key of its own is not a safe path segment, since a catalog key may contain
+/// the separator; the JSON encoding of the whole path is.
+function leafValues(value, path, leaves) {
+  if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) leafValues(item, [...path, key], leaves)
+    return leaves
+  }
+  leaves.set(JSON.stringify(path), { path, value })
+  return leaves
+}
+
+const LEAF_VALUE_WIDTH = 80
+
+function leafValue(value) {
+  if (value === undefined) return "(absent)"
+  const encoded = JSON.stringify(value)
+  return encoded.length > LEAF_VALUE_WIDTH ? `${encoded.slice(0, LEAF_VALUE_WIDTH - 1)}…` : encoded
+}
+
+/// Every override the run applied, with the value upstream states beside the
+/// patched one. A patch whose leaves all equal upstream says so, so a reviewer
+/// can retire it with evidence. This prints on an up-to-date run too.
+function overrideReport(notes) {
+  if (notes.length === 0) return []
+  const lines = []
+  let providerId
+  for (const note of notes) {
+    if (note.providerId !== providerId) {
+      providerId = note.providerId
+      lines.push(`${pad(providerId, 24)} overrides`)
+    }
+    if (note.differences.length === 0) {
+      lines.push(`  = ${pad(note.modelId)} override repeats upstream; retire it`)
+      continue
+    }
+    for (const difference of note.differences) {
+      lines.push(`  * ${pad(note.modelId)} ${difference.path} ${show(difference.patched)} (upstream ${show(difference.upstream)})`)
+    }
+  }
+  return lines
+}
+
+function show(value) {
+  if (value === undefined) return "absent"
+  return JSON.stringify(value)
+}
+
+function changedFields(before, after) {
+  const fields = []
+  for (const [key, label] of SUMMARY_FIELDS) {
+    const a = before.capabilities?.[key]
+    const b = after.capabilities?.[key]
+    if (a !== b) fields.push(`${label} ${a ?? "none"} -> ${b ?? "none"}`)
+  }
+  if (before.status !== after.status) fields.push(`status ${before.status} -> ${after.status}`)
+  for (const key of ["reasoning", "toolCalling", "vision"]) {
+    const a = before.capabilities?.[key]
+    const b = after.capabilities?.[key]
+    if (a !== b) fields.push(`${key} ${a} -> ${b}`)
+  }
+  const a = before.metadata?.reasoning?.effortOptions
+  const b = after.metadata?.reasoning?.effortOptions
+  if (JSON.stringify(a) !== JSON.stringify(b)) fields.push(`effortOptions ${showOptions(a)} -> ${showOptions(b)}`)
+  return fields
+}
+
+function showOptions(value) {
+  return Array.isArray(value) ? value.join(",") : "none"
+}
+
+function listPreview(ids) {
+  return ids.length <= 6 ? ids.join(", ") : `${ids.slice(0, 6).join(", ")}, ... (${ids.length})`
+}
+
+function pad(text, width = 32) {
+  return text.length >= width ? text : `${text}${" ".repeat(width - text.length)}`
+}
+
+/// The bundled entry's media declaration laid over the upstream row. When the
+/// upstream no longer lists the model, the bundled row is the only source, so
+/// the merge starts from it and takes the fields the overlay overrides; that
+/// keeps `canonical_model_id` and the entry's limits instead of falling back to
+/// the assumed pair.
+function mediaOverlay(providerId, bundled, upstream) {
+  const fields = ["id", "display_name", "type", "modalities", "modalityCapabilities"]
+  if (providerId !== "google" || bundled.id !== "gemini-3.5-flash") {
+    fields.push("tool_call", "structured_output")
+  }
+  const declared = Object.fromEntries(fields.filter((key) => Object.hasOwn(bundled, key)).map((key) => [key, bundled[key]]))
+  const base = isRecord(upstream) ? upstream : bundled
+  return mergePatch(base, declared)
+}
+
+/// `canonical_model_id` is not upstream's to omit: the matching step reads it,
+/// so a surviving row keeps the bundled value when upstream states none. An
+/// upstream value wins, and a kept one is reported so a reviewer can retire it
+/// by removing it from the bundled entry by hand.
+function carryCanonicalIds(providerId, models, previous, kept) {
+  return models.map((model) => {
+    const id = model.id.trim()
+    const bundled = previous.get(id)?.canonical_model_id
+    if (bundled === undefined) return model
+    const value = model.canonical_model_id
+    if (value !== undefined) return model
+    kept.push({ providerId, modelId: id, canonicalId: bundled })
+    return { ...model, canonical_model_id: bundled }
+  })
+}
+
+/// Every canonical id a sync carried over because upstream omitted it, so the
+/// summary says which entry a reviewer has to edit to let go of one.
+function keptReport(kept) {
+  if (kept.length === 0) return []
+  const lines = []
+  let providerId
+  for (const note of kept) {
+    if (note.providerId !== providerId) {
+      providerId = note.providerId
+      lines.push(`${pad(providerId, 24)} carried`)
+    }
+    lines.push(`  = ${pad(note.modelId)} canonical_model_id ${note.canonicalId} kept; upstream omits it`)
+  }
+  return lines
+}
+
+function createReasoningOffOverrideState(overrides, policies) {
   const providers = isRecord(overrides?.providers) ? overrides.providers : {}
   const pending = new Map()
   for (const [providerId, providerConfig] of Object.entries(providers)) {
@@ -171,7 +626,7 @@ function createReasoningOffOverrideState(overrides) {
     for (const [modelId, modelConfig] of Object.entries(models)) {
       providerModels.set(modelId, validateReasoningOffOverride(providerId, modelId, modelConfig))
     }
-    if (Object.hasOwn(remoteProviders, providerId)) pending.set(providerId, providerModels)
+    if (policies[providerId]?.source === "remote") pending.set(providerId, providerModels)
   }
   return pending
 }
@@ -288,6 +743,22 @@ function validateChatTemplateOffKeys(providerId, modelId, value) {
   })
 }
 
+/// A provider with bundled models states whether it serves its own vendor's
+/// models or resells other vendors'. The question has no answer for a provider
+/// whose model list comes from the user or the endpoint, so those carry none.
+function validateRole(id, metadata, models) {
+  const role = metadata.role
+  if (role !== undefined && role !== "vendor" && role !== "aggregator") {
+    throw new Error(`Provider ${id}: role must be vendor or aggregator`)
+  }
+  if (models.length > 0 && role === undefined) {
+    throw new Error(`Provider ${id}: a provider with bundled models needs a role`)
+  }
+  if (models.length === 0 && role !== undefined) {
+    throw new Error(`Provider ${id}: a provider without bundled models carries no role`)
+  }
+}
+
 function validateCatalog(catalog) {
   if (!Array.isArray(catalog?.providers) || typeof catalog.updatedAt !== "string" || !Number.isFinite(Date.parse(catalog.updatedAt))) {
     throw new Error("Catalog requires an updatedAt timestamp and a providers array")
@@ -300,6 +771,7 @@ function validateCatalog(catalog) {
     if (id === "dimcode-api-oauth") throw new Error("The managed provider owns its catalog")
     if (!isRecord(metadata?.raw) || !Array.isArray(models)) throw new Error(`Provider ${id} requires raw metadata and a models array`)
     if (metadata.lookupOnly && metadata.customModels) throw new Error(`Provider ${id}: model ownership is ambiguous`)
+    validateRole(id, metadata, models)
     assertUniqueModelIds(models, id, "modelId")
     for (const { modelId, capabilities } of models) {
       for (const key of ["contextWindow", "maxOutputTokens"]) {
@@ -564,78 +1036,6 @@ function isFilteredModel(model) {
   if (matches(model?.family)) return true
   const hints = model?.typeHints
   return Array.isArray(hints) && hints.some((hint) => matches(hint))
-}
-
-function applyLocalModelOverrides(providerId, models, previous) {
-  if (providerId === "kimi-for-coding") {
-    return models.map((model) => {
-      const context = model.limit?.context ?? model.contextWindow
-      if (model.id.trim() !== "k3.1-pro" || !Number.isSafeInteger(context) || context <= 262144) return model
-      return { ...model, limit: { ...model.limit, context: 262144 } }
-    })
-  }
-  if (providerId === "stepfun") {
-    const failClosedRemoteModels = models.map((model) => ({
-      ...model,
-      type: "other",
-      chat: false,
-      tool_call: false,
-      structured_output: false,
-      modalities: { input: ["text"], output: ["text"] },
-    }))
-    return failClosedRemoteModels.map((model) => previous.get(model.id.trim()) ?? model)
-  }
-  if (providerId === "custom-provider") {
-    return models.map((model) => {
-      const id = normalizeString(model?.id)?.toLowerCase()
-      if (id !== "minimax-m2.7") return model
-      return withReasoningCapability(model, { interleaved: true })
-    })
-  }
-  if (providerId === "aihubmix") {
-    // AIHubMix omits the feature flags for glm-5.3-flashx, so the upstream
-    // pipeline reports it as tool-call/reasoning-incapable and the model drops
-    // out of agent model selection. The model supports both — Z.AI's own route
-    // advertises them — so patch the capability fields at sync time instead of
-    // hand-editing the synced file, which the next sync would overwrite.
-    return models.map((model) => {
-      if (normalizeString(model?.id) !== "glm-5.3-flashx") return model
-      const metadata = isRecord(model.metadata) ? model.metadata : {}
-      const extraReasoning = isRecord(model.extra_capabilities?.reasoning)
-        ? model.extra_capabilities.reasoning
-        : {}
-      const features = stringArray(metadata.features) ?? [
-        "thinking",
-        "tools",
-        "function_calling",
-        "structured_outputs",
-      ]
-      return {
-        ...model,
-        reasoning: { supported: true, default: true },
-        tool_call: true,
-        metadata: { ...metadata, features },
-        extra_capabilities: {
-          ...(model.extra_capabilities ?? {}),
-          reasoning: { ...extraReasoning, supported: true },
-        },
-      }
-    })
-  }
-  return models
-}
-
-function withReasoningCapability(model, capability) {
-  return {
-    ...model,
-    extra_capabilities: {
-      ...(model.extra_capabilities ?? {}),
-      reasoning: {
-        ...(model.extra_capabilities?.reasoning ?? {}),
-        ...capability,
-      },
-    },
-  }
 }
 
 async function readRemoteJson(url) {

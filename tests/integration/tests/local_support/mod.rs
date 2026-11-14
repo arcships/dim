@@ -4,7 +4,7 @@
 
 use dim_agent_capabilities::{
     defaults,
-    environment_clients::{SessionClientsHost, SessionClientsSource},
+    environment_clients::{SessionClientsHost, SessionPresences},
     execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     history::HistoryRenderer,
     host::*,
@@ -387,7 +387,7 @@ pub struct Options {
     /// catalog plugin registers them either way.
     pub require_without_install: bool,
     /// A client-presence source, provided at the root when present.
-    pub clients: Option<Arc<dyn SessionClientsSource>>,
+    pub clients: Option<SessionPresences>,
     /// The `executionSettingsHost` face, provided to HostPlatform and the root
     /// when present; the settings tool and snapshot parts are registered with
     /// it.
@@ -565,7 +565,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         root.provide_as::<HostPlatform>(Arc::new(host))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))?;
         if let Some(clients) = clients {
-            root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost(clients)))?;
+            root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost::new(clients)))?;
         }
         if let Some(execution) = execution {
             root.provide_as::<ExecutionSettingsHost>(execution)?;

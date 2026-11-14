@@ -1434,7 +1434,7 @@ impl Connection {
                 }
                 let widget = session
                     .session_service::<crate::mcp::McpSession>()?
-                    .widget(&p.tool)
+                    .widget(p.tool)
                     .await
                     .map_err(mcp::app_error)?;
                 Reply::McpWidget(widget)
@@ -1449,7 +1449,7 @@ impl Connection {
                 let started = std::time::Instant::now();
                 let outcome = session
                     .session_service::<crate::mcp::McpSession>()?
-                    .call(&p.server, &p.tool, p.arguments)
+                    .call(p.server.clone(), p.tool.clone(), p.arguments)
                     .await;
                 tracing::info!(
                     target: "mcp.app",
@@ -1499,7 +1499,7 @@ impl Connection {
                 }
                 let result = session
                     .service::<BackgroundExec>(&p.branch_id)?
-                    .stop(&p.task_id)
+                    .stop(p.task_id)
                     .await
                     .map_err(|error| match error {
                         TaskError::Unknown => RpcError::app(
@@ -2261,14 +2261,11 @@ impl ConnectionPlugin {
     }
 }
 /// The presence host over the connection and UI registries.
-struct HubClients(Arc<ConnectionHub>);
-impl dim_agent_capabilities::environment_clients::SessionClientsSource for HubClients {
-    fn presences(
-        &self,
-        session_id: &str,
-    ) -> Vec<dim_agent_capabilities::environment_clients::ClientPresence> {
-        self.0.client_presences(session_id)
-    }
+fn hub_clients(
+    hub: Arc<ConnectionHub>,
+) -> dim_agent_capabilities::environment_clients::SessionClientsHost {
+    use dim_agent_capabilities::environment_clients::SessionClientsHost;
+    SessionClientsHost::new(Arc::new(move |session_id| hub.client_presences(session_id)))
 }
 impl DynPlugin for ConnectionPlugin {
     fn name(&self) -> &str {
@@ -2291,14 +2288,7 @@ impl DynPlugin for ConnectionPlugin {
             })?;
             ctx.provide_as::<ConnectionHub>(hub.clone())?;
             dim_agent_capabilities::environment_clients::register_parts(ctx, &parts)?;
-            ctx.provide_at(
-                self.clients.clone(),
-                Arc::new(
-                    dim_agent_capabilities::environment_clients::SessionClientsHost(Arc::new(
-                        HubClients(hub),
-                    )),
-                ),
-            )?;
+            ctx.provide_at(self.clients.clone(), Arc::new(hub_clients(hub)))?;
             Ok(Effect::Done)
         })
     }

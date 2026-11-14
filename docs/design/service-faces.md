@@ -88,6 +88,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | --- | --- | --- |
 | `scheduleJobs` | `scheduleJobs.call(JobRequest)` | 按 [Scheduler](plugins/Scheduler.md#a2-tool-schedule) 的 flat `JobRequest`/`JobReply`，与 `wakeups` 同一批次（[#1396](https://github.com/arcships/dim/pull/1396)）。 |
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
+| `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFilesHost` 是进程内绑定。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.9。 |
@@ -127,14 +128,24 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `sqliteStorage` | 连接与事务 | 数据面 `store` 的 Session 行部分（§5）；`sqliteStorage` 是提供方内部的 SQL 引擎（#1298） |
 | `timelineStore` | 连接与批次 | 同一 `store` 面的 Timeline 部分：`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
 | `toolHost` | `ToolDriver` | `execute` 数据面 |
-| `mcpSession` | 会话对象 | 每 server 的 id 操作 |
-| `backgroundExec` | 任务对象 | task id 操作 |
 | `approval`、`permission` | 决策状态 | `decide` 数据面 |
 | `inputQueue` | 队列状态 | `submit`/`withdraw` 数据面 |
 | `wait` | `WaitResult`、`CancellationToken` | `start`/`wait`/`result` 操作面 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
+
+`mcpSession` 与 `backgroundExec` 的数据面以 id 加操作暴露：
+
+| 名字 | 数据面 | 所有者把什么留在内部 |
+| --- | --- | --- |
+| `mcpSession` | `state()`、`refresh()`、`widget(published)`、`call(server, tool, arguments)` | 连接代次、已发布工具、发现与重连 |
+| `backgroundExec` | `output(taskId)`、`outputPage(taskId, cursor, limit)`、`wait(taskId, timeoutMs)`、`stop(taskId)` | 任务表、活进程、输出采集与唤醒 |
+
+形状与错误由所有者文档定义：[MCP Apps](appserver/mcp-apps.md#44-the-mcpsession-data-face)（`mcpSession`）和
+[WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md#data-face)（`backgroundExec`）。
+`backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
+这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
 `hostPlatform`、`fileStorage`、`sqliteStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
 
@@ -201,12 +212,6 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `eventSubscriptions` | process | eventhub | legacy-no-consumer | 按 #1292 定义操作面 |
-| `listenAddresses` | process | Transport | legacy-no-consumer | 按 #1292 定义操作面 |
-| `credentialVariablesHost` | process | root | legacy-no-consumer | 按 #1292 定义操作面 |
-| `reservedMethods` | process | — | legacy-no-consumer | 按 #1292 定义操作面 |
-| `collaborationDirectory` | process | CollaborationDirectory | legacy-no-consumer | 按 #1292 定义操作面 |
-| `sessionClientsHost` | process | Connection | legacy-no-consumer | 按 #1292 定义操作面 |
 | `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 批次契约（#1292）
@@ -292,9 +297,23 @@ wakeups.cancel {sessionId, wakeupId} -> {} | {state}
 
 `Wakeup` 持久化字段继续使用 snake_case，数据面用上面的 wire 字段。测试覆盖 create、list、cancel 和 loopback。
 
+### 4.7b `loops`
+
+与 `wakeups` 同一做法：注册为 shared，在 `host_key("loops")` 提供 dispatcher，原生 `Loops` 在类型键继续提供。按 Scheduler §12.6：
+
+```text
+loops.start {sessionId, branchId?, prompt, everySeconds?} -> {loopId, branchId, state, round, nextAt?, lastRoundAt?, expiresAt, stoppedReason?, settledAt?}
+loops.next {sessionId, loopId, delaySeconds?} -> 同一记录形状
+loops.list {sessionId, branchId?} -> {loops: [记录…]}
+loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: false}
+  -> error {code: invalid_params | loop_not_found | loop_limit | loop_invalid | ..., message}
+```
+
+`branchId` 默认 `main`；`delaySeconds` 缺省取工具的默认值。校验与 `session.loop.*` 共用同一个解析函数，所以两端对同一请求给出同一个错误码。投递 pass、恢复与 `settle_delivering` 是内部实现，不在此面。
+
 ### 4.8 宿主端口：`executionSettingsHost` 等六个
 
-这六个名字的内容本来就是数据（§3.7），没有 leaf 消费者时留在宿主；这一批把它们做成数据面，名字不变。每个名字只有一份定义：端口类型持有 owner 的读（闭包形式，没有第二个 owner trait），它的 dispatcher 在同一个模块里写出 wire 形状，Rust 绑定是这个 dispatcher 的薄客户端——调用同一个 operation，不写第二份逻辑。调用方拿到的回复是 `cancellable_future`：丢弃等待就取消这次调用，owner 看到的 token 随之取消（`drop_guard`），所以一次被放弃的读不会在宿主里跑下去。
+这六个名字的内容本来就是数据（§3.7），没有 leaf 消费者时留在宿主；这一批把它们做成数据面，名字不变。每个名字只有一份定义：五个读取端口持有 owner 的闭包，Rust 绑定调用同模块的 dispatcher；modality 端口的 Rust 绑定和 dispatcher 都直接调用同一个 `ModalityRequests` owner 方法，不写第二份业务逻辑。异步操作的回复是 `cancellable_future`：丢弃等待就取消这次调用，owner 看到的 token 随之取消（`drop_guard`），所以一次被放弃的读不会在宿主里跑下去。
 
 ```text
 executionSettingsHost.read({}) -> {sandbox, network}
@@ -317,9 +336,8 @@ modalityConnectionHost.modalityRequest({target, operation, method, url, headers?
 - 每个 operation 只收一个请求对象；没有输入的写 `{}`（`provider-management.md` §3.6 的形状），多一个参数或未知字段都是 `invalid_request`。
 - 取消是协议动作：调用方丢弃等待，或被取消的绑定调用不再进入 owner；owner 自己的生命周期仍然约束它启动的 worker。
 - 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用；`cwd` 的请求方向同理，`ModelSelectionRequest::at` 是 Rust 调用方换字段的唯一一处。
-- `modalityConnectionHost` 是操作面，不是 `internal`：`resolveModalityConnection` 只给路由事实（protocol、model、baseUrl、realtime），**没有** header、bearer、api key 或 Bedrock 凭据；`modalityRequest` 由 owner 把这次请求连同连接的 header 与凭据发出去，回报 `{status, headers, body}`。凭据因此只在 owner 里，调用方无论哪种语言都拿不到，也不需要“按名字把 secret 交出去”的授权模型。`body` 是 base64（跨界的字节）。Rust 适配器另有同进程的 `connection`（含解析后的连接），只因为 realtime 会话自己做 WS 握手；它不经过 face，也不序列化。
+- `modalityConnectionHost` 是操作面，不是 `internal`：`resolveModalityConnection` 只给路由事实（protocol、model、baseUrl、realtime），**没有** header、bearer、api key 或 Bedrock 凭据；`modalityRequest` 由 owner 把这次请求连同连接的 header 与凭据发出去，回报 `{status, headers, body}`。凭据因此只在 owner 里，调用方无论哪种语言都拿不到，也不需要“按名字把 secret 交出去”的授权模型。`body` 是 base64（跨界的字节）。Rust 适配器另有同进程的 `connection`（含解析后的连接），供现有可信媒体适配器（包括 realtime 的 WS 握手）使用；它不经过 face，也不序列化。
 - 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。
-- `Names::registered` 现在把 shared 名字也算“assembly 注册了它”：同名从类型键改成 data face 后，可选依赖仍能认出部件存在（PromptSuggestion 的设置端口就是这样，`prompt_suggestion.rs`）。
 - 测试：`host_port_faces.rs` 逐个比对“Rust binding 的结果 == wire 的结果”，钉住 `{}` 请求、字段拼写和错误码，用持有 token 的 owner worker 证明丢弃等待会取消 owner 的读，并用一个持有连接的 modality owner 证明 `resolveModalityConnection` 的回复没有凭据字段、`modalityRequest` 能把调用方的请求送到 owner 并拿到 data 回复；`provider_flow.rs`、`managed_oauth_flow.rs`、`dim-modality` 与 aimux 的 flow 用真实 Provider 装配跑同样的读。
 
 ### 4.9 旧主机端口：`agentConfig` 等五个
@@ -345,6 +363,35 @@ worktreeAssociations.associate {sessionId, repository, root, subtree} -> {}
 - `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
 - `worktreeAssociations` 去掉 `AssociateWorktree` trait：端口持有所有者的写闭包，Rust 调用方和 wire 调用同一个 `associate`。SessionStore 绑定 `associate_worktree`；字符串转回 `PathBuf`，绝对性和子树包含仍由所有者校验。
 - 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
+
+### 4.9 旧主机端口：`credentialVariablesHost` 等六个
+
+六个进程端口的内容本来就是数据，所有者各自把读绑定成端口类型上的 operation，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`eventSubscriptions` 手写 `HostDispatch`，因为 owner 的错误是带动态 `code` 的 struct，生成面会把 `code` 写成类型名。
+
+```text
+credentialVariablesHost.variables() -> {variables: [string]}
+  -- 只给变量名，永不给凭据值
+sessionClientsHost.presences {sessionId} -> {presences: [{channel, label?}]}
+  -- channel 是 tui/cli/web/acp/remote/desktop/unknown；label 是 hello.clientName，不是身份
+listenAddresses.read() -> {unixPath?, pipeName?, websocketAddress?}
+  -> error {code: invalid_path, message}
+  -- 路径按 §1 是 UTF-8 字符串；非 UTF-8 的 unix socket 路径是 invalid_path
+reservedMethods.check {namespace, declarations: [{name, mutating, notifications}]}
+  -> {} | error {code: reserved, message}
+  -- interruption/progress 只属于真实注册，不属于这个问题
+collaborationDirectory.relations() -> {relations: [{memberSessionId, leaderSessionId, memberAgentId}]}
+  -- 只读：Team 关系的写入仍由 Collaboration 的准入决定，数据面不提供第二个写入者
+eventSubscriptions.sources() -> sources
+eventSubscriptions.subscribe {sessionId, branchId?, types, match?, mode?} -> reply
+eventSubscriptions.unsubscribe {sessionId, subscriptionId} -> reply
+eventSubscriptions.list {sessionId} -> reply
+  -> error {code, message}
+  -- subscribe 将 EventHub A.3 的 target.sessionId/branchId 展开到请求顶层；sessionId 是值，不是授权
+```
+
+`eventSubscriptions` 的 `sources`、`list` 在 dispatcher 里是 sync，其余是 async。测试：`crates/dim-agent-capabilities/tests/legacy_port_faces.rs`、`crates/dim-app-server/tests/legacy_port_faces.rs` 和 EventHub 的 `fixture_flow.rs` 证明 typed binding 与 wire 返回同一结果。
+
+`reservedMethods` 的 owner 是 App Server 的根值：它从 `process_value`（每个 Agent 一份）改为进程根上的一份，因为 shared 名字的 isolate 只覆盖 dispatcher key，而 `process_value` 的按 Agent 隔离覆盖的是类型 key；一份进程值对所有 Session 表等价，且只有一个 dispatcher。
 
 ## 5. 验证
 

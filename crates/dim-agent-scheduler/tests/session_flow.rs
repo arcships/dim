@@ -613,6 +613,13 @@ async fn the_fifth_answer_settles_lost_and_an_exhausted_budget_needs_no_lookup()
     );
 
     client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    client
         .rpc("daemon.shutdown", json!({"ifIdle": true}))
         .await
         .unwrap();

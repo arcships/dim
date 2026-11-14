@@ -68,7 +68,10 @@ pub fn catalog() -> dim_agent_runtime::names::ServiceCatalog {
 }
 
 fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
-    use dim_agent_runtime::{BRANCH_GROUP, SESSION_GROUP, names::register};
+    use dim_agent_runtime::{
+        BRANCH_GROUP, SESSION_GROUP,
+        names::{name_of, register},
+    };
     let session = Some(SESSION_GROUP);
     register::<timeline_tree::TimelineTree>(catalog, session);
     register::<timeline_tree::TreeCommands>(catalog, session);
@@ -123,14 +126,14 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<file_storage::FileStorage>(catalog, None);
     register::<host::ModelHost>(catalog, None);
     register::<host::ProviderConnectionResolver>(catalog, None);
-    dim_agent_runtime::names::share::<host::ModelSelectionHost>(catalog);
-    register::<host::CredentialVariablesHost>(catalog, None);
+    catalog.register_shared(name_of::<host::ModelSelectionHost>());
+    catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     register::<host::SessionFilesHost>(catalog, None);
     register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
-    register::<environment_clients::SessionClientsHost>(catalog, None);
-    dim_agent_runtime::names::share::<execution_settings::ExecutionSettingsHost>(catalog);
-    dim_agent_runtime::names::share::<toolchain::ToolchainSourceHost>(catalog);
+    catalog.register_shared(name_of::<environment_clients::SessionClientsHost>());
+    catalog.register_shared(name_of::<execution_settings::ExecutionSettingsHost>());
+    catalog.register_shared(name_of::<toolchain::ToolchainSourceHost>());
     register::<skills::SkillsCatalog>(catalog, None);
 }
 impl PublicService for approval::Approval {}

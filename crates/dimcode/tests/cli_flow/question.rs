@@ -854,9 +854,14 @@ fn tui_member_questions_stay_read_only_and_a_leader_question_takes_the_prompt() 
             {"id":"result","sequence":3,"create_at":3,"type":"collaboration","name":"result","data":{"request_event_id":"request","agent_id":"reviewer","session_id":"member","status":"completed","text":"done"}},
         ],"through":3,"nextAfter":3,"done":true}));
         wire.no_context();
-        let providers = wire.read("account.providers");
-        wire.reply(&providers,json!([]));
-        let attach = wire.read("session.attach");
+        let attach = loop {
+            let request = wire.read_any();
+            match request["method"].as_str().unwrap() {
+                "account.providers" | "agent.list" => wire.reply(&request, json!([])),
+                "session.attach" => break request,
+                other => panic!("Unexpected startup request: {other}"),
+            }
+        };
         assert_eq!(attach["params"]["sessionId"],"member");
         wire.reply(&attach, attach_record(&attach));
         let history = wire.read("session.history");

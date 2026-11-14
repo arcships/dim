@@ -166,7 +166,18 @@ pub(crate) struct CatalogMetadata {
     pub(crate) remote_model_list: Option<bool>,
     #[serde(default)]
     reasoning_off_overrides: bool,
+    role: Option<ProviderRole>,
     pub(crate) raw: Option<CatalogRawMetadata>,
+}
+
+/// Whether a provider serves its own vendor's models or resells other
+/// vendors'. A provider whose model list comes from the user or the endpoint
+/// has no bundled models and declares none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderRole {
+    Vendor,
+    Aggregator,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -291,6 +302,13 @@ impl BundledCatalog {
         self.by_provider
             .get(provider_id)
             .map(|index| &self.providers[*index])
+    }
+
+    /// Whether the bundled declarations for `provider_id` belong to that
+    /// provider's own vendor or to a reseller's mixture, as the catalog states
+    /// them. `None` when the provider is not bundled or lists no models.
+    pub fn role(&self, provider_id: &str) -> Option<ProviderRole> {
+        self.provider(provider_id)?.metadata.as_ref()?.role
     }
 
     pub fn project(

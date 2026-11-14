@@ -308,21 +308,36 @@ pub fn render_overlay(
 ) -> Overlay {
     let inner = width.saturating_sub(4).max(1);
     let padded = max_rows >= 6;
-    let query_rows = if padded { 3 } else { 1 };
+    let query_in_border = max_rows < 4;
+    let query_rows = if padded {
+        3
+    } else {
+        usize::from(!query_in_border)
+    };
     let page = max_rows.saturating_sub(2 + query_rows).clamp(1, 16);
-    let query = truncate_cells(&state.query, inner.saturating_sub(2));
+    let query = truncate_cells(
+        &state.query,
+        inner.saturating_sub(if query_in_border { 4 } else { 2 }),
+    );
+    let query_line = format!("> {query}");
     let mut content = Vec::new();
     if padded {
         content.push(String::new());
     }
-    content.push(format!("> {query}"));
+    if !query_in_border {
+        content.push(query_line.clone());
+    }
     if padded {
         content.push(String::new());
     }
     content.extend(list(state, rows, inner, page, p));
     content.resize(query_rows + page, String::new());
     let title = paint(
-        t("Command Palette"),
+        if query_in_border {
+            &query_line
+        } else {
+            t("Command Palette")
+        },
         Paint {
             fg: Some(&p.accent),
             bold: true,
@@ -332,8 +347,15 @@ pub fn render_overlay(
     Overlay {
         rows: bordered(&content, width, None, &p.border, Some(&title), None),
         cursor: Some((
-            if padded { 2 } else { 1 },
-            (4 + crate::ui::text::display_width(&query)).min(width.saturating_sub(2)) as u16,
+            if query_in_border {
+                0
+            } else if padded {
+                2
+            } else {
+                1
+            },
+            (4 + usize::from(query_in_border) + crate::ui::text::display_width(&query))
+                .min(width.saturating_sub(2)) as u16,
         )),
     }
 }
@@ -445,6 +467,7 @@ mod tests {
             "export",
             "earlier",
             "goal",
+            "loop",
             "tasks",
             "rename",
             "web",

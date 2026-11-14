@@ -205,12 +205,6 @@ pub enum CompactionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberCard {
     pub task: TaskView,
-    /// The temporary profile's name, or a native Agent's name once
-    /// `agent.list` named it; its ID until then.
-    pub agent: String,
-    /// The native Agent `agent.list` can name; none for a temporary profile
-    /// or a provider member.
-    pub agent_id: Option<String>,
     pub prompt: String,
     /// Member activity, not a claim about the model that ran this task: an
     /// ended card keeps the last observation made while it ran.
@@ -302,6 +296,11 @@ pub struct TaskView {
     pub branch_id: String,
     pub kind: TaskKind,
     pub label: String,
+    pub command: Option<String>,
+    /// The member Agent's name, or its id until `agent.list` names it.
+    pub agent: Option<String>,
+    /// An existing native Agent that `agent.list` can name.
+    pub agent_id: Option<String>,
     pub started_at: u64,
     pub finished: Option<TaskFinish>,
 }
@@ -374,15 +373,16 @@ pub enum MemberConversationState {
 }
 
 /// Whether the shown line has history older than the loaded window, and
-/// whether a read for it is in flight.
+/// whether an earlier read for it is requested or in flight.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Earlier {
-    /// The shown line's first event is loaded: nothing earlier to read.
+    /// The shown line's first event is loaded, or no window has loaded yet:
+    /// nothing earlier to read.
     #[default]
     AtStart,
     /// Older history exists and is not loaded.
     Unread,
-    /// An earlier read is in flight.
+    /// An earlier read is requested or in flight. It follows `Unread` only.
     Reading,
 }
 

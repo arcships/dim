@@ -148,6 +148,22 @@ struct WatchedSession {
     session: Session,
 }
 
+/// One member relation as `collaborationDirectory.relations` answers it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollaborationRelation {
+    pub member_session_id: String,
+    pub leader_session_id: String,
+    pub member_agent_id: String,
+}
+
+/// The `relations` reply: every member relation this process holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CollaborationRelationsReply {
+    pub relations: Vec<CollaborationRelation>,
+}
+
 /// Process-lifetime records, independent of reloadable AgentIndex logic.
 #[derive(Default)]
 pub(crate) struct CollaborationDirectory {
@@ -156,6 +172,40 @@ pub(crate) struct CollaborationDirectory {
     /// Watched Session ids and their Agents: closure (treated as deletion)
     /// removes their relations and may release an owned Agent.
     watched: Mutex<BTreeMap<String, Arc<WatchedSession>>>,
+}
+
+impl CollaborationDirectory {
+    /// Records one member relation; the caller guarantees it is an admitted
+    /// member of that leader.
+    pub(crate) fn record(&self, relation: CollaborationRelation) {
+        self.relations.lock().unwrap().insert(
+            relation.member_session_id,
+            Relation {
+                leader: relation.leader_session_id,
+                member_agent: relation.member_agent_id,
+            },
+        );
+    }
+}
+
+#[rutis::service]
+impl CollaborationDirectory {
+    /// Every member relation this process holds, by member Session id.
+    pub fn relations(&self) -> CollaborationRelationsReply {
+        CollaborationRelationsReply {
+            relations: self
+                .relations
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(member, relation)| CollaborationRelation {
+                    member_session_id: member.clone(),
+                    leader_session_id: relation.leader.clone(),
+                    member_agent_id: relation.member_agent.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Provides collaboration records without depending on reloadable services.
@@ -364,13 +414,11 @@ impl Collaboration {
                 return Err(member_create_failed(error));
             }
         }
-        self.directory.relations.lock().unwrap().insert(
-            session.id().to_owned(),
-            Relation {
-                leader: leader_id.to_owned(),
-                member_agent: host.agent_id.clone(),
-            },
-        );
+        self.directory.record(CollaborationRelation {
+            member_session_id: session.id().to_owned(),
+            leader_session_id: leader_id.to_owned(),
+            member_agent_id: host.agent_id.clone(),
+        });
         self.watch(&leader_host.agent_id, leader);
         self.watch(&host.agent_id, session.clone());
         let usage = self
@@ -1062,10 +1110,20 @@ impl CollaborationSession {
             }
             Input::Request {
                 prompt,
+                title,
                 agent_id,
                 session_id,
                 profile,
             } => {
+                if title.as_ref().is_some_and(|title| {
+                    title.trim().is_empty()
+                        || title.contains(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+                }) {
+                    return Ok(refusal(
+                        Refusal::InvalidInput,
+                        "request title must be a nonblank single-line string",
+                    ));
+                }
                 let target = match (agent_id, session_id, profile) {
                     (Some(agent_id), None, None) => CollaborationTarget::Agent { agent_id },
                     (Some(agent_id), Some(session_id), None) => CollaborationTarget::Member {
@@ -1095,6 +1153,7 @@ impl CollaborationSession {
                         call_id,
                         target,
                         prompt,
+                        title,
                     }),
                     "request",
                 )
@@ -3111,6 +3170,8 @@ enum Input {
     },
     Request {
         prompt: String,
+        #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
+        title: Option<String>,
         agent_id: Option<String>,
         session_id: Option<String>,
         profile: Option<AgentProfile>,
@@ -3195,6 +3256,8 @@ fn agent_definition(
         CollaborationRole::Leader => {
             properties["resultId"] = json!({"type": "string"});
             properties["prompt"] = json!({"type": "string"});
+            properties["title"] = json!({"type": "string", "minLength": 1,
+                "description": "Short, nonblank single-line title for this task in the background task list; separate from prompt and the Agent profile name."});
             properties["profile"] = json!({
                 "type": "object",
                 "required": ["name", "description", "systemPrompt", "tools"],
@@ -3238,8 +3301,8 @@ fn agent_definition(
     for action in &actions {
         let choices = match *action {
             "request" => vec![
-                vec!["action", "prompt", "agentId"],
-                vec!["action", "prompt", "profile"],
+                vec!["action", "prompt", "title", "agentId"],
+                vec!["action", "prompt", "title", "profile"],
             ],
             "cancel" | "close" | "read" => vec![vec!["action", "agentId", "sessionId"]],
             "message" => vec![vec!["action", "agentId", "sessionId", "content"]],
@@ -4024,5 +4087,35 @@ mod tests {
         let failed = cancel_rpc(AgentError::Storage("disk is full".into()));
         assert_eq!(failed.code, -32603);
         assert!(failed.data.is_none(), "{failed:?}");
+    }
+
+    /// The `collaborationDirectory` face (service faces #1292): a Rust reader
+    /// calls `relations` in process and a part of another language calls the
+    /// same operation by name, so both answer the same.
+    #[tokio::test]
+    async fn relations_answer_the_same_through_the_binding_and_the_face() {
+        use rutis_bridge::session::call_service;
+
+        let root = Ctx::root().unwrap();
+        let directory = CollaborationDirectory::default();
+        let relation = CollaborationRelation {
+            member_session_id: "member".into(),
+            leader_session_id: "leader".into(),
+            member_agent_id: "agent".into(),
+        };
+        directory.record(relation.clone());
+        root.provide(directory).unwrap();
+        let binding = root.get::<CollaborationDirectory>().unwrap().relations();
+        let face: CollaborationRelationsReply =
+            call_service(&root, "collaborationDirectory", "relations", ())
+                .await
+                .unwrap();
+        assert_eq!(binding, face);
+        assert_eq!(
+            face,
+            CollaborationRelationsReply {
+                relations: vec![relation]
+            }
+        );
     }
 }

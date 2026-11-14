@@ -1,0 +1,40 @@
+{
+  "providers": {
+    "kimi-for-coding": {
+      "models": {
+        "k3.1-pro": { "limit": { "context": 262144 } }
+      }
+    },
+    "custom-provider": {
+      "models": {
+        "MiniMax-M2.7": { "extra_capabilities": { "reasoning": { "interleaved": true } } }
+      }
+    },
+    "aihubmix": {
+      "models": {
+        "glm-5.3-flashx": {
+          "reasoning": { "supported": true, "default": true },
+          "tool_call": true,
+          "metadata": {
+            "features": [
+              "thinking",
+              "tools",
+              "function_calling",
+              "structured_outputs"
+            ]
+          },
+          "extra_capabilities": { "reasoning": { "supported": true } }
+        },
+        "laguna-xs-2.1": { "extra_capabilities": { "reasoning": { "supported": true } } },
+        "laguna-s-2.1": { "extra_capabilities": { "reasoning": { "supported": true } } },
+        "ling-3.0-flash": { "extra_capabilities": { "reasoning": { "supported": true } } }
+      }
+    },
+    "siliconflow": {
+      "models": {
+        "Qwen/Qwen3-235B-A22B-Thinking-2507": { "limit": { "context": 262000, "output": 131072 } },
+        "Qwen/Qwen3-Coder-480B-A35B-Instruct": { "limit": { "context": 262000, "output": 65536 } }
+      }
+    }
+  }
+}

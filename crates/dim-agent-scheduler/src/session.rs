@@ -3,6 +3,7 @@
 //! before it calls the process service ([design §1.1, A.2, §10](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
     document::MAX_PROMPT_BYTES,
+    loops::{self, Loops, StartRequest, wire_loop},
     methods::{Caller, ScheduleJobs, ToolRequest},
     wakeups::{WakeupRequest, Wakeups},
 };
@@ -30,12 +31,22 @@ const UNLOADING_AFTER_CALL: &str = "tool provider generation is unloading; this 
 const CANCELLED_BEFORE_HANDOVER: &str = "schedule: cancelled before handover";
 const WAKEUP_CANCELLED_BEFORE_HANDOVER: &str = "wakeup: cancelled before handover";
 /// The `dim-scheduler` guide entry (design §5.2), verbatim.
-const ENTRY: &str = "<dim-scheduler kind=\"scheduled-run\" job=\"nightly-build\" run=\"run-7f2\">: a scheduled job's saved prompt, delivered when the job runs, and <dim-scheduler kind=\"wakeup\">: a wakeup's prompt, delivered once at its set time as one turn on the same Session. job names the job on a scheduled run and run names the run. In the scheduled-run tag the body is the job's name, and the message after the tag is the prompt saved for the job: the request this run carries out, in the operator's channel. The wakeup body is the wakeup id.";
+const ENTRY: &str = "<dim-scheduler kind=\"scheduled-run\" job=\"nightly-build\" run=\"run-7f2\">: a scheduled job's saved prompt, delivered when the job runs, and <dim-scheduler kind=\"wakeup\">: a wakeup's prompt, delivered once at its set time as one turn on the same Session. job names the job on a scheduled run and run names the run. In the scheduled-run tag the body is the job's name, and the message after the tag is the prompt saved for the job: the request this run carries out, in the operator's channel. The wakeup body is the wakeup id. A loop round is one of a loop's prompts, delivered when the loop is due; its attributes name the loop and which round this is, and the loop continues only through the model's `loop` action=next.";
 
 /// The `session.wakeup` namespace (design §10), registered by the Session
 /// part; Rpc restores an unloaded Session for each call, so list and cancel
 /// keep working when the target is cold.
 const WAKEUP_NAMESPACE: &str = "session.wakeup";
+
+/// The `session.loop` namespace (design §12.6), registered by the Session
+/// part; Rpc restores an unloaded Session for each call, so list and stop keep
+/// working when the target is cold.
+const LOOP_NAMESPACE: &str = "session.loop";
+const LOOP_UNAVAILABLE: &str = "loop is available only in interactive leader Sessions.";
+const LOOP_CANCELLED_BEFORE_HANDOVER: &str = "loop: cancelled before handover";
+/// The `loop` tool's declaration (design §12.4). The description sentences
+/// that say when to continue and when to stop are policy text.
+const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop with delay_seconds until its first round is due (default 300).\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
 
 fn declaration(description: &str) -> ToolDefinition {
     let mut tool = definition(
@@ -94,6 +105,7 @@ fn wakeup_declaration() -> ToolDefinition {
 pub struct SchedulerSession {
     jobs: Key<ScheduleJobs>,
     wakeups: Key<Wakeups>,
+    loops: Key<Loops>,
     methods: Key<SessionMethods>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
@@ -107,6 +119,7 @@ impl SchedulerSession {
         Ok(Self {
             jobs: names.key()?,
             wakeups: names.key()?,
+            loops: names.key()?,
             methods: names.key()?,
             tools: names.key()?,
             guide: names.key()?,
@@ -125,6 +138,7 @@ impl DynPlugin for SchedulerSession {
         vec![
             self.jobs.erase(),
             self.wakeups.erase(),
+            self.loops.erase(),
             self.methods.erase(),
             self.tools.erase(),
             self.guide.erase(),
@@ -136,6 +150,7 @@ impl DynPlugin for SchedulerSession {
         Box::pin(async move {
             let jobs = ctx.require_at(&self.jobs)?;
             let wakeups = ctx.require_at(&self.wakeups)?;
+            let loops = ctx.require_at(&self.loops)?;
             let methods = ctx.require_at(&self.methods)?;
             let tools = ctx.require_at(&self.tools)?;
             let config = ctx.require_at(&self.config)?;
@@ -174,6 +189,18 @@ impl DynPlugin for SchedulerSession {
                     }),
                 },
             )?;
+            tools.register(
+                ctx,
+                ToolContribution {
+                    definition: loop_declaration(),
+                    handler: Arc::new(LoopTool {
+                        loops: loops.clone(),
+                        config: config.clone(),
+                        session_id: identity.session_id.clone(),
+                        closing: closing.clone(),
+                    }),
+                },
+            )?;
             methods.register(
                 ctx,
                 WAKEUP_NAMESPACE,
@@ -183,6 +210,16 @@ impl DynPlugin for SchedulerSession {
                     MethodDecl::new("session.wakeup.cancel", true, Interruption::Drain),
                 ],
                 wakeup_handler(wakeups),
+            )?;
+            methods.register(
+                ctx,
+                LOOP_NAMESPACE,
+                vec![
+                    MethodDecl::new("session.loop.start", true, Interruption::Drain),
+                    MethodDecl::new("session.loop.list", false, Interruption::Report),
+                    MethodDecl::new("session.loop.stop", true, Interruption::Drain),
+                ],
+                loop_handler(loops),
             )?;
             Ok(Effect::Done)
         })
@@ -240,6 +277,171 @@ fn parse_at(at: &str) -> Result<chrono::DateTime<chrono::Utc>, RpcError> {
     chrono::DateTime::parse_from_rfc3339(at)
         .map(|instant| instant.with_timezone(&chrono::Utc))
         .map_err(|_| RpcError::invalid("at must be an RFC 3339 timestamp"))
+}
+
+/// `loop list` for a model: one line per loop plus the state a next action
+/// needs.
+fn loop_listing(records: &[loops::Loop]) -> String {
+    if records.is_empty() {
+        return "loops: none".into();
+    }
+    let mut text = format!("loops: {}", records.len());
+    for record in records {
+        let prompt: String = record.prompt.chars().take(120).collect();
+        text.push_str(&format!(
+            "\n- {} {} round {} next {} {}",
+            record.loop_id,
+            record.state.name(),
+            record.round,
+            record.next_at.as_deref().unwrap_or("none"),
+            prompt.replace('\n', " "),
+        ));
+    }
+    text
+}
+
+/// The `session.loop.*` handler: parses at the wire boundary, forwards to the
+/// process owner, and maps its errors.
+fn loop_handler(loops: Arc<Loops>) -> dim_agent_capabilities::methods::Handler {
+    Arc::new(move |call, _cancel, _progress| {
+        let MethodCall {
+            method,
+            params: value,
+            ..
+        } = call;
+        let loops = loops.clone();
+        Box::pin(async move {
+            match method.as_str() {
+                "session.loop.start" => {
+                    let p: LoopStartParams = params(value)?;
+                    let created = loops.start(loop_start_request(p)?).await?;
+                    reply(json!({ "loop": wire_loop(&created) }))
+                }
+                "session.loop.list" => {
+                    let p: LoopListParams = params(value)?;
+                    let (session_id, branch) = loop_list_scope(p)?;
+                    let own = loops.list(&session_id, &branch).await?;
+                    reply(json!({
+                        "loops": own.iter().map(wire_loop).collect::<Vec<_>>()
+                    }))
+                }
+                "session.loop.stop" => {
+                    let p: LoopStopParams = params(value)?;
+                    let (session_id, loop_id) = loop_stop_target(p)?;
+                    let (record, settled) = loops.stop(&session_id, &loop_id).await?;
+                    let mut answer = json!({ "loop": wire_loop(&record) });
+                    if !settled {
+                        answer["settled"] = json!(false);
+                    }
+                    reply(answer)
+                }
+                _ => Err(RpcError::unknown_method()),
+            }
+        })
+    })
+}
+
+/// The `loop` tool's declaration (design §12.4). Its sentences on continuing
+/// and stopping are policy text.
+fn loop_declaration() -> ToolDefinition {
+    let mut tool = definition(
+        "loop",
+        LOOP_DESCRIPTION,
+        json!({
+            "type": "object",
+            "required": ["action"],
+            "additionalProperties": false,
+            "properties": {
+                "action": {"type": "string", "enum": ["start", "next", "stop", "list"]},
+                "prompt": {"type": "string", "description": format!("[start] The text each round delivers, at most {MAX_PROMPT_BYTES} bytes of UTF-8.")},
+                "delay_seconds": {"type": "integer", "description": "[start, next] Seconds until the round is due; a next delay is clamped to 60..3600."},
+                "loop_id": {"type": "string", "description": "[next, stop] The loop to act on; absent, the branch's only loop."}
+            }
+        }),
+    );
+    tool.source = ToolSource::Extension;
+    tool.risk = Some("persistent_configuration".into());
+    tool
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopStartParams {
+    pub(crate) session_id: String,
+    #[serde(default)]
+    pub(crate) branch_id: Option<String>,
+    pub(crate) prompt: String,
+    /// A fixed cadence; absent starts a self-paced loop.
+    #[serde(default)]
+    pub(crate) every_seconds: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopListParams {
+    pub(crate) session_id: String,
+    #[serde(default)]
+    pub(crate) branch_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopStopParams {
+    pub(crate) session_id: String,
+    pub(crate) loop_id: String,
+}
+
+/// The one parse of a loop start, shared by the `session.loop.start` handler
+/// and the `loops` data face's `start`, so both answer the same errors.
+pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest, RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = params.branch_id.as_deref().unwrap_or("main");
+    nonempty(branch, "branchId")?;
+    nonempty(&params.prompt, "prompt")?;
+    prompt_size(&params.prompt).map_err(RpcError::invalid)?;
+    Ok(StartRequest {
+        session_id: params.session_id,
+        branch_id: branch.to_owned(),
+        prompt: params.prompt,
+        every_seconds: params.every_seconds,
+    })
+}
+
+/// The one parse of a loop list scope, shared by the handler and the face.
+pub(crate) fn loop_list_scope(params: LoopListParams) -> Result<(String, String), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    let branch = params.branch_id.as_deref().unwrap_or("main");
+    nonempty(branch, "branchId")?;
+    Ok((params.session_id, branch.to_owned()))
+}
+
+/// The one parse of a loop stop target, shared by the handler and the face.
+pub(crate) fn loop_stop_target(params: LoopStopParams) -> Result<(String, String), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    nonempty(&params.loop_id, "loopId")?;
+    Ok((params.session_id, params.loop_id))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LoopNextParams {
+    pub(crate) session_id: String,
+    pub(crate) loop_id: String,
+    /// Seconds until the round is due; absent uses the tool's default.
+    #[serde(default)]
+    pub(crate) delay_seconds: Option<i64>,
+}
+
+/// The one parse of a loop `next`, shared by the handler and the face. The
+/// delay default is the tool's, so one absence rule serves both entry points.
+pub(crate) fn loop_next_target(params: LoopNextParams) -> Result<(String, String, i64), RpcError> {
+    nonempty(&params.session_id, "sessionId")?;
+    nonempty(&params.loop_id, "loopId")?;
+    Ok((
+        params.session_id,
+        params.loop_id,
+        params.delay_seconds.unwrap_or(300),
+    ))
 }
 
 pub(crate) fn wakeup_request(
@@ -464,6 +666,150 @@ impl ToolHandler for WakeupTool {
                 Err(error) => {
                     ToolResult::error(format!("wakeup: {}\n{}", error.code, error.message))
                 }
+            })
+        })
+    }
+}
+
+/// The model-facing arguments of `loop`, exactly as the declaration reads them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoopArgs {
+    action: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    delay_seconds: Option<i64>,
+    #[serde(default)]
+    every_seconds: Option<u64>,
+    #[serde(default)]
+    loop_id: Option<String>,
+}
+
+struct LoopTool {
+    loops: Arc<Loops>,
+    config: Arc<SessionConfig>,
+    session_id: String,
+    /// Cancelled when this generation starts to unload.
+    closing: CancellationToken,
+}
+
+impl LoopTool {
+    /// The loop a `next` or `stop` names: the given id, or the branch's only
+    /// live loop.
+    async fn target(&self, branch_id: &str, loop_id: Option<&str>) -> Result<String, String> {
+        if let Some(id) = loop_id {
+            return Ok(id.to_owned());
+        }
+        let own = self
+            .loops
+            .list(&self.session_id, branch_id)
+            .await
+            .map_err(|error| format!("loop: {}\n{}", error.code, error.message))?;
+        let mut live: Vec<&loops::Loop> =
+            own.iter().filter(|record| record.state.is_live()).collect();
+        match live.len() {
+            1 => Ok(live.remove(0).loop_id.clone()),
+            0 => Err("loop: loop_not_found\nthis branch has no live loop".into()),
+            _ => Err(
+                "loop: loop_invalid\nthis branch has several live loops; name one with loop_id"
+                    .into(),
+            ),
+        }
+    }
+}
+
+impl ToolHandler for LoopTool {
+    fn execute(
+        &self,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move {
+            if self.closing.is_cancelled() {
+                return Ok(ToolResult::error(UNLOADING_BEFORE_CALL));
+            }
+            if !self.config.interactive
+                || self.config.collaboration_role == CollaborationRole::Member
+            {
+                return Ok(ToolResult::error(LOOP_UNAVAILABLE));
+            }
+            let args: LoopArgs = match serde_json::from_value(Value::Object(call.input)) {
+                Ok(args) => args,
+                Err(error) => {
+                    return Ok(ToolResult::error(format!("loop: loop_invalid\n{error}")));
+                }
+            };
+            if cancel.is_cancelled() {
+                return Ok(ToolResult::error(LOOP_CANCELLED_BEFORE_HANDOVER));
+            }
+            let branch_id = context.branch_id;
+            let outcome = match args.action.as_str() {
+                "start" => {
+                    let Some(prompt) = args.prompt.filter(|prompt| !prompt.is_empty()) else {
+                        return Ok(ToolResult::error(
+                            "loop: loop_invalid\nstart requires a prompt",
+                        ));
+                    };
+                    if let Err(message) = prompt_size(&prompt) {
+                        return Ok(ToolResult::error(format!("loop: loop_invalid\n{message}")));
+                    }
+                    self.loops
+                        .start(StartRequest {
+                            session_id: self.session_id.clone(),
+                            branch_id: branch_id.clone(),
+                            prompt,
+                            every_seconds: args.every_seconds,
+                        })
+                        .await
+                        .map(|record| {
+                            format!(
+                                "loop: started\n{}\nThe first round is due now; arm the following one with action=next.",
+                                wire_loop(&record)
+                            )
+                        })
+                        .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
+                }
+                "next" => {
+                    let loop_id = match self.target(&branch_id, args.loop_id.as_deref()).await {
+                        Ok(id) => id,
+                        Err(message) => return Ok(ToolResult::error(message)),
+                    };
+                    let delay = args.delay_seconds.unwrap_or(300);
+                    self.loops
+                        .next(&self.session_id, &loop_id, delay)
+                        .await
+                        .map(|record| format!("loop: next\n{}", wire_loop(&record)))
+                        .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
+                }
+                "stop" => {
+                    let loop_id = match self.target(&branch_id, args.loop_id.as_deref()).await {
+                        Ok(id) => id,
+                        Err(message) => return Ok(ToolResult::error(message)),
+                    };
+                    self.loops
+                        .stop(&self.session_id, &loop_id)
+                        .await
+                        .map(|(record, _)| format!("loop: stopped\n{}", wire_loop(&record)))
+                        .map_err(|error| format!("loop: {}\n{}", error.code, error.message))
+                }
+                "list" => self
+                    .loops
+                    .list(&self.session_id, &branch_id)
+                    .await
+                    .map(|own| format!("loop: list\n{}", loop_listing(&own)))
+                    .map_err(|error| format!("loop: {}\n{}", error.code, error.message)),
+                other => Err(format!(
+                    "loop: loop_invalid\nunknown action {other}; use start, next, stop or list"
+                )),
+            };
+            if self.closing.is_cancelled() {
+                return Ok(ToolResult::error(UNLOADING_AFTER_CALL));
+            }
+            Ok(match outcome {
+                Ok(text) => ToolResult::text(text),
+                Err(message) => ToolResult::error(message),
             })
         })
     }

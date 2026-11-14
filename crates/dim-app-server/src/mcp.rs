@@ -26,7 +26,7 @@ use config::{
     McpSecrets, McpServerSettings, McpSettings,
 };
 use dim_agent_capabilities::file_storage::FileStorage;
-use dim_agent_capabilities::host::{CredentialVariables, CredentialVariablesHost};
+use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
@@ -450,7 +450,7 @@ fn resolved_entry(
 
 pub struct McpService {
     settings: Arc<SettingsService>,
-    credentials: Arc<dyn CredentialVariables>,
+    credentials: Arc<CredentialVariablesHost>,
     /// Why the last registration of a plugin was refused, by plugin id: the
     /// raw error, and its static reason when the cause has one
     /// (PluginManager A.2).
@@ -463,7 +463,7 @@ pub struct McpService {
 impl McpService {
     /// The credential variable names the daemon owns now.
     pub(crate) fn protected(&self) -> BTreeSet<String> {
-        self.credentials.credential_variables()
+        self.credentials.variables().variables
     }
 
     /// Acquire a generation in an explicit owner's loader subtree.
@@ -659,7 +659,7 @@ impl McpService {
         self.publication.refresh();
         let credentials = self.credentials.clone();
         self.run(cancel, move |settings, cancel| async move {
-            let protected = credentials.credential_variables();
+            let protected = credentials.variables().variables;
             let mut catalog = McpCatalog {
                 user_revision: String::new(),
                 project_revision: None,
@@ -776,7 +776,7 @@ impl McpService {
     ) -> Result<McpResolvedEntry> {
         let credentials = self.credentials.clone();
         self.run(cancel, move |settings, cancel| async move {
-            let protected = credentials.credential_variables();
+            let protected = credentials.variables().variables;
             let Some(scope) = source.scope() else {
                 let (mut entries, mut invalid) = settings
                     .read::<McpPluginServers>(SettingsScope::User, &cancel)
@@ -1822,7 +1822,7 @@ impl DynPlugin for McpPlugin {
             let auth = McpAuth::new(files, self.home_root).map_err(ErrorKind::PluginFailed)?;
             let service = Arc::new(McpService {
                 settings,
-                credentials: credentials.0.clone(),
+                credentials,
                 refused: Mutex::default(),
                 publication,
                 stopping: ctx.cancellation_token(),

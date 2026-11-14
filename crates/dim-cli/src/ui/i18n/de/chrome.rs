@@ -574,6 +574,13 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C leeren, zweimal beenden · Ctrl+D beendet bei leerem Entwurf"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab Berechtigungen wechseln (Eingabefokus)"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "Bei Auswahl Shift+Tab zum neueren Ziel · Esc zurück zur Eingabe"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab zum Wechseln)",
         "Fullscreen" => "Vollbild",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown scrollen · Home/End Anfang/Ende (bei leerem Entwurf) · Tab Nachricht wählen, e bearbeiten, q zitieren"

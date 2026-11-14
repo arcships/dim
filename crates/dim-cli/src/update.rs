@@ -4,6 +4,9 @@
 //! ever upgrades within itself, as the publish scripts guarantee from the
 //! other side.
 
+#[cfg(unix)]
+mod staged;
+
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -35,17 +38,69 @@ pub struct Offer {
 pub struct Install {
     pub version: String,
     pub program: PathBuf,
-    pub args: Vec<String>,
+    pub manager: Manager,
     /// The manager's installation root, outside the packages it replaces.
     pub directory: PathBuf,
+    /// The package this copy was installed from, which names the directory the
+    /// manager installs it into and the commands that start it.
+    pub package: String,
+}
+
+/// How the manager installs the new version.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Manager {
+    /// The manager installs under any prefix it is given, so the update installs
+    /// the new version beside the live package and switches it in afterwards.
+    /// Only unix exchanges the package folder without touching a running image.
+    #[cfg(unix)]
+    Staged,
+    /// The manager installs only into the layout the update replaces, with
+    /// these arguments before the package.
+    InPlace { arguments: Vec<String> },
 }
 
 impl Install {
+    /// The package and channel tag the manager installs.
+    fn spec(&self) -> String {
+        format!("{}@{}", self.package, self.version)
+    }
+
+    /// The manager's arguments for installing the new version into `prefix`
+    /// when that is a staging directory. `--globalconfig` keeps the global npm
+    /// configuration of the live installation: `--prefix` alone points npm at
+    /// `<prefix>/etc/npmrc` and would drop the registry, mirror and credentials
+    /// an operator saved with `npm config set -g`.
+    #[cfg(unix)]
+    fn staging_command(&self, prefix: &Path) -> Vec<String> {
+        let globalconfig = self.directory.join("etc").join("npmrc");
+        vec![
+            "install".to_owned(),
+            "-g".to_owned(),
+            "--prefer-online".to_owned(),
+            "--prefix".to_owned(),
+            prefix.to_string_lossy().into_owned(),
+            "--globalconfig".to_owned(),
+            globalconfig.to_string_lossy().into_owned(),
+            self.spec(),
+        ]
+    }
+
+    /// The manager's arguments for installing the version where it lives now.
+    fn in_place_command(&self) -> Vec<String> {
+        match &self.manager {
+            #[cfg(unix)]
+            Manager::Staged => self.staging_command(&self.directory),
+            Manager::InPlace { arguments } => {
+                arguments.iter().cloned().chain([self.spec()]).collect()
+            }
+        }
+    }
+
     #[cfg(test)]
     pub fn command_line(&self) -> String {
         let program = self.program.file_name().unwrap_or(self.program.as_os_str());
         std::iter::once(program.to_string_lossy().into_owned())
-            .chain(self.args.iter().cloned())
+            .chain(self.in_place_command())
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -137,24 +192,23 @@ fn manual(package: &str, current: &str) -> String {
 /// when another Node comes first on `PATH`.
 fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
     let path = exe.to_string_lossy().replace('\\', "/");
-    let spec = format!("{package}@{version}");
-    let (program, args, directory) =
+    let (program, manager, directory) =
         if let Some((prefix, _)) = path.split_once("/.bun/install/global/node_modules/") {
             (
                 "bun".into(),
-                vec!["add", "-g"],
+                in_place(&["add", "-g"]),
                 Path::new(prefix).join(".bun/install/global"),
             )
         } else if let Some((prefix, _)) = path.split_once("/.volta/") {
             (
                 "volta".into(),
-                vec!["install"],
+                in_place(&["install"]),
                 Path::new(prefix).join(".volta"),
             )
         } else if let Some((prefix, _)) = path.split_once("/pnpm/global/") {
             (
                 "pnpm".into(),
-                vec!["add", "-g"],
+                in_place(&["add", "-g"]),
                 Path::new(prefix).join("pnpm/global"),
             )
         } else if let Some((prefix, _)) = path.split_once("/.pnpm/") {
@@ -164,11 +218,15 @@ fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
             } else {
                 directory
             };
-            ("pnpm".into(), vec!["add", "-g"], directory.to_path_buf())
+            (
+                "pnpm".into(),
+                in_place(&["add", "-g"]),
+                directory.to_path_buf(),
+            )
         } else if let Some((prefix, _)) = path.split_once("/yarn/global/") {
             (
                 "yarn".into(),
-                vec!["global", "add"],
+                in_place(&["global", "add"]),
                 Path::new(prefix).join("yarn/global"),
             )
         } else {
@@ -184,18 +242,34 @@ fn installer(exe: &Path, package: &str, version: &str) -> Option<Install> {
                 Path::new(prefix).join("bin").join("npm")
             };
             let npm = if npm.is_file() { npm } else { "npm".into() };
-            (
-                npm,
-                vec!["install", "-g", "--prefer-online", "--prefix", prefix],
-                PathBuf::from(prefix),
-            )
+            // Windows npm installs under `<prefix>\node_modules` with command
+            // shims in `<prefix>`, and this process runs from inside the folder
+            // an exchange would replace, so it keeps the in-place install there.
+            #[cfg(windows)]
+            let manager = in_place(&["install", "-g", "--prefer-online", "--prefix", prefix]);
+            // No unix system keeps an image mapped, so the package folder can be
+            // replaced while this process runs from inside it.
+            #[cfg(unix)]
+            let manager = Manager::Staged;
+            (npm, manager, PathBuf::from(prefix))
         };
     Some(Install {
         version: version.to_owned(),
         program,
-        args: args.into_iter().map(str::to_owned).chain([spec]).collect(),
+        manager,
         directory,
+        package: package.to_owned(),
     })
+}
+
+/// How a manager without a staging step is told to install.
+fn in_place(arguments: &[&str]) -> Manager {
+    Manager::InPlace {
+        arguments: arguments
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect(),
+    }
 }
 
 /// The dist-tag a build upgrades along, `None` when it has none: only a build
@@ -297,7 +371,11 @@ pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
         }
     };
     if let Some(error) = output_error {
-        return Err(format!("{error}; {}", result.unwrap_err()).into());
+        return Err(match result {
+            Ok(_) => format!("{error}; the update itself had finished"),
+            Err(update) => format!("{error}; {update}"),
+        }
+        .into());
     }
     if interactive {
         crossterm::execute!(
@@ -306,8 +384,11 @@ pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
             crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
         )?;
     }
-    result?;
+    let warnings = result?;
     writeln!(stderr, "Updated {package} on the {tag} channel.")?;
+    for warning in warnings {
+        writeln!(stderr, "{warning}")?;
+    }
     Ok(0)
 }
 
@@ -393,7 +474,7 @@ pub async fn install(
     install: Install,
     cancel: CancellationToken,
     legacy_exited: bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let own = LEASE.lock().unwrap().take();
     drop(own);
     let result = install_exclusive(&install, cancel, legacy_exited).await;
@@ -405,7 +486,22 @@ async fn install_exclusive(
     install: &Install,
     cancel: CancellationToken,
     legacy_exited: bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
+    let lock = lease(install, legacy_exited)?;
+    let result = match install.manager {
+        #[cfg(unix)]
+        Manager::Staged => staged::update(install, &cancel).await,
+        Manager::InPlace { .. } => run_manager(install, install.in_place_command(), cancel)
+            .await
+            .map(|()| Vec::new()),
+    };
+    drop(lock);
+    result
+}
+
+/// Takes the installation's exclusive lease and records the baseline marker,
+/// returning the lock so it is held for as long as the caller needs it.
+fn lease(install: &Install, legacy_exited: bool) -> Result<std::fs::File, String> {
     let path = install.directory.join(LOCK_FILE);
     let lock = open_lock(&install.directory, true)
         .map_err(|error| format!("Cannot lock installation {}: {error}", path.display()))?;
@@ -426,10 +522,17 @@ async fn install_exclusive(
         std::fs::write(&baseline, b"")
             .map_err(|error| format!("Cannot record {}: {error}", baseline.display()))?;
     }
+    Ok(lock)
+}
+
+/// Runs the manager and waits for it, ending its process tree on cancellation.
+async fn run_manager(
+    install: &Install,
+    args: Vec<String>,
+    cancel: CancellationToken,
+) -> Result<(), String> {
     let mut command = tokio::process::Command::new(&install.program);
-    command
-        .args(&install.args)
-        .stdin(std::process::Stdio::null());
+    command.args(&args).stdin(std::process::Stdio::null());
     let mut tree = dim_agent_capabilities::host_platform::ProcessTree::spawn(command)
         .map_err(|error| format!("{}: {error}", install.program.display()))?;
     let mut stdout = tree.stdout();
@@ -540,8 +643,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             npm.command_line(),
-            "npm install -g --prefer-online --prefix /u/.nvm/versions/node/v24 dimcode@0.1.0-alpha.2"
+            "npm install -g --prefer-online --prefix /u/.nvm/versions/node/v24 --globalconfig /u/.nvm/versions/node/v24/etc/npmrc dimcode@0.1.0-alpha.2"
         );
+        assert_eq!(npm.package, "dimcode");
+        assert_eq!(npm.manager, Manager::Staged);
         let prefix = tempfile::tempdir().unwrap();
         std::fs::create_dir(prefix.path().join("bin")).unwrap();
         std::fs::write(prefix.path().join("bin/npm"), "").unwrap();
@@ -549,7 +654,9 @@ mod tests {
         let np = installer(&copied, "dimcode", spec).unwrap();
         assert_eq!(np.program, prefix.path().join("bin/npm"));
         assert_eq!(
-            np.args.last().map(String::as_str),
+            np.staging_command(Path::new("/stage"))
+                .last()
+                .map(String::as_str),
             Some("dimcode@0.1.0-alpha.2")
         );
         let bun = installer(
@@ -577,5 +684,23 @@ mod tests {
             "pnpm add -g dimcode-alpha@0.1.0-alpha.2"
         );
         assert!(installer(Path::new("/u/dim/target/debug/dimcode"), "dimcode", spec).is_none());
+    }
+
+    /// Windows replaces the package folder in place, so its command stays the
+    /// one it always was: no staging prefix and no `--globalconfig`.
+    #[cfg(windows)]
+    #[test]
+    fn the_install_keeps_the_in_place_command_on_windows() {
+        let install = installer(
+            Path::new(r"C:\Users\u\AppData\Roaming\npm\node_modules\dimcode\bin\dimcode.exe"),
+            "dimcode",
+            "0.1.0-alpha.2",
+        )
+        .unwrap();
+        assert_eq!(
+            install.command_line(),
+            "npm install -g --prefer-online --prefix C:/Users/u/AppData/Roaming/npm dimcode@0.1.0-alpha.2"
+        );
+        assert!(matches!(install.manager, Manager::InPlace { .. }));
     }
 }
