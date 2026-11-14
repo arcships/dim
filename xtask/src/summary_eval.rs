@@ -1334,19 +1334,21 @@ async fn collected(mut stream: ModelStream) -> std::result::Result<Completion, H
     })
 }
 
-/// The verdicts of a judge reply: the first JSON array that parses as a
-/// verdict list, or else the first run of verdict objects, one per line.
-/// Prose, a fenced block or a bracketed lead-in before the verdicts must not
-/// hide them, and a bracket inside a quoted verdict is part of the JSON, not
-/// a boundary. A reply with neither says why it could not be read.
+/// The verdicts of a judge reply: the first array whose elements are all JSON
+/// objects, else the first run of verdict objects, one per line. An element of
+/// that array that does not read fails the whole reply, naming its own probe;
+/// any other array is skipped, and `[]` is no verdicts.
 pub(crate) fn parse_judgements(text: &str) -> std::result::Result<Vec<Judgement>, String> {
     let mut array_error = None;
     for (start, _) in text.match_indices('[') {
         match serde_json::Deserializer::from_str(&text[start..])
-            .into_iter::<Vec<Judgement>>()
+            .into_iter::<Vec<serde_json::Value>>()
             .next()
         {
-            Some(Ok(judged)) => return Ok(judged),
+            Some(Ok(values)) if values.iter().all(serde_json::Value::is_object) => {
+                return judgements(values);
+            }
+            Some(Ok(_)) => {}
             Some(Err(error)) => {
                 array_error.get_or_insert(error.to_string());
             }
@@ -1357,6 +1359,23 @@ pub(crate) fn parse_judgements(text: &str) -> std::result::Result<Vec<Judgement>
         return Ok(judged);
     }
     Err(array_error.unwrap_or_else(|| "the reply holds no verdict object".to_owned()))
+}
+
+/// One verdict per parsed object, each naming its own probe and the value that
+/// failed.
+fn judgements(values: Vec<serde_json::Value>) -> std::result::Result<Vec<Judgement>, String> {
+    values
+        .into_iter()
+        .map(|value| {
+            let id = value
+                .get("id")
+                .and_then(|id| id.as_str())
+                .unwrap_or("<no id>")
+                .to_owned();
+            serde_json::from_value::<Judgement>(value)
+                .map_err(|error| format!("probe `{id}` carries no readable verdict: {error}"))
+        })
+        .collect()
 }
 
 /// The first run of verdict objects in a reply, one per line: the objects
@@ -1990,6 +2009,20 @@ mod tests {
         assert_eq!(judged[0].verdict, Verdict::Present);
     }
 
+    #[test]
+    fn a_bracketed_lead_in_does_not_hide_the_verdicts() {
+        for reply in [
+            "See [1] below.\n[{\"id\": \"ran\", \"verdict\": \"present\", \"quote\": \"turn/end\"}]",
+            "See [\"draft\"] below.\n\
+             [{\"id\": \"ran\", \"verdict\": \"present\", \"quote\": \"turn/end\"}]",
+        ] {
+            let judged = parse_judgements(reply).unwrap();
+            assert_eq!(judged.len(), 1, "{reply}");
+            assert_eq!(judged[0].id, "ran");
+        }
+        assert!(parse_judgements("[]").unwrap().is_empty());
+    }
+
     /// The verdicts are read from one object per line, with prose around the
     /// run and a brace in the prose before it.
     #[test]
@@ -2017,9 +2050,15 @@ mod tests {
             .err()
             .expect("a reply with no verdict object");
         assert_eq!(error, "the reply holds no verdict object");
-        let error = parse_judgements(r#"[{"id": "ran", "verdict": "maybe"}]"#)
-            .err()
-            .expect("an array of no verdict object");
+        let error = parse_judgements(
+            r#"[{"id": "ran", "verdict": "present"}, {"id": "floods", "verdict": "maybe"}]"#,
+        )
+        .err()
+        .expect("an array of no verdict object");
+        assert!(
+            error.contains("probe `floods` carries no readable verdict"),
+            "{error}"
+        );
         assert!(error.contains("unknown variant `maybe`"), "{error}");
     }
 
