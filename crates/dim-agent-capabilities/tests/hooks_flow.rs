@@ -8,6 +8,7 @@ use dim_agent_capabilities::{
     hooks::{
         HookSourceId, HookSourceSnapshot, HookSourceState, HookSourcesHost, HookSourcesSnapshot,
         HooksBranchPlugin, HooksDocument, HooksSessionPlugin, ReadHookSources,
+        testing::watch_settled,
     },
     host::*,
     host_platform::{
@@ -642,9 +643,9 @@ impl Env {
             builder.require_feature(Feature::new("HooksBranchTest").branch(
                 "HooksBranchOwner",
                 move |names| {
-                    let plugin = HooksBranchPlugin::new(names)?;
+                    let plugin = Arc::new(HooksBranchPlugin::new(names)?);
                     Ok(Box::new(HooksBranchOwner {
-                        plugin: Mutex::new(Some(plugin)),
+                        plugin,
                         views: views.clone(),
                     }))
                 },
@@ -731,6 +732,11 @@ impl Env {
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
+    }
+
+    /// The working directory of a Session of this environment.
+    fn work(&self) -> PathBuf {
+        self.dir.join("work")
     }
 
     /// Writes a `context/configured` whose tool part declares `names`, from
@@ -826,9 +832,11 @@ impl DynPlugin for HooksSessionOwner {
 }
 
 /// Mounts the real `HooksBranch` as a child, so a test can unload it and
-/// read what an unload settles (A.6.1's reload row).
+/// read what an unload settles (A.6.1's reload row). A dependency refresh
+/// loads the owner again, and each load mounts its own copy: the product
+/// re-applies `HooksBranch` on reload, so a single mount is not the contract.
 struct HooksBranchOwner {
-    plugin: Mutex<Option<HooksBranchPlugin>>,
+    plugin: Arc<HooksBranchPlugin>,
     views: Arc<Mutex<Vec<FiberView>>>,
 }
 impl DynPlugin for HooksBranchOwner {
@@ -836,25 +844,30 @@ impl DynPlugin for HooksBranchOwner {
         "HooksBranchOwner"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        self.plugin
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(DynPlugin::injects)
-            .unwrap_or_default()
+        self.plugin.injects()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let plugin = self
-                .plugin
-                .lock()
-                .unwrap()
-                .take()
-                .expect("the owner mounts its HooksBranch once");
-            let view = dim_agent_runtime::mount_active(ctx, plugin).await?;
+            let view =
+                dim_agent_runtime::mount_active(ctx, MountedBranch(self.plugin.clone())).await?;
             self.views.lock().unwrap().push(view);
             Ok(Effect::Done)
         })
+    }
+}
+
+/// The part the owner mounts: `HooksBranchPlugin` itself, which the owner
+/// shares with every apply it makes.
+struct MountedBranch(Arc<HooksBranchPlugin>);
+impl DynPlugin for MountedBranch {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.injects()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        self.0.apply(ctx)
     }
 }
 
@@ -3477,15 +3490,10 @@ async fn an_unload_reports_only_the_handlers_still_running() {
     let env = Env::with_mounted_hooks(Arc::new(Model::default()), None).await;
     let started = env.path("project-started");
     let pid_file = env.path("project-pid");
-    let user_done = env.path("user-done");
     env.sources.set(document(serde_json::json!({
         "UserPromptSubmit": [command(serde_json::json!({
             "type": "command",
-            "command": format!(
-                "printf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"user context\"}}}}'; \
-                 printf done > {}",
-                user_done.display(),
-            ),
+            "command": "printf '{\"hookSpecificOutput\":{\"additionalContext\":\"user context\"}}'",
         }))],
     })));
     env.sources.set_project(
@@ -3494,9 +3502,12 @@ async fn an_unload_reports_only_the_handlers_still_running() {
         })),
         true,
     );
+    let mut settled = watch_settled(&env.work(), "user");
     let (session, release, _old_id, call) = steer_into_a_pending_prompt(&env).await;
     wait_file(&started, "the project prompt hook did not start").await;
-    wait_file(&user_done, "the user prompt hook did not exit").await;
+    tokio::time::timeout(Duration::from_secs(10), settled.settled())
+        .await
+        .expect("the runner did not take the user hook's result");
     env.restart_hooks().await;
     let reply = call
         .await
@@ -3549,11 +3560,10 @@ async fn an_unload_keeps_a_finished_handlers_real_reason() {
     let env = Env::with_mounted_hooks(Arc::new(Model::default()), None).await;
     let started = env.path("project-started");
     let pid_file = env.path("project-pid");
-    let user_done = env.path("user-done");
     env.sources.set(document(serde_json::json!({
         "UserPromptSubmit": [command(serde_json::json!({
             "type": "command",
-            "command": format!("printf boom >&2; printf done > {}; exit 3", user_done.display()),
+            "command": "printf boom >&2; exit 3",
         }))],
     })));
     env.sources.set_project(
@@ -3562,9 +3572,16 @@ async fn an_unload_keeps_a_finished_handlers_real_reason() {
         })),
         true,
     );
+    let mut settled = watch_settled(&env.work(), "user");
     let (_session, release, _old_id, call) = steer_into_a_pending_prompt(&env).await;
     wait_file(&started, "the project prompt hook did not start").await;
-    wait_file(&user_done, "the user prompt hook did not exit").await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), settled.settled())
+            .await
+            .expect("the runner did not take the user hook's result"),
+        "exited with exit status: 3",
+        "the runner recorded the user hook's own reason"
+    );
     env.restart_hooks().await;
     let reply = call
         .await
