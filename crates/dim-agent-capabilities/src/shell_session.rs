@@ -41,7 +41,7 @@ const RETAINED_BUFFER_LIMIT: usize = 64 * 1024;
 /// `RETAINED_BUFFER_LIMIT`. A burst arrives in thousands of small chunks, so
 /// trimming at the limit itself would re-copy the buffer once per chunk; the
 /// slack makes the cut amortized while the buffer stays bounded by twice the
-/// limit, which is still far below a marker's own line.
+/// limit, which is far above the longest marker line it must hold.
 const RETAINED_BUFFER_TRIM: usize = 2 * RETAINED_BUFFER_LIMIT;
 const OUTPUT_LIMIT: usize = 16_000;
 const MAX_TIMEOUT_MS: u64 = 3_600_000;
@@ -741,7 +741,9 @@ impl ShellSession {
     /// Consumes PTY output: folds it into the retained buffer and the
     /// command's capture, settles background tasks whose completion marker
     /// arrived (removing the marker from every buffer), and advances the
-    /// occupying task.
+    /// occupying task. A background marker is looked for only in the tail
+    /// this chunk can have completed, so the scan stays as small as the
+    /// chunk however far `retained` has grown.
     async fn handle_output(self: &Arc<Self>, text: &str) {
         let mut settled: Vec<Settlement> = Vec::new();
         {
@@ -750,13 +752,13 @@ impl ShellSession {
             if let Some(capture) = inner.capture.as_mut() {
                 capture.append(text);
             }
+            let tail = tail_bytes(&inner.retained, text.len() + MARKER_LINE_LIMIT);
             let matched: Vec<(String, String)> = inner
                 .background
                 .values()
                 .filter(|task| matches!(task.kind, BackgroundKind::Posix))
                 .filter_map(|task| {
-                    marker_code(&inner.retained, &task.end_marker)
-                        .map(|code| (task.task_id.clone(), code))
+                    marker_code(tail, &task.end_marker).map(|code| (task.task_id.clone(), code))
                 })
                 .collect();
             for (task_id, code) in matched {
