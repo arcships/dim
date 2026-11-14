@@ -29,6 +29,9 @@ impl Script {
     fn push(&self, calls: Vec<ToolCall>) {
         self.batches.lock().unwrap().push_back(calls);
     }
+    fn count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
     fn texts(&self) -> String {
         self.requests
             .lock()
@@ -36,6 +39,34 @@ impl Script {
             .iter()
             .map(|request| format!("{request:?}"))
             .collect()
+    }
+    /// The user texts of the first request recorded after the first `count`
+    /// that carries `marker`. A run id is written by its own delivery only, so
+    /// that request is the delivered turn's.
+    fn delivered_turn(&self, count: usize, marker: &str) -> Option<Vec<String>> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(count)
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .filter(|message| message.role == Role::User)
+                    .flat_map(|message| match &message.content {
+                        MessageContent::Text(text) => vec![text.clone()],
+                        MessageContent::Parts(parts) => parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                MessagePart::Text { text, .. } => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .find(|texts| texts.iter().any(|text| text.contains(marker)))
     }
 }
 
@@ -47,12 +78,18 @@ impl ModelDriver for Script {
         _: CancellationToken,
     ) -> HostFuture<'_, ModelStream> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push(request);
-            let id = format!("m{}", self.requests.lock().unwrap().len());
+            // Recorded and claimed in one step: a recorded request has already
+            // taken its batch, whatever else is pushed for later Sessions.
+            let (id, batch) = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push(request);
+                let id = format!("m{}", requests.len());
+                (id, self.batches.lock().unwrap().pop_front())
+            };
             let mut chunks = vec![Ok(ModelChunk::MessageStart {
                 message_id: id.clone(),
             })];
-            let reason = match self.batches.lock().unwrap().pop_front() {
+            let reason = match batch {
                 Some(calls) => {
                     for call in calls {
                         chunks.push(Ok(ModelChunk::ToolStart {
@@ -241,29 +278,52 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
     assert!(saved["cwd"].is_null(), "{listed}");
 
     let job_id = listed["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let before = model.count();
     let accepted: Value = client
         .typed("schedule.run_now", json!({"job_id": job_id}))
         .await
         .unwrap();
     assert_eq!(accepted["state"], "delivering", "{accepted}");
-    let run = wait_for_delivery(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let run = wait_for_delivery(&mut client, &job_id, &run_id).await;
     assert_eq!(run["state"], "delivered", "{run}");
     assert!(run["input_event_id"].is_string(), "{run}");
     assert_eq!(run["branch_id"], "main", "{run}");
     assert!(run["session_origin"].is_null(), "{run}");
     assert!(run["report_to"].is_null(), "{run}");
-    let texts = model.texts();
+
+    let delivered = run["input_event_id"].as_str().unwrap();
+    let input = delivered_input(&mut client, &interactive, delivered).await;
     assert!(
-        texts.contains("scheduled-run"),
-        "the marker reached the branch"
+        input.as_deref().is_some_and(|text| text.contains(&format!(
+            "<dim-scheduler kind=\"scheduled-run\" job=\"{job_id}\" run=\"{run_id}\">"
+        ))),
+        "the delivery writes its own marker: {input:?}"
     );
     assert!(
-        texts.contains("Summarize the day."),
-        "the saved prompt reached the branch"
+        input
+            .as_deref()
+            .is_some_and(|text| text.contains("Summarize the day.")),
+        "the delivery writes the saved prompt: {input:?}"
+    );
+    wait_for("this run's marker to reach the model", || {
+        model.delivered_turn(before, &run_id).is_some()
+    })
+    .await;
+    let turn = model.delivered_turn(before, &run_id).unwrap();
+    assert!(
+        turn.iter().any(|text| text.contains(&format!(
+            "<dim-scheduler kind=\"scheduled-run\" job=\"{job_id}\" run=\"{run_id}\">"
+        ))),
+        "the delivered turn carries this run's marker: {turn:?}"
     );
     assert!(
-        !texts.contains("scheduler-report:"),
-        "a session delivery sends no report"
+        turn.iter().any(|text| text == "Summarize the day."),
+        "the delivered turn carries the saved prompt: {turn:?}"
+    );
+    assert!(
+        !turn.iter().any(|text| text.contains("scheduler-report:")),
+        "a session delivery sends no report: {turn:?}"
     );
 
     let member = create_session(&mut client, home.path(), false).await;
@@ -391,6 +451,41 @@ async fn wait_for_delivery(client: &mut Client, job_id: &str, run_id: &str) -> V
     })
     .await
     .expect("the delivery settles")
+}
+
+/// The text one delivered input carries, read from its branch by the event id
+/// the delivery reports: the marker block and the prompt, in that order.
+async fn delivered_input(client: &mut Client, session_id: &str, input_id: &str) -> Option<String> {
+    let mut after = 0;
+    let mut through = None;
+    let mut events = Vec::new();
+    loop {
+        let mut params = json!({"sessionId": session_id, "branchId": "main", "after": after});
+        if let Some(through) = through {
+            params["through"] = json!(through);
+        }
+        let page: dim_client::wire::History =
+            client.typed("session.history", params).await.unwrap();
+        through = Some(page.through);
+        let next = page.next(after, through).unwrap();
+        events.extend(page.events);
+        match next {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    let event = events.iter().find(|event| event["id"] == json!(input_id))?;
+    let data = &event["data"];
+    let mut text = String::new();
+    for block in data["blocks"].as_array().into_iter().flatten() {
+        text.push_str(block["text"].as_str().unwrap_or_default());
+        text.push('\n');
+    }
+    for block in data["user"]["content"].as_array().into_iter().flatten() {
+        text.push_str(block["text"].as_str().unwrap_or_default());
+        text.push('\n');
+    }
+    Some(text)
 }
 
 /// The `description` member of [`SchedulerTexts`] is what the `schedule`
