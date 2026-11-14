@@ -2,6 +2,7 @@ use dim_app_server::model_catalog::{
     BundledCatalog, ModelEdit, ModelEntry, ModelSource, ProviderProjection, ProviderRole,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 
 #[test]
 fn bundled_lookup_preserves_explicit_asymmetric_limits_and_hidden_metadata() {
@@ -1511,5 +1512,130 @@ fn the_prefix_is_normalised_and_must_leave_a_name() {
     assert!(
         empty.metadata.as_ref().unwrap().identification.is_none(),
         "a prefix that leaves no name identifies nothing"
+    );
+}
+
+/// The relay projection with the provider's own statement that a listed id
+/// stands for another model.
+fn aliased_relay(catalog: &BundledCatalog, id: &str, target: &str) -> ModelEntry {
+    let provider = ProviderProjection {
+        provider_id: "my-gateway".into(),
+        source: Some(ModelSource::Custom),
+        model_aliases: BTreeMap::from([(id.to_owned(), target.to_owned())]),
+        ..Default::default()
+    };
+    catalog.project(&provider, &json!({ "id": id })).unwrap()
+}
+
+/// A provider's own statement that a listed id stands for another model is
+/// what that id resolves through: the target goes through the same steps, so
+/// the answer carries the target row's numbers and rule, and no second
+/// vocabulary is introduced for the fact that an alias was used.
+///
+/// A `provider/model` target answers through the token step on a relay, not
+/// through the qualified one: the qualified index keys a row by the id the row
+/// carries itself, so a target that no row spells whole is read by its tokens,
+/// with its namespace binding those tokens to that provider. The rule word is
+/// therefore `token`, and the strategy keeps the target's own provider.
+#[test]
+fn a_provider_alias_resolves_an_id_through_the_pipeline() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "ark-code-latest", "ark-code/ark-code-latest");
+    assert_eq!(matched(&entry), ("ark-code", "ark-code-latest"));
+    assert_eq!(numbers(&entry), (Some(204_800), Some(60_000)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    assert_eq!(
+        entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+        Some("ark-code-token")
+    );
+}
+
+/// An alias on an id no rule can read answers with the target's own rule, not
+/// a rule of its own.
+#[test]
+fn an_alias_on_an_unreadable_id_takes_the_targets_rule() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "my-deployment-gpt-4o", "gpt-5.5");
+    assert_eq!(matched(&entry), ("openai", "gpt-5.5"));
+    assert_eq!(numbers(&entry), (Some(1_050_000), Some(128_000)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+}
+
+/// An alias whose target is itself ambiguous returns the target's candidates:
+/// an alias names one model, and it may not choose a side of a disagreement.
+#[test]
+fn an_alias_onto_an_ambiguous_target_stays_ambiguous() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = aliased_relay(&catalog, "my-deployment-ark", "ark-code-latest");
+    assert_eq!(matched(&entry), ("provider-default", "-"));
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    let mut named: Vec<_> = identification
+        .candidates
+        .iter()
+        .map(|candidate| candidate.provider_id.as_str())
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        ["ark-agent-plan", "ark-code", "byteplus-coding-plan"]
+    );
+}
+
+/// Without the statement `ark-code-latest` keeps today's ambiguity and its
+/// three candidates, so the alias is the only change to the id, and an alias
+/// that names nothing leaves the id exactly as it was without one.
+#[test]
+fn an_unaliased_ambiguous_id_keeps_its_candidates_and_a_stale_alias_adds_nothing() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "ark-code-latest");
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    assert_eq!(identification.candidates.len(), 3);
+    let stale = aliased_relay(&catalog, "ark-code-latest", "zzzz-nothing-names-this");
+    let stale_identification = stale
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (
+            stale_identification.rule.as_str(),
+            stale_identification.candidates.len()
+        ),
+        ("ambiguous", 3),
+        "a target that names nothing falls through to the merge as if there were no alias"
     );
 }

@@ -343,29 +343,62 @@ impl BundledCatalog {
     }
 
     fn identify_steps(&self, provider: &ProviderProjection, id: &str) -> Outcome {
+        self.identify_with_alias(provider, id, true)
+    }
+
+    /// The step list, with the alias step present or excluded. A target the
+    /// provider's alias names is resolved by the same list without the alias,
+    /// so an alias never chains to another one.
+    ///
+    /// A step that names one model answers at once. A step that refuses the id
+    /// leaves the refusal open to the alias step and then stands: the rules can
+    /// read the id to a disagreement, which is the case an alias exists for,
+    /// but no later step may answer over a refusal the first one made.
+    fn identify_with_alias(&self, provider: &ProviderProjection, id: &str, alias: bool) -> Outcome {
         if let Some((provider_id, entry)) = self.own_row(provider, id) {
             let strategy = Rule::ProviderExact.strategy(&provider_id, &entry.model_id, id);
             return self.one(provider_id, entry, strategy, Rule::ProviderExact);
         }
-        let Some(query) = Query::parse(id, provider.glued_prefix.as_deref()) else {
-            return Outcome::None;
+        let query = Query::parse(id, provider.glued_prefix.as_deref());
+        let found = match &query {
+            Some(query) => self.identify_rules(provider, query, id),
+            None => Outcome::None,
         };
+        if let Outcome::One(_) = found {
+            return found;
+        }
+        if alias {
+            match self.identify_alias(provider, id) {
+                Outcome::None => {}
+                found => return found,
+            }
+        }
+        match (found, query) {
+            (Outcome::Ambiguous(candidates), _) => Outcome::Ambiguous(candidates),
+            (_, Some(query)) => self.merge_rows(id, &query),
+            (_, None) => Outcome::None,
+        }
+    }
+
+    /// Steps 2 to 6 over one id's tokens: the qualified id, the vendor rows by
+    /// token and by name, and the `custom-provider` rows by token and by name.
+    fn identify_rules(&self, provider: &ProviderProjection, query: &Query, id: &str) -> Outcome {
         let namespace = namespace_of(id);
         match self.identify_qualified(id, namespace) {
             Outcome::None => {}
             found => return found,
         }
-        match self.identify_by_tokens(Index::Vendor, &query, provider, namespace, Rule::Token, id) {
+        match self.identify_by_tokens(Index::Vendor, query, provider, namespace, Rule::Token, id) {
             Outcome::None => {}
             found => return found,
         }
-        match self.identify_by_names(&query, provider, namespace, id) {
+        match self.identify_by_names(query, provider, namespace, id) {
             Outcome::None => {}
             found => return found,
         }
         match self.identify_by_tokens(
             Index::CustomProvider,
-            &query,
+            query,
             provider,
             namespace,
             Rule::CustomProvider,
@@ -374,11 +407,24 @@ impl BundledCatalog {
             Outcome::None => {}
             found => return found,
         }
-        match self.identify_by_names_in(Index::CustomProvider, &query, provider, namespace, id) {
-            Outcome::None => {}
-            found => return found,
-        }
-        self.merge_rows(id, &query)
+        self.identify_by_names_in(Index::CustomProvider, query, provider, namespace, id)
+    }
+
+    /// The second half of step 6: the provider's own statement that this id
+    /// stands for another one.
+    ///
+    /// The alias is keyed by the exact id the provider lists, because that id
+    /// is the provider's own spelling. Its target is resolved by the step list
+    /// without the alias step, so the answer carries the target row's rule,
+    /// score and numbers; an ambiguous target stays ambiguous rather than
+    /// letting the alias choose a side; and a target that names nothing falls
+    /// through to the refusal or the merge the id had without the alias, so a
+    /// stale alias never makes an id worse than it is.
+    fn identify_alias(&self, provider: &ProviderProjection, id: &str) -> Outcome {
+        let Some(target) = provider.model_aliases.get(id.trim()) else {
+            return Outcome::None;
+        };
+        self.identify_with_alias(provider, target, false)
     }
 
     /// Step 2: the whole qualified id, before any step drops its namespace

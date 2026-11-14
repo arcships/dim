@@ -65,6 +65,11 @@ pub struct ModelEdit {
     pub modality_capabilities: Option<Vec<String>>,
     #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
     pub endpoint: Option<FieldUpdate<NewApiEndpoint>>,
+    /// The catalog model this entry's id stands for. The record holds it
+    /// beside the provider's other statements about its ids, not as a
+    /// descriptor override.
+    #[serde(default, deserialize_with = "crate::protocol::optional_non_null")]
+    pub alias: Option<FieldUpdate<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -188,6 +193,9 @@ pub struct ProviderProjection {
     /// The prefix this provider's listed ids carry, stripped once before an id
     /// is broken into the tokens the steps compare.
     pub glued_prefix: Option<String>,
+    /// The provider's own statement that a listed id stands for another one,
+    /// keyed by the exact id the provider spells.
+    pub model_aliases: std::collections::BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

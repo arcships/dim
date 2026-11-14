@@ -99,6 +99,9 @@ pub struct ManagementModel {
     pub actions: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_override: Option<NewApiEndpoint>,
+    /// The model this entry's id stands for, when the provider says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
 }
 
 impl ProviderService {
@@ -194,6 +197,7 @@ impl ProviderService {
                 ManagementModel {
                     enabled: !record.disabled_model_ids.contains(&model.model_id),
                     endpoint_override: record.endpoint_overrides.get(&model.model_id).copied(),
+                    alias: record.model_aliases.get(&model.model_id).cloned(),
                     model,
                     source: if user {
                         "user"
@@ -312,6 +316,7 @@ impl ProviderService {
                         let enabled = !record
                             .disabled_model_ids
                             .contains(&effective.entry.model_id);
+                        let alias = record.model_aliases.get(&effective.entry.model_id).cloned();
                         ManagementModel {
                             enabled,
                             model: effective.entry,
@@ -325,6 +330,7 @@ impl ProviderService {
                             unavailable_reason,
                             actions,
                             endpoint_override: None,
+                            alias,
                         }
                     })
                     .collect();

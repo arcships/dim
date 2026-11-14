@@ -279,6 +279,9 @@ struct ProviderRecord {
     /// The prefix this account's listed ids carry, as the user states it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     glued_prefix: Option<String>,
+    /// The listed ids this account states stand for another model.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_aliases: BTreeMap<String, String>,
     version: u32,
 }
 
@@ -365,6 +368,10 @@ pub struct StaticProviderRecord {
     /// stripped once before an id is matched. Absent means the ids carry none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     glued_prefix: Option<String>,
+    /// The listed ids this Provider states stand for another model, keyed by
+    /// the id the Provider spells.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    model_aliases: BTreeMap<String, String>,
     #[serde(default)]
     definition_fingerprint: Option<String>,
     version: u32,
@@ -1053,6 +1060,7 @@ fn static_entries(
                 }),
                 models: models.clone(),
                 glued_prefix: record.glued_prefix.clone(),
+                model_aliases: record.model_aliases.clone(),
                 ..Default::default()
             },
             &models,
@@ -1322,6 +1330,7 @@ fn bundled_seed(provider: &CatalogProvider) -> Result<StaticProviderRecord, Host
         disabled_model_ids: Vec::new(),
         enabled: authority != CredentialAuthority::Static,
         glued_prefix: None,
+        model_aliases: BTreeMap::new(),
         definition_fingerprint: Some(format!("{:x}", Sha256::digest(fingerprint))),
         version: 1,
     })
@@ -2085,8 +2094,17 @@ impl ProviderService {
                                 model_config_overrides,
                                 model_preferences,
                                 glued_prefix,
+                                model_aliases,
                             ) = old.map_or_else(
-                                || (Vec::new(), Vec::new(), BTreeMap::new(), None),
+                                || {
+                                    (
+                                        Vec::new(),
+                                        Vec::new(),
+                                        BTreeMap::new(),
+                                        None,
+                                        BTreeMap::new(),
+                                    )
+                                },
                                 |record| {
                                     (
                                         record.disabled_model_ids,
@@ -2094,8 +2112,9 @@ impl ProviderService {
                                         record.model_preferences,
                                         // A refresh rewrites the account's
                                         // listings, not the user's own
-                                        // statement about their ids.
+                                        // statements about their ids.
                                         record.glued_prefix,
+                                        record.model_aliases,
                                     )
                                 },
                             );
@@ -2107,6 +2126,7 @@ impl ProviderService {
                                 model_config_overrides,
                                 model_preferences,
                                 glued_prefix,
+                                model_aliases,
                                 version,
                             };
                             save_catalog(&tx, &provider_id, &record)?;

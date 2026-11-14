@@ -181,6 +181,7 @@ impl ConnectionInput {
             disabled_model_ids: Vec::new(),
             enabled,
             glued_prefix: None,
+            model_aliases: BTreeMap::new(),
             definition_fingerprint: None,
             version: 1,
         })

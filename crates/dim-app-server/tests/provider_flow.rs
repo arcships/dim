@@ -258,6 +258,18 @@ fn stored_record(home: &Path, provider_id: &str) -> StaticProviderRecord {
     parse_static(provider_id, version, &body).unwrap()
 }
 
+/// One stored record's own JSON, for the fields the record owner keeps
+/// private to its module.
+fn stored_record_json(home: &Path, provider_id: &str) -> String {
+    let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    db.query_row(
+        "SELECT record FROM providers WHERE provider_id=?1",
+        [provider_id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 /// The prefix a stored record carries, read from the record's own JSON: the
 /// field is the record owner's, and the store is where the statement lives.
 fn stored_prefix(home: &Path, provider_id: &str) -> Option<String> {
@@ -8153,6 +8165,158 @@ async fn a_provider_states_the_prefix_its_ids_carry_and_that_statement_resolves_
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// `provider.models.edit` sets and clears a model's alias on the record, and an
+/// alias is not a descriptor override: the edit writes none, so the reset path
+/// has nothing to leave behind and the id becomes selectable while the alias
+/// stands.
+///
+/// The reply is the target's rule and numbers, because the alias resolves
+/// through the pipeline rather than beside it.
+#[tokio::test]
+async fn a_model_edit_sets_an_alias_on_the_record_and_creates_no_override() {
+    let home = std::env::temp_dir().join(format!("provider-alias-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const ALIASED: &str = "00000000-0000-4000-8000-000000000061";
+    const ALIASED_ID: &str = "ark-code-latest";
+    let mut relay = input(
+        ALIASED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "alias",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":ALIASED_ID, "displayName":ALIASED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    let catalog = provider
+        .catalog_for(ALIASED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        catalog.models[0].missing_limits,
+        ["contextWindow", "maxOutputTokens"],
+        "the rows that name the id disagree, so none supplies numbers"
+    );
+    // Setting the alias is one edit, and it writes the record's map rather
+    // than a descriptor override.
+    let aliased = provider
+        .update_model_config(
+            ALIASED.into(),
+            catalog.version,
+            ALIASED_ID.into(),
+            serde_json::from_value(
+                json!({"alias":{"action":"set","value":"ark-code/ark-code-latest"}}),
+            )
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record: Value = serde_json::from_str(&stored_record_json(&home, ALIASED)).unwrap();
+    assert_eq!(
+        record["modelAliases"][ALIASED_ID],
+        json!("ark-code/ark-code-latest"),
+        "the statement is on the record"
+    );
+    let managed = provider
+        .management(Some(ALIASED.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(
+        managed.models.as_ref().unwrap()[0].alias.as_deref(),
+        Some("ark-code/ark-code-latest"),
+        "the management reply says what the entry stands for"
+    );
+    assert_eq!(
+        record["modelConfigOverrides"],
+        json!([]),
+        "an alias edit writes no override for the reset path to leave behind"
+    );
+    // The id is selectable now, with the target's own numbers and rule.
+    let model = &aliased.models[0];
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(model.capabilities.context_window, Some(204_800));
+    assert_eq!(model.capabilities.max_output_tokens, Some(60_000));
+    let identification = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    provider
+        .select(
+            None,
+            ModelId {
+                provider_id: ALIASED.into(),
+                model_id: ALIASED_ID.into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+        .expect("the aliased id is selectable");
+    // Clearing it is one edit too, and the id goes back to the ambiguity it
+    // had, with the candidates it named.
+    let cleared = provider
+        .update_model_config(
+            ALIASED.into(),
+            aliased.version,
+            ALIASED_ID.into(),
+            serde_json::from_value(json!({"alias":{"action":"clear"}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record: Value = serde_json::from_str(&stored_record_json(&home, ALIASED)).unwrap();
+    assert_eq!(record.get("modelAliases"), None);
+    let model = &cleared.models[0];
+    assert_eq!(model.missing_limits, ["contextWindow", "maxOutputTokens"]);
+    assert_eq!(
+        model
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .as_ref()
+            .unwrap()
+            .rule,
+        "ambiguous"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
 /// #522: a v25 store holds the seed with the assumed pair, because its daemon
 /// copied the bundle as it was. The v26 upgrade and the next start's reseed
 /// leave the same record a fresh home seeds: the bundle's current models and
