@@ -643,9 +643,9 @@ impl Env {
             builder.require_feature(Feature::new("HooksBranchTest").branch(
                 "HooksBranchOwner",
                 move |names| {
-                    let plugin = HooksBranchPlugin::new(names)?;
+                    let plugin = Arc::new(HooksBranchPlugin::new(names)?);
                     Ok(Box::new(HooksBranchOwner {
-                        plugin: Mutex::new(Some(plugin)),
+                        plugin,
                         views: views.clone(),
                     }))
                 },
@@ -832,9 +832,11 @@ impl DynPlugin for HooksSessionOwner {
 }
 
 /// Mounts the real `HooksBranch` as a child, so a test can unload it and
-/// read what an unload settles (A.6.1's reload row).
+/// read what an unload settles (A.6.1's reload row). A dependency refresh
+/// loads the owner again, and each load mounts its own copy: the product
+/// re-applies `HooksBranch` on reload, so a single mount is not the contract.
 struct HooksBranchOwner {
-    plugin: Mutex<Option<HooksBranchPlugin>>,
+    plugin: Arc<HooksBranchPlugin>,
     views: Arc<Mutex<Vec<FiberView>>>,
 }
 impl DynPlugin for HooksBranchOwner {
@@ -842,25 +844,30 @@ impl DynPlugin for HooksBranchOwner {
         "HooksBranchOwner"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        self.plugin
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(DynPlugin::injects)
-            .unwrap_or_default()
+        self.plugin.injects()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let plugin = self
-                .plugin
-                .lock()
-                .unwrap()
-                .take()
-                .expect("the owner mounts its HooksBranch once");
-            let view = dim_agent_runtime::mount_active(ctx, plugin).await?;
+            let view =
+                dim_agent_runtime::mount_active(ctx, MountedBranch(self.plugin.clone())).await?;
             self.views.lock().unwrap().push(view);
             Ok(Effect::Done)
         })
+    }
+}
+
+/// The part the owner mounts: `HooksBranchPlugin` itself, which the owner
+/// shares with every apply it makes.
+struct MountedBranch(Arc<HooksBranchPlugin>);
+impl DynPlugin for MountedBranch {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        self.0.injects()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        self.0.apply(ctx)
     }
 }
 
