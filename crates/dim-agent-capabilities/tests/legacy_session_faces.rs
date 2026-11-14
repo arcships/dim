@@ -3,7 +3,7 @@ use dim_agent_capabilities::file_access::{
 };
 use dim_agent_capabilities::prompt_sources::{SessionLanguage, SessionLanguageReply};
 use dim_agent_capabilities::skills::{SkillsConfig, SkillsConfigReply};
-use dim_agent_runtime::{AgentConfig, AgentConfigReply, ReplyLanguage};
+use dim_agent_runtime::{AgentConfig, ReplyLanguage};
 use rutis::Ctx;
 use rutis::host::CtxHost;
 use rutis_bridge::session::call_service;
@@ -71,16 +71,9 @@ async fn the_agents_configuration_answers_the_same_through_the_binding_and_the_f
     };
     root.provide(config.clone()).unwrap();
     let binding = root.get::<AgentConfig>().unwrap();
-    let face: AgentConfigReply = wire(&root, "agentConfig", "get", ()).await;
+    let face: AgentConfig = wire(&root, "agentConfig", "get", ()).await;
     assert_eq!(binding.get(), face);
-    assert_eq!(
-        face,
-        AgentConfigReply {
-            name: config.name,
-            system_prompt: config.system_prompt,
-            model: config.model,
-        }
-    );
+    assert_eq!(face, config);
 }
 
 #[tokio::test]

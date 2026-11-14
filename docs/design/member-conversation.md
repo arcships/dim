@@ -267,10 +267,18 @@ Temporary profile names already exist on the leader's request. For an existing
 native Agent, read the public Agent list after identities are known and share that
 result across cards; it is read again only when a card names a native Agent the
 last read did not cover. A missing entry/read error shows the Agent ID rather than
-an invented name; the delivered Session ID remains available in detail. Do not
-read Agent records or private Collaboration state. A provider card uses its
+an invented name; the delivered Session ID remains available in detail. A completed
+card still receives the result of its pending name lookup. Completion stops its
+name refresh only once that lookup succeeds, misses the Agent or fails; it does
+not start another lookup. Do not read Agent records or private Collaboration
+state. A provider card uses its
 leader-side target/delivered Agent identity; `agent.list` is not assumed to
 expose that provider's configuration or model.
+
+```text
+Completed card: Agent ID -- existing name read settles --+--> Agent name
+                                                       +--> ID (missing/error)
+```
 
 Apply §1's member-kind boundary before building any observation or control
 target, including `/tasks` and its stop-all capture. A provider member's opaque
