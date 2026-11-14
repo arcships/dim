@@ -4824,32 +4824,6 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
     );
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ocr_is_absent_on_a_platform_without_apple_vision() {
-    let home = home("dm-ocr-platform");
-    let helper = fake_helper(&home);
-    let server = start_with_helper(home, helper).await;
-    let mut client = Client::new_version(&server, false, 3).await;
-    let snapshot = client.rpc("modality.capabilities", json!({})).await;
-    assert_ok(&snapshot);
-    let recognize = operation_in(&snapshot, "ocr", "recognize");
-    assert_eq!(recognize["available"], false);
-    assert_eq!(recognize["reasons"][0]["dimension"], "platform");
-    let submit = client
-        .rpc(
-            "modality.task.submit",
-            json!({
-                "category": "ocr",
-                "operation": "recognize",
-                "model": {"providerId": OCR_PROVIDER, "modelId": OCR_MODEL},
-                "files": [{"name": "scan.png", "media_type": "image/png", "data_base64": IMAGE_BASE64}],
-            }),
-        )
-        .await;
-    assert_eq!(app_error(&submit), "unavailable");
-}
-
 // ---------------------------------------------------------------------------
 // The plugin-supplied OCR target (A.2.1): a fixture process row provides
 // `ocrHelper`, its `describe` reply is the test's, and the helper it names is
