@@ -113,7 +113,8 @@ is not appended again under the member's own final reply.
 
 A completed delegation's result in the leader transcript is one row headed
 `agent result · <task title> · <agent>`, its text drawn by the assistant
-Markdown renderer. The first six rendered rows are shown, then `… N more lines`.
+Markdown renderer. The preview ends after six non-blank rendered rows, then
+`… N more lines` counts every remaining rendered row, including blank rows.
 Scrollback has no expand for it; fullscreen marks a longer result with a
 disclosure that shows the whole result. Failed and cancelled results remain one
 status line with their reason.

@@ -15,8 +15,8 @@ pub struct PendingExec {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The call's index in its model response, when that response made
-    /// several calls.
+    /// The call's index in a multi-call model response. Absent for a
+    /// single-call response or when the response is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
 }
@@ -31,8 +31,8 @@ pub struct PendingDelegation {
     pub started_at: u64,
     pub request: crate::CollaborationRequestData,
     pub delivery: Option<crate::CollaborationDelivery>,
-    /// The call's index in its model response, when that response made
-    /// several calls.
+    /// The call's index in a multi-call model response. Absent for a
+    /// single-call response or when the response is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
 }

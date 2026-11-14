@@ -137,7 +137,10 @@ owner's settled tasks at the window's cutoff, read before its unfinished ones:
 | `session.exec.finished {sessionId, branchId, through?}` | WorkspaceTools | `branchId`, fixed `through`, `tasks`: up to 50 `FinishedExec` items `{start, endedAt, end}`, newest end first. `start` is the item `session.exec.pending` returns; `end` is the `exec/ended` data |
 | `session.collaboration.finished {sessionId, branchId, through?}` | CollaborationSession | `branchId`, fixed `through`, `requests`: up to 50 `FinishedDelegation` items `{start, endedAt, result}`, newest end first. `start` is the item `session.collaboration.pending` returns, with its latest delivery; `result` is the `collaboration/result` data, or null when a failed delivery ended it |
 
-Both are nonmutating and unpaged: 50 is the list's own retention. They read only
+Both are nonmutating and unpaged: 50 matches the task list's finished-row
+retention, not a complete history. Older results remain in the Timeline and
+their original conversation; the inventory does not restore every past task.
+They read only
 the terminal facts and the starts those facts name. The client folds a reported
 task once, by branch and start event, whether or not the window also held it;
 a task already finished in the projection is kept as folded. Each is its own method entry in the owner's Session method table and is
@@ -186,7 +189,8 @@ Proposed first-release presentation:
   delegations group by the model request that issued them; a request takes
   the time of its earliest retained task, and requests are ordered by that time, then branch ID
   and request ID. Within one request, tasks follow their call's position in the
-  model response (`step/tool-call` `calls`) when that response was read,
+  model response (`step/tool-call` `calls`) when that response was read or
+  the owner supplies its position in inventory,
   then their start/request event's sequence: the requests of one parallel
   batch commit in no fixed order. Workflow runs follow every command and
   delegation, by creation time. The order is the same live, on reopening the

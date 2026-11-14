@@ -1416,6 +1416,12 @@ fn tui_task_inventory_keeps_fifty_terminal_facts_and_their_original_results() {
 #[test]
 fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
     let home = Home::new();
+    fs::write(
+        home.0.join("config.json"),
+        json!({"locale":"en","tuiToolDetails":"collapsed","tuiThinkingDetailsExpanded":true})
+            .to_string(),
+    )
+    .unwrap();
     let daemon = home.daemon(move |wire| {
         wire.hello(&[]);
         let providers = wire.read("account.providers");
@@ -1438,7 +1444,7 @@ fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
         wire.reply(&attach, attach_record(&attach));
         let first = wire.read("session.history");
         assert_eq!(first["params"], json!({"sessionId":"member","branchId":"main","latestTurn":true,"limit":64}));
-        wire.reply(&first, json!({"events":[fact("member-hidden",5,2000,"input","message",json!({"mode":"append","blocks":[{"type":"raw","text":"hidden runtime state"}]}))],"through":5,"nextAfter":5,"nextBefore":5,"done":true}));
+        wire.reply(&first, json!({"events":[fact("member-tools",5,2000,"step","tool-call",json!({"turn_id":"member-turn","request_id":"member-tools","calls":[{"id":"member-exec","name":"exec","input":{"command":"echo member-output"}}]}))],"through":5,"nextAfter":5,"nextBefore":5,"done":true}));
         let second = wire.read("session.history");
         assert_eq!(second["params"], json!({"sessionId":"member","branchId":"main","before":5,"through":5,"limit":64}));
         event(wire, "main", fact("leader-observation",3,3000,"input","message",json!({"mode":"append","user":{"content":[{"type":"text","text":"leader notice while reading"}]}})));
@@ -1450,7 +1456,8 @@ fn tui_member_conversation_is_read_only_and_preserves_the_leader_draft() {
         wire.notice("session.state", json!({"sessionId":"member","branchId":"main","running":true}));
         wire.notice("session.model.progress",json!({"sessionId":"session","branchId":"child","requestId":"wrong-root","text":"","textOffset":0,"thinking":"wrong leader branch thought","thinkingOffset":0}));
 wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message",json!({"mode":"queue","user":{"content":[{"type":"text","text":"member user\u{1b}]52;c;never-copy\u{7}"}]}})),fact("member-applied",2,1000,"input","applied",json!({"input_id":"member-input","mode":"queue"})),fact("member-consumed",3,1000,"input","consumed",json!({"input_id":"member-input"})),fact("member-text",4,2000,"step","text",json!({"turn_id":"member-turn","request_id":"member-model","delta":"member original"}))],"through":5,"nextAfter":4,"done":true,"nextBefore":1}));
-        wire.notice("session.model.progress", json!({"sessionId":"member","branchId":"main","requestId":"member-model","text":"","textOffset":0,"thinking":"live member thought","thinkingOffset":0}));
+        wire.notice("session.event", json!({"sessionId":"member","branchId":"main","event":fact("member-tool-result",7,3000,"step","tool-result",json!({"turn_id":"member-turn","request_id":"member-tools","results":[{"call_id":"member-exec","result":{"content":"member disclosure output"}}]}))}));
+        wire.notice("session.model.progress", json!({"sessionId":"member","branchId":"main","requestId":"member-model","text":"","textOffset":0,"thinking":"live member thought\n\nmember thinking final paragraph","thinkingOffset":0}));
         let stop = wire.read("session.stop");
         assert_eq!(stop["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
         wire.reply(&stop, json!({}));
@@ -1490,6 +1497,13 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
     terminal.until("Read-only: you can watch this agent or stop it.");
     terminal.until("member original + live");
     terminal.until("live member thought");
+    terminal.until("member thinking final paragraph");
+    assert!(!terminal.transcript.contains("member disclosure output"));
+    terminal.write(b"\t\r");
+    terminal.until("Ran 1 tool");
+    terminal.write(b"\x1b[Z\r");
+    terminal.until("member disclosure output");
+    terminal.write(b"ebfq\r");
     let size = libc::winsize {
         ws_row: 18,
         ws_col: 48,
@@ -3020,7 +3034,7 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
         let methods = wire.read("session.methods");
-        wire.reply(&methods, json!({"methods":[{"name":"session.turn.get","mutating":false},{"name":"session.input.pending","mutating":false},{"name":"session.exec.pending","mutating":false}]}));
+        wire.reply(&methods, json!({"methods":[{"name":"session.turn.get","mutating":false},{"name":"session.input.pending","mutating":false},{"name":"session.exec.pending","mutating":false},{"name":"session.exec.finished","mutating":false},{"name":"session.collaboration.finished","mutating":false}]}));
         let history = wire.read("session.history");
         wire.reply(&history, json!({"events":[fact("child",1,1000,"branch","create",json!({
             "branch":"child","at":{"kind":"create"},"source":{"kind":"host","operation_id":"child"},"prompt":"ended history"
@@ -3038,6 +3052,8 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
                 "account.providers" => { accounts = true; wire.reply(&request, json!([])); }
                 "session.input.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"inputs":[],"next":null})),
                 "session.exec.pending" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"tasks":[],"next":null})),
+                "session.exec.finished" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"tasks":[]})),
+                "session.collaboration.finished" => wire.reply(&request,json!({"branchId":request["params"]["branchId"],"through":2,"requests":[]})),
                 "session.turn.get" => {
                     inventories += usize::from(request["params"]["through"].is_number());
                     wire.reply(&request, json!({"branchId":request["params"]["branchId"],"through":2,"turn":null,"output":null}));
@@ -3058,6 +3074,15 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
         };
         let history = wire.read("session.history");
         wire.reply(&history,json!({"events":page(289,320),"through":640,"nextAfter":640,"nextBefore":577,"done":false}));
+        let finished = wire.read("session.exec.finished");
+        assert_eq!(finished["params"]["branchId"], "child");
+        wire.reply(&finished, json!({"branchId":"child","through":640,"tasks":[{
+            "start":pending_command("old-task", 1, 1000, "ended branch command"),
+            "endedAt":2000,"end":{"task_id":"old-task","status":"completed","result":{"content":"ended branch result"}}
+        }]}));
+        let finished = wire.read("session.collaboration.finished");
+        assert_eq!(finished["params"]["branchId"], "child");
+        wire.reply(&finished, json!({"branchId":"child","through":640,"requests":[]}));
         for (start, end) in [(161,288),(33,160),(1,32)] {
             let earlier = wire.read("session.history");
             assert_eq!(earlier["params"]["before"],end*2+1);
@@ -3088,6 +3113,8 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
         }
     }
     let restored = strip_ansi(&terminal.transcript).contains("ended-message-001");
+    terminal.write(b"/tasks\r");
+    terminal.until("ended branch command");
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();
@@ -3104,14 +3131,16 @@ fn earlier_on_an_ended_line_keeps_the_oldest_loaded_message() {
 /// in the model's call order however the results arrived.
 #[test]
 fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order() {
-    let home = Home::new();
-    let daemon = home.daemon(move |wire| {
+    for include_starts in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
         wire.hello(&["session.methods"]);
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
         let methods = wire.read("session.methods");
         wire.reply(&methods, json!({"methods":[
             {"name":"session.input.pending","mutating":false},
+            {"name":"session.exec.finished","mutating":false},
             {"name":"session.collaboration.finished","mutating":false},
             {"name":"session.collaboration.pending","mutating":false},
             {"name":"session.turn.get","mutating":false}
@@ -3130,14 +3159,31 @@ fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order(
             json!({"status":"ok","agent_id":"reviewer","session_id":format!("member-{of}")})
         };
         let history = wire.read("session.history");
-        wire.reply(&history, json!({"events":[
-            request("req-c", 59, "call-1", "Task beta"),
+        let mut events = Vec::new();
+        if include_starts {
+            events.extend([
+                fact("req-d", 51, 51_000, "exec", "started", json!({
+                    "turn_id":"turn","request_id":"batch","call_id":"call-d","task_id":"command-d",
+                    "description":"Command delta","output_path":"/server/private/output"
+                })),
+                request("req-g", 53, "call-2", "Task gamma"),
+                request("req-a", 56, "call-0", "Task alpha"),
+            ]);
+        }
+        events.extend([
+            fact("res-d", 64, 64_000, "exec", "ended", json!({
+                "task_id":"command-d","status":"completed","result":{"content":"delta done"}
+            })),
+            fact("res-g", 65, 65_000, "collaboration", "result", result("gamma", "req-g")),
             fact("res-a", 70, 70_000, "collaboration", "result", result("alpha", "req-a")),
-        ],"through":70,"nextAfter":70,"done":true}));
+        ]);
+        wire.reply(&history, json!({"events":events,"through":70,"nextAfter":70,"done":true}));
         let mut finished = false;
+        let mut pending = false;
+        let mut turn = false;
         let mut context = false;
         let mut accounts = false;
-        while !finished || !context || !accounts {
+        while !finished || !pending || !turn || !context || !accounts {
             let request = wire.read_any();
             let branch = request["params"]["branchId"].as_str().unwrap_or("main");
             match request["method"].as_str().unwrap() {
@@ -3147,6 +3193,11 @@ fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order(
                 }
                 "account.providers" => { accounts = true; wire.reply(&request, json!([])); }
                 "agent.list" => wire.reply(&request, json!([{"agentId":"reviewer","name":"reviewer"}])),
+                "session.exec.finished" => wire.reply(&request, json!({"branchId":branch,"through":70,"tasks":[{
+                    "start":{"eventId":"req-d","sequence":51,"startedAt":51_000,"position":1,
+                        "taskId":"command-d","turnId":"turn","requestId":"batch","callId":"call-d","description":"Command delta"},
+                    "endedAt":64_000,"end":{"task_id":"command-d","status":"completed","result":{"content":"delta done"}}
+                }]})),
                 "session.collaboration.finished" => {
                     finished = true;
                     assert_eq!(request["params"]["through"], 70);
@@ -3156,21 +3207,27 @@ fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order(
                                 "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task alpha","title":"Task alpha"},
                             "delivery":delivered("a")},
                          "endedAt":70_000,"result":result("alpha", "req-a")},
-                        {"start":{"eventId":"req-g","sequence":53,"startedAt":53_000,"position":2,
+                        {"start":{"eventId":"req-g","sequence":53,"startedAt":53_000,"position":3,
                             "request":{"turn_id":"turn","request_id":"batch","call_id":"call-2",
                                 "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task gamma","title":"Task gamma"},
                             "delivery":delivered("g")},
                          "endedAt":65_000,"result":result("gamma", "req-g")},
                     ]}));
                 }
-                "session.collaboration.pending" => wire.reply(&request, json!({"branchId":branch,"through":70,"requests":[
-                    {"eventId":"req-c","sequence":59,"startedAt":59_000,"position":1,
+                "session.collaboration.pending" => {
+                    pending = true;
+                    wire.reply(&request, json!({"branchId":branch,"through":70,"requests":[
+                    {"eventId":"req-c","sequence":59,"startedAt":59_000,"position":2,
                      "request":{"turn_id":"turn","request_id":"batch","call_id":"call-1",
                         "target":{"kind":"agent","agent_id":"reviewer"},"prompt":"Task beta","title":"Task beta"},
                      "delivery":delivered("c")}
-                ],"next":null})),
+                ],"next":null}));
+                }
                 "session.input.pending" => wire.reply(&request, json!({"branchId":branch,"through":70,"inputs":[],"next":null})),
-                "session.turn.get" => wire.reply(&request, json!({"branchId":branch,"through":70,"turn":null,"output":null})),
+                "session.turn.get" => {
+                    turn = true;
+                    wire.reply(&request, json!({"branchId":branch,"through":70,"turn":null,"output":null}));
+                }
                 "session.attach" => wire.reply(&request, attach_record(&request)),
                 "session.history" => wire.reply(&request, json!({"events":[],"through":1,"nextAfter":1,"done":true})),
                 "session.detach" => wire.reply(&request, json!({})),
@@ -3179,17 +3236,23 @@ fn tui_resume_restores_settled_delegations_outside_the_window_in_dispatch_order(
         }
         wire.quiet(Duration::from_millis(300));
     });
-    let mut terminal = Terminal::resume_tui(home.command());
-    terminal.until("test / model");
-    terminal.write(b"/tasks\r");
-    terminal.until("Task gamma");
-    let start = terminal.transcript.rfind("Background tasks").unwrap();
-    let list = &terminal.transcript[start..];
-    let alpha = list.rfind("Task alpha").expect("alpha restored");
-    let beta = list.rfind("Task beta").expect("beta pending");
-    let gamma = list.rfind("Task gamma").expect("gamma restored");
-    assert!(alpha < beta && beta < gamma, "dispatch order: {list}");
-    home.kill(&terminal);
-    terminal.wait();
-    daemon.join().unwrap();
+        let mut terminal = Terminal::resume_tui(home.command());
+        terminal.until("test / model");
+        terminal.until_anywhere("agent result · Task alpha · reviewer");
+        terminal.write(b"/tasks\r");
+        terminal.until("Task beta");
+        let start = terminal.transcript.rfind("Background tasks").unwrap();
+        let list = &terminal.transcript[start..];
+        let alpha = list.rfind("Task alpha").expect("alpha restored");
+        let beta = list.rfind("Task beta").expect("beta pending");
+        let gamma = list.rfind("Task gamma").expect("gamma restored");
+        let delta = list.rfind("Command delta").expect("command restored");
+        assert!(
+            alpha < delta && delta < beta && beta < gamma,
+            "dispatch order: {list}"
+        );
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
 }

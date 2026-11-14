@@ -721,8 +721,7 @@ impl TasksPanel {
 }
 
 impl TasksPanel {
-    /// Whether the panel shows a member's conversation: fullscreen draws it
-    /// over the whole screen with [`TasksPanel::render_member_screen`].
+    /// Whether the panel shows a member's conversation.
     pub fn shows_member(&self) -> bool {
         matches!(
             self.detail.as_deref(),
@@ -733,18 +732,15 @@ impl TasksPanel {
         )
     }
 
-    /// The member conversation as fullscreen draws it: the member's rows at
-    /// the transcript's detail setting under a boundary naming the task, and
-    /// a read-only bar in the composer's place listing the keys it accepts.
-    /// `width` and `rows` are the whole terminal.
-    pub fn render_member_screen(
-        &self,
-        width: usize,
-        rows: usize,
-        p: &Palette,
-        markdown: &MarkdownRenderer,
-        tool_detail: ToolDetail,
-    ) -> Vec<String> {
+    pub fn member_snapshot(&self) -> Option<&ViewSnapshot> {
+        match &self.detail.as_deref()?.body {
+            DetailBody::Member { snapshot, .. } => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    /// The boundary above the transcript and the read-only composer bar.
+    pub fn member_chrome(&self, width: usize, p: &Palette) -> (String, Vec<String>) {
         let Some(Detail {
             task,
             body:
@@ -753,8 +749,6 @@ impl TasksPanel {
                     state,
                     model,
                 },
-            scroll,
-            page,
             ..
         }) = self.detail.as_deref()
         else {
@@ -803,44 +797,7 @@ impl TasksPanel {
             title.push_str(&format!(" · {agent}"));
         }
         title.push_str(&format!(" · {}", t("read-only")));
-        let mut lines = Vec::new();
-        if snapshot.rows.is_empty() {
-            lines.push(fg(
-                match state {
-                    MemberConversationState::Loading => t("Loading conversation..."),
-                    _ => t("No conversation yet"),
-                },
-                &p.muted,
-            ));
-        }
-        for (index, row) in snapshot.rows.iter().enumerate() {
-            if row.kind == RowKind::ToolCall && !opens_group(&snapshot.rows, index) {
-                continue;
-            }
-            let block = project_row(&snapshot.rows, index, tool_detail);
-            lines.extend(crate::ui::transcript::blocks::render_block(
-                &block, content, p, markdown, false,
-            ));
-            lines.push(String::new());
-        }
-        let view = rows.saturating_sub(bar.len() + 1).max(1);
-        page.set(view);
-        let offset = scroll.get().min(lines.len().saturating_sub(view));
-        scroll.set(offset);
-        let end = lines.len().saturating_sub(offset);
-        let mut screen = vec![fg(
-            &crate::ui::transcript::blocks::boundary_line(&title, width),
-            &p.muted,
-        )];
-        screen.extend(
-            lines[end.saturating_sub(view)..end]
-                .iter()
-                .map(|line| format!(" {line}")),
-        );
-        screen.resize(rows.saturating_sub(bar.len()), String::new());
-        screen.extend(bar);
-        screen.truncate(rows);
-        screen
+        (title, bar)
     }
 }
 

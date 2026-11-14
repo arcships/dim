@@ -268,6 +268,20 @@ async fn finished(
                                 },
                                 values: vec![json!("error")],
                             },
+                            QueryFilter::Exists {
+                                condition: Box::new(QueryFilter::And {
+                                    conditions: vec![
+                                        kind("collaboration/request"),
+                                        QueryFilter::Compare {
+                                            left: QueryOperand::Field { path: "id".into() },
+                                            comparison: QueryComparison::Eq,
+                                            right: QueryOperand::Outer {
+                                                path: "data.op_event_id".into(),
+                                            },
+                                        },
+                                    ],
+                                }),
+                            },
                         ],
                     },
                 ],

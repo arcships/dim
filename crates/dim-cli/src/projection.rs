@@ -401,7 +401,7 @@ impl Projection {
                         Some(agent) => format!("{} · {agent}", task.label),
                         None => task.label.clone(),
                     });
-                let index = self.push(format!("agent-{sequence}"), kind, text);
+                let index = self.push(format!("agent-{}", data.request_event_id), kind, text);
                 let row = self.row(index);
                 row.tone = tone;
                 if kind == RowKind::MemberResult {
@@ -875,6 +875,7 @@ impl Projection {
             self.cards.insert(event_id.to_owned(), index);
         }
         self.tasks.push(task);
+        self.retain_tasks();
     }
     fn exec_ended(
         &mut self,
@@ -979,12 +980,12 @@ impl Projection {
     /// Adopts a background command the owner reports ended at the inventory
     /// cutoff, whether or not the transcript window held its start.
     pub fn finished_exec(&mut self, branch: &str, task: &dim_agent_types::FinishedExec) {
+        self.pending_exec(branch, &task.start);
         if self.tasks.iter().any(|known| {
             known.branch_id == branch && known.id == task.start.event_id && known.finished.is_some()
         }) {
             return;
         }
-        self.pending_exec(branch, &task.start);
         self.exec_ended(branch, &task.end, task.ended_at, true);
         self.retain_tasks();
     }
@@ -997,11 +998,6 @@ impl Projection {
         request: &dim_agent_types::FinishedDelegation,
     ) {
         let start = &request.start;
-        if self.tasks.iter().any(|known| {
-            known.branch_id == branch && known.id == start.event_id && known.finished.is_some()
-        }) {
-            return;
-        }
         self.delegation_started(
             branch,
             &start.request,
@@ -1010,6 +1006,12 @@ impl Projection {
             start.started_at,
             start.position,
         );
+        self.refresh_result_labels();
+        if self.tasks.iter().any(|known| {
+            known.branch_id == branch && known.id == start.event_id && known.finished.is_some()
+        }) {
+            return;
+        }
         if let Some(delivery) = &start.delivery {
             self.delegation_delivered(
                 branch,
@@ -1121,6 +1123,7 @@ impl Projection {
         });
         self.background
             .insert(target, (task.request_id.clone(), task.call_id.clone()));
+        self.retain_tasks();
     }
 
     pub fn clear_inventory(&mut self, branch: &str) {
@@ -1597,6 +1600,24 @@ impl Projection {
             );
         }
         self.agent_names = names;
+        self.refresh_result_labels();
+    }
+
+    fn refresh_result_labels(&mut self) {
+        let owner = if self.owner.is_empty() {
+            "main"
+        } else {
+            &self.owner
+        };
+        for task in self.tasks.iter().filter(|task| task.branch_id == owner) {
+            let row_id = format!("agent-{}", task.id);
+            if let Some(row) = self.rows.iter_mut().find(|row| row.row_id == row_id) {
+                Arc::make_mut(row).display = Some(match &task.agent {
+                    Some(agent) => format!("{} · {agent}", task.label),
+                    None => task.label.clone(),
+                });
+            }
+        }
     }
 
     /// Native Agents the tasks or cards name that no `agent.list` read covered yet.

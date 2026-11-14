@@ -244,6 +244,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut status = Reporter::from_env();
     let mut screen = Screen::new(terminal.size(), synchronized);
     let mut full = None;
+    let mut leader_full = None;
     if surroundings.fullscreen {
         if terminal.set_fullscreen(true).is_err() {
             return terminal.lost();
@@ -298,6 +299,17 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let code = loop {
         for update in app.host.drain() {
             app.apply(update);
+            dirty = true;
+        }
+        if full.is_some() && app.shows_member() != leader_full.is_some() {
+            if app.shows_member() {
+                leader_full = full.replace(FullScreen::new(terminal.size(), synchronized));
+            } else {
+                full = leader_full.take();
+                if let Some(full) = &mut full {
+                    full.invalidate();
+                }
+            }
             dirty = true;
         }
         // A management panel may ask for the editor with its first view, as
@@ -462,6 +474,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             // A jump the frame itself landed (a `/timeline` target or a
             // loaded page) moves the view once its blocks are laid out.
             if let Some(full) = &mut full
+                && !app.shows_member()
                 && let Some(jump) = app.jump.take()
             {
                 apply_jump(full, &app, jump);
@@ -565,6 +578,26 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                 }
             }
             Wait::Event(InputEvent::Key(key))
+                if app.shows_member()
+                    && full.as_ref().is_some_and(|full| {
+                        key.code == KeyCode::Esc
+                            || matches!(key.code, KeyCode::Home | KeyCode::End)
+                            || !full.focused() && matches!(key.code, KeyCode::Up | KeyCode::Down)
+                    }) =>
+            {
+                let Some(full) = &mut full else { continue };
+                match key.code {
+                    KeyCode::Up => full.scroll(-1),
+                    KeyCode::Down => full.scroll(1),
+                    KeyCode::Home => full.scroll_to_top(),
+                    KeyCode::End => full.follow(),
+                    _ => {
+                        app.handle(InputEvent::Key(key));
+                    }
+                }
+                dirty = true;
+            }
+            Wait::Event(InputEvent::Key(key))
                 if key.code == KeyCode::Esc && full.as_ref().is_some_and(FullScreen::selecting) =>
             {
                 if let Some(full) = &mut full {
@@ -574,7 +607,7 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             }
             Wait::Event(InputEvent::Key(key))
                 if full.is_some()
-                    && app.keyboard_free()
+                    && (app.keyboard_free() || app.shows_member())
                     && ((key.code == KeyCode::Tab && key.mods.0 == 0)
                         || full.as_ref().is_some_and(FullScreen::focused)) =>
             {
@@ -642,14 +675,14 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             }
             Wait::Event(InputEvent::Key(key))
                 if full.is_some()
-                    && app.keyboard_free()
+                    && (app.keyboard_free() || app.shows_member())
                     && key.mods.0 == 0
                     && (matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
                         || (matches!(key.code, KeyCode::Home | KeyCode::End)
                             && app.composer.is_empty())) =>
             {
                 if let Some(full) = &mut full {
-                    if key.code == KeyCode::PageUp && full.at_top() {
+                    if key.code == KeyCode::PageUp && full.at_top() && !app.shows_member() {
                         app.show_earlier();
                     } else {
                         match key.code {
@@ -664,6 +697,8 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             Wait::Event(event) => match app.handle(event) {
                 Outcome::Continue => {
                     if let Some(full) = &mut full
+                        && leader_full.is_none()
+                        && !app.shows_member()
                         && let Some(jump) = app.jump.take()
                     {
                         apply_jump(full, &app, jump);
@@ -1033,6 +1068,11 @@ struct App {
     /// lay it out again from here (a scrollback rewrite, the fullscreen
     /// virtual list). Bounded by `HISTORY_MAX_BLOCKS`.
     history: std::collections::VecDeque<Block>,
+    member_history: std::collections::VecDeque<Block>,
+    member_choices: HashMap<String, bool>,
+    member_expansions: HashMap<String, bool>,
+    member_rewrites: u64,
+    result_blocks: HashMap<usize, String>,
     /// Blocks dropped from the front of `history` so far.
     dropped: usize,
     /// The history id of the block the newest stream batch began; its next
@@ -1458,6 +1498,11 @@ impl App {
             side_rows: 0,
             last_pulse: 0,
             history: Default::default(),
+            member_history: Default::default(),
+            member_choices: HashMap::new(),
+            member_expansions: HashMap::new(),
+            member_rewrites: 0,
+            result_blocks: HashMap::new(),
             dropped: 0,
             stream_block: None,
             rewrites: 0,
@@ -4059,6 +4104,9 @@ impl App {
             _ => None,
         };
         if member != self.member_target {
+            self.member_history.clear();
+            self.member_choices.clear();
+            self.member_expansions.clear();
             let projection_id = member
                 .as_ref()
                 .or(self.member_target.as_ref())
@@ -5895,19 +5943,7 @@ impl App {
                 cols.saturating_sub(4).min(OVERLAY_LIST_WIDTH)
             };
             frame.overlay = match &self.prompt {
-                Some(Prompt::Tasks(prompt)) if prompt.shows_member() && !palette_overlay => {
-                    Some(Overlay {
-                        rows: prompt.render_member_screen(
-                            cols,
-                            size.1 as usize,
-                            p,
-                            &self.markdown,
-                            self.tool_detail,
-                        ),
-                        cursor: None,
-                        screen: true,
-                    })
-                }
+                Some(Prompt::Tasks(prompt)) if prompt.shows_member() && !palette_overlay => None,
                 _ if palette_overlay => {
                     let width = cols.saturating_sub(4).min(OVERLAY_PALETTE_WIDTH);
                     self.composer.palette_overlay(width, budget, p)
@@ -5960,15 +5996,12 @@ impl App {
                     let cursor = panel_cursor(list_width, budget)
                         .flatten()
                         .map(|(row, column)| (row as u16, column as u16));
-                    rows.map(|rows| Overlay {
-                        rows,
-                        cursor,
-                        screen: false,
-                    })
+                    rows.map(|rows| Overlay { rows, cursor })
                 }
             };
         }
         let panel = match &self.prompt {
+            _ if self.shows_member() => None,
             _ if frame.overlay.is_some() => None,
             Some(Prompt::Ask(_)) if command_entry => {
                 self.composer.palette_panel(outer, panel_rows, p)
@@ -6028,7 +6061,78 @@ impl App {
         };
         frame.live = live;
         self.sync_compaction_details();
+        if self.shows_member() {
+            self.project_member(cols);
+            let Some(Prompt::Tasks(panel)) = &self.prompt else {
+                unreachable!()
+            };
+            let (_, bar) = panel.member_chrome(cols, &self.palette);
+            frame = Frame {
+                live: bar,
+                ..Frame::default()
+            };
+        }
         frame
+    }
+
+    fn shows_member(&self) -> bool {
+        self.fullscreen
+            && matches!(&self.prompt, Some(Prompt::Tasks(panel)) if panel.shows_member())
+    }
+
+    fn active_history(&self) -> &std::collections::VecDeque<Block> {
+        if self.shows_member() {
+            &self.member_history
+        } else {
+            &self.history
+        }
+    }
+
+    fn project_member(&mut self, cols: usize) {
+        let Some(Prompt::Tasks(panel)) = &self.prompt else {
+            return;
+        };
+        let Some(snapshot) = panel.member_snapshot() else {
+            return;
+        };
+        let (title, _) = panel.member_chrome(cols, &self.palette);
+        self.member_history.clear();
+        self.member_history.push_back(Block::Boundary(title));
+        if snapshot.rows.is_empty() {
+            self.member_history
+                .push_back(Block::Note(t("No conversation yet").to_owned()));
+        }
+        for (index, row) in snapshot.rows.iter().enumerate() {
+            if row.kind == RowKind::ToolCall && !opens_group(&snapshot.rows, index) {
+                continue;
+            }
+            let detail = if row.kind == RowKind::Thinking {
+                self.thinking_detail
+            } else {
+                self.tool_detail
+            };
+            let mut block = match row.kind {
+                RowKind::ToolCall => Block::ToolGroup(project_fullscreen_group(
+                    &group_rows(&snapshot.rows, index),
+                    self.tool_detail,
+                    Some(&self.member_choices),
+                )),
+                RowKind::StreamingAssistant => Block::Assistant(row.text.clone()),
+                _ => project_row(&snapshot.rows, index, detail),
+            };
+            if let Some(expanded) = self.member_expansions.get(&row.row_id) {
+                match &mut block {
+                    Block::Thinking { expanded: open, .. }
+                    | Block::Hook { expanded: open, .. }
+                    | Block::MemberResult { expanded: open, .. }
+                    | Block::Compaction { expanded: open, .. }
+                    | Block::Error { expanded: open, .. } => *open = *expanded,
+                    _ => {}
+                }
+            }
+            self.member_history.push_back(block);
+        }
+        self.member_rewrites += 1;
     }
 
     fn arm_window(&mut self) -> bool {
@@ -6516,6 +6620,7 @@ impl App {
         if self.fullscreen {
             self.dropped += self.history.len();
             self.history.clear();
+            self.result_blocks.clear();
             self.stream_block = None;
             self.jump = Some(Jump::Bottom);
         }
@@ -6606,6 +6711,7 @@ impl App {
         if self.fullscreen {
             self.dropped += self.history.len();
             self.history.clear();
+            self.result_blocks.clear();
             self.stream_block = None;
             self.banner_committed = false;
             self.jump = Some(Jump::Bottom);
@@ -6783,6 +6889,7 @@ impl App {
         self.message_blocks.clear();
         self.dropped += self.history.len();
         self.history.clear();
+        self.result_blocks.clear();
         self.stream_block = None;
     }
 
@@ -6839,6 +6946,18 @@ impl App {
 
     /// Remembers a committed block (bounded, newest last).
     fn record(&mut self, mut source: Block) {
+        if let Block::MemberResult { label, body, .. } = &source
+            && let Some(snapshot) = &self.snapshot
+            && let Some(row) = snapshot.rows.iter().find(|row| {
+                row.kind == RowKind::MemberResult
+                    && row.text == *body
+                    && row.display == *label
+                    && !self.result_blocks.values().any(|id| id == &row.row_id)
+            })
+        {
+            self.result_blocks
+                .insert(self.dropped + self.history.len(), row.row_id.clone());
+        }
         if let Block::Compaction {
             target,
             detail: Some(detail),
@@ -6856,6 +6975,7 @@ impl App {
         self.history.push_back(source);
         if self.history.len() > HISTORY_MAX_BLOCKS {
             self.history.pop_front();
+            self.result_blocks.remove(&self.dropped);
             self.dropped += 1;
         }
     }
@@ -6867,6 +6987,11 @@ impl App {
     /// that group. Whether it did.
     fn click(&mut self, block: Option<usize>, row: usize, cols: usize) -> bool {
         if let Some((node, open)) = self.tool_disclosure(block, row, cols) {
+            if self.shows_member() {
+                self.member_choices.insert(node, !open);
+                self.project_member(cols);
+                return true;
+            }
             self.tool_choices
                 .entry(self.tool_scope())
                 .or_default()
@@ -6878,6 +7003,41 @@ impl App {
         let Some(id) = block else { return false };
         if row != 1 {
             return false;
+        }
+        if self.shows_member() {
+            let Some(Prompt::Tasks(panel)) = &self.prompt else {
+                return false;
+            };
+            let Some(snapshot) = panel.member_snapshot() else {
+                return false;
+            };
+            let Some(source) = id.checked_sub(1).and_then(|at| {
+                snapshot
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, row)| {
+                        row.kind != RowKind::ToolCall || opens_group(&snapshot.rows, *index)
+                    })
+                    .nth(at)
+                    .map(|(_, row)| row.row_id.clone())
+            }) else {
+                return false;
+            };
+            let Some(
+                Block::Thinking { expanded, .. }
+                | Block::Hook { expanded, .. }
+                | Block::MemberResult { expanded, .. }
+                | Block::Compaction { expanded, .. }
+                | Block::Error { expanded, .. },
+            ) = self.member_history.get_mut(id)
+            else {
+                return false;
+            };
+            *expanded = !*expanded;
+            self.member_expansions.insert(source, *expanded);
+            self.member_rewrites += 1;
+            return true;
         }
         let index = id.checked_sub(self.dropped);
         match index.and_then(|index| self.history.get_mut(index)) {
@@ -6924,12 +7084,14 @@ impl App {
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         let (group, row) = match block {
             Some(id) => {
-                let Block::ToolGroup(group) = self.history.get(id.checked_sub(self.dropped)?)?
+                let Block::ToolGroup(group) =
+                    self.active_history().get(id.checked_sub(self.dropped())?)?
                 else {
                     return None;
                 };
                 (group, row.checked_sub(1)?)
             }
+            None if self.shows_member() => return None,
             None => self
                 .tail_groups
                 .iter()
@@ -7032,15 +7194,27 @@ impl App {
         }
     }
 
-    /// Fullscreen redraws a committed user row the model has consumed since;
-    /// scrollback keeps what it printed (timeline UI §4.8).
+    /// Refreshes result titles from restored task identities. Fullscreen also
+    /// redraws user rows the model has consumed (timeline UI §4.8).
     fn refresh_messages(&mut self) {
-        if !self.fullscreen || self.message_blocks.is_empty() {
-            return;
-        }
         let Some(snapshot) = &self.snapshot else {
             return;
         };
+        let mut changed = Vec::new();
+        for (id, source) in &self.result_blocks {
+            let Some(Block::MemberResult { label, .. }) = id
+                .checked_sub(self.dropped)
+                .and_then(|index| self.history.get_mut(index))
+            else {
+                continue;
+            };
+            if let Some(row) = snapshot.rows.iter().find(|row| row.row_id == *source)
+                && *label != row.display
+            {
+                *label = row.display.clone();
+                changed.push(*id);
+            }
+        }
         let settled: Vec<usize> = self
             .message_blocks
             .iter()
@@ -7065,6 +7239,15 @@ impl App {
                 })
             })
             .collect();
+        for id in &changed {
+            self.mark_rewritten(*id);
+        }
+        if !self.fullscreen {
+            if !changed.is_empty() {
+                self.request_reflow();
+            }
+            return;
+        }
         for index in settled {
             let Some(at) = index.checked_sub(self.dropped) else {
                 continue;
@@ -7533,11 +7716,17 @@ impl App {
 impl Document for App {
     fn disclosure(&self, block: Option<usize>, cols: usize, row: usize) -> Option<String> {
         let (node, _) = self.tool_disclosure(block, row, cols)?;
+        if self.shows_member() {
+            return Some(
+                serde_json::to_string(&(self.member_target.as_ref(), node))
+                    .expect("tool identity is JSON"),
+            );
+        }
         Some(serde_json::to_string(&(self.tool_scope(), node)).expect("tool identity is JSON"))
     }
 
     fn tool_rows(&self, index: usize, cols: usize) -> Vec<usize> {
-        let Block::ToolGroup(group) = &self.history[index] else {
+        let Block::ToolGroup(group) = &self.active_history()[index] else {
             return Vec::new();
         };
         disclosure_rows(group, cols.saturating_sub(2 + MARGIN).max(1), &self.palette)
@@ -7547,6 +7736,9 @@ impl Document for App {
     }
 
     fn rewritten(&self, since: u64) -> (u64, Option<Vec<usize>>) {
+        if self.shows_member() {
+            return (self.member_rewrites, None);
+        }
         let count = (self.rewrites - since) as usize;
         let ids = (count <= self.rewrite_log.len())
             .then(|| self.rewrite_log.iter().rev().take(count).copied().collect());
@@ -7554,6 +7746,9 @@ impl Document for App {
     }
 
     fn cards(&self, index: usize) -> Vec<String> {
+        if self.shows_member() {
+            return Vec::new();
+        }
         match &self.history[index] {
             Block::ToolGroup(group) => card_actions(group).into_iter().map(str::to_owned).collect(),
             Block::Line { id, .. } => vec![id.clone()],
@@ -7563,6 +7758,9 @@ impl Document for App {
     }
 
     fn card_rows(&self, index: usize, cols: usize, card: &str) -> Option<(usize, usize)> {
+        if self.shows_member() {
+            return None;
+        }
         let group = match &self.history[index] {
             Block::ToolGroup(group) => group,
             Block::Line { .. } | Block::LoadMore(_) => {
@@ -7576,6 +7774,9 @@ impl Document for App {
     }
 
     fn card_at(&self, index: usize, cols: usize, row: usize) -> Option<String> {
+        if self.shows_member() {
+            return None;
+        }
         let group = match &self.history[index] {
             Block::ToolGroup(group) => group,
             Block::Line { id, .. } => return (row > 0).then(|| id.clone()),
@@ -7587,19 +7788,19 @@ impl Document for App {
     }
 
     fn dropped(&self) -> usize {
-        self.dropped
+        if self.shows_member() { 0 } else { self.dropped }
     }
 
     fn len(&self) -> usize {
-        self.history.len()
+        self.active_history().len()
     }
 
     fn rows(&self, index: usize, cols: usize) -> Vec<String> {
-        raw_rows(&self.render_source(&self.history[index], cols)).collect()
+        raw_rows(&self.render_source(&self.active_history()[index], cols)).collect()
     }
 
     fn estimate(&self, index: usize, cols: usize) -> usize {
-        match &self.history[index] {
+        match &self.active_history()[index] {
             Block::Assistant(text) => {
                 let width = cols.saturating_sub(2 + MARGIN).max(1);
                 1 + text
@@ -7612,6 +7813,9 @@ impl Document for App {
     }
 
     fn message(&self, index: usize) -> Option<&str> {
+        if self.shows_member() {
+            return None;
+        }
         match &self.history[index] {
             Block::User { text, .. } => Some(text),
             _ => None,
@@ -7619,6 +7823,9 @@ impl Document for App {
     }
 
     fn cut(&self, index: usize) -> Option<u64> {
+        if self.shows_member() {
+            return None;
+        }
         match &self.history[index] {
             Block::User { cut, .. } => *cut,
             _ => None,
@@ -10377,7 +10584,8 @@ mod tests {
             );
             app.open_task("m4");
             let detail = app.frame(size);
-            emu.feed(&screen.render(&detail, size, &app.palette, &app));
+            let mut member_screen = FullScreen::new(size, true);
+            emu.feed(&member_screen.render(&detail, size, &app.palette, &app));
             let rendered = emu.rows_text().join("\n");
             if size.0 >= 80 {
                 assert!(rendered.contains("Audit cancellation"), "{rendered}");
@@ -10386,13 +10594,13 @@ mod tests {
             assert!(rendered.contains("Esc back"), "{rendered}");
             assert!(!rendered.contains("keep this draft"), "{rendered}");
             assert_eq!(
-                screen.mouse(event(MouseKind::Press), &app),
+                member_screen.mouse(event(MouseKind::Press), &app),
                 MouseOutcome::Ignored
             );
-            assert_eq!(
-                screen.mouse(event(MouseKind::Release), &app),
-                MouseOutcome::Ignored
-            );
+            assert!(matches!(
+                member_screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Click { .. } | MouseOutcome::Ignored
+            ));
             app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
                 KeyCode::Esc,
                 Modifiers::NONE,
@@ -10400,6 +10608,7 @@ mod tests {
             assert!(app.prompt.is_none());
             assert_eq!(app.composer.text(), "keep this draft");
 
+            screen.invalidate();
             screen.render(&app.frame(size), size, &app.palette, &app);
             screen.mouse(event(MouseKind::Press), &app);
             screen.mouse(event(MouseKind::Drag), &app);

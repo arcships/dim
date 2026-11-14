@@ -350,13 +350,8 @@ impl Worker {
                 json!({"sessionId":self.session_id,"branchId":branch_id}),
             )
         } else if self.task_history[&branch_id].window_complete {
-            if self.task_history[&branch_id].ended {
-                self.finish_window(&branch_id);
-                self.changed();
-                return Ok(());
-            }
             for required in ["session.input.pending", "session.turn.get"] {
-                if !self.methods.contains(required) {
+                if !self.task_history[&branch_id].ended && !self.methods.contains(required) {
                     self.fail_inventory(
                         &branch_id,
                         format!("Current-state read unavailable: {required}"),
@@ -366,9 +361,14 @@ impl Worker {
             }
             let history = self.task_history.get_mut(&branch_id).unwrap();
             while history.inventory_index < inventory::METHODS.len()
-                && !self
+                && (!self
                     .methods
                     .contains(inventory::METHODS[history.inventory_index])
+                    || (history.ended
+                        && !matches!(
+                            inventory::METHODS[history.inventory_index],
+                            "session.exec.finished" | "session.collaboration.finished"
+                        )))
             {
                 history.inventory_index += 1;
             }
@@ -553,7 +553,6 @@ impl Worker {
             history.window.push(page).map_err(|error| error.to_string())
         });
         let window_ready = matches!(result, Ok(true));
-        let earlier = history.earlier == EarlierRead::Reading;
         match result {
             Err(error) => {
                 history.error = Some(error.clone());
@@ -590,9 +589,7 @@ impl Worker {
                     for event in events {
                         self.replay(&request.branch_id, event);
                     }
-                    if !self.task_history[&request.branch_id].ended {
-                        self.task_history_queue.push_back(request.branch_id.clone());
-                    }
+                    self.task_history_queue.push_back(request.branch_id.clone());
                 }
                 if missing_prefix {
                     self.send(Update::Notice(
@@ -603,9 +600,6 @@ impl Worker {
         }
         self.changed();
         if window_ready {
-            if !earlier && self.task_history[&request.branch_id].ended {
-                self.finish_window(&request.branch_id);
-            }
             self.publish();
         }
         Ok(())
