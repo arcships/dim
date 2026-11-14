@@ -5196,12 +5196,13 @@ async fn owned_session_creation_and_plugin_shutdown_keep_one_resource_owner() {
 #[tokio::test]
 async fn sqlite_close_releases_ownership_while_a_spawned_child_inherits_descriptors() {
     use std::{
+        ffi::c_void,
         io::{Read, Write},
         os::{fd::AsRawFd, unix::net::UnixStream, unix::process::CommandExt},
     };
     unsafe extern "C" {
-        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
-        fn write(fd: i32, buffer: *const u8, count: usize) -> isize;
+        fn read(fd: i32, buffer: *mut c_void, count: usize) -> isize;
+        fn write(fd: i32, buffer: *const c_void, count: usize) -> isize;
     }
 
     let database = Database::new();
@@ -5219,7 +5220,9 @@ async fn sqlite_close_releases_ownership_while_a_spawned_child_inherits_descript
         unsafe {
             command.pre_exec(move || {
                 let mut byte = 1_u8;
-                if write(fd, &byte, 1) != 1 || read(fd, &mut byte, 1) != 1 {
+                if write(fd, (&raw const byte).cast(), 1) != 1
+                    || read(fd, (&raw mut byte).cast(), 1) != 1
+                {
                     return Err(std::io::Error::from_raw_os_error(5));
                 }
                 Ok(())

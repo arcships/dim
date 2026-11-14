@@ -114,12 +114,13 @@ impl ToolDriver for HoldTool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn process_plugin_reloads_keep_sessions() {
     use std::{
+        ffi::c_void,
         io::{Read, Write},
         os::{fd::AsRawFd, unix::net::UnixStream, unix::process::CommandExt},
     };
     unsafe extern "C" {
-        fn read(fd: i32, buffer: *mut u8, count: usize) -> isize;
-        fn write(fd: i32, buffer: *const u8, count: usize) -> isize;
+        fn read(fd: i32, buffer: *mut c_void, count: usize) -> isize;
+        fn write(fd: i32, buffer: *const c_void, count: usize) -> isize;
     }
 
     let started = Arc::new(tokio::sync::Notify::new());
@@ -194,7 +195,9 @@ async fn process_plugin_reloads_keep_sessions() {
         unsafe {
             command.pre_exec(move || {
                 let mut byte = 1_u8;
-                if write(fd, &byte, 1) != 1 || read(fd, &mut byte, 1) != 1 {
+                if write(fd, (&raw const byte).cast(), 1) != 1
+                    || read(fd, (&raw mut byte).cast(), 1) != 1
+                {
                     return Err(std::io::Error::from_raw_os_error(5));
                 }
                 Ok(())

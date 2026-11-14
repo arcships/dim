@@ -80,7 +80,7 @@ function release(t, options = {}) {
   });
   writeManifest(native, {version: options.manifestVersion ?? version,
     sourceCommit: options.sourceCommit ?? commit, platform: options.nativePlatform ?? 'linux-x64',
-    account: true, toolchain: {rust: '1.98.1'}});
+    account: true, toolchain: {rust: '1.100.0'}});
   if (options.changeNative) writeFileSync(path.join(native, 'default-plugins.json'), '{"plugins":{}}\nchanged\n');
   if (options.addNative) writeFileSync(path.join(native, 'extra.txt'), 'extra\n');
   if (options.linkNative) symlinkSync('LICENSE', path.join(native, 'plugins/EXAMPLE-LINK'));

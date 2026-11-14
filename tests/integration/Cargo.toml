@@ -3,6 +3,7 @@ name = "dim-agent-integration-tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 [dev-dependencies]
 dim-agent-runtime = { workspace = true, features = ["testing"] }

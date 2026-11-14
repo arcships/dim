@@ -3,6 +3,7 @@ name = "dimcode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "The single dimcode executable: the CLI, with the App Server as its `app-server` subcommand"
 

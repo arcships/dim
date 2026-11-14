@@ -3,6 +3,7 @@ name = "dim-acp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 description = "Client-host ACP gateway over Dim's public RPC v3"
 
