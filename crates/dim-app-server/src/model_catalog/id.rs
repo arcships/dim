@@ -12,6 +12,9 @@ use super::*;
 pub(super) enum Rule {
     /// The projection's own list carries this exact id.
     ProviderExact,
+    /// A bundled row carries the input's whole qualified id, and the id's
+    /// namespace names that row's provider.
+    Qualified,
     /// A vendor's row whose own tokens are the input's head.
     Token,
     /// A vendor's row named through its upstream canonical id, its display
@@ -31,6 +34,7 @@ impl Rule {
     fn strategy(self, provider_id: &str, model_id: &str, input: &str) -> String {
         match self {
             Rule::ProviderExact => "provider-exact".into(),
+            Rule::Qualified => format!("{provider_id}-exact"),
             Rule::Token if model_id == input => format!("{provider_id}-exact"),
             Rule::Token => format!("{provider_id}-token"),
             Rule::Canonical { .. } => format!("{provider_id}-canonical"),
@@ -41,7 +45,7 @@ impl Rule {
 
     fn score(self) -> f64 {
         match self {
-            Rule::ProviderExact | Rule::Token | Rule::CustomProvider => 1.,
+            Rule::ProviderExact | Rule::Qualified | Rule::Token | Rule::CustomProvider => 1.,
             Rule::Canonical { .. } => 0.95,
             Rule::Merge => 0.9,
         }
@@ -51,6 +55,7 @@ impl Rule {
     fn word(self) -> &'static str {
         match self {
             Rule::ProviderExact => "provider-exact",
+            Rule::Qualified => "qualified",
             Rule::Token => "token",
             Rule::Canonical { .. } => "canonical",
             Rule::CustomProvider => "custom-provider",
@@ -145,8 +150,8 @@ pub(super) struct Lookup {
     pub(super) strategy: String,
     pub(super) score: f64,
     /// The step that named the row, as `metadata.identification.rule` carries
-    /// it: `provider-exact`, `token`, `canonical`, `custom-provider` or
-    /// `merge`.
+    /// it: `provider-exact`, `qualified`, `token`, `canonical`,
+    /// `custom-provider` or `merge`.
     pub(super) rule: &'static str,
     /// Step 3's display name settled several canonical hits.
     pub(super) narrowed: bool,
@@ -178,6 +183,9 @@ impl Lookup {
 pub(super) struct IdIndex {
     vendor_tokens: HashMap<Vec<String>, Vec<usize>>,
     custom_tokens: HashMap<Vec<String>, Vec<usize>>,
+    /// Every row by its whole id, lowercased, for the qualified step that runs
+    /// before any step drops the namespace segments.
+    qualified: HashMap<String, Vec<usize>>,
     rows: Vec<IndexedRow>,
 }
 
@@ -199,13 +207,15 @@ impl IdIndex {
     pub(super) fn new(providers: &[CatalogProvider]) -> Self {
         let mut vendor_tokens: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut custom_tokens: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
+        let mut qualified: HashMap<String, Vec<usize>> = HashMap::new();
         let mut rows = Vec::new();
         for (provider, catalog) in providers.iter().enumerate() {
             let role = catalog.metadata.as_ref().and_then(|metadata| metadata.role);
             let role_is_vendor = role == Some(ProviderRole::Vendor);
             let custom = catalog.provider_id == "custom-provider";
-            // Every row is indexed: steps 2 and 3 read vendor rows, step 4 the
-            // `custom-provider` rows, and step 7 every other aggregator row.
+            // Every row is indexed: the qualified step reads every row's whole
+            // id, steps 2 and 3 read vendor rows, step 4 the `custom-provider`
+            // rows, and step 7 every other aggregator row.
             for (model, entry) in catalog.models.iter().enumerate() {
                 let model_tokens = split_id(&entry.model_id);
                 let position = rows.len();
@@ -220,6 +230,10 @@ impl IdIndex {
                         .or_default()
                         .push(position);
                 }
+                qualified
+                    .entry(entry.model_id.trim().to_lowercase())
+                    .or_default()
+                    .push(position);
                 rows.push(IndexedRow {
                     provider,
                     model,
@@ -252,8 +266,17 @@ impl IdIndex {
         Self {
             vendor_tokens,
             custom_tokens,
+            qualified,
             rows,
         }
+    }
+
+    /// The rows whose own id is the input's, whole, as positions.
+    fn qualified_rows(&self, id: &str) -> &[usize] {
+        self.qualified
+            .get(&id.trim().to_lowercase())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// The rows of one list whose own token tuple is a head of the input, as
@@ -323,6 +346,10 @@ impl BundledCatalog {
             return Outcome::None;
         };
         let namespace = namespace_of(id);
+        match self.identify_qualified(id, namespace) {
+            Outcome::None => {}
+            found => return found,
+        }
         match self.identify_by_tokens(Index::Vendor, &query, provider, namespace, Rule::Token, id) {
             Outcome::None => {}
             found => return found,
@@ -347,6 +374,51 @@ impl BundledCatalog {
             found => return found,
         }
         self.merge_rows(id, &query)
+    }
+
+    /// Step 2: the whole qualified id, before any step drops its namespace
+    /// segments. An aggregator's own house model is named this way, so a router
+    /// is never answered by the unrelated row its final token happens to name.
+    ///
+    /// The namespace is what makes the id an identity here: the step answers
+    /// only when the namespace names the provider whose row carries the whole
+    /// id. Without that, the id is a plain name for a model several providers
+    /// sell, and the steps after this one read it.
+    fn identify_qualified(
+        &self,
+        id: &str,
+        namespace: Option<&str>,
+    ) -> Outcome {
+        // The identity this step reads is the id's own namespace, so an id
+        // without one has nothing here.
+        let Some(namespace) = namespace else {
+            return Outcome::None;
+        };
+        let rows = self.rows_in(self.ids.qualified_rows(id));
+        let answering: Vec<Row<'_>> = rows
+            .into_iter()
+            .filter(|row| row.provider_id == namespace)
+            .collect();
+        let [row] = answering.as_slice() else {
+            // Nothing under the namespace carries it, or several of its rows
+            // still disagree: either way this step named no one model.
+            return match answering.len() {
+                0 => Outcome::None,
+                _ => Outcome::Ambiguous(
+                    answering
+                        .iter()
+                        .map(|row| row.candidate(Rule::Qualified))
+                        .collect(),
+                ),
+            };
+        };
+        let strategy = Rule::Qualified.strategy(row.provider_id, &row.entry.model_id, id);
+        self.one(
+            row.provider_id.to_owned(),
+            row.entry.clone(),
+            strategy,
+            Rule::Qualified,
+        )
     }
 
     /// Step 1: the projection's own list, by exact id. The row answers with
@@ -414,7 +486,29 @@ impl BundledCatalog {
             return Outcome::None;
         }
         let rows = self.rows_in(rows);
+        if let Some(refused) = self.refuse_foreign(rows.clone(), namespace, rule) {
+            return refused;
+        }
         self.settle(rows, provider, namespace, rule, query, input)
+    }
+
+    /// The namespace of a qualified id names whose model it is. When it names a
+    /// bundled provider and no row this step found belongs to that provider,
+    /// the id is not the other seller's model and no seller may answer for it
+    /// by its final token alone: the refusal names the rows that would have.
+    fn refuse_foreign(
+        &self,
+        rows: Vec<Row<'_>>,
+        namespace: Option<&str>,
+        rule: Rule,
+    ) -> Option<Outcome> {
+        let namespace = namespace.filter(|namespace| self.provider(namespace).is_some())?;
+        if rows.iter().any(|row| row.provider_id == namespace) {
+            return None;
+        }
+        Some(Outcome::Ambiguous(
+            rows.iter().map(|row| row.candidate(rule)).collect(),
+        ))
     }
 
     /// Step 3: the vendor's upstream canonical id and its display name, read
@@ -796,8 +890,6 @@ impl BundledCatalog {
         let efforts = intersection(declaring.iter());
         entry.capabilities.context_window = window;
         entry.capabilities.max_output_tokens = output;
-        // The intersection is the merged entry's own statement, so it is
-        // written even when the row the entry is copied from declares none.
         if let Some(efforts) = efforts {
             let metadata = entry.metadata.get_or_insert_default();
             metadata.reasoning.get_or_insert_default().effort_options = Some(efforts);

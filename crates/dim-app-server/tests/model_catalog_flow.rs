@@ -805,6 +805,86 @@ fn an_aggregators_house_model_answers_on_its_own_provider() {
     assert!(entry.capabilities.missing_limits().is_empty());
 }
 
+/// An aggregator's own qualified id is its identity before any step drops the
+/// namespace: `openrouter/auto` is OpenRouter's router and not the bare `auto`
+/// a vendor sells, and `openrouter/fusion` is its text router and not Rev AI's
+/// audio transcription model.
+#[test]
+fn a_qualified_house_model_keeps_its_own_identity() {
+    let catalog = BundledCatalog::load().unwrap();
+    for id in ["openrouter/auto", "openrouter/fusion"] {
+        let entry = relay(&catalog, id);
+        let row = catalog
+            .bundled_models("openrouter")
+            .unwrap()
+            .iter()
+            .find(|row| row.model_id == id)
+            .unwrap();
+        let metadata = entry.metadata.as_ref().unwrap();
+        let answered = (
+            matched(&entry),
+            numbers(&entry),
+            entry.capabilities.modalities.clone(),
+            entry.capabilities.audio,
+            entry.capabilities.tool_calling,
+            metadata.identification.as_ref().map(|found| found.rule.as_str()),
+            metadata.match_strategy.as_deref(),
+        );
+        let expected = (
+            ("openrouter", id),
+            (
+                row.capabilities.context_window,
+                row.capabilities.max_output_tokens,
+            ),
+            row.capabilities.modalities.clone(),
+            row.capabilities.audio,
+            row.capabilities.tool_calling,
+            Some("qualified"),
+            Some("openrouter-exact"),
+        );
+        assert_eq!(answered, expected, "{id}: the relay answers with the row itself");
+    }
+}
+
+/// A namespace that names a known provider binds the id to that provider: when
+/// nothing under it names the model, another vendor may not claim the id by its
+/// final token, so the refusal names the rows that would have.
+#[test]
+fn a_namespaced_id_the_namespace_provider_does_not_name_is_refused() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "openai/gpt-image-2.5-flare");
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .map(|found| found.rule.as_str());
+    assert_eq!(
+        (matched(&entry), identification),
+        (("provider-default", "-"), Some("ambiguous")),
+        "the token `flare` is not an answer under the namespace `openai`"
+    );
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "ambiguous");
+    let named: Vec<_> = identification
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.provider_id.as_str(), candidate.model_id.as_str()))
+        .collect();
+    assert_eq!(named, [("openai-codex", "gpt-image-2.5-flare")]);
+}
+
 /// Every aggregator row that names the same model with the same tag joins, and
 /// the merge takes the safe direction: the smallest window and the smallest
 /// output cap any joining row declares.

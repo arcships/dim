@@ -432,25 +432,38 @@ already records:
 
 The model is identified first, and the numbers are read from the entry that
 identification named. Identification runs over the catalog, and the first step
-that leaves one model wins: the provider's own list by exact id; then a vendor
-entry whose own tokens are the head of the id, its tail no more than a date,
-`latest`, a tag suffix or a bracketed context modifier; then the vendor's
-upstream canonical id and display name read together, where the display name
-narrows several canonical hits and a remaining disagreement is an ambiguity
-rather than a guess; then the `custom-provider` rows by those same two rules;
-and last, for a model that no vendor entry and no `custom-provider` row names,
-a merge of the aggregator rows whose own id names the same model with the same
-tag, taken in the safe direction: the smallest window, the smallest output cap
-and the intersection of the effort choices. A provider default is not a
-declaration, so a row carrying the pair its provider writes across many of its
-rows declares no limit there. The projection records the outcome in
-`metadata.identification`: `rule` is one of `provider-exact`, `token`,
-`canonical`, `custom-provider`, `merge` or `ambiguous`; `narrowedByDisplayName`
-says the display name settled several canonical hits; `candidates` names the
-rows an ambiguity refused; and `filled` names the entry and rule that supplied
-each limit the row did not declare. A refusal names the provider and the model
-id, the limits that are missing, the candidates that still disagree, and
-`provider.models.edit` as the write that declares them.
+that leaves one model wins: the provider's own list by exact id; then the whole
+qualified id, when the namespace it carries names the provider whose row
+carries that id, so an aggregator's own house model is never answered by the
+unrelated row its final token happens to name; then a vendor entry whose own
+tokens are the head of the id, its tail no more than a date, `latest`, a tag
+suffix or a bracketed context modifier; then the vendor's upstream canonical id
+and display name read together, where the display name narrows several
+canonical hits and a remaining disagreement is an ambiguity rather than a
+guess; then the `custom-provider` rows by those same two rules; and last, for a
+model that no vendor entry and no `custom-provider` row names, a merge of the
+aggregator rows whose own id names the same model with the same tag, taken in
+the safe direction: the smallest window, the smallest output cap and the
+intersection of the effort choices. A provider default is not a declaration, so
+a row carrying the pair its provider writes across many of its rows declares no
+limit there.
+
+The namespace of a qualified id is what makes it an identity, not a hint. When
+it names a bundled provider, a token, canonical-id or display-name step that
+finds only rows of other providers answers nothing and refuses the id with
+those rows as the candidates: a final token alone may not hand a qualified id
+to a vendor the id did not name. An id whose namespace names no bundled
+provider is a plain name for a model several sellers list, and those steps read
+it as one.
+
+The projection records the outcome in `metadata.identification`: `rule` is one
+of `provider-exact`, `qualified`, `token`, `canonical`, `custom-provider`,
+`merge` or `ambiguous`; `narrowedByDisplayName` says the display name settled
+several canonical hits; `candidates` names the rows an ambiguity refused; and
+`filled` names the entry and rule that supplied each limit the row did not
+declare. A refusal names the provider and
+the model id, the limits that are missing, the candidates that still disagree,
+and `provider.models.edit` as the write that declares them.
 
 Absence is a value of the type, not a number. The catalog carries
 `CatalogCapabilities`, whose two limits are optional and absent when no source
