@@ -388,7 +388,7 @@ impl BundledCatalog {
             .map(|m| m.capability_override_fields.clone())
             .unwrap_or_default();
         let lookup = self.lookup(provider, &id);
-        let identification = self.identify_record(provider, &id);
+        let identification = self.identify_record(provider, &id, &explicit);
         if let Some(found_lookup) = lookup {
             let pid = found_lookup.provider_id.clone();
             let found = found_lookup.entry;
@@ -437,18 +437,22 @@ impl BundledCatalog {
     }
 
     /// How an id was identified, as the entry carries it. `None` when no step
-    /// named a row; the candidates when a step refused the id.
+    /// named a row; the candidates when a step refused the id. `declared` names
+    /// the limits the entry states itself: a merge adopts one minimum per limit
+    /// from a joining row, and a limit the entry declares is not one it
+    /// adopted, even when the two values are equal.
     fn identify_record(
         &self,
         provider: &ProviderProjection,
         id: &str,
+        declared: &[String],
     ) -> Option<ModelIdentification> {
         match self.identify(provider, id) {
             Ok(Some(found)) => Some(ModelIdentification {
                 rule: found.rule.into(),
                 narrowed_by_display_name: found.narrowed,
                 candidates: Vec::new(),
-                filled: found.suppliers,
+                filled: adopted(found.suppliers, declared),
             }),
             Err(candidates) => Some(ModelIdentification {
                 rule: "ambiguous".into(),
@@ -546,7 +550,15 @@ impl BundledCatalog {
             .iter()
             .map(|model| {
                 let mut model = model.clone();
-                let identification = self.identify_record(provider, &model.model_id);
+                let identification = self.identify_record(
+                    provider,
+                    &model.model_id,
+                    model
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.capability_override_fields.as_slice())
+                        .unwrap_or_default(),
+                );
                 if let Some(found) = self.lookup(provider, &model.model_id) {
                     let provider_id = found.provider_id.clone();
                     let strategy = found.strategy.clone();
@@ -723,6 +735,17 @@ impl BundledCatalog {
                 .off = Some(off.clone());
         }
     }
+}
+
+/// The merged limits the projection actually adopted: a merge adopts one
+/// minimum per limit from a joining row, and `declared` names the limits the
+/// entry states itself. A declared limit is the entry's own number, so it has
+/// no `filled` record even when the adopted minimum equals it.
+fn adopted(suppliers: Vec<FilledLimit>, declared: &[String]) -> Vec<FilledLimit> {
+    suppliers
+        .into_iter()
+        .filter(|limit| !declared.contains(&limit.field))
+        .collect()
 }
 
 fn descriptor_entry(

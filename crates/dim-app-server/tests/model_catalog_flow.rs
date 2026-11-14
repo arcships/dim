@@ -984,6 +984,67 @@ fn a_merged_limit_names_the_seller_it_came_from() {
     assert_eq!(identification.rule, "merge");
 }
 
+/// A limit the descriptor declares is the entry's own number, so the merge's
+/// record of an adopted minimum for that field is not a limit this entry
+/// inherited: `filled` lists only the ones it did. A value equal to the
+/// adopted minimum is still a declaration of its own.
+#[test]
+fn filled_lists_only_the_limits_the_descriptor_did_not_declare() {
+    let catalog = BundledCatalog::load().unwrap();
+    let provider = ProviderProjection {
+        provider_id: "custom_relay".into(),
+        source: Some(ModelSource::Custom),
+        ..Default::default()
+    };
+    for (descriptor, declared, filled) in [
+        (
+            json!({"id":"openai/gpt-oss-20b","limit":{"context":777,"output":333}}),
+            (Some(777), Some(333)),
+            vec![],
+        ),
+        (
+            json!({"id":"openai/gpt-oss-20b","limit":{"context":777}}),
+            (Some(777), Some(4_096)),
+            vec![("maxOutputTokens", 4_096, "qiniu")],
+        ),
+        (
+            json!({"id":"openai/gpt-oss-20b","limit":{"context":128_000}}),
+            (Some(128_000), Some(4_096)),
+            vec![("maxOutputTokens", 4_096, "qiniu")],
+        ),
+        (
+            json!({"id":"openai/gpt-oss-20b","limit":{"context":128_000,"output":4_096}}),
+            (Some(128_000), Some(4_096)),
+            vec![],
+        ),
+    ] {
+        let entry = catalog.project(&provider, &descriptor).unwrap();
+        let identification = entry
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .as_ref()
+            .unwrap();
+        let listed: Vec<_> = identification
+            .filled
+            .iter()
+            .map(|limit| {
+                (
+                    limit.field.as_str(),
+                    limit.value,
+                    limit.provider_id.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            (numbers(&entry), listed),
+            (declared, filled),
+            "{descriptor}: a declared limit has no filled record"
+        );
+    }
+}
+
 /// The same provenance on the list a relay serves: `effective_models` projects
 /// every row of a custom provider, and a row that declares neither limit takes
 /// both from the merge with the seller of each.
