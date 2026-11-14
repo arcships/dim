@@ -119,7 +119,9 @@ fn ctrl_c_ends_the_interface_when_the_terminal_stops_reading_after_the_goodbye_p
             line.clear();
         }
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     assert_eq!(
         terminal.local_mode() & (libc::ICANON | libc::ECHO),

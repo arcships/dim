@@ -482,6 +482,7 @@ fn tui_rename_without_a_session_sends_nothing() {
         } else {
             "--scrollback"
         });
+        sized(&mut command, 120, 24);
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.write(b"/new\r");
