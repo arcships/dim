@@ -475,3 +475,27 @@ test('an artifact path that is not a directory is invalid input', t => {
     assert.ok(error.message.includes('The artifact directory is missing'), error.message)
   }
 })
+
+test('the plugin manifest and its lock agree', () => {
+  const directory = path.join(pluginSource)
+  const manifest = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8'))
+  const lock = JSON.parse(readFileSync(path.join(directory, 'package-lock.json'), 'utf8'))
+  assert.equal(lock.lockfileVersion, 3)
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    '@arcships/light-ocr',
+    '@arcships/light-ocr-runtime',
+    '@arcships/rutis',
+  ])
+  assert.deepEqual(lock.packages[''].dependencies, manifest.dependencies)
+  for (const [name, entry] of Object.entries(lock.packages)) {
+    if (name === '') continue
+    assert.ok(name.startsWith('node_modules/'), name)
+    assert.equal(typeof entry.integrity, 'string', name)
+    assert.equal(entry.hasInstallScript, undefined, name)
+  }
+  const facade = lock.packages['node_modules/@arcships/light-ocr']
+  const runtime = lock.packages['node_modules/@arcships/light-ocr-runtime']
+  assert.equal(facade.dependencies['@arcships/light-ocr-runtime'], runtime.version)
+  assert.equal(manifest.dependencies['@arcships/light-ocr-runtime'], runtime.version)
+  assert.equal(lock.packages['node_modules/@arcships/rutis'].version, manifest.dependencies['@arcships/rutis'])
+})
