@@ -239,7 +239,7 @@ fn an_idle_v3_daemon_of_this_version_is_replaced() {
             None,
             "the CLI kept the stopped daemon's connection open"
         );
-        let hello = serve_successor_hello(&successor);
+        let hello = serve_successor(&successor);
         assert_eq!(
             hello["params"]["protocolVersion"], 4,
             "the successor was reached at this build's protocol: {hello}"
@@ -257,37 +257,6 @@ fn an_idle_v3_daemon_of_this_version_is_replaced() {
         !stderr.contains("The App Server is still"),
         "a replaced daemon says nothing: {stderr}"
     );
-}
-
-/// The first `hello` the successor receives, and its answer.
-fn serve_successor_hello(successor: &UnixListener) -> Value {
-    let deadline = Instant::now() + HANG_GUARD;
-    loop {
-        let stream = match successor.accept() {
-            Ok((stream, _)) => stream,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline, "the CLI never reconnected");
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-            Err(error) => panic!("{error}"),
-        };
-        stream.set_nonblocking(false).unwrap();
-        stream.set_read_timeout(Some(HANG_GUARD)).unwrap();
-        let mut wire = Wire::new(stream);
-        let Some(line) = wire.trailing_request() else {
-            continue;
-        };
-        let hello: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(hello["method"], "hello");
-        wire.reply(
-            &hello,
-            json!({"instanceId":"new","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history"]}),
-        );
-        let catalog = wire.read("provider.catalog");
-        wire.reply(&catalog, json!({"catalog":null}));
-        return hello;
-    }
 }
 
 /// Serves a v3 daemon that refuses v4, admits v3, answers one plain

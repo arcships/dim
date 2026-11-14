@@ -167,7 +167,19 @@ fn the_upgrade_line_follows_the_saved_locale() {
 fn a_starting_daemon_that_reports_nothing_fails_at_the_bound() {
     let home = Home::new();
     let note = note_path(&home);
-    let server = script(&home, "silent-server", "exec sleep 5");
+    // The child says nothing for eight seconds and then leaves a marker: one
+    // that reached it proves the wait outlived its bound, whatever it printed.
+    // Eight seconds is below the 10 s default, so a CLI that ignores the
+    // configured bound is caught too.
+    let marker = home.0.join("silent-server-reached-eight-seconds");
+    let server = script(
+        &home,
+        "silent-server",
+        &format!(
+            "sleep 8\ntouch '{marker}'\nexec sleep 5",
+            marker = marker.display()
+        ),
+    );
     let started = Instant::now();
     let output = home
         .command()
@@ -186,12 +198,13 @@ fn a_starting_daemon_that_reports_nothing_fails_at_the_bound() {
         "a child that reports nothing left a progress note"
     );
     assert!(
-        elapsed >= Duration::from_millis(1500),
-        "the wait ended before the bound it was given: {elapsed:?}"
+        !marker.exists(),
+        "the child reached eight seconds, so the wait outlived the 1500 ms bound \
+         it was given: {elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_secs(60),
-        "the wait outlived its bound: {elapsed:?}"
+        elapsed >= Duration::from_millis(1500),
+        "the wait ended before the bound it was given: {elapsed:?}"
     );
 }
 
@@ -202,7 +215,7 @@ fn progress_for_another_pid_does_not_extend_the_wait() {
     let note = note_path(&home);
     let copies = home.0.join("copied-notes");
     let mut body = String::new();
-    for counter in 1..=35 {
+    for counter in 1..=100 {
         body.push_str(&note_write(&note, "999999", counter));
         body.push_str(&format!(
             "\ncat '{note}' >> '{copies}'\n",
@@ -222,9 +235,10 @@ fn progress_for_another_pid_does_not_extend_the_wait() {
         .unwrap();
     let elapsed = started.elapsed();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("did not start in time"), "{stderr}");
-    assert!(!stderr.contains(UPGRADING), "{stderr}");
+    // The child writes its notes after the CLI has gone: the timeout returns
+    // without killing it (crates/dim-cli/src/client.rs, the `did not start in
+    // time` error leaves the spawned child running in its own session), so
+    // this copy is the burst as it stood at the moment the CLI returned.
     let written = fs::read_to_string(&copies).unwrap_or_default();
     let named: Vec<&str> = written
         .lines()
@@ -238,9 +252,22 @@ fn progress_for_another_pid_does_not_extend_the_wait() {
         named.iter().all(|line| line.contains("pid=999999")),
         "a note named a pid other than the one under test: {written}"
     );
+    // The child writes 100 notes 100 ms apart and the bound is 1500 ms: a wait
+    // that held ended while the burst was still running, so this count is the
+    // burst's prefix, about fifteen and fewer on a loaded machine. A wait a
+    // foreign-pid note extended ran until the burst ended, and counts all 100.
     assert!(
-        elapsed < Duration::from_secs(60),
-        "a note for another pid extended the wait: {elapsed:?}"
+        named.len() < 100,
+        "the child had written {} of its 100 notes when the CLI returned, so a \
+         note for another pid extended the wait past the 1500 ms bound: {elapsed:?}",
+        named.len()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("did not start in time"), "{stderr}");
+    assert!(!stderr.contains(UPGRADING), "{stderr}");
+    assert!(
+        elapsed >= Duration::from_millis(1500),
+        "the wait ended before the bound it was given: {elapsed:?}"
     );
 }
 
