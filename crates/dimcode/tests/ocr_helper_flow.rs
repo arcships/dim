@@ -118,10 +118,12 @@ async fn an_unknown_flag_is_a_typed_exit_two() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_missing_input_is_a_typed_exit_two() {
+async fn a_missing_input_is_refused_by_the_confinement() {
     let base = scratch();
     let output = run(&base, &base.join("missing.png"), &[]).await;
-    // The confinement refuses a read path that does not exist before the
-    // helper starts.
-    assert!(output.is_err());
+    assert!(
+        matches!(output, Err(ConfinedError::InvalidPath { .. })),
+        "{output:?}"
+    );
+    assert!(!base.join("work/result.json").exists());
 }

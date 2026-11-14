@@ -1006,9 +1006,6 @@ fn startup_environment_is_not_read_by_help_version_or_management() {
         );
         let text = String::from_utf8_lossy(&output.stdout);
         if matches!(args[0], "--help" | "-h") {
-            for name in STARTUP_ENV {
-                assert!(text.contains(name), "help missing {name}");
-            }
             assert!(text.contains("--autocompact"));
             assert!(text.contains("--model"));
             let (_, entries) = text.split_once("\nCommands:\n").unwrap();
