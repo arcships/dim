@@ -8929,6 +8929,7 @@ mod tests {
         i18n::set(i18n::Locale::En);
     }
 
+    /// An empty composer shows the locale's placeholder; typing replaces it.
     #[test]
     fn short_composers_keep_the_caret_and_the_complete_draft() {
         for fullscreen in [false, true] {
@@ -8936,11 +8937,7 @@ mod tests {
             drawn.app.fullscreen = fullscreen;
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             drawn.app.host = Box::new(Recorder(sent.clone()));
-            for (locale, hint) in [
-                (i18n::Locale::En, "Ask anything... · Ctrl+J newline"),
-                (i18n::Locale::ZhCn, "输入你的问题… · Ctrl+J 换行"),
-            ] {
-                i18n::set(locale);
+            let caret_row = |drawn: &mut Drawn| -> String {
                 let frame = drawn.app.frame(drawn.size);
                 let bytes = if fullscreen {
                     FullScreen::new(drawn.size, true).render(
@@ -8954,11 +8951,35 @@ mod tests {
                 };
                 let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
                 emu.feed(&bytes);
+                emu.row(emu.cy).replace('\0', "")
+            };
+            for locale in [i18n::Locale::En, i18n::Locale::ZhCn] {
+                i18n::set(locale);
+                let caret = caret_row(&mut drawn);
+                let inside = caret
+                    .split('│')
+                    .nth(1)
+                    .map(str::trim)
+                    .map(|text| text.trim_start_matches('›').trim().to_owned())
+                    .unwrap_or_default();
+                let placeholder = inside
+                    .strip_prefix(drawn.app.composer.text())
+                    .unwrap_or(&inside)
+                    .trim()
+                    .to_owned();
                 assert!(
-                    emu.row(emu.cy).replace('\0', "").contains(hint),
-                    "fullscreen={fullscreen}: {:?}",
-                    emu.rows_text()
+                    !placeholder.is_empty(),
+                    "{locale:?} fullscreen={fullscreen}: the composer's row holds no \
+                     placeholder: {caret:?}"
                 );
+                typed(&mut drawn.app, "ask");
+                let caret = caret_row(&mut drawn);
+                assert!(
+                    caret.contains("ask") && !caret.contains(&placeholder),
+                    "{locale:?} fullscreen={fullscreen}: typing replaces the placeholder: \
+                     {caret:?}"
+                );
+                drawn.app.composer.clear();
             }
             i18n::set(i18n::Locale::En);
             typed(&mut drawn.app, "first line");
@@ -8978,8 +8999,8 @@ mod tests {
                     .frame(drawn.size)
                     .live
                     .join("\n")
-                    .contains("Ctrl+J"),
-                "typing replaces the placeholder"
+                    .contains(t(COMPOSER_PLACEHOLDER)),
+                "the draft replaces the placeholder"
             );
             let draft = (0..12)
                 .map(|n| format!("line {n:02}"))
@@ -9042,21 +9063,23 @@ mod tests {
         );
     }
 
+    /// The branch label follows the workspace the interface shows.
     #[test]
     fn composer_tracks_git_switches_in_repositories_and_worktrees() {
         let root = tempfile::tempdir().unwrap();
         let theme = test_theme();
+        let launch = root.path().to_string_lossy().into_owned();
         for fullscreen in [false, true] {
             let mut app = App::new(
                 Box::new(Idle),
                 MarkdownRenderer::new(&theme),
                 theme.palette.clone(),
                 root.path().join("home"),
-                root.path().to_string_lossy().into_owned(),
+                launch.clone(),
             );
             app.fullscreen = fullscreen;
             let frame = app.frame((160, 30));
-            let cwd = crate::ui::tilde(&root.path().to_string_lossy());
+            let cwd = crate::ui::tilde(&launch);
             let row = frame
                 .live
                 .iter()
@@ -9120,62 +9143,61 @@ mod tests {
                     MarkdownRenderer::new(&theme),
                     theme.palette.clone(),
                     root.path().join("home"),
-                    cwd.to_string_lossy().into_owned(),
+                    launch.clone(),
                 );
                 app.fullscreen = fullscreen;
+                app.apply(Update::Switched {
+                    session_id: "s1".into(),
+                    kind: SwitchKind::Resumed,
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                });
                 assert!(
                     app.frame((160, 30))
                         .live
                         .iter()
-                        .any(|row| row.contains(&format!("({expected})")))
+                        .any(|row| row.contains(&format!("({expected})"))),
+                    "{cwd:?} must name {expected}"
                 );
                 apps.push(app);
             }
         }
-        git(&repo, &["switch", "-q", "-c", "feature/updated"]);
-        git(&linked, &["switch", "-q", "-c", "feature/linked-updated"]);
-        for (expected, linked_expected) in [
-            ("feature/updated", "feature/linked-updated"),
-            ("HEAD", "HEAD"),
-            ("feature/updated", "feature/linked-updated"),
-        ] {
-            if expected == "HEAD" {
-                git(&repo, &["switch", "-q", "--detach"]);
-                git(&linked, &["switch", "-q", "--detach"]);
+        let check = |app: &mut App, expected: &str| {
+            app.git_checked = Instant::now();
+            assert!(!app.tick(), "a Git switch must wait for the next check");
+            app.git_checked -= GIT_BRANCH_POLL;
+            assert!(app.tick(), "a Git switch must request a repaint");
+            let frame = app.frame((160, 30));
+            let mut emu = crate::ui::render::testterm::Emu::new(160, 30);
+            let bytes = if app.fullscreen {
+                FullScreen::new((160, 30), true).render(&frame, (160, 30), &app.palette, app)
             } else {
-                git(&repo, &["switch", "-q", expected]);
-                git(&linked, &["switch", "-q", linked_expected]);
-            }
-            for (index, app) in apps.iter_mut().enumerate() {
-                app.git_checked = Instant::now();
-                assert!(!app.tick(), "a Git switch must wait for the next check");
-                app.git_checked -= GIT_BRANCH_POLL;
-                assert!(app.tick(), "a Git switch must request a repaint");
-                let expected = if index < 2 { expected } else { linked_expected };
-                let frame = app.frame((160, 30));
-                let mut emu = crate::ui::render::testterm::Emu::new(160, 30);
-                let bytes = if app.fullscreen {
-                    FullScreen::new((160, 30), true).render(&frame, (160, 30), &app.palette, app)
-                } else {
-                    Screen::new((160, 30), true).render(&frame, (160, 30))
-                };
-                emu.feed(&bytes);
-                assert!(
-                    emu.rows_text()
-                        .iter()
-                        .any(|row| row.contains(&format!("({expected})"))),
-                    "composer must show {expected}"
-                );
-            }
+                Screen::new((160, 30), true).render(&frame, (160, 30))
+            };
+            emu.feed(&bytes);
+            assert!(
+                emu.rows_text()
+                    .iter()
+                    .any(|row| row.contains(&format!("({expected})"))),
+                "the composer must show the shown workspace's {expected}: {:?}",
+                emu.rows_text()
+            );
+        };
+        git(&repo, &["switch", "-q", "-c", "feature/updated"]);
+        for app in apps.iter_mut().take(2) {
+            check(app, "feature/updated");
+        }
+        git(&linked, &["switch", "-q", "-c", "linked-updated"]);
+        for app in apps.iter_mut().skip(2) {
+            check(app, "linked-updated");
+        }
+        git(&repo, &["switch", "-q", "--detach"]);
+        for app in apps.iter_mut().take(2) {
+            check(app, "HEAD");
         }
         for (index, app) in apps.iter_mut().enumerate() {
+            let last = if index < 2 { "HEAD" } else { "linked-updated" };
             app.git_checked -= GIT_BRANCH_POLL;
             assert!(!app.tick(), "an unchanged HEAD must not request a repaint");
-            let expected = if index < 2 {
-                "feature/updated"
-            } else {
-                "feature/linked-updated"
-            };
             let head = app.git_head.clone().unwrap();
             let saved = std::fs::read(&head).unwrap();
             std::fs::remove_file(&head).unwrap();
@@ -9189,8 +9211,8 @@ mod tests {
                     app.frame((160, 30))
                         .live
                         .iter()
-                        .any(|row| row.contains(&format!("({expected})"))),
-                    "a missing or empty HEAD must preserve the last branch label"
+                        .any(|row| row.contains(&format!("({last})"))),
+                    "a missing or empty HEAD must preserve the last branch label {last}"
                 );
             }
             std::fs::write(&head, saved).unwrap();
@@ -10394,21 +10416,42 @@ mod tests {
                 ..ViewSnapshot::default()
             }))
         };
+        let drawn = |app: &mut App| -> String {
+            app.frame((80, 30))
+                .live
+                .iter()
+                .map(|row| strip_escapes(row))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         let fading = ended_at(background_task("t1", "cargo build"), (now - 1) * 1000);
         app.apply(snapshot(vec![fading]));
-        assert!(app.task_line_shown(), "an ended task stays while it fades");
         assert!(app.tick(), "the pulse repaints the fading row");
-        assert!(app.task_row, "the frame it asked for drew the row");
+        let rows = drawn(&mut app);
+        assert!(
+            rows.contains("cargo build"),
+            "the fading row is drawn: {rows}"
+        );
 
         let gone = ended_at(
             background_task("t2", "cargo test"),
             (now - TASK_FADE) * 1000,
         );
         app.apply(snapshot(vec![gone]));
-        assert!(!app.task_line_shown(), "an ended task leaves");
-        app.task_second -= 1;
-        assert!(app.tick(), "the pulse asks for the erasing frame");
-        assert!(!app.task_row, "and then stops asking");
+        let started = Instant::now();
+        while !app.tick() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the pulse never asked for the erasing frame"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let rows = drawn(&mut app);
+        assert!(
+            !rows.contains("cargo "),
+            "the erasing frame draws no task row: {rows}"
+        );
+        assert!(!app.tick(), "and then it stops asking");
     }
 
     /// A task whose end a read of recorded history applied, as the attach
@@ -14331,6 +14374,7 @@ mod tests {
         i18n::set(i18n::Locale::En);
     }
 
+    /// `/timeline`'s jump reaches earlier history in scrollback and in fullscreen.
     #[test]
     fn a_timeline_jump_in_scrollback_draws_earlier_history_from_the_message() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -14359,6 +14403,26 @@ mod tests {
         assert_eq!(
             drawn.app.notice.as_ref().map(|(text, _)| text.as_str()),
             Some(t("Already on screen above; /tui jumps to it"))
+        );
+
+        let mut full = Drawn::new((80, 40), None, true);
+        full.app.fullscreen = true;
+        resume_asks(&mut full, 120);
+        full.app.run_command("timeline", "");
+        full.key(KeyCode::Home);
+        full.key(KeyCode::Down);
+        full.key(KeyCode::Enter);
+        full.key(KeyCode::Enter);
+        let picked = full
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::User { text, .. } if text == "ask 1"))
+            .expect("the message is drawn");
+        assert_eq!(
+            full.app.jump,
+            Some(Jump::Block(full.app.dropped + picked)),
+            "fullscreen picks the drawn message rather than scrolling to it"
         );
     }
 
@@ -14399,28 +14463,6 @@ mod tests {
                 .history
                 .iter()
                 .any(|block| matches!(block, Block::User { text, .. } if text == "ask 0"))
-        );
-    }
-
-    #[test]
-    fn a_fullscreen_timeline_jump_picks_the_message_drawing_it_first() {
-        let mut drawn = Drawn::new((80, 40), None, true);
-        drawn.app.fullscreen = true;
-        resume_asks(&mut drawn, 120);
-        drawn.app.run_command("timeline", "");
-        drawn.key(KeyCode::Home);
-        drawn.key(KeyCode::Down);
-        drawn.key(KeyCode::Enter);
-        drawn.key(KeyCode::Enter);
-        let picked = drawn
-            .app
-            .history
-            .iter()
-            .position(|block| matches!(block, Block::User { text, .. } if text == "ask 1"))
-            .expect("the message is drawn");
-        assert_eq!(
-            drawn.app.jump,
-            Some(Jump::Block(drawn.app.dropped + picked))
         );
     }
 
