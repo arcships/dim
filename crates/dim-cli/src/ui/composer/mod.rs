@@ -509,8 +509,8 @@ impl Composer {
         self.mention_open() && self.mentions.as_mut().is_some_and(|m| m.changed())
     }
 
-    /// Whether the `@` index is still being walked. It is false before the
-    /// first draft starts a walk and after the walk has finished one.
+    /// Whether the `@` index still owes a walk: true before the first draft
+    /// starts one, while it runs, and false once one has finished.
     pub fn mention_searching(&self) -> bool {
         self.mentions.as_ref().is_some_and(|m| m.searching())
     }

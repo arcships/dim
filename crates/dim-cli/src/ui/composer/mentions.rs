@@ -279,6 +279,8 @@ pub struct Mentions {
     shallow: bool,
     /// The index the picker ranks.
     walk: Option<Walk>,
+    /// Whether the last query owed a walk, answered before one exists.
+    walk_owed: bool,
     /// A refresh of a stale index; it replaces `walk` once finished, so
     /// the picker keeps its results meanwhile.
     refresh: Option<Walk>,
@@ -304,6 +306,7 @@ impl Mentions {
             root,
             shallow,
             walk: None,
+            walk_owed: !shallow,
             refresh: None,
             walks: 0,
             ttl: INDEX_TTL,
@@ -372,9 +375,14 @@ impl Mentions {
         false
     }
 
-    /// Whether the walk is still filling the index.
+    /// Whether a walk still owes the picker its index: true before the query
+    /// that starts one, while it fills the index, and false once one has
+    /// finished. A root that is only listed, and a query naming a directory
+    /// outside it, start no walk and are never searching.
     pub fn searching(&self) -> bool {
-        self.walk.as_ref().is_some_and(|walk| !walk.done())
+        self.walk
+            .as_ref()
+            .map_or(self.walk_owed, |walk| !walk.done())
     }
 
     /// The best candidates for a query, best first.
@@ -389,6 +397,7 @@ impl Mentions {
             || prefix.split('/').any(|part| part == "..")
             || Path::new(prefix).is_absolute();
         if outside || self.shallow {
+            self.walk_owed = false;
             let Some(dir) = self.resolve(prefix) else {
                 return Vec::new();
             };
@@ -416,6 +425,7 @@ impl Mentions {
             return ranked.into_iter().take(RESULTS).map(|(_, c)| c).collect();
         }
         let root = self.root.clone();
+        self.walk_owed = true;
         self.walk();
         let Some(walk) = &self.walk else {
             return Vec::new();
@@ -770,6 +780,38 @@ mod tests {
             .collect();
         assert_eq!(under[0], "src/deep/");
         assert!(under.contains(&"src/deep/er/main.rs".to_owned()));
+    }
+
+    #[test]
+    fn searching_is_true_before_the_first_walk_and_false_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "").unwrap();
+        let mut mentions = Mentions::new(dir.path().to_owned());
+        assert!(
+            mentions.searching(),
+            "no walk has started, and one is still owed"
+        );
+        assert!(mentions.walk.is_none(), "asking starts no walk");
+        mentions.candidates("");
+        assert!(mentions.walk.is_some(), "the query started the walk");
+        wait(&mut mentions);
+        assert!(!mentions.searching(), "the walk finished");
+        // A query naming a directory outside the root lists it and starts no
+        // walk, so nothing about it is still being searched.
+        let mut outside = Mentions::new(dir.path().to_owned());
+        outside.candidates("~/");
+        assert!(
+            !outside.searching(),
+            "a listing query starts no walk, and none is owed"
+        );
+        let home = dir.path().to_owned();
+        let mut listed = Mentions::new_with_home(home.clone(), Some(home));
+        listed.candidates("");
+        wait(&mut listed);
+        assert!(
+            !listed.searching(),
+            "a root that is only listed is never searching"
+        );
     }
 
     #[test]
