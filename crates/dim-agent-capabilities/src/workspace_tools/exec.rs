@@ -1123,8 +1123,8 @@ fn ends_in_continuation(line: &str) -> bool {
 const HIGH_COST_BASENAMES: [&str; 5] = ["node_modules", ".git", "dist", "build", "target"];
 
 fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult> {
-    let tokens = tokenize_shell_command(command);
-    let first = tokens.first()?;
+    let words = tokenize_shell_command(command);
+    let first = words.first()?;
     let family = first
         .rsplit(['/', '\\'])
         .next()
@@ -1141,23 +1141,7 @@ fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult
             "exec_dynamic_search_refused",
         ));
     }
-    let args = &tokens[1..];
-    let positional: Vec<&String> = args
-        .iter()
-        .filter(|token| !token.starts_with('-'))
-        .collect();
-    let targets: Vec<String> = match family.as_str() {
-        "find" => find_starting_points(args),
-        "fd" | "tree" | "du" if positional.is_empty() => vec![".".into()],
-        "fd" | "tree" | "du" => positional.into_iter().cloned().collect(),
-        "rg" if args.iter().any(|arg| arg == "--files") => ripgrep_files_targets(args),
-        _ if positional.len() <= 1 => vec![],
-        _ => positional[1..]
-            .iter()
-            .map(|target| (*target).clone())
-            .collect(),
-    };
-    targets
+    scan_targets(&family, &words[1..])
         .into_iter()
         .find(|target| high_cost_target(target, cwd, home))
         .map(|target| {
@@ -1168,6 +1152,332 @@ fn check_heavy_search(command: &str, cwd: &str, home: &str) -> Option<ToolResult
                 "exec_high_cost_target_refused",
             )
         })
+}
+
+/// The paths a family's words scan, in the order the command names them.
+///
+/// An option that takes a value belongs in the family's table; one left out is
+/// read as before the table existed, so its value becomes a scanned path or the
+/// pattern.
+fn scan_targets(family: &str, args: &[String]) -> Vec<String> {
+    if family == "find" {
+        return find_starting_points(args);
+    }
+    let Some(mut reading) = reading(family) else {
+        return vec![];
+    };
+    if family == "rg" && args.iter().any(|arg| arg == "--files") {
+        reading.shape = Shape::Paths;
+    }
+    reading.targets(args)
+}
+
+/// What a family reads its positional words as once the options are removed.
+#[derive(Clone, Copy)]
+enum Shape {
+    /// `PATTERN [PATH...]`: the first positional is a pattern.
+    Pattern,
+    /// `[PATH...]`: every positional is a path.
+    Paths,
+}
+
+/// What an option's value names.
+#[derive(Clone, Copy, PartialEq)]
+enum Named {
+    /// The command's pattern: it takes the place of the positional one.
+    Pattern,
+    /// A path the command scans like a positional one.
+    Path,
+    /// Neither: the value names nothing the command scans.
+    Other,
+}
+
+/// How one family reads its words.
+struct Reading {
+    shape: Shape,
+    /// Options that take a value, and what the value names. A value is the
+    /// next word, or attached to the option's own word: `-m 5`, `-m5`,
+    /// `--max-count=5`, `--glob build`.
+    valued: &'static [(&'static str, Named)],
+}
+
+/// What one argument word holds.
+enum Taken<'a> {
+    /// An option no table lists, written bare: like any word starting with
+    /// `-`, it names nothing the command scans and takes no value.
+    Flag,
+    /// A value written inside this word, and what it names.
+    Attached(&'a str, Named),
+    /// The next word is this option's value.
+    Next(Named),
+    /// A word the command reads as a positional.
+    Operand,
+}
+
+impl Reading {
+    /// The paths this family scans, in the order the command names them.
+    fn targets(&self, args: &[String]) -> Vec<String> {
+        let mut operands: Vec<&str> = vec![];
+        let mut named: Vec<&str> = vec![];
+        let mut pattern_named = false;
+        let mut index = 0;
+        while index < args.len() {
+            let word = args[index].as_str();
+            index += 1;
+            let (value, role) = match self.take(word) {
+                Taken::Operand => {
+                    operands.push(word);
+                    continue;
+                }
+                Taken::Flag => continue,
+                Taken::Attached(value, role) => (value, role),
+                Taken::Next(role) => match args.get(index) {
+                    Some(value) => {
+                        index += 1;
+                        (value.as_str(), role)
+                    }
+                    None => continue,
+                },
+            };
+            match role {
+                Named::Pattern => pattern_named = true,
+                Named::Path => named.push(value),
+                Named::Other => {}
+            }
+        }
+        let scanned = match (self.shape, pattern_named) {
+            (Shape::Pattern, false) => operands.get(1..).unwrap_or_default(),
+            (Shape::Pattern, true) | (Shape::Paths, _) => &operands[..],
+        };
+        scanned
+            .iter()
+            .chain(named.iter())
+            .map(|word| (*word).to_owned())
+            .collect()
+    }
+
+    fn take<'a>(&self, word: &'a str) -> Taken<'a> {
+        if let Some(long) = word.strip_prefix("--") {
+            let (name, attached) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            return match self.valued.iter().find(|(spelling, _)| *spelling == name) {
+                Some((_, role)) => match attached {
+                    Some(value) => Taken::Attached(value, *role),
+                    None => Taken::Next(*role),
+                },
+                None => Taken::Flag,
+            };
+        }
+        let Some(cluster) = word.strip_prefix('-') else {
+            return Taken::Operand;
+        };
+        for (offset, letter) in cluster.char_indices() {
+            let end = offset + letter.len_utf8();
+            let short = &cluster[offset..end];
+            if let Some((_, role)) = self.valued.iter().find(|(spelling, _)| *spelling == short) {
+                return match cluster[end..].is_empty() {
+                    true => Taken::Next(*role),
+                    false => Taken::Attached(&cluster[end..], *role),
+                };
+            }
+        }
+        Taken::Flag
+    }
+}
+
+/// Each family's options that take a value, named as the manual it ships
+/// lists them: grep(1) (BSD, whose long spellings GNU grep shares), rg(1)
+/// (ripgrep 15), fd(1), tree(1) 2.3, du(1) (BSD and GNU) and ag(1). An option
+/// left out takes no value here, so the word after it stays an operand.
+fn reading(family: &str) -> Option<Reading> {
+    let reading = match family {
+        "grep" => Reading {
+            shape: Shape::Pattern,
+            valued: &[
+                ("e", Named::Pattern),
+                ("regexp", Named::Pattern),
+                ("f", Named::Pattern),
+                ("file", Named::Pattern),
+                ("A", Named::Other),
+                ("after-context", Named::Other),
+                ("B", Named::Other),
+                ("before-context", Named::Other),
+                ("C", Named::Other),
+                ("context", Named::Other),
+                ("D", Named::Other),
+                ("devices", Named::Other),
+                ("d", Named::Other),
+                ("directories", Named::Other),
+                ("m", Named::Other),
+                ("max-count", Named::Other),
+                ("exclude", Named::Other),
+                ("exclude-dir", Named::Other),
+                ("exclude-from", Named::Other),
+                ("include", Named::Other),
+                ("include-dir", Named::Other),
+                ("binary-files", Named::Other),
+                ("label", Named::Other),
+                ("group-separator", Named::Other),
+            ],
+        },
+        "ag" => Reading {
+            shape: Shape::Pattern,
+            valued: &[
+                ("E", Named::Other),
+                ("extension", Named::Other),
+                ("G", Named::Other),
+                ("file-search-regex", Named::Other),
+                ("g", Named::Other),
+                ("filename-pattern", Named::Other),
+                ("m", Named::Other),
+                ("max-count", Named::Other),
+                ("W", Named::Other),
+                ("width", Named::Other),
+                ("P", Named::Other),
+                ("pager", Named::Other),
+                ("I", Named::Other),
+                ("ignore", Named::Other),
+                ("ignore-dir", Named::Other),
+                ("X", Named::Other),
+                ("invert-file-search-regex", Named::Other),
+                ("workers", Named::Other),
+                ("depth", Named::Other),
+                ("agrc", Named::Other),
+            ],
+        },
+        "rg" => Reading {
+            shape: Shape::Pattern,
+            valued: &[
+                ("e", Named::Pattern),
+                ("regexp", Named::Pattern),
+                ("f", Named::Pattern),
+                ("file", Named::Pattern),
+                ("g", Named::Other),
+                ("glob", Named::Other),
+                ("iglob", Named::Other),
+                ("ignore-file", Named::Other),
+                ("pre", Named::Other),
+                ("pre-glob", Named::Other),
+                ("E", Named::Other),
+                ("encoding", Named::Other),
+                ("engine", Named::Other),
+                ("m", Named::Other),
+                ("max-count", Named::Other),
+                ("j", Named::Other),
+                ("threads", Named::Other),
+                ("d", Named::Other),
+                ("max-depth", Named::Other),
+                ("t", Named::Other),
+                ("type", Named::Other),
+                ("T", Named::Other),
+                ("type-not", Named::Other),
+                ("type-add", Named::Other),
+                ("type-clear", Named::Other),
+                ("A", Named::Other),
+                ("after-context", Named::Other),
+                ("B", Named::Other),
+                ("before-context", Named::Other),
+                ("C", Named::Other),
+                ("context", Named::Other),
+                ("context-separator", Named::Other),
+                ("field-context-separator", Named::Other),
+                ("field-match-separator", Named::Other),
+                ("colors", Named::Other),
+                ("hostname-bin", Named::Other),
+                ("hyperlink-format", Named::Other),
+                ("M", Named::Other),
+                ("max-columns", Named::Other),
+                ("path-separator", Named::Other),
+                ("r", Named::Other),
+                ("replace", Named::Other),
+                ("sort", Named::Other),
+                ("sortr", Named::Other),
+            ],
+        },
+        "fd" => Reading {
+            shape: Shape::Pattern,
+            valued: &[
+                ("and", Named::Other),
+                ("d", Named::Other),
+                ("max-depth", Named::Other),
+                ("min-depth", Named::Other),
+                ("exact-depth", Named::Other),
+                ("t", Named::Other),
+                ("type", Named::Other),
+                ("e", Named::Other),
+                ("extension", Named::Other),
+                ("E", Named::Other),
+                ("exclude", Named::Other),
+                ("ignore-contain", Named::Other),
+                ("ignore-file", Named::Other),
+                ("c", Named::Other),
+                ("color", Named::Other),
+                ("j", Named::Other),
+                ("threads", Named::Other),
+                ("S", Named::Other),
+                ("size", Named::Other),
+                ("changed-within", Named::Other),
+                ("changed-before", Named::Other),
+                ("o", Named::Other),
+                ("owner", Named::Other),
+                ("C", Named::Other),
+                ("base-directory", Named::Other),
+                ("path-separator", Named::Other),
+                ("format", Named::Other),
+                ("x", Named::Other),
+                ("exec", Named::Other),
+                ("X", Named::Other),
+                ("exec-batch", Named::Other),
+                ("batch-size", Named::Other),
+                ("max-results", Named::Other),
+                ("search-path", Named::Path),
+            ],
+        },
+        "tree" => Reading {
+            shape: Shape::Paths,
+            valued: &[
+                ("H", Named::Other),
+                ("L", Named::Other),
+                ("P", Named::Other),
+                ("I", Named::Other),
+                ("o", Named::Other),
+                ("T", Named::Other),
+                ("gitfile", Named::Other),
+                ("hintro", Named::Other),
+                ("houtro", Named::Other),
+                ("sort", Named::Other),
+                ("filelimit", Named::Other),
+                ("charset", Named::Other),
+                ("timefmt", Named::Other),
+                ("scheme", Named::Other),
+                ("authority", Named::Other),
+                ("compress", Named::Other),
+                ("infofile", Named::Other),
+            ],
+        },
+        "du" => Reading {
+            shape: Shape::Paths,
+            valued: &[
+                ("B", Named::Other),
+                ("block-size", Named::Other),
+                ("d", Named::Other),
+                ("max-depth", Named::Other),
+                ("t", Named::Other),
+                ("threshold", Named::Other),
+                ("I", Named::Other),
+                ("exclude", Named::Other),
+                ("exclude-from", Named::Other),
+                ("X", Named::Other),
+                ("files0-from", Named::Other),
+                ("time", Named::Other),
+                ("time-style", Named::Other),
+            ],
+        },
+        _ => return None,
+    };
+    Some(reading)
 }
 
 /// `find [options] [starting-point...] [expression]`: only the starting
@@ -1196,6 +1506,9 @@ fn tokenize_shell_command(command: &str) -> Vec<String> {
     let mut tokens = vec![];
     let mut current = String::new();
     let (mut single, mut double) = (false, false);
+    // A redirect's target is a file the shell opens, not a word the command
+    // reads: `>`, `>>`, `2>`, `<` and the attached `>file` alike.
+    let mut target = false;
     for ch in command.chars() {
         if ch == '\'' && !double {
             single = !single;
@@ -1205,21 +1518,39 @@ fn tokenize_shell_command(command: &str) -> Vec<String> {
             double = !double;
             continue;
         }
-        if !single && !double && ch.is_whitespace() {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
+        if single || double {
+            current.push(ch);
             continue;
         }
-        if !single && !double && matches!(ch, ';' | '|' | '&') {
-            break;
+        match ch {
+            '<' | '>' => {
+                // A leading run of digits is a file descriptor, not an operand.
+                if !current.chars().all(|c| c.is_ascii_digit()) {
+                    end_word(&mut tokens, &mut current, &mut target);
+                }
+                current.clear();
+                target = true;
+            }
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    end_word(&mut tokens, &mut current, &mut target);
+                }
+            }
+            ';' | '|' | '&' => break,
+            _ => current.push(ch),
         }
-        current.push(ch);
     }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
+    end_word(&mut tokens, &mut current, &mut target);
     tokens
+}
+
+/// Ends the word being read, unless it names a redirect's target.
+fn end_word(tokens: &mut Vec<String>, word: &mut String, target: &mut bool) {
+    let redirected = std::mem::take(target);
+    if !redirected && !word.is_empty() {
+        tokens.push(std::mem::take(word));
+    }
+    word.clear();
 }
 
 fn has_unquoted_command_substitution(command: &str) -> bool {
@@ -1242,52 +1573,6 @@ fn has_unquoted_command_substitution(command: &str) -> bool {
         i += 1;
     }
     false
-}
-
-fn ripgrep_files_targets(args: &[String]) -> Vec<String> {
-    const WITH_VALUE: [&str; 11] = [
-        "-g",
-        "--glob",
-        "-t",
-        "--type",
-        "-T",
-        "--type-not",
-        "--ignore-file",
-        "--path-separator",
-        "--sort",
-        "--sortr",
-        "--threads",
-    ];
-    const INLINE: [&str; 8] = [
-        "--glob=",
-        "--type=",
-        "--type-not=",
-        "--ignore-file=",
-        "--path-separator=",
-        "--sort=",
-        "--sortr=",
-        "--threads=",
-    ];
-    let mut targets = vec![];
-    let mut iter = args.iter();
-    while let Some(token) = iter.next() {
-        if token == "--files" {
-            continue;
-        }
-        if WITH_VALUE.contains(&token.as_str()) {
-            iter.next();
-            continue;
-        }
-        if INLINE.iter().any(|prefix| token.starts_with(prefix)) || token.starts_with('-') {
-            continue;
-        }
-        targets.push(token.clone());
-    }
-    if targets.is_empty() {
-        vec![".".into()]
-    } else {
-        targets
-    }
 }
 
 fn strip_trailing_slash(value: &str) -> &str {

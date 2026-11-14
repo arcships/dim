@@ -2447,22 +2447,39 @@ async fn child_outcome(params: &ChildParams, preflight: &Arc<Provider>) -> Child
     outcome
 }
 
+/// The settings the native probe child serves: a model configuration rather
+/// than a product home, the run's boundary and overrides, and no `plugin`
+/// tool.
+fn native_probe_settings(
+    model_config: PathBuf,
+    socket: PathBuf,
+    boundary: Option<FileToolBoundary>,
+    overrides: Overrides,
+) -> RunSettings {
+    RunSettings {
+        overrides,
+        model_config: Some(model_config),
+        unix_path: Some(socket),
+        defaults: None,
+        node: None,
+        js_runtime: None,
+        boundary,
+        plugin_tools: false,
+    }
+}
+
 /// The native probe child: the assembly served as a run child is served —
 /// the same home, workspace and boundary — but without the plugin defaults,
 /// and one probe Session whose declared set the child prints for the
 /// parent's runs. The probe's one turn is answered by the child's own
 /// loopback provider and calls no tool.
 async fn native_probe_child(params: &ChildParams) -> Result<Vec<(String, ToolSource)>> {
-    let settings = RunSettings {
-        overrides: child_overrides(&params.overrides),
-        model_config: Some(params.model_config.clone()),
-        unix_path: Some(params.socket.clone()),
-        defaults: None,
-        node: None,
-        js_runtime: None,
-        boundary: params.boundary.clone(),
-        plugin_tools: false,
-    };
+    let settings = native_probe_settings(
+        params.model_config.clone(),
+        params.socket.clone(),
+        params.boundary.clone(),
+        child_overrides(&params.overrides),
+    );
     let server = app_server::serve_home(
         &params.home,
         &params.workspace,
@@ -12988,6 +13005,213 @@ mod tests {
         assert!(
             !offered.iter().any(|tool| tool == "plugin"),
             "the member declares no plugin tool: {offered:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_tools_tests {
+    use super::*;
+    use dim_agent_runtime::{Feature, SessionConfig};
+    use std::path::{Path, PathBuf};
+
+    /// The probe Session's tool registry, once its parts have assembled.
+    #[derive(Clone, Default)]
+    struct RegistryProbe(Arc<Mutex<Option<Arc<ToolRegistry>>>>);
+
+    fn probe_part(names: &Names<'_>, probe: RegistryProbe) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(RegistryProbePart {
+            tools: names.key()?,
+            probe,
+        }) as Box<dyn DynPlugin>)
+    }
+
+    struct RegistryProbePart {
+        tools: Key<ToolRegistry>,
+        probe: RegistryProbe,
+    }
+
+    impl DynPlugin for RegistryProbePart {
+        fn name(&self) -> &str {
+            "RunToolsProbe"
+        }
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![self.tools.erase()]
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+            Box::pin(async move {
+                let tools = ctx.require_at(&self.tools)?;
+                *self.probe.0.lock().unwrap() = Some(tools);
+                Ok(Effect::Done)
+            })
+        }
+    }
+
+    /// The tool names one Session of `server` declares; the server is shut
+    /// down afterwards. No turn runs, so `model` is resolved but never called.
+    async fn declared_tools(
+        server: RunningServer,
+        probe: RegistryProbe,
+        cwd: &Path,
+        model: ModelSelection,
+    ) -> BTreeSet<String> {
+        let agent = server
+            .agent()
+            .expect("the served profile has a default Agent");
+        let session = agent
+            .create_session(SessionConfig {
+                cwd: cwd.to_string_lossy().into_owned(),
+                tools: None,
+                model,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let registry = probe
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the probe part assembled with the profile's Session");
+        let declared: BTreeSet<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let _ = session.close().await;
+        server.shutdown();
+        let _ = server.join().await;
+        declared
+    }
+
+    /// A model configuration over an unreachable base URL: the profile is
+    /// served, never called.
+    fn fixture_models(directory: &Path) -> PathBuf {
+        let path = directory.join("models.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "defaultModel": {"providerId": "local", "modelId": "fixture"},
+                "providers": [{
+                    "id": "local",
+                    "kind": "openai-chat",
+                    "baseUrl": "http://127.0.0.1:1/v1",
+                    "models": [{
+                        "id": "fixture",
+                        "contextWindow": 24_000,
+                        "maxOutputTokens": 200,
+                        "config": {"maxTokens": 200}
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    /// A socket path short enough to bind: a profile's endpoint is a unix
+    /// socket path, and the platform bounds its length (`SUN_LEN`), which the
+    /// scratch directory's own path overruns. The test never connects to it;
+    /// `serve_home` only binds it.
+    fn socket_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("dim-run-tools-{label}-{}.sock", std::process::id()))
+    }
+
+    fn difference_message(
+        profile: &str,
+        declared: &BTreeSet<String>,
+        expected: &BTreeSet<String>,
+    ) -> String {
+        let unlisted: Vec<&String> = declared.difference(expected).collect();
+        let unserved: Vec<&String> = expected.difference(declared).collect();
+        format!(
+            "the {profile} profile offers tools its run list does not name: {unlisted:?}; \
+             its run list names tools the profile does not offer: {unserved:?}"
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_run_list_is_the_probes_tool_set_and_the_product_serves_it_with_plugin() {
+        let directory = app_server::scratch("run-tools").unwrap();
+        let workspace = directory.join("workspace");
+        private_directory(&workspace).unwrap();
+        let models = fixture_models(&directory);
+        let probe = RegistryProbe::default();
+        let serving = probe.clone();
+        let server = app_server::serve_home(
+            &directory.join("probe-home"),
+            &workspace,
+            directory.join("probe-output"),
+            native_probe_settings(models, socket_path("probe"), None, Overrides::default()),
+            move |builder| {
+                builder.require_feature(
+                    Feature::new("RunToolsProbe").session("RunToolsProbe", move |names| {
+                        probe_part(names, serving.clone())
+                    }),
+                );
+            },
+        )
+        .await
+        .unwrap();
+        let probe_tools = declared_tools(
+            server,
+            probe,
+            &workspace,
+            ModelSelection {
+                provider_id: "local".into(),
+                model_id: "fixture".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            },
+        )
+        .await;
+        let expected: BTreeSet<String> = RUN_TOOLS.iter().map(|name| (*name).to_owned()).collect();
+        assert!(
+            probe_tools == expected,
+            "{}",
+            difference_message("native probe", &probe_tools, &expected)
+        );
+        assert!(
+            !probe_tools.contains(PLUGIN_TOOL),
+            "the native probe profile turns plugin_tools off, so it offers no \
+             {PLUGIN_TOOL} tool: {probe_tools:?}"
+        );
+        let product = RegistryProbe::default();
+        let serving = product.clone();
+        let server = app_server::serve_product(&directory.join("product"), move |builder| {
+            builder.require_feature(
+                Feature::new("RunToolsProbe").session("RunToolsProbe", move |names| {
+                    probe_part(names, serving.clone())
+                }),
+            );
+        })
+        .await
+        .unwrap();
+        let product_tools = declared_tools(
+            server,
+            product,
+            &directory.join("product"),
+            ModelSelection {
+                provider_id: "mock".into(),
+                model_id: "deterministic".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            },
+        )
+        .await;
+        let with_plugin: BTreeSet<String> = expected
+            .iter()
+            .cloned()
+            .chain(std::iter::once(PLUGIN_TOOL.to_owned()))
+            .collect();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            product_tools == with_plugin,
+            "{}",
+            difference_message("product", &product_tools, &with_plugin)
         );
     }
 }

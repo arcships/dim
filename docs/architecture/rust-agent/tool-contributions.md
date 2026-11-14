@@ -87,6 +87,9 @@ impl ToolRegistry {
 
 固定表含宿主的全部工具，在 `apply` 时构建。每个挂载的注册工具是注册表自有的带版本集合，键为 `#contributed:<tool>`；来源名满足 `[A-Za-z0-9_-]{1,64}`，不含 `#`，所以二者的键不会相同。没有挂载列表时，声明先按宿主的顺序列出宿主工具，再按名称列出注册工具；有挂载列表时，按列表顺序列出其中的宿主工具与注册工具；两种情况下其后都是其他来源的工具。
 
+工具处理器在 `execute` 之外还有两个可选问题，都有默认实现：`resolve_write` 在不产生效果的前提下解析写入目标，`risk` 给出 Approval 准入这次调用所用的风险类别。`claim(call, caller)` 返回处理器在调用被发布前要登记的东西：守卫释放即撤回，`ToolClaim::dispatch` 消费它来跑这次调用。发布与释放顺序见
+[Questions §2.1](../../design/plugins/Questions.md#21-the-claim-before-the-fact)。
+
 ## 3. 依赖方向
 
 | 方向 | 规定 |

@@ -105,6 +105,10 @@ not need one, because the failed request ran none of the calls it announced:
 
 - only a Completed output produces `step/tool-call`
   ([agent_loop.rs](../../../../crates/dim-agent-capabilities/src/agent_loop.rs));
+- the batch's handler claims are made immediately before that append and held
+  with the request's tool snapshot, so a call that is never dispatched — here,
+  because the turn ends before the batch — releases whatever it claimed when the
+  snapshot is dropped (ToolExecution, [Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact));
 - ToolExecutor consumes `step/tool-call` and nothing else
   ([tool_executor.rs](../../../../crates/dim-agent-capabilities/src/tool_executor.rs)),
   so no call of a failed output reaches a tool;
