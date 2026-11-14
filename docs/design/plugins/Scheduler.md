@@ -282,7 +282,7 @@ Automation never widens authority (E2). Because a job captures no policy and com
 
 ## 4. Timing and conflicts
 
-Scheduler judges every instant against one clock it owns, and crosses every wait of the timer, the stop timer and a lookup poll through that clock. The instant a record carries and the instant a later generation judges it by therefore come from the same source, across restarts. The clock is process state, not data crossing a boundary: no method parameter or stored record changes with it.
+Scheduler judges every instant against one clock it owns, and crosses every wait of the timer, the stop timer and a lookup poll through that clock. The instant a record carries and the instant a later generation judges it by therefore come from the same source, across restarts. The clock is process state, not data crossing a boundary: no method parameter or stored record changes with it. A record's time is read inside the transaction that writes it, after the file lease is held, so a wait for the lease is not charged to a run.
 
 ```mermaid
 sequenceDiagram

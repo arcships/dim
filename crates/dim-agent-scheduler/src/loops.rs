@@ -483,7 +483,7 @@ impl Loops {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
-        let now = self.shared.now();
+        let clock = self.shared.clock.clone();
         let (record, settled) = self
             .change(session_id, loop_id, move |record| {
                 if record.state.is_terminal() {
@@ -492,7 +492,7 @@ impl Loops {
                 record.state = LoopState::Stopped;
                 record.next_at = None;
                 record.delivering_round = None;
-                record.settled_at = Some(stamp(now));
+                record.settled_at = Some(stamp(clock.now()));
                 Ok((true, true))
             })
             .await?;
@@ -538,7 +538,7 @@ impl Loops {
         R: Send + 'static,
     {
         let _hold = self.shared.loops.lock().await;
-        let now = self.shared.now();
+        let clock = self.shared.clock.clone();
         let session_id = session_id.to_owned();
         let loop_id = loop_id.to_owned();
         let (record, answer, changed) = update(&self.shared.files, move |loops| {
@@ -553,7 +553,7 @@ impl Loops {
             };
             let (changed, answer) = change(record)?;
             if record.state.is_terminal() && record.settled_at.is_none() {
-                record.settled_at = Some(stamp(now));
+                record.settled_at = Some(stamp(clock.now()));
             }
             record.validate().map_err(SchedulerError::invalid_data)?;
             let snapshot = record.clone();
@@ -1055,7 +1055,7 @@ impl Loops {
         if changes.is_empty() && prune.is_empty() {
             return Ok(());
         }
-        let now = self.shared.now();
+        let clock = self.shared.clock.clone();
         let announced = update(&self.shared.files, move |loops| {
             let mut touched: Vec<Loop> = Vec::new();
             for change in changes {
@@ -1065,7 +1065,7 @@ impl Loops {
                 else {
                     continue;
                 };
-                change.apply(record, now);
+                change.apply(record, clock.now());
                 record.validate().map_err(SchedulerError::invalid_data)?;
                 touched.push(record.clone());
             }

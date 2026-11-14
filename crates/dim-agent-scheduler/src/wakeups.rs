@@ -285,7 +285,7 @@ impl Wakeups {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
         let _hold = self.shared.wakeups.lock().await;
-        let now = self.shared.now();
+        let clock = self.shared.clock.clone();
         let session_id = session_id.to_owned();
         let wakeup_id = wakeup_id.to_owned();
         let (record, settled) = update(&self.shared.files, move |wakeups| {
@@ -308,7 +308,7 @@ impl Wakeups {
             let settled = record.state == WakeupState::Scheduled;
             if settled {
                 record.state = WakeupState::Cancelled;
-                record.settled_at = Some(stamp(now));
+                record.settled_at = Some(stamp(clock.now()));
             }
             let record = record.clone();
             Ok((settled, (record, settled)))

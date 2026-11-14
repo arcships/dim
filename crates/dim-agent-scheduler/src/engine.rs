@@ -124,7 +124,7 @@ async fn record(
         .effective_target()
         .ok_or_else(|| SchedulerError::invalid_data("job has no target"))?;
     let spawn_target = target.clone();
-    let now = shared.now();
+    let clock = shared.clock.clone();
     let run = runs::update(&shared.files, move |history| {
         if window != MANUAL
             && history
@@ -133,6 +133,7 @@ async fn record(
         {
             return Ok((false, None));
         }
+        let now = clock.now();
         let (state, detail) = if missed {
             (DeliveryState::Missed, "missed")
         } else if history
@@ -469,7 +470,7 @@ async fn finish(
     detail: String,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
-    let now = shared.now();
+    let clock = shared.clock.clone();
     let settled = runs::update(&shared.files, move |history| {
         let run = history
             .iter_mut()
@@ -479,7 +480,7 @@ async fn finish(
             return Ok((false, None));
         }
         run.state = state;
-        run.ended_at = Some(stamp(now));
+        run.ended_at = Some(stamp(clock.now()));
         run.detail = detail;
         run.validate().map_err(SchedulerError::invalid_data)?;
         Ok((true, Some(run.clone())))
@@ -916,7 +917,7 @@ enum LookupStep {
 /// and before the input, so the caller's own copy may predate it.
 async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), SchedulerError> {
     let found = run_id.to_owned();
-    let now = shared.now();
+    let clock = shared.clock.clone();
     let step = runs::update(&shared.files, move |history| {
         let Some(run) = history.iter_mut().find(|run| run.run_id == found) else {
             return Ok((false, LookupStep::Settled));
@@ -927,7 +928,7 @@ async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), Scheduler
         let attempts = run.attempts.unwrap_or(0);
         if attempts >= LOOKUP_BOUND {
             run.state = DeliveryState::Lost;
-            run.ended_at = Some(stamp(now));
+            run.ended_at = Some(stamp(clock.now()));
             run.detail = LOOKUP_BUDGET_EXHAUSTED.into();
             run.validate().map_err(SchedulerError::invalid_data)?;
             return Ok((true, LookupStep::Exhausted(Box::new(run.clone()))));
@@ -1008,7 +1009,7 @@ async fn settle_delivered(
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
     let input_id = input_id.to_owned();
-    let now = shared.now();
+    let clock = shared.clock.clone();
     let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observe = moved.clone();
     runs::update(&shared.files, move |history| {
@@ -1021,7 +1022,7 @@ async fn settle_delivered(
         }
         run.state = DeliveryState::Delivered;
         run.input_event_id = Some(input_id);
-        run.ended_at = Some(stamp(now));
+        run.ended_at = Some(stamp(clock.now()));
         run.validate().map_err(SchedulerError::invalid_data)?;
         *observe.lock().unwrap() = Some(run.clone());
         Ok((true, ()))
@@ -1047,7 +1048,7 @@ async fn settle_lost(
     answer: String,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
-    let now = shared.now();
+    let clock = shared.clock.clone();
     let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observe = moved.clone();
     runs::update(&shared.files, move |history| {
@@ -1059,7 +1060,7 @@ async fn settle_lost(
             return Ok((false, ()));
         }
         run.state = DeliveryState::Lost;
-        run.ended_at = Some(stamp(now));
+        run.ended_at = Some(stamp(clock.now()));
         run.detail = answer;
         run.validate().map_err(SchedulerError::invalid_data)?;
         *observe.lock().unwrap() = Some(run.clone());
