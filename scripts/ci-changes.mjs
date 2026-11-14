@@ -24,7 +24,7 @@ const rules=[
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
   [/^xtask\//,['rust','node','eval']],
   // Before the catch-all below, so it repeats that rule's groups.
-  [/^(runtime\/(plugins|fixtures)\/light-ocr\/|runtime\/light-ocr-[^/]*\.test\.mjs$|runtime\/package-lock\.json$|crates\/dim-(ocr|modality)\/)/,['rust','node','ocr']],
+  [/^(runtime\/(plugins|fixtures)\/light-ocr\/|runtime\/light-ocr-[^/]*\.test\.mjs$|runtime\/package(-lock)?\.json$|crates\/dim-ocr\/)/,['rust','node','ocr']],
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
 

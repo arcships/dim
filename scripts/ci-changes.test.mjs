@@ -59,10 +59,13 @@ test('workspace, toolchain, workflow and unknown paths run everything',()=>{
 test('the OCR-only tests follow the paths that can change them',()=>{
   assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'),'the event types still select node');
   assert.deepEqual(classify(['crates/dim-ocr/src/vision.rs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['crates/dim-modality/src/engine.rs']),only('rust','node','ocr'));
+  assert.deepEqual(classify(['crates/dim-ocr/tests/engine.rs']),only('rust','node','ocr'));
+  assert.deepEqual(classify(['crates/dim-modality/src/engine.rs']),only('rust','node'),'no dim-modality target runs in the OCR step');
   assert.deepEqual(classify(['runtime/plugins/light-ocr/helper.cjs']),only('rust','node','ocr'));
   assert.deepEqual(classify(['runtime/fixtures/light-ocr/light-ocr/index.cjs']),only('rust','node','ocr'));
   assert.deepEqual(classify(['runtime/light-ocr-helper.test.mjs']),only('rust','node','ocr'));
+  assert.deepEqual(classify(['runtime/light-ocr-row.test.mjs']),only('rust','node','ocr'));
+  assert.deepEqual(classify(['runtime/package.json']),only('rust','node','ocr'),'the tree the helper runs from');
   assert.deepEqual(classify(['runtime/package-lock.json']),only('rust','node','ocr'));
   assert.deepEqual(classify(['runtime/plugin-sdk.test.mjs']),only('rust','node'),'the plugin SDK test stays on node');
 });
