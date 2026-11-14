@@ -3,8 +3,9 @@
 //! round 2; a round without `next` leaves the loop `waiting` and delivers
 //! nothing more; `stop` is idempotent; expiry settles `expired`; a gone branch
 //! settles `stopped`; a restart with a delivered round settles by lookup and
-//! never writes a second one. Timing follows `wakeup_flow.rs`: a real clock, an
-//! instant a couple of seconds ahead, and a short poll with a hard timeout.
+//! never writes a second one. A row that waits for a window names one an hour
+//! out and crosses it with the clock; one that waits for a pass crosses a tick
+//! (#1536).
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_agent_types::*;
@@ -130,7 +131,11 @@ async fn start_armed(
     dim_agent_scheduler::install_with_testing(
         &mut builder,
         dim_agent_scheduler::SchedulerTexts::default(),
-        holds,
+        dim_agent_scheduler::testing::TestingOptions {
+            holds,
+            clock: dim_agent_scheduler::testing::clock(home),
+            signals: dim_agent_scheduler::testing::signals(home),
+        },
     )
     .expect("the built-in texts are valid");
     serve(
@@ -420,7 +425,7 @@ async fn next_clamps_its_delay_to_the_ceiling() {
             .cloned()
             .unwrap(),
     }]);
-    let before = chrono::Utc::now();
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
     client
         .rpc(
             "session.submit",
@@ -465,11 +470,16 @@ async fn an_expired_loop_settles_expired() {
         .unwrap();
     wait_for("the loop file", || !stored_loops(home.path()).is_empty()).await;
 
-    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // An hour out, so the expiry below is reached by the advance and by no real
+    // wait the row could take.
+    let past = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::seconds(3600))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["expires_at"] = json!(past);
     });
+    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
     wait_for("expiry", || {
         stored_loops(home.path())
             .first()
@@ -501,15 +511,18 @@ async fn a_gone_branch_settles_stopped() {
     .await;
 
     // A branch that does not exist answers `branch_missing`, as a deleted
-    // target would.
-    let at = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // target would. The window is an hour out, so only the advance reaches it.
+    let at = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::seconds(3600))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["branch_id"] = json!("gone-branch");
         loops[0]["state"] = json!("running");
         loops[0]["next_at"] = json!(at);
         loops[0]["delivering_round"] = Value::Null;
     });
+    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
     wait_for("a stopped loop", || {
         stored_loops(home.path())
             .first()
@@ -622,18 +635,17 @@ async fn a_restart_retries_an_unanswered_lookup_on_the_next_tick() {
     .await;
     let mut client = connect(&server).await;
 
-    // Ten seconds is far short of the minute a one-shot startup pass would
-    // leave the round unsettled for, and far longer than the per-tick retry.
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !stored_loops(home.path())
+    // The startup pass's lookup was lost, so the round stays `delivering` and
+    // the per-tick pass asks again. One crossed tick is that retry — far short
+    // of the minute a one-shot startup pass would leave it unsettled for — and
+    // the record is read once after it.
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        stored_loops(home.path())
             .first()
-            .is_some_and(|record| record["delivering_round"].is_null())
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the per-tick pass settles the round after the unanswered startup lookup");
+            .is_some_and(|record| record["delivering_round"].is_null()),
+        "the per-tick pass settles the round after the unanswered startup lookup"
+    );
 
     let after = loop_rounds(&history(&mut client, &session).await).len();
     assert_eq!(
@@ -731,13 +743,16 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
     let rounds = loop_rounds(&history(&mut client, &session).await).len();
     assert_eq!(rounds, 1, "round one is delivered");
 
-    // Bring the next window forward while that round is still pending: the
-    // pass must skip it rather than queue a second round.
-    let due = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // Bring the next window an hour forward while that round is still pending:
+    // the pass must skip it rather than queue a second round. The window is far
+    // enough that only the advance below reaches it.
+    let due = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::seconds(3600))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["next_at"] = json!(due);
     });
+    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
     wait_for("the skipped window", || {
         stored_loops(home.path()).first().is_some_and(|record| {
             record["next_at"]
@@ -752,24 +767,28 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
         "a skipped window writes nothing"
     );
 
-    // Releasing the branch consumes the held round, so the window after it
-    // delivers round 2.
+    // Releasing the branch consumes the held round, so a later pass delivers
+    // round 2. A pass that finds the branch still pending rewrites the window a
+    // whole cadence ahead, so the window is re-armed due at each tick: the
+    // delivery lands at the first tick whose pass finds the branch free, and
+    // every tick here is crossed by the clock, not by a real second.
     model.release();
-    let next = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    edit_loops(home.path(), |loops| {
-        loops[0]["next_at"] = json!(next);
-    });
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if loop_rounds(&history(&mut client, &session).await).len() == 2 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    let mut delivered = false;
+    for _ in 0..10 {
+        let due = clock
+            .now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        edit_loops(home.path(), |loops| {
+            loops[0]["next_at"] = json!(due);
+        });
+        dim_agent_scheduler::testing::step(home.path(), 1).await;
+        if loop_rounds(&history(&mut client, &session).await).len() == 2 {
+            delivered = true;
+            break;
         }
-    })
-    .await
-    .expect("round two is delivered");
+    }
+    assert!(delivered, "round two is delivered");
     // The input write precedes the settle, so a round read straight after the
     // history shows it can still be the round before the settle.
     wait_for("the round to settle", || {
@@ -814,19 +833,25 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     })
     .await;
 
-    // The next window is due at once, so the pass reaches its input write while
-    // the store's write connection is held below.
-    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // The next window is an hour out, so the pass reaches its input write only
+    // once the advance below brings it there, while the store's write
+    // connection is held.
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    let due = (clock.now() + chrono::Duration::seconds(3600))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["state"] = json!("running");
         loops[0]["next_at"] = json!(due);
         loops[0]["delivering_round"] = Value::Null;
     });
 
+    // The connection is held before the clock moves, so the woken pass cannot
+    // finish its input write before the hold exists.
     let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    clock.advance(chrono::Duration::seconds(3610));
 
     // The pass marks the round delivering, then waits on the held connection
     // while it holds the loop lock.
@@ -843,7 +868,7 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     let loops = server
         .service::<dim_agent_scheduler::Loops>()
         .expect("the Scheduler process part provides its loop service");
-    let before = chrono::Utc::now();
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
     let mut arming = Box::pin(loops.next(&session, &loop_id, 600));
     assert!(
         tokio::time::timeout(Duration::from_secs(1), &mut arming)
@@ -922,9 +947,13 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
 
     // The first loop is past its expiry, and the second is due again, so one
     // pass both expires the first and reaches an input write for the second.
-    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
+    // The second window is an hour out, so only the advance after the edit
+    // brings the pass to it.
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    let past = (clock.now() - chrono::Duration::seconds(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = (clock.now() + chrono::Duration::seconds(3600))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         for record in loops.iter_mut() {
             if record["loop_id"] == json!(old) {
@@ -938,10 +967,13 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
         }
     });
 
+    // The connection is held before the clock moves, so the woken pass cannot
+    // finish its input write before the hold exists.
     let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    clock.advance(chrono::Duration::seconds(3610));
 
     // The pass has read the snapshot with the loop lock taken, marked the
     // second loop's round delivering, and waits on the held connection with

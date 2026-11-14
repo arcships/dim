@@ -4,6 +4,7 @@
 //! The process owner keeps jobs in the `schedule` settings document and run
 //! history in `scheduler/runs.json`, and serves the `schedule` management
 //! namespace.
+mod clock;
 mod document;
 mod engine;
 mod loops;
@@ -64,15 +65,15 @@ pub fn install_with(builder: &mut AgentBuilder, texts: SchedulerTexts) -> Result
     install_inner(builder, texts, SchedulerPlugin::new)
 }
 
-/// [`install_with`] with the flow tests' holds in force (feature `testing`).
+/// [`install_with`] with the flow tests' seams in force (feature `testing`).
 #[cfg(feature = "testing")]
 pub fn install_with_testing(
     builder: &mut AgentBuilder,
     texts: SchedulerTexts,
-    holds: std::sync::Arc<testing::Holds>,
+    options: testing::TestingOptions,
 ) -> Result<(), String> {
     install_inner(builder, texts, move |names, texts| {
-        SchedulerPlugin::new_with_testing(names, texts, holds.clone())
+        SchedulerPlugin::new_with_testing(names, texts, options.clone())
     })
 }
 

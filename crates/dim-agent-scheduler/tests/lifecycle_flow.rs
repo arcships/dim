@@ -438,17 +438,12 @@ async fn an_at_job_saved_after_its_instant_records_missed_and_disables() {
         .unwrap();
     let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
 
-    let disabled = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
-            if listed["jobs"][0]["enabled"] == false {
-                return listed;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("the past at job disables itself");
+    // The first timer pass records the past window `missed`; the one after it
+    // finds the delivery terminal and disables the job. Two crossed ticks are
+    // those two passes, rather than a poll for a real second.
+    step(home.path(), 2).await;
+    let disabled: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    assert_eq!(disabled["jobs"][0]["enabled"], false, "{disabled}");
     let history: Value = client
         .typed("schedule.history", json!({"job_id": job_id}))
         .await
@@ -537,25 +532,169 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     assert!(listed.to_string().contains(&launched), "{listed}");
 
+    // The delete spawns the retention pass that deletes the launched Session
+    // and then its record; the count names that pass, and both facts are read
+    // once after it.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": job_id}))
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let listed = client.rpc("session.summaries", json!({})).await.unwrap();
-            if !listed.to_string().contains(&launched)
-                && !stored_runs(home.path())
-                    .iter()
-                    .any(|run| run["job_id"] == job_id.as_str())
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+    retention(home.path(), before).await;
+    let listed = client.rpc("session.summaries", json!({})).await.unwrap();
+    assert!(!listed.to_string().contains(&launched), "{listed}");
+    assert!(
+        !stored_runs(home.path())
+            .iter()
+            .any(|run| run["job_id"] == job_id.as_str()),
+        "the launched Session is deleted before its last record is removed"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The instant a delivery record carries.
+fn instant(stamped: &Value) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(stamped.as_str().expect("a stamped instant"))
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+/// Whether the stop timer's own interrupt is on the branch: the reason
+/// `stop_at` sends, distinct from the one a closing branch writes.
+fn stopped_at_its_stop_time(history: &[Value]) -> bool {
+    history.iter().any(|event| {
+        event["type"] == "stop"
+            && event["name"] == "interrupt"
+            && event["data"]["reason"] == "scheduled run reached its stop time"
     })
-    .await
-    .expect("the launched Session is deleted before its last record is removed");
+}
+
+/// Every event of a Session's `main` branch, in order.
+async fn branch_events(client: &mut dim_client::Client, session_id: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    let mut after = 0;
+    let mut through = None;
+    loop {
+        let mut params = json!({"sessionId": session_id, "branchId": "main", "after": after});
+        if let Some(through) = through {
+            params["through"] = json!(through);
+        }
+        let page: dim_client::wire::History =
+            client.typed("session.history", params).await.unwrap();
+        through = Some(page.through);
+        let next = page.next(after, through).unwrap();
+        events.extend(page.events);
+        match next {
+            Some(next) => after = next,
+            None => return events,
+        }
+    }
+}
+
+/// Holds `scheduler/runs.json` at its transaction: the returned sender
+/// releases it, and the task is the holder.
+///
+/// The closure signals that it has entered, which is after `transact` took the
+/// file lease and read the file, and then blocks until the test releases it. A
+/// call that writes the same file therefore waits on the lease, which is what
+/// makes that wait observable.
+async fn hold_runs_file(
+    server: &dim_app_server::RunningServer,
+) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
+    let files = server
+        .service::<dim_app_server::plugin_files::PluginFileTransactions>()
+        .expect("the App Server provides the file transactions");
+    let (release, held) = std::sync::mpsc::channel();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        files
+            .transact("scheduler/runs.json", move |_| {
+                entered.send(()).unwrap();
+                held.recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap();
+                (None, ())
+            })
+            .await
+            .unwrap();
+    });
+    entered_rx.await.unwrap();
+    (release, task)
+}
+
+/// A launch's stop time is counted from the instant its record is written, not
+/// from before the wait for the runs file's lease: a hold on `runs.json` that
+/// outlasts `max_run_minutes` leaves the run its whole budget and does not stop
+/// the launched Session as already expired (§3.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_counts_its_stop_time_from_when_its_record_is_written() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "held", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Complete the accepted work.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+
+    let (release, held) = hold_runs_file(&server).await;
+    let id = client
+        .send("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    // The launch is waiting on the lease: the hold above is the only thing that
+    // has the file. This check can only miss the bug, by advancing before the
+    // launch has read the time, and can never fail a correct build.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), client.response(id))
+            .await
+            .is_err(),
+        "the launch waits for the runs file"
+    );
+
+    // The hold outlasts the whole run budget. A record stamped before the wait
+    // carries a stop time the advance below has already passed.
+    clock(home.path()).advance(chrono::Duration::minutes(6));
+    // A record is stamped to the millisecond, so the instant the advance
+    // reached is read as a stamp and parsed the way a record's is.
+    let reached = clock(home.path())
+        .now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let advanced = instant(&json!(reached));
+    release.send(()).unwrap();
+    held.await.unwrap();
+    let accepted: Value = client.response(id).await.unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let run = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    let session_id = run["session_id"].as_str().unwrap().to_owned();
+
+    let created_at = instant(&run["created_at"]);
+    let deadline_at = instant(&run["deadline_at"]);
+    assert!(
+        created_at >= advanced,
+        "the record is stamped when it is written, not before the wait: {run}"
+    );
+    assert_eq!(
+        deadline_at,
+        created_at + chrono::Duration::minutes(5),
+        "the stop time is the record's own instant plus the budget: {run}"
+    );
+
+    // The stop time is in the future, so the stop timer waits for it. Were the
+    // record stamped before the wait its stop time would already have passed,
+    // and the launched Session would be stopped at once.
+    assert!(
+        !stopped_at_its_stop_time(&branch_events(&mut client, &session_id).await),
+        "a launch whose record was written after the wait is not stopped at once"
+    );
 
     drop(client);
     server.shutdown();
@@ -595,12 +734,12 @@ async fn a_launch_session_is_stopped_at_its_stop_time() {
         "a launch records its stop time: {delivered}"
     );
 
-    // Move the stop time forward to now, as time would, so the resumed timer
-    // fires at once instead of after the job's five minutes.
+    // Move the stop time an hour out, as a restart that resumes the timer long
+    // before it would meet it; the advance below is what reaches it.
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
-    let soon = (chrono::Utc::now() + chrono::Duration::seconds(2))
+    let soon = (clock(home.path()).now() + chrono::Duration::seconds(3600))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_runs(home.path(), |runs| {
         let run = runs
@@ -609,8 +748,10 @@ async fn a_launch_session_is_stopped_at_its_stop_time() {
             .unwrap();
         run["deadline_at"] = json!(soon);
     });
+    let parks = stop_parks(home.path());
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
+    stop_time(home.path(), parks).await;
 
     // The held turn ends at the stop time; the held model reply is what the
     // launched Session was waiting on.
