@@ -103,7 +103,9 @@ fn tui_connect_disabled_provider_refreshes_its_model_management_panel() {
         terminal.raw(b"\r");
         terminal.until("Enable provider");
         terminal.until("Edit models");
-        terminal.raw(b"\x1b[B\x1b[B\r");
+        // From the API key: Down past the model id prefix and Enable
+        // provider to Edit models.
+        terminal.raw(b"\x1b[B\x1b[B\x1b[B\r");
         terminal.until("Models · Fixture");
         terminal.raw(b"\x12");
         terminal.until("Fresh catalog model");

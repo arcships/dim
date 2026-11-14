@@ -142,6 +142,7 @@ impl ProvidersPanel {
             if let Some(form) = &mut self.form
                 && let Some(entry) = self.providers.iter().find(|p| p.id == form.provider_id)
             {
+                let focused = form.rows().get(form.active).copied();
                 let failed = matches!(form.message, Some(Err(_)));
                 let edited = !form.api_key.text().is_empty()
                     || form.base_url.text().trim() != form.original_base_url
@@ -162,7 +163,12 @@ impl ProvidersPanel {
                     form.model_prefix = LineInput::new(&form.original_model_prefix);
                 }
                 if form.name.take().is_some() {
-                    form.active = 2;
+                    let kept = match focused {
+                        Some(Field::Name) | None => Field::BaseUrl,
+                        Some(field) => field,
+                    };
+                    let rows = form.rows();
+                    form.active = rows.iter().position(|row| *row == kept).unwrap_or(0);
                 }
                 form.api_key_preview = entry.api_key_preview.clone();
                 form.busy = false;
@@ -1046,6 +1052,47 @@ mod tests {
         assert!(matches!(panel.handle_key(key(KeyCode::Enter)),
             Effect::Provider(ProviderAction::Configure {expected_version: 2, api_key: Some(key), base_url: Some(url), glued_prefix: None, ..})
             if key == "retry-key" && url == "http://draft.test/v1"));
+    }
+
+    /// A create that failed is reread as the new provider's own form: the
+    /// cursor keeps the field it was on, so the Apply the message names is
+    /// still under Enter, whatever rows the other form has.
+    #[test]
+    fn a_failed_create_reread_as_the_provider_keeps_the_cursor_on_apply() {
+        let mut panel = ProvidersPanel::new();
+        panel.set_providers(Ok(vec![entry("mock", "mock", "connected", true)]));
+        let key = |code| KeyEvent::new(code, Modifiers::NONE);
+        panel.handle_key(key(KeyCode::Down));
+        panel.handle_key(key(KeyCode::Enter));
+        panel.paste("Recovered provider");
+        panel.handle_key(key(KeyCode::Enter));
+        panel.paste("https://first.example/v1");
+        panel.handle_key(key(KeyCode::Enter));
+        panel.paste("first-key");
+        let form = panel.form.as_ref().unwrap();
+        assert_eq!(
+            form.rows(),
+            vec![Field::Name, Field::BaseUrl, Field::ApiKey, Field::Apply]
+        );
+        panel.handle_key(key(KeyCode::Enter));
+        let form = panel.form.as_ref().unwrap();
+        assert_eq!(form.rows()[form.active], Field::Apply);
+        let allocated_id = form.provider_id.clone();
+        panel.set_providers(Err("Snapshot unavailable".into()));
+        let mut reread = entry(&allocated_id, "Recovered provider", "connected", false);
+        reread.version = 1;
+        reread.base_url = Some("https://first.example/v1".into());
+        panel.set_providers(Ok(vec![reread]));
+        let form = panel.form.as_ref().unwrap();
+        assert!(form.name.is_none(), "the reread is the provider's own form");
+        assert_eq!(form.rows()[form.active], Field::Apply);
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::Provider(ProviderAction::Configure {
+                expected_version: 1,
+                ..
+            })
+        ));
     }
 
     /// A typed prefix is the patch's own statement about the ids this Provider
