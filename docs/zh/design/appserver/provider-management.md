@@ -288,6 +288,32 @@ Rpc 沿用 service_reloading/service_unavailable 和准入；调用由 owner 追
 | 捆绑目录 | `metadataSource` 指向匹配的捆绑 Provider：条目仅在其 `metadata.raw` 声明处才有上限，其余取值在捆绑加载时删除；该 Provider 的 `contextWindowOverride`、`contextWindowFallback` 元数据仍是声明 | 匹配到的模型，或该 Provider 的全部模型 |
 | 用户 | 同一 `capabilityOverrideFields` 字段，写在描述覆盖或用户模型上：`models.edit` 为它编辑的每项上限写入，两个旧版导入器为导入时保留的每项值写入 | 覆盖所指的模型 |
 
+先识别模型，再从识别指明的条目读取数字。识别在目录上进行，第一个只留下一个模型的步骤胜出：
+Provider 自有清单按精确 id；然后是整个限定 id，当它携带的命名空间正是持有该 id 那一行的
+Provider 时，聚合方自有的 house model 因此不会被其末段 token 偶然指名的无关行作答；然后是自有
+token 是 id 头部、尾部至多为日期、`latest`、tag 后缀或方括号上下文修饰的厂商条目；接着把厂商的
+上游规范 id 与显示名合看，显示名将多个规范命中收窄为一个，仍有分歧即歧义而非猜测；然后按同样
+两条规则读取 `custom-provider` 行；最后，对既没有厂商条目也没有 `custom-provider` 行指名的模型，
+合并自有 id 为同名同 tag 的聚合行，且只取安全方向：最小窗口、最小输出上限与 effort 选项的交集。
+Provider 默认值不是声明，携带其 Provider 在大量行上写出的那一对数值的行在该处不声明任何上限。
+
+限定 id 的命名空间是身份，不是提示。当它指名某个捆绑 Provider 时，token、规范 id 或显示名步骤
+若只找到其他 Provider 的行，则该步骤不作答，并以这些行作为候选拒绝该 id：仅凭末段 token 不得把
+限定 id 交给 id 未指名的厂商。命名空间不指名任何捆绑 Provider 的 id 是多个卖方共同列出的普通
+名字，这些步骤照常读取。
+
+投影把结果记入 `metadata.identification`：`rule` 取 `provider-exact`、`qualified`、`token`、
+`canonical`、`custom-provider`、`merge`、`ambiguous` 之一；`narrowedByDisplayName` 表示显示名
+收窄了多个规范命中；`candidates` 指出歧义拒绝的各行；`filled` 指出为该行未声明的每项上限提供
+取值的条目、规则与数值。合并对每项上限各取一个最小值，各自来自一行，因此其 `filled` 指出声明
+该值的行，并带该合并自己的 `rule`。行自身声明的上限没有 `filled` 记录，`provider.models.edit`
+为其声明的每项上限删除对应记录。拒绝时消息指出 Provider 与模型 id、缺失的上限、仍然分歧的
+候选行，以及声明它们的写入 `provider.models.edit`。
+
+`metadataSource` 与 `matchedProviderId` 指出投影条目复制自哪一行，对合并即第一行加入的行：
+条目的显示名、价格、能力，以及该行自身声明的上限都来自它。它们不指出合并后某项上限的卖方；
+`filled` 逐项指出。
+
 缺失是类型上的值，不是数字。目录侧使用 `CatalogCapabilities`：两项上限都是可选的，没有来源
 声明时缺省；存储描述、其覆盖、用户模型、投影结果和托管目录的模型都用它。面向 Session 的
 `ModelCapabilities` 两项上限仍然必填且为正，并且没有默认值，因此任何投影、夹具或回退都无法

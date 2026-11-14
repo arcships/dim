@@ -1,5 +1,8 @@
 //! Pure model descriptor projection owned by the provider service.
 
+mod id;
+
+use self::id::variants;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -115,10 +118,52 @@ pub struct ModelMetadata {
     pub match_score: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_match_reason: Option<String>,
+    /// How this entry was identified, and what supplied a limit it does not
+    /// declare. Absent when nothing named the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identification: Option<ModelIdentification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capability_override_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub raw: Map<String, Value>,
+}
+
+/// The one model an id named, and the numbers something else supplied.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelIdentification {
+    /// The step that named the row, as `Rule`'s own word.
+    pub rule: String,
+    /// Step 3's display name settled several canonical hits.
+    pub narrowed_by_display_name: bool,
+    /// The rows a step still disagreed on, when it reported an ambiguity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateId>,
+    /// The limits this entry did not declare and something else supplied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filled: Vec<FilledLimit>,
+}
+
+/// One row an ambiguity named.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateId {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+/// A limit an entry did not declare, the entry that supplied it and how that
+/// entry was identified, so a filled value never reads as a declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilledLimit {
+    /// `contextWindow` or `maxOutputTokens`.
+    pub field: String,
+    pub value: u64,
+    pub provider_id: String,
+    pub model_id: String,
+    /// How the supplying entry was identified.
+    pub rule: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -167,6 +212,8 @@ pub(crate) struct CatalogMetadata {
     #[serde(default)]
     reasoning_off_overrides: bool,
     role: Option<ProviderRole>,
+    #[serde(default)]
+    plan: bool,
     pub(crate) raw: Option<CatalogRawMetadata>,
 }
 
@@ -253,6 +300,7 @@ pub struct BundledCatalog {
     providers: Vec<CatalogProvider>,
     by_provider: HashMap<String, usize>,
     reasoning_off: HashMap<(String, String), ReasoningOff>,
+    ids: id::IdIndex,
 }
 
 impl BundledCatalog {
@@ -282,6 +330,7 @@ impl BundledCatalog {
             }
         }
         Ok(Self {
+            ids: id::IdIndex::new(&file.providers),
             providers: file.providers,
             by_provider,
             reasoning_off,
@@ -311,6 +360,12 @@ impl BundledCatalog {
         self.provider(provider_id)?.metadata.as_ref()?.role
     }
 
+    /// Whether the bundled declarations for `provider_id` belong to a
+    /// subscription or coding plan rather than the vendor's API entry.
+    pub fn is_plan(&self, provider_id: &str) -> Option<bool> {
+        Some(self.provider(provider_id)?.metadata.as_ref()?.plan)
+    }
+
     pub fn project(
         &self,
         provider: &ProviderProjection,
@@ -333,7 +388,12 @@ impl BundledCatalog {
             .map(|m| m.capability_override_fields.clone())
             .unwrap_or_default();
         let lookup = self.lookup(provider, &id);
-        if let Some((pid, found, strategy, score)) = lookup {
+        let identification = self.identify_record(provider, &id, &explicit);
+        if let Some(found_lookup) = lookup {
+            let pid = found_lookup.provider_id.clone();
+            let found = found_lookup.entry;
+            let strategy = found_lookup.strategy;
+            let score = found_lookup.score;
             entry = merge_entry(entry, &found, &explicit);
             let declared = input.get("capabilities").and_then(Value::as_object);
             if input.get("modalities").is_none()
@@ -368,11 +428,116 @@ impl BundledCatalog {
             metadata.match_strategy = Some("provider-default".into());
             metadata.metadata_match_reason = Some("no_unique_match".into());
         }
+        entry.metadata.get_or_insert_default().identification = identification;
         self.apply_provider_rules(provider, &mut entry);
         if !limits_valid(&entry.capabilities) {
             return Err(ProjectionError::InvalidLimits);
         }
         Ok(entry)
+    }
+
+    /// How an id was identified, as the entry carries it. `None` when no step
+    /// named a row; the candidates when a step refused the id. `declared` names
+    /// the limits the entry states itself: a merge adopts one minimum per limit
+    /// from a joining row, and a limit the entry declares is not one it
+    /// adopted, even when the two values are equal.
+    fn identify_record(
+        &self,
+        provider: &ProviderProjection,
+        id: &str,
+        declared: &[String],
+    ) -> Option<ModelIdentification> {
+        match self.identify(provider, id) {
+            Ok(Some(found)) => Some(ModelIdentification {
+                rule: found.rule.into(),
+                narrowed_by_display_name: found.narrowed,
+                candidates: Vec::new(),
+                filled: adopted(found.suppliers, declared),
+            }),
+            Err(candidates) => Some(ModelIdentification {
+                rule: "ambiguous".into(),
+                narrowed_by_display_name: false,
+                candidates: candidates
+                    .into_iter()
+                    .map(|candidate| CandidateId {
+                        provider_id: candidate.provider_id,
+                        model_id: candidate.model_id,
+                    })
+                    .collect(),
+                filled: Vec::new(),
+            }),
+            Ok(None) => None,
+        }
+    }
+
+    /// A limit the row does not declare, supplied by the entry the id
+    /// identifies and recorded in `identification.filled` so it never reads as
+    /// the row's own declaration.
+    fn fill_undeclared(&self, model: &mut ModelEntry, provider_id: &str) {
+        // The row's own provider writes a default pair rather than declaring a
+        // limit, so such a row counts as undeclared here.
+        let placeholder = id::is_placeholder(provider_id, model);
+        let needs_window = model.capabilities.context_window.is_none() || placeholder;
+        let needs_output = model.capabilities.max_output_tokens.is_none() || placeholder;
+        if !needs_window && !needs_output {
+            return;
+        }
+        // The identified entry supplies the pair. The row itself answers step 1
+        // on its own provider, so the entry is looked up outside that list.
+        let Some(found) = self.lookup(&ProviderProjection::default(), &model.model_id) else {
+            return;
+        };
+        let mut filled = Vec::new();
+        for (field, needs, value, own) in [
+            (
+                "contextWindow",
+                needs_window,
+                found.entry.capabilities.context_window,
+                &mut model.capabilities.context_window,
+            ),
+            (
+                "maxOutputTokens",
+                needs_output,
+                found.entry.capabilities.max_output_tokens,
+                &mut model.capabilities.max_output_tokens,
+            ),
+        ] {
+            let Some(value) = value.filter(|_| needs) else {
+                continue;
+            };
+            *own = Some(value);
+            // A merge adopted the value from one of the joining rows, and that
+            // row is the supplier; a step that named one row is its own.
+            let supplier = found
+                .suppliers
+                .iter()
+                .find(|limit| limit.field == field && limit.value == value);
+            filled.push(match supplier {
+                Some(limit) => limit.clone(),
+                None => FilledLimit {
+                    field: field.into(),
+                    value,
+                    provider_id: found.provider_id.clone(),
+                    model_id: found.entry.model_id.clone(),
+                    rule: found.rule.to_owned(),
+                },
+            });
+        }
+        if filled.is_empty() {
+            return;
+        }
+        let metadata = model.metadata.get_or_insert_default();
+        match &mut metadata.identification {
+            Some(identification) => identification.filled = filled,
+            None => {
+                metadata.identification = Some(ModelIdentification {
+                    rule: "provider-exact".into(),
+                    narrowed_by_display_name: false,
+                    candidates: Vec::new(),
+                    filled,
+                })
+            }
+        }
     }
 
     pub fn effective_models(
@@ -385,22 +550,47 @@ impl BundledCatalog {
             .iter()
             .map(|model| {
                 let mut model = model.clone();
-                if let Some((provider_id, fallback, strategy, score)) =
-                    self.lookup(provider, &model.model_id)
-                {
+                let identification = self.identify_record(
+                    provider,
+                    &model.model_id,
+                    model
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.capability_override_fields.as_slice())
+                        .unwrap_or_default(),
+                );
+                if let Some(found) = self.lookup(provider, &model.model_id) {
+                    let provider_id = found.provider_id.clone();
+                    let strategy = found.strategy.clone();
+                    let score = found.score;
                     let explicit = model
                         .metadata
                         .as_ref()
                         .map(|m| m.capability_override_fields.clone())
                         .unwrap_or_default();
-                    model = merge_entry(model, &fallback, &explicit);
+                    model = merge_entry(model, &found.entry, &explicit);
                     let metadata = model.metadata.get_or_insert_default();
                     metadata.metadata_source = Some(provider_id.clone());
-                    metadata.matched_provider_id = Some(provider_id);
-                    metadata.matched_model_id = Some(fallback.model_id.clone());
+                    metadata.matched_provider_id = Some(provider_id.clone());
+                    metadata.matched_model_id = Some(found.entry.model_id.clone());
                     metadata.match_strategy = Some(strategy);
                     metadata.match_score = Some(score);
                     metadata.metadata_match_reason = None;
+                    model.metadata.get_or_insert_default().identification = identification;
+                    self.fill_undeclared(&mut model, &provider_id);
+                } else {
+                    // Nothing named the model, so its descriptor is the only
+                    // statement of what it supports, and the two fields that
+                    // carry reasoning must not disagree.
+                    if let Some(supported) = model
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.reasoning.as_ref())
+                        .map(|reasoning| reasoning.supported)
+                    {
+                        model.capabilities.reasoning = supported;
+                    }
+                    model.metadata.get_or_insert_default().identification = identification;
                 }
                 self.apply_provider_rules(provider, &mut model);
                 model
@@ -445,20 +635,26 @@ impl BundledCatalog {
                 &mut model.capabilities.max_output_tokens,
             ),
         ] {
-            let fields = &mut model
-                .metadata
-                .get_or_insert_default()
-                .capability_override_fields;
+            let metadata = model.metadata.get_or_insert_default();
+            let marked = metadata
+                .capability_override_fields
+                .iter()
+                .any(|name| name == field);
             match value {
                 Some(value) => {
                     *target = Some(value.get());
-                    if !fields.iter().any(|name| name == field) {
-                        fields.push(field.into());
+                    if !marked {
+                        metadata.capability_override_fields.push(field.into());
+                    }
+                    // The edit declares this limit, so a record of an entry
+                    // that supplied it is stale and must not survive the edit.
+                    if let Some(identification) = metadata.identification.as_mut() {
+                        identification.filled.retain(|limit| limit.field != field);
                     }
                 }
                 // A limit this entry does not declare is dropped, so an
                 // override never captures a value inherited from a bundle.
-                None if !fields.iter().any(|name| name == field) => *target = None,
+                None if !marked => *target = None,
                 None => {}
             }
         }
@@ -492,102 +688,7 @@ impl BundledCatalog {
     /// Bundled metadata for a model served by a relay outside the catalog.
     pub fn fallback(&self, id: &str) -> Option<ModelEntry> {
         self.lookup(&ProviderProjection::default(), id)
-            .map(|(_, model, _, _)| model)
-    }
-
-    fn lookup(
-        &self,
-        provider: &ProviderProjection,
-        id: &str,
-    ) -> Option<(String, ModelEntry, String, f64)> {
-        if provider.source != Some(ModelSource::Custom)
-            && let Some(m) = provider.models.iter().find(|m| m.model_id == id)
-        {
-            // The bundled entry is the declaration for a builtin provider's
-            // model, so a stored copy that lacks a limit is supplied from it.
-            let found = self
-                .bundled_models(&provider.provider_id)
-                .and_then(|models| models.iter().find(|entry| entry.model_id == id))
-                .cloned()
-                .unwrap_or_else(|| m.clone());
-            return Some((
-                provider.provider_id.clone(),
-                found,
-                "provider-exact".into(),
-                1.,
-            ));
-        }
-        let mut ids = vec!["custom-provider"];
-        let normalized = variants(id);
-        for (prefix, sources) in [
-            ("deepseek-", &["deepseek"][..]),
-            ("glm-", &["zai", "zhipuai"]),
-            ("qwen", &["bailian-coding-plan", "bailian"]),
-            ("kimi-", &["moonshot", "moonshot-ai"]),
-            ("claude-", &["anthropic"]),
-            ("gemini-", &["google"]),
-            ("gpt-", &["openai"]),
-            ("minimax-", &["minimax", "minimax-cn"]),
-            ("seed-", &["doubao-seed"]),
-        ] {
-            if normalized.iter().any(|variant| variant.starts_with(prefix)) {
-                ids.extend_from_slice(sources);
-            }
-        }
-        ids.extend([
-            "openrouter",
-            "zenmux",
-            "vercel-ai-gateway",
-            "jiekou",
-            "ppinfra",
-            "aihubmix",
-        ]);
-        for pid in ids {
-            if let Some(models) = self.bundled_models(pid)
-                && let Some((m, kind, score)) = match_models(models, id)
-            {
-                return Some((pid.into(), m.clone(), format!("{pid}-{kind}"), score));
-            }
-        }
-        for exact in [true, false] {
-            let candidates: Vec<_> = self
-                .providers
-                .iter()
-                .filter(|p| !matches!(p.provider_id.as_str(), "custom-provider" | "aihubmix"))
-                .flat_map(|p| p.models.iter().map(move |m| (p, m)))
-                .filter(|(_, m)| {
-                    if exact {
-                        m.model_id == id
-                    } else {
-                        !variants(&m.model_id).is_disjoint(&normalized)
-                    }
-                })
-                .filter_map(|(p, m)| media_signature(m).map(|signature| (p, m, signature)))
-                .collect();
-            if let Some((p, m, signature)) = candidates.first()
-                && candidates.iter().all(|(_, _, other)| other == signature)
-            {
-                let kind = if exact { "exact" } else { "normalized" };
-                return Some((
-                    p.provider_id.clone(),
-                    (*m).clone(),
-                    format!("{}-{kind}", p.provider_id),
-                    if exact { 1. } else { 0.98 },
-                ));
-            }
-        }
-        if provider.source == Some(ModelSource::Custom) {
-            provider.models.iter().find(|m| m.model_id == id).map(|m| {
-                (
-                    provider.provider_id.clone(),
-                    m.clone(),
-                    "custom-config-exact".into(),
-                    1.,
-                )
-            })
-        } else {
-            None
-        }
+            .map(|found| found.entry)
     }
 
     fn apply_provider_rules(&self, provider: &ProviderProjection, entry: &mut ModelEntry) {
@@ -636,6 +737,17 @@ impl BundledCatalog {
     }
 }
 
+/// The merged limits the projection actually adopted: a merge adopts one
+/// minimum per limit from a joining row, and `declared` names the limits the
+/// entry states itself. A declared limit is the entry's own number, so it has
+/// no `filled` record even when the adopted minimum equals it.
+fn adopted(suppliers: Vec<FilledLimit>, declared: &[String]) -> Vec<FilledLimit> {
+    suppliers
+        .into_iter()
+        .filter(|limit| !declared.contains(&limit.field))
+        .collect()
+}
+
 fn descriptor_entry(
     provider_id: &str,
     id: &str,
@@ -643,7 +755,13 @@ fn descriptor_entry(
 ) -> Result<ModelEntry, ProjectionError> {
     let capabilities = input.get("capabilities").and_then(Value::as_object);
     let (context, output) = declared_limits(input);
-    let reasoning_value = input.get("reasoning");
+    // A descriptor states its reasoning at the top level, and a stored entry
+    // sent back carries the same object under `metadata`.
+    let reasoning_value = input.get("reasoning").or_else(|| {
+        input
+            .get("metadata")
+            .and_then(|metadata| metadata.get("reasoning"))
+    });
     let reasoning_options = input.get("reasoning_options").or_else(|| {
         input
             .get("raw")
@@ -1232,132 +1350,6 @@ pub(crate) fn model_kind(metadata: &ModelMetadata) -> Option<String> {
     (kind != "model").then_some(kind)
 }
 
-fn media_signature(model: &ModelEntry) -> Option<Value> {
-    let raw = model.metadata.as_ref().map(|m| &m.raw);
-    let get = |name: &str| raw.and_then(|r| r.get(name));
-    let sorted = |values: Vec<String>| {
-        let mut values: Vec<_> = values
-            .into_iter()
-            .map(|v| v.trim().to_lowercase())
-            .filter(|v| !v.is_empty())
-            .collect();
-        values.sort();
-        values.dedup();
-        values
-    };
-    let list = |value: Option<&Value>| {
-        value
-            .and_then(Value::as_array)
-            .map(|v| strings(v))
-            .unwrap_or_default()
-    };
-    let kind = model.metadata.as_ref().and_then(model_kind);
-    let hints = sorted(list(get("typeHints").or_else(|| get("type_hints"))));
-    let actions = sorted(list(
-        get("modalityCapabilities").or_else(|| get("modality_capabilities")),
-    ));
-    let input = sorted(list(get("modalities").and_then(|v| v.get("input"))));
-    let output = sorted(list(get("modalities").and_then(|v| v.get("output"))));
-    let modalities = sorted(model.capabilities.modalities.clone());
-    let is_media = model.capabilities.audio
-        || model.capabilities.vision
-        || kind.as_ref().is_some_and(|kind| kind != "chat")
-        || !actions.is_empty()
-        || hints.iter().any(|kind| kind != "chat")
-        || input
-            .iter()
-            .chain(&output)
-            .chain(&modalities)
-            .any(|v| v != "text");
-    is_media.then(|| {
-        serde_json::json!({
-            "type": kind, "typeHints": hints, "modalityCapabilities": actions,
-            "input": input, "output": output, "modalities": modalities,
-            "audio": model.capabilities.audio, "vision": model.capabilities.vision,
-        })
-    })
-}
-
-fn match_models<'a>(
-    models: &'a [ModelEntry],
-    id: &str,
-) -> Option<(&'a ModelEntry, &'static str, f64)> {
-    if let Some(m) = models.iter().find(|m| m.model_id == id) {
-        return Some((m, "exact", 1.));
-    }
-    let target = variants(id);
-    let normalized: Vec<_> = models
-        .iter()
-        .filter(|m| variants(&m.model_id).iter().any(|v| target.contains(v)))
-        .collect();
-    if normalized.len() == 1 {
-        return Some((normalized[0], "normalized", 0.98));
-    }
-    let nums = numbers(id);
-    let mut scored: Vec<_> = models
-        .iter()
-        .filter(|m| numbers(&m.model_id) == nums)
-        .map(|m| (m, similarity(id, &m.model_id)))
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let best = scored.first()?;
-    if best.1 >= 0.82 && best.1 - scored.get(1).map(|x| x.1).unwrap_or(0.) >= 0.08 {
-        Some((best.0, "fuzzy", best.1))
-    } else {
-        None
-    }
-}
-fn variants(s: &str) -> HashSet<String> {
-    let c = canonical(s);
-    let mut r = HashSet::from([c.clone()]);
-    if let Some((_, tail)) = c.rsplit_once('/') {
-        r.insert(tail.into());
-    }
-    r
-}
-fn canonical(s: &str) -> String {
-    let lower = s.trim().to_lowercase();
-    let mut result = String::new();
-    let mut separator = false;
-    for ch in lower.strip_prefix("models/").unwrap_or(&lower).chars() {
-        if ch == '_' || ch == ':' || ch.is_whitespace() {
-            if !separator {
-                result.push('-');
-            }
-            separator = true;
-        } else {
-            result.push(ch);
-            separator = false;
-        }
-    }
-    result
-}
-fn numbers(s: &str) -> Vec<String> {
-    s.split(|ch: char| !ch.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .map(str::to_owned)
-        .collect()
-}
-fn similarity(a: &str, b: &str) -> f64 {
-    let (a, b) = (canonical(a), canonical(b));
-    let max = a.len().max(b.len());
-    if max == 0 {
-        return 1.;
-    }
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.bytes().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.bytes().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (row[j + 1] + 1)
-                .min(row[j] + 1)
-                .min(prev + usize::from(ca != cb));
-            prev = old;
-        }
-    }
-    1. - row[b.len()] as f64 / max as f64
-}
 fn string(v: Option<&Value>) -> Option<&str> {
     v.and_then(Value::as_str)
         .map(str::trim)
