@@ -891,6 +891,55 @@ fn a_namespaced_id_the_namespace_provider_does_not_name_is_refused() {
     assert_eq!(named, [("openai-codex", "gpt-image-2.5-flare")]);
 }
 
+/// The namespace binds every identification step, not only the token step: a
+/// canonical-id or display-name answer that names another provider is refused
+/// too, and the refusal names those rows. Both spellings of one id reach the
+/// canonical step, so both carry the same answer.
+#[test]
+fn the_namespace_refuses_canonical_and_display_name_answers_too() {
+    let catalog = BundledCatalog::load().unwrap();
+    for (id, refused) in [
+        (
+            "openrouter/daybreak-blue",
+            "openai/gpt-daybreak-blue-latest",
+        ),
+        ("openrouter/deepseek-v4.1-flash", "deepseek/deepseek-flash"),
+        (
+            "openai/GPT Image 2.5 Flare (2026-09-08)",
+            "openai-codex/gpt-image-2.5-flare-2026-09-08",
+        ),
+    ] {
+        let entry = relay(&catalog, id);
+        let identification = entry
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .as_ref()
+            .unwrap();
+        let named: Vec<_> = identification
+            .candidates
+            .iter()
+            .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+            .collect();
+        assert_eq!(
+            (
+                matched(&entry),
+                identification.rule.as_str(),
+                named,
+                entry.capabilities.missing_limits(),
+            ),
+            (
+                ("provider-default", "-"),
+                "ambiguous",
+                vec![refused.to_owned()],
+                vec!["contextWindow".to_owned(), "maxOutputTokens".to_owned()],
+            ),
+            "{id}: the answer is not this namespace's row"
+        );
+    }
+}
+
 /// A merge answers for several sellers at once, so each adopted limit keeps the
 /// row it came from: `openai/gpt-oss-20b` takes its window from aihubmix and its
 /// output cap from qiniu, while `metadataSource` still names the row the entry

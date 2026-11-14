@@ -156,7 +156,8 @@ pub(super) struct Lookup {
     /// Step 3's display name settled several canonical hits.
     pub(super) narrowed: bool,
     /// For a merge, the row each adopted limit came from. Empty for every step
-    /// that named one row, whose own declaration supplies both limits.
+    /// that named one row, whose own declaration supplies both limits. A
+    /// projection keeps only those its entry did not declare itself.
     pub(super) suppliers: Vec<FilledLimit>,
 }
 
@@ -486,29 +487,7 @@ impl BundledCatalog {
             return Outcome::None;
         }
         let rows = self.rows_in(rows);
-        if let Some(refused) = self.refuse_foreign(rows.clone(), namespace, rule) {
-            return refused;
-        }
         self.settle(rows, provider, namespace, rule, query, input)
-    }
-
-    /// The namespace of a qualified id names whose model it is. When it names a
-    /// bundled provider and no row this step found belongs to that provider,
-    /// the id is not the other seller's model and no seller may answer for it
-    /// by its final token alone: the refusal names the rows that would have.
-    fn refuse_foreign(
-        &self,
-        rows: Vec<Row<'_>>,
-        namespace: Option<&str>,
-        rule: Rule,
-    ) -> Option<Outcome> {
-        let namespace = namespace.filter(|namespace| self.provider(namespace).is_some())?;
-        if rows.iter().any(|row| row.provider_id == namespace) {
-            return None;
-        }
-        Some(Outcome::Ambiguous(
-            rows.iter().map(|row| row.candidate(rule)).collect(),
-        ))
     }
 
     /// Step 3: the vendor's upstream canonical id and its display name, read
@@ -596,6 +575,12 @@ impl BundledCatalog {
     /// declares no limit is still a candidate: the fill supplies the pair, and
     /// refusing it here would send an id whose only row declares nothing to the
     /// merge, where nothing else names it.
+    ///
+    /// Every token, canonical-id and display-name answer passes through here,
+    /// so the namespace binding is enforced once for all of them: when the
+    /// input's namespace names a bundled provider and none of the rows this
+    /// step found belongs to it, the id is not the other seller's model and
+    /// the refusal names the rows that would have answered.
     fn settle(
         &self,
         rows: Vec<Row<'_>>,
@@ -607,6 +592,12 @@ impl BundledCatalog {
     ) -> Outcome {
         if rows.is_empty() {
             return Outcome::None;
+        }
+        let known_namespace = namespace.filter(|namespace| self.provider(namespace).is_some());
+        if let Some(namespace) = known_namespace
+            && !rows.iter().any(|row| row.provider_id == namespace)
+        {
+            return Outcome::Ambiguous(rows.iter().map(|row| row.candidate(rule)).collect());
         }
         let groups = collapse(rows);
         let Some(group) = self.choose(&groups, provider, namespace, query) else {
@@ -892,8 +883,8 @@ impl BundledCatalog {
         }
         let suppliers = [("contextWindow", window), ("maxOutputTokens", output)]
             .into_iter()
-            .filter_map(|(field, adopted)| {
-                let (row, value) = adopted?;
+            .filter_map(|(field, minimum)| {
+                let (row, value) = minimum?;
                 Some(FilledLimit {
                     field: field.into(),
                     value,
