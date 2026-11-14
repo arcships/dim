@@ -71,6 +71,22 @@ test('the copied image limits belong to the model version the lock installs', ()
     `IMAGE_LIMITS in helper.cjs copies ${MODEL} ${MODEL_VERSION}'s bundle/normalized-config.json resource limits; both must change together`)
 })
 
+test('the plugin declares its three dependencies and one copy of the runtime', () => {
+  const manifest = JSON.parse(readFileSync(path.join(pluginSource, 'package.json'), 'utf8'))
+  const lock = JSON.parse(readFileSync(path.join(pluginSource, 'package-lock.json'), 'utf8'))
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    '@arcships/light-ocr',
+    '@arcships/light-ocr-runtime',
+    '@arcships/rutis',
+  ], 'LightOcr.md §2: the facade, the runtime whose platformIdentity the helper reads, and rutis')
+  const facade = lock.packages['node_modules/@arcships/light-ocr']
+  const runtime = lock.packages['node_modules/@arcships/light-ocr-runtime']
+  assert.equal(facade.dependencies['@arcships/light-ocr-runtime'], runtime.version,
+    `LightOcr.md §2: the runtime is at the facade's own pin, so the lock holds one copy; the facade pins ${facade.dependencies['@arcships/light-ocr-runtime']} and the lock installs ${runtime.version}`)
+  assert.equal(manifest.dependencies['@arcships/light-ocr-runtime'], runtime.version,
+    `the manifest declares the runtime ${manifest.dependencies['@arcships/light-ocr-runtime']} at the facade's pin and the lock installs ${runtime.version}`)
+})
+
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00])
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
 const PDF = Buffer.from('%PDF-1.7\nfixture document\n%%EOF\n')
