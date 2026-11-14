@@ -889,6 +889,23 @@ impl Gateway {
                 if !self.rpc.supports(method) {
                     return reply.respond_with_error(Error::method_not_found());
                 }
+                if method == "session.delete" && !self.sessions.contains_key(&args.session_id) {
+                    self.spawn(async move {
+                        let id = args.session_id;
+                        let result = rpc
+                            .call(method, json!({"sessionId":id,"requireInactive":true}))
+                            .await
+                            .and_then(|result| {
+                                if result["deleted"] == false {
+                                    Err(Error::resource_not_found(Some(id.clone())))
+                                } else {
+                                    Ok(result)
+                                }
+                            });
+                        Work::Removed { id, reply, result }
+                    });
+                    return Ok(());
+                }
                 let Some(Slot::Ready(session)) = self.sessions.get_mut(&args.session_id) else {
                     return reply
                         .respond_with_error(Error::resource_not_found(Some(args.session_id)));

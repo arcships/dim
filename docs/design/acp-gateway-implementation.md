@@ -129,7 +129,7 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 | `session/prompt` | 可接 | §5；`session.submit {sessionId, branchId:"main", submissionId:<uuid>, user:<mapped>, mode:"queue"}`。回复携带原生已提交 event；等消费该 input 的 turn 终态才回复 ACP。每 Session 同时只接受一个 prompt |
 | `session/cancel` | 可接 | §6；作用于该连接已登记的 Session，有本连接 prompt 时先撤回尚未采用的 input，再按需 `session.stop {sessionId,branchId:"main"}`；没有本连接 prompt 时，仍可请求该 Session main 的当前 turn 停止。不能因本地没有 prompt 就忽略取消 |
 | `session/close` | 条件可接 | 原生 `session.close {sessionId}`；这是显式关闭整个 Dim Session，影响其他客户端和分支。等待原生结算成功后清理本 runtime、回复 `{}`；不是 detach。当前 daemon 对关闭 id 的再 attach 可能拒绝，不能承诺关闭后可立即 resume |
-| `session/delete` | 条件可接 | 原生 `session.delete {sessionId}`，等待原生持久化删除结果，再删除本 runtime。失败保留诊断，不本地隐藏记录冒充删除 |
+| `session/delete` | 条件可接 | 本连接已 attach 的 Session 继续调用原生 `session.delete {sessionId}`，等待原生持久化删除结果，再删除本 runtime。未登记的 id 无须先 load/attach，调用 `session.delete {sessionId,requireInactive:true}`，由 [Session deletion](appserver/session-deletion-and-fork.md#31-method) 的原子检查保护其他连接使用中的 Session；`deleted:false` 映射为 ACP resource not found。失败保留诊断，不本地隐藏记录冒充删除 |
 | `session/set_mode` | 条件可接 | 仅提供 `read-only`、`workspace-write`、`full-access`。先 get policy/version，再 update `{sessionId,branchId:"main",expectedVersion,policy:<保留工具列表，仅替换 preset>}`。冲突返回错误并刷新；不盲重试旧 policy，不映射 plan mode |
 | `session/set_config_option` | 条件可接 | `mode` 复用上一行。`model` 仅在安全 provider catalog 和 `session.model.update` 可用时提供：保留 catalog 中 native model id，使用生成该选项的 providerId 调用 `{sessionId,branchId:"main",providerId,modelId}`。等待原生 `{model,outcome:"adopted"|"unchanged"}` 并接收 `context/configured`，再返回完整 configOptions；`configuration_superseded` 时刷新并报错，不把请求值直接当 currentValue |
 
