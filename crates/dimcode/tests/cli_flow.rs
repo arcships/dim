@@ -8960,7 +8960,11 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
         assert!(hello.get("result").is_some(), "{hello}");
         wire
     }
-    fn post(events: &std::sync::mpsc::Receiver<(String, Value)>, marker: &str) -> Value {
+    fn post(
+        events: &std::sync::mpsc::Receiver<(String, Value)>,
+        marker: &str,
+        effort: Option<&str>,
+    ) -> Value {
         let deadline = Instant::now() + Duration::from_secs(8);
         loop {
             let (key, body) = events
@@ -8971,7 +8975,7 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
                     key.as_str(),
                     "Bearer first-key" | "Bearer second-key"
                 ));
-                assert_eq!(body["reasoning_effort"], "high");
+                assert_eq!(body["reasoning_effort"].as_str(), effort, "{body}");
                 return json!({"key":key,"body":body});
             }
         }
@@ -9134,7 +9138,7 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.write(b"first-provider-message\r");
     terminal.until("provider-first-reply");
     assert_eq!(
-        post(&events, "first-provider-message")["key"],
+        post(&events, "first-provider-message", Some("high"))["key"],
         "Bearer first-key"
     );
     terminal.write(b"/connect\r");
@@ -9168,7 +9172,7 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.write(b"updated-provider-message\r");
     terminal.until("provider-updated-reply");
     assert_eq!(
-        post(&events, "updated-provider-message")["key"],
+        post(&events, "updated-provider-message", Some("high"))["key"],
         "Bearer second-key"
     );
     home.kill(&terminal);
@@ -9189,7 +9193,7 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.write(b"restored-provider-message\r");
     terminal.until("provider-updated-reply");
     assert_eq!(
-        post(&events, "restored-provider-message")["key"],
+        post(&events, "restored-provider-message", Some("high"))["key"],
         "Bearer second-key"
     );
     let mut wire = connect(&home);
@@ -9206,11 +9210,18 @@ fn tui_provider_management_uses_the_production_daemon_and_survives_restart() {
     terminal.write(b"/models\r");
     terminal.until("Provider flow /");
     terminal.write(b"Provider flow\r");
-    terminal.until("Model adoption with saved preferences");
+    terminal.until("Default for new sessions: Provider flow / fixture-model");
+    terminal.write(b"stale-effort-message\r");
+    terminal.until("provider-updated-reply");
+    assert_eq!(
+        post(&events, "stale-effort-message", None)["key"],
+        "Bearer second-key"
+    );
     let retained = rpc(&mut wire, "provider.management", json!({"providerId":id}));
     assert_eq!(
         retained["result"]["providers"][0]["preferences"]["fixture-model"]["reasoningEffort"],
-        "high"
+        "high",
+        "the model no longer advertises `high`, so the adoption dropped it from its own configuration and kept the saved record: {retained}"
     );
     terminal.write(b"/models\r");
     terminal.until("Provider flow /");
