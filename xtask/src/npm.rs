@@ -2,11 +2,11 @@
 //!
 //! A plugin's tree is installed with `npm ci --ignore-scripts`, so the lock is
 //! what ships: it carries this npm's lockfile version, its root entry repeats
-//! the manifest it was resolved for, every exact pin resolves from its holder
-//! to the version the lock records, and every entry has an `integrity` and no
-//! install script.
+//! the manifest it was resolved for as npm normalizes it, every exact pin
+//! resolves from its holder to the version the lock records, and every entry
+//! has an `integrity` and no install script.
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -53,6 +53,27 @@ fn exact(spec: &str) -> Option<&str> {
         }
         _ => None,
     }
+}
+
+/// The manifest as npm's `optionalDedupe` step leaves it: a name that
+/// `optionalDependencies` also declares leaves `dependencies`, because npm
+/// resolves the optional spec (`@npmcli/package-json/lib/normalize.js`;
+/// `@npmcli/arborist/lib/arborist/load-virtual.js` reads a lock root the same
+/// way, deleting every optional name from its `dependencies`).
+fn npm_normalized(manifest: &Value) -> Value {
+    let mut normalized = manifest.clone();
+    let optional: BTreeSet<String> = manifest
+        .get("optionalDependencies")
+        .and_then(Value::as_object)
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+    if let Some(dependencies) = normalized
+        .get_mut("dependencies")
+        .and_then(Value::as_object_mut)
+    {
+        dependencies.retain(|name, _| !optional.contains(name));
+    }
+    normalized
 }
 
 /// One member of a manifest or lock root, absent members as empty.
@@ -118,8 +139,9 @@ fn check_lock(lock_path: &Path, errors: &mut Vec<String>) {
             ));
         }
     }
+    let normalized = npm_normalized(&manifest);
     for member in ROOT_MEMBERS {
-        let (locked, declared) = (members(root, member), members(&manifest, member));
+        let (locked, declared) = (members(root, member), members(&normalized, member));
         let drifted: std::collections::BTreeSet<&String> = locked
             .keys()
             .chain(declared.keys())
@@ -280,6 +302,26 @@ mod tests {
         error
     }
 
+    /// A plugin tree whose manifest declares `manifest` and whose lock root
+    /// repeats `root`, as npm writes it, with `installed` as its
+    /// `node_modules/` entries.
+    fn overlapping(name: &str, manifest: &str, root: &str, installed: &[(&str, &str)]) -> PathBuf {
+        let tree = agreeing(name);
+        std::fs::write(tree.join("runtime/plugins/example/package.json"), manifest).unwrap();
+        rewrite(&tree, |lock| {
+            let packages = lock["packages"].as_object_mut().unwrap();
+            packages.clear();
+            packages.insert(String::new(), serde_json::from_str(root).unwrap());
+            for (package, version) in installed {
+                packages.insert(
+                    format!("node_modules/{package}"),
+                    serde_json::json!({"version": version, "integrity": format!("sha512-{package}")}),
+                );
+            }
+        });
+        tree
+    }
+
     #[test]
     fn an_agreeing_tree_passes() {
         let root = agreeing("clean");
@@ -308,6 +350,68 @@ mod tests {
         );
         assert!(
             error.contains("pins left 2.0.0, the lock installs 1.2.3"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_dependency_npm_takes_out_of_an_optional_overlap_passes() {
+        let root = overlapping(
+            "optional-overlap",
+            r#"{"name":"example","version":"1.0.0","private":true,
+                "dependencies":{"left":"1.2.3"},"optionalDependencies":{"left":"1.2.3"}}"#,
+            r#"{"name":"example","version":"1.0.0","optionalDependencies":{"left":"1.2.3"}}"#,
+            &[("left", "1.2.3")],
+        );
+        check(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_optional_overlap_does_not_hide_a_dependency_the_lock_root_lacks() {
+        let root = overlapping(
+            "optional-overlap-drift",
+            r#"{"name":"example","version":"1.0.0","private":true,
+                "dependencies":{"left":"1.2.3","right":"2.0.0"},
+                "optionalDependencies":{"left":"1.2.3"}}"#,
+            r#"{"name":"example","version":"1.0.0","optionalDependencies":{"left":"1.2.3"}}"#,
+            &[("left", "1.2.3")],
+        );
+        let error = refusal(&root);
+        assert!(
+            error.contains("the root entry's dependencies disagree with the manifest on right"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_dev_overlap_npm_keeps_is_named_when_the_lock_root_drops_it() {
+        let root = overlapping(
+            "dev-overlap",
+            r#"{"name":"example","version":"1.0.0","private":true,
+                "dependencies":{"left":"1.2.3"},"devDependencies":{"left":"1.2.3"}}"#,
+            r#"{"name":"example","version":"1.0.0","devDependencies":{"left":"1.2.3"}}"#,
+            &[("left", "1.2.3")],
+        );
+        let error = refusal(&root);
+        assert!(
+            error.contains("the root entry's dependencies disagree with the manifest on left"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_peer_overlap_npm_keeps_is_named_when_the_lock_root_drops_it() {
+        let root = overlapping(
+            "peer-overlap",
+            r#"{"name":"example","version":"1.0.0","private":true,
+                "dependencies":{"left":"1.2.3"},"peerDependencies":{"left":"1.2.3"}}"#,
+            r#"{"name":"example","version":"1.0.0","peerDependencies":{"left":"1.2.3"}}"#,
+            &[("left", "1.2.3")],
+        );
+        let error = refusal(&root);
+        assert!(
+            error.contains("the root entry's dependencies disagree with the manifest on left"),
             "{error}"
         );
     }
