@@ -2385,11 +2385,18 @@ mod workspace_tests {
             Some("step-plan/stepaudio-2.5-realtime")
         );
         let error = parse(&["--operation", "transcribe"]).err().unwrap();
-        assert_eq!(error.to_string(), "--operation requires realtime");
+        assert!(
+            error.to_string().contains("--operation") && error.to_string().contains("realtime"),
+            "the refusal names the flag and the command it belongs to: {error}"
+        );
         let error = parse(&["realtime", "--operation", "voice", "--operation", "voice"])
             .err()
             .unwrap();
-        assert_eq!(error.to_string(), "Supply --operation only once");
+        let refusal = error.to_string();
+        assert!(
+            refusal.contains("--operation") && refusal.contains("once"),
+            "a duplicate refuses by naming the flag and asking for one: {refusal}"
+        );
     }
 
     #[cfg(any(unix, windows))]

@@ -8975,6 +8975,7 @@ mod tests {
         i18n::set(i18n::Locale::En);
     }
 
+    /// An empty composer shows the locale's placeholder; typing replaces it.
     #[test]
     fn short_composers_keep_the_caret_and_the_complete_draft() {
         for fullscreen in [false, true] {
@@ -8982,11 +8983,7 @@ mod tests {
             drawn.app.fullscreen = fullscreen;
             let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             drawn.app.host = Box::new(Recorder(sent.clone()));
-            for (locale, hint) in [
-                (i18n::Locale::En, "Ask anything... · Ctrl+J newline"),
-                (i18n::Locale::ZhCn, "输入你的问题… · Ctrl+J 换行"),
-            ] {
-                i18n::set(locale);
+            let caret_row = |drawn: &mut Drawn| -> String {
                 let frame = drawn.app.frame(drawn.size);
                 let bytes = if fullscreen {
                     FullScreen::new(drawn.size, true).render(
@@ -9000,11 +8997,35 @@ mod tests {
                 };
                 let mut emu = crate::ui::render::testterm::Emu::new(80, 24);
                 emu.feed(&bytes);
+                emu.row(emu.cy).replace('\0', "")
+            };
+            for locale in [i18n::Locale::En, i18n::Locale::ZhCn] {
+                i18n::set(locale);
+                let caret = caret_row(&mut drawn);
+                let inside = caret
+                    .split('│')
+                    .nth(1)
+                    .map(str::trim)
+                    .map(|text| text.trim_start_matches('›').trim().to_owned())
+                    .unwrap_or_default();
+                let placeholder = inside
+                    .strip_prefix(drawn.app.composer.text())
+                    .unwrap_or(&inside)
+                    .trim()
+                    .to_owned();
                 assert!(
-                    emu.row(emu.cy).replace('\0', "").contains(hint),
-                    "fullscreen={fullscreen}: {:?}",
-                    emu.rows_text()
+                    !placeholder.is_empty(),
+                    "{locale:?} fullscreen={fullscreen}: the composer's row holds no \
+                     placeholder: {caret:?}"
                 );
+                typed(&mut drawn.app, "ask");
+                let caret = caret_row(&mut drawn);
+                assert!(
+                    caret.contains("ask") && !caret.contains(&placeholder),
+                    "{locale:?} fullscreen={fullscreen}: typing replaces the placeholder: \
+                     {caret:?}"
+                );
+                drawn.app.composer.clear();
             }
             i18n::set(i18n::Locale::En);
             typed(&mut drawn.app, "first line");
@@ -9024,8 +9045,8 @@ mod tests {
                     .frame(drawn.size)
                     .live
                     .join("\n")
-                    .contains("Ctrl+J"),
-                "typing replaces the placeholder"
+                    .contains(t(COMPOSER_PLACEHOLDER)),
+                "the draft replaces the placeholder"
             );
             let draft = (0..12)
                 .map(|n| format!("line {n:02}"))
@@ -9088,21 +9109,23 @@ mod tests {
         );
     }
 
+    /// The branch label follows the workspace the interface shows.
     #[test]
     fn composer_tracks_git_switches_in_repositories_and_worktrees() {
         let root = tempfile::tempdir().unwrap();
         let theme = test_theme();
+        let launch = root.path().to_string_lossy().into_owned();
         for fullscreen in [false, true] {
             let mut app = App::new(
                 Box::new(Idle),
                 MarkdownRenderer::new(&theme),
                 theme.palette.clone(),
                 root.path().join("home"),
-                root.path().to_string_lossy().into_owned(),
+                launch.clone(),
             );
             app.fullscreen = fullscreen;
             let frame = app.frame((160, 30));
-            let cwd = crate::ui::tilde(&root.path().to_string_lossy());
+            let cwd = crate::ui::tilde(&launch);
             let row = frame
                 .live
                 .iter()
@@ -9166,62 +9189,61 @@ mod tests {
                     MarkdownRenderer::new(&theme),
                     theme.palette.clone(),
                     root.path().join("home"),
-                    cwd.to_string_lossy().into_owned(),
+                    launch.clone(),
                 );
                 app.fullscreen = fullscreen;
+                app.apply(Update::Switched {
+                    session_id: "s1".into(),
+                    kind: SwitchKind::Resumed,
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                });
                 assert!(
                     app.frame((160, 30))
                         .live
                         .iter()
-                        .any(|row| row.contains(&format!("({expected})")))
+                        .any(|row| row.contains(&format!("({expected})"))),
+                    "{cwd:?} must name {expected}"
                 );
                 apps.push(app);
             }
         }
-        git(&repo, &["switch", "-q", "-c", "feature/updated"]);
-        git(&linked, &["switch", "-q", "-c", "feature/linked-updated"]);
-        for (expected, linked_expected) in [
-            ("feature/updated", "feature/linked-updated"),
-            ("HEAD", "HEAD"),
-            ("feature/updated", "feature/linked-updated"),
-        ] {
-            if expected == "HEAD" {
-                git(&repo, &["switch", "-q", "--detach"]);
-                git(&linked, &["switch", "-q", "--detach"]);
+        let check = |app: &mut App, expected: &str| {
+            app.git_checked = Instant::now();
+            assert!(!app.tick(), "a Git switch must wait for the next check");
+            app.git_checked -= GIT_BRANCH_POLL;
+            assert!(app.tick(), "a Git switch must request a repaint");
+            let frame = app.frame((160, 30));
+            let mut emu = crate::ui::render::testterm::Emu::new(160, 30);
+            let bytes = if app.fullscreen {
+                FullScreen::new((160, 30), true).render(&frame, (160, 30), &app.palette, app)
             } else {
-                git(&repo, &["switch", "-q", expected]);
-                git(&linked, &["switch", "-q", linked_expected]);
-            }
-            for (index, app) in apps.iter_mut().enumerate() {
-                app.git_checked = Instant::now();
-                assert!(!app.tick(), "a Git switch must wait for the next check");
-                app.git_checked -= GIT_BRANCH_POLL;
-                assert!(app.tick(), "a Git switch must request a repaint");
-                let expected = if index < 2 { expected } else { linked_expected };
-                let frame = app.frame((160, 30));
-                let mut emu = crate::ui::render::testterm::Emu::new(160, 30);
-                let bytes = if app.fullscreen {
-                    FullScreen::new((160, 30), true).render(&frame, (160, 30), &app.palette, app)
-                } else {
-                    Screen::new((160, 30), true).render(&frame, (160, 30))
-                };
-                emu.feed(&bytes);
-                assert!(
-                    emu.rows_text()
-                        .iter()
-                        .any(|row| row.contains(&format!("({expected})"))),
-                    "composer must show {expected}"
-                );
-            }
+                Screen::new((160, 30), true).render(&frame, (160, 30))
+            };
+            emu.feed(&bytes);
+            assert!(
+                emu.rows_text()
+                    .iter()
+                    .any(|row| row.contains(&format!("({expected})"))),
+                "the composer must show the shown workspace's {expected}: {:?}",
+                emu.rows_text()
+            );
+        };
+        git(&repo, &["switch", "-q", "-c", "feature/updated"]);
+        for app in apps.iter_mut().take(2) {
+            check(app, "feature/updated");
+        }
+        git(&linked, &["switch", "-q", "-c", "linked-updated"]);
+        for app in apps.iter_mut().skip(2) {
+            check(app, "linked-updated");
+        }
+        git(&repo, &["switch", "-q", "--detach"]);
+        for app in apps.iter_mut().take(2) {
+            check(app, "HEAD");
         }
         for (index, app) in apps.iter_mut().enumerate() {
+            let last = if index < 2 { "HEAD" } else { "linked-updated" };
             app.git_checked -= GIT_BRANCH_POLL;
             assert!(!app.tick(), "an unchanged HEAD must not request a repaint");
-            let expected = if index < 2 {
-                "feature/updated"
-            } else {
-                "feature/linked-updated"
-            };
             let head = app.git_head.clone().unwrap();
             let saved = std::fs::read(&head).unwrap();
             std::fs::remove_file(&head).unwrap();
@@ -9235,8 +9257,8 @@ mod tests {
                     app.frame((160, 30))
                         .live
                         .iter()
-                        .any(|row| row.contains(&format!("({expected})"))),
-                    "a missing or empty HEAD must preserve the last branch label"
+                        .any(|row| row.contains(&format!("({last})"))),
+                    "a missing or empty HEAD must preserve the last branch label {last}"
                 );
             }
             std::fs::write(&head, saved).unwrap();
@@ -10418,6 +10440,8 @@ mod tests {
     /// erases the row, so the composer never keeps a row nothing draws into.
     #[test]
     fn the_pulse_asks_for_the_frame_that_erases_an_ended_task_row() {
+        use crate::ui::render::panel::strip_escapes;
+
         let theme = test_theme();
         let home = tempfile::tempdir().unwrap();
         let mut app = App::new(
@@ -10438,25 +10462,42 @@ mod tests {
                 ..ViewSnapshot::default()
             }))
         };
+        let drawn = |app: &mut App| -> String {
+            app.frame((80, 30))
+                .live
+                .iter()
+                .map(|row| strip_escapes(row))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         let fading = ended_at(background_task("t1", "cargo build"), (now - 1) * 1000);
         app.apply(snapshot(vec![fading]));
-        assert!(app.task_line_shown(), "an ended task stays while it fades");
         assert!(app.tick(), "the pulse repaints the fading row");
-        assert!(app.task_row, "the frame it asked for drew the row");
+        let rows = drawn(&mut app);
+        assert!(
+            rows.contains("cargo build"),
+            "the fading row is drawn: {rows}"
+        );
 
-        // The end is older than the fade: nothing draws the row, and the
-        // pulse still asks for the frame that erases what it last drew. The
-        // pulse runs once a second, so the recorded second is moved back the
-        // way the clock would.
         let gone = ended_at(
             background_task("t2", "cargo test"),
             (now - TASK_FADE) * 1000,
         );
         app.apply(snapshot(vec![gone]));
-        assert!(!app.task_line_shown(), "an ended task leaves");
-        app.task_second -= 1;
-        assert!(app.tick(), "the pulse asks for the erasing frame");
-        assert!(!app.task_row, "and then stops asking");
+        let started = Instant::now();
+        while !app.tick() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the pulse never asked for the erasing frame"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let rows = drawn(&mut app);
+        assert!(
+            !rows.contains("cargo "),
+            "the erasing frame draws no task row: {rows}"
+        );
+        assert!(!app.tick(), "and then it stops asking");
     }
 
     /// A task whose end a read of recorded history applied, as the attach
@@ -14476,6 +14517,7 @@ mod tests {
         i18n::set(i18n::Locale::En);
     }
 
+    /// `/timeline`'s jump reaches earlier history in scrollback and in fullscreen.
     #[test]
     fn a_timeline_jump_in_scrollback_draws_earlier_history_from_the_message() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -14504,6 +14546,26 @@ mod tests {
         assert_eq!(
             drawn.app.notice.as_ref().map(|(text, _)| text.as_str()),
             Some(t("Already on screen above; /tui jumps to it"))
+        );
+
+        let mut full = Drawn::new((80, 40), None, true);
+        full.app.fullscreen = true;
+        resume_asks(&mut full, 120);
+        full.app.run_command("timeline", "");
+        full.key(KeyCode::Home);
+        full.key(KeyCode::Down);
+        full.key(KeyCode::Enter);
+        full.key(KeyCode::Enter);
+        let picked = full
+            .app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::User { text, .. } if text == "ask 1"))
+            .expect("the message is drawn");
+        assert_eq!(
+            full.app.jump,
+            Some(Jump::Block(full.app.dropped + picked)),
+            "fullscreen picks the drawn message rather than scrolling to it"
         );
     }
 
@@ -14544,28 +14606,6 @@ mod tests {
                 .history
                 .iter()
                 .any(|block| matches!(block, Block::User { text, .. } if text == "ask 0"))
-        );
-    }
-
-    #[test]
-    fn a_fullscreen_timeline_jump_picks_the_message_drawing_it_first() {
-        let mut drawn = Drawn::new((80, 40), None, true);
-        drawn.app.fullscreen = true;
-        resume_asks(&mut drawn, 120);
-        drawn.app.run_command("timeline", "");
-        drawn.key(KeyCode::Home);
-        drawn.key(KeyCode::Down);
-        drawn.key(KeyCode::Enter);
-        drawn.key(KeyCode::Enter);
-        let picked = drawn
-            .app
-            .history
-            .iter()
-            .position(|block| matches!(block, Block::User { text, .. } if text == "ask 1"))
-            .expect("the message is drawn");
-        assert_eq!(
-            drawn.app.jump,
-            Some(Jump::Block(drawn.app.dropped + picked))
         );
     }
 
@@ -17528,6 +17568,35 @@ mod tests {
         })));
     }
 
+    fn drawn_messages(app: &App) -> Vec<(String, String)> {
+        let snapshot = app.snapshot.as_ref().expect("a drawn window");
+        snapshot
+            .rows
+            .iter()
+            .filter(|row| row.kind.is_message())
+            .skip(app.hidden_messages())
+            .map(|row| (row.row_id.clone(), row.text.clone()))
+            .collect()
+    }
+
+    fn drawn_top(app: &App) -> String {
+        drawn_messages(app)
+            .into_iter()
+            .next()
+            .expect("a drawn page")
+            .1
+    }
+
+    fn row_index(app: &App, id: &str) -> usize {
+        app.snapshot
+            .as_ref()
+            .expect("a drawn window")
+            .rows
+            .iter()
+            .position(|row| row.row_id == id)
+            .unwrap_or_else(|| panic!("{id} is not in the snapshot"))
+    }
+
     #[test]
     fn follow_floors_keeps_each_floor_on_its_row_through_prepend_append_and_trim() {
         let mut drawn = Drawn::new((80, 40), None, true);
@@ -17535,153 +17604,113 @@ mod tests {
         drawn
             .app
             .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
-        // Two windows of rows; the next frame arms the floor on the first
-        // message of the newest window, hiding one window's worth above it.
         show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
         drawn.draw();
-        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
-        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
-        // A prepend of one window of older rows keeps the anchored row where
-        // it was relative to the rows that follow it.
+        assert_eq!(
+            drawn_top(&drawn.app),
+            "ask 100",
+            "the window opens on the newest page"
+        );
+        assert_eq!(drawn.app.hidden_messages(), HISTORY_WINDOW);
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(2 * HISTORY_WINDOW));
         show_window(&mut drawn, rows);
-        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
-        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW);
-        // An append moves no floor.
+        assert_eq!(drawn_top(&drawn.app), "ask 100", "a prepend moves no row");
+        assert_eq!(drawn.app.hidden_messages(), 2 * HISTORY_WINDOW);
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
-        show_window(&mut drawn, rows);
-        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW);
-        // A front trim removes rows above the anchored one only: it keeps its
-        // identity and moves down by the number removed.
-        let mut rows = older_rows(HISTORY_WINDOW);
-        rows.extend(window_rows(2 * HISTORY_WINDOW + 1));
+        show_window(&mut drawn, rows.clone());
+        assert_eq!(drawn_top(&drawn.app), "ask 100", "an append moves no row");
         let trimmed = HISTORY_WINDOW / 2;
         show_window(&mut drawn, rows[trimmed..].to_vec());
-        assert_eq!(drawn.app.window_floor, 2 * HISTORY_WINDOW - trimmed);
-        assert_eq!(drawn.app.history_floor, 2 * HISTORY_WINDOW - trimmed);
-        // A floor of 0 names the first row: a prepend of N rows moves it to N.
-        show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
-        drawn.app.window_floor = 0;
-        drawn.app.history_floor = 0;
+        assert_eq!(drawn_top(&drawn.app), "ask 100", "a trim moves no row");
+        assert_eq!(
+            row_index(&drawn.app, "u100"),
+            2 * HISTORY_WINDOW - trimmed,
+            "the top message moved down by the number of rows trimmed"
+        );
+        show_window(&mut drawn, window_rows(HISTORY_WINDOW));
+        assert_eq!(drawn.app.hidden_messages(), 0);
+        assert_eq!(drawn_top(&drawn.app), "ask 0", "the first row is drawn");
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        show_window(&mut drawn, rows);
+        assert_eq!(
+            drawn_top(&drawn.app),
+            "ask 0",
+            "the first row follows a prepend"
+        );
+        assert_eq!(drawn.app.hidden_messages(), HISTORY_WINDOW);
+        let mut gone = Drawn::new((80, 40), None, true);
+        gone.app
+            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(2 * HISTORY_WINDOW));
-        show_window(&mut drawn, rows);
-        assert_eq!(drawn.app.window_floor, HISTORY_WINDOW);
-        assert_eq!(drawn.app.history_floor, HISTORY_WINDOW);
+        let survived = rows[2 * HISTORY_WINDOW + 3].text.clone();
+        show_window(&mut gone, rows.clone());
+        gone.draw();
+        assert_eq!(drawn_top(&gone.app), "ask 100");
+        show_window(&mut gone, rows[2 * HISTORY_WINDOW + 3..].to_vec());
+        assert_eq!(
+            drawn_top(&gone.app),
+            survived,
+            "the first surviving row after the gone one takes over"
+        );
+        assert_eq!(gone.app.hidden_messages(), 0);
     }
 
     #[test]
     fn follow_floors_leaves_an_unarmed_window_alone() {
-        let mut drawn = Drawn::new((80, 40), None, true);
-        drawn.app.fullscreen = true;
-        drawn
-            .app
-            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+        let page = |rows: Vec<std::sync::Arc<ViewRow>>| {
+            let mut drawn = Drawn::new((80, 40), None, true);
+            drawn.app.fullscreen = true;
+            drawn
+                .app
+                .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
+            show_window(&mut drawn, window_rows(2 * HISTORY_WINDOW));
+            show_window(&mut drawn, rows);
+            drawn.draw();
+            drawn_messages(&drawn.app)
+        };
+        let straight = page(window_rows(2 * HISTORY_WINDOW));
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(2 * HISTORY_WINDOW));
-        show_window(&mut drawn, rows);
-        assert!(drawn.app.awaiting_window, "no frame has armed the window");
-        assert_eq!(drawn.app.window_floor, 0, "an unarmed floor stays put");
-        assert_eq!(drawn.app.history_floor, 0);
-    }
-
-    #[test]
-    fn follow_floors_lands_on_the_first_surviving_row_when_the_floor_row_is_gone() {
-        let mut drawn = Drawn::new((80, 40), None, true);
-        drawn.app.fullscreen = true;
-        drawn
-            .app
-            .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
-        let mut rows = older_rows(HISTORY_WINDOW);
-        rows.extend(window_rows(2 * HISTORY_WINDOW));
-        show_window(&mut drawn, rows);
-        drawn.draw();
-        let floor = drawn.app.window_floor;
         assert_eq!(
-            floor,
-            2 * HISTORY_WINDOW,
-            "three windows of messages hide two of them"
-        );
-        // A trim removes the floor row and the rows after it, up to old3.
-        let mut rows = older_rows(HISTORY_WINDOW);
-        rows.extend(window_rows(2 * HISTORY_WINDOW));
-        // rows[floor + 3] is the first row that survives the trim.
-        show_window(&mut drawn, rows[floor + 3..].to_vec());
-        assert_eq!(
-            drawn.app.window_floor, 0,
-            "the first surviving row after the gone one takes over"
-        );
-        assert_eq!(
-            drawn.app.snapshot.as_ref().unwrap().rows[0].row_id,
-            rows[floor + 3].row_id
+            page(rows),
+            straight,
+            "a prepend before the first frame draws the same page"
         );
     }
 
+    /// `/earlier` at the drawn top asks for the page and draws it when it lands.
     #[test]
     fn show_earlier_requests_unread_history_and_does_nothing_at_the_start() {
-        let theme = test_theme();
+        let mut drawn = Drawn::new((80, 40), None, true);
+        drawn.app.fullscreen = true;
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut app = App::new(
-            Box::new(Recorder(sent.clone())),
-            MarkdownRenderer::new(&theme),
-            theme.palette.clone(),
-            std::path::PathBuf::from("/tmp"),
-            "/work".into(),
-        );
-        app.fullscreen = true;
-        app.snapshot = Some(ViewSnapshot {
+        drawn.app.host = Box::new(Recorder(sent.clone()));
+        drawn.app.snapshot = Some(ViewSnapshot {
             session_id: "s1".into(),
-            rows: window_rows(2 * HISTORY_WINDOW),
+            rows: window_rows(HISTORY_WINDOW),
             focus: "main".into(),
             history_complete: true,
             earlier: Earlier::Unread,
             ..ViewSnapshot::default()
         });
-        // Every loaded row is drawn, so the request is the only way forward.
-        app.window_floor = 0;
-        app.show_earlier();
+        drawn.draw();
+        assert_eq!(drawn.app.hidden_messages(), 0);
+        let before = drawn.transcript();
+        drawn.app.show_earlier();
         assert_eq!(sent.borrow().len(), 1, "an unread prefix is requested");
         assert!(matches!(sent.borrow()[0], Command::Earlier));
-        assert!(app.reveal_pending, "the arriving page is to be revealed");
-        // A live-read snapshot keeps the request; it is still in flight.
-        app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
-        app.apply_earlier(None);
-        assert!(
-            app.reveal_pending,
-            "a live snapshot must not drop the reveal"
-        );
-        // `Reading` asks for nothing new.
-        sent.borrow_mut().clear();
-        app.show_earlier();
-        assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
-        assert!(app.reveal_pending);
-        // At the start there is nothing to show and nothing is sent.
-        app.reveal_pending = false;
-        sent.borrow_mut().clear();
-        app.snapshot.as_mut().unwrap().earlier = Earlier::AtStart;
-        let floor = app.window_floor;
-        app.show_earlier();
-        assert!(sent.borrow().is_empty(), "AtStart sends nothing");
-        assert!(!app.reveal_pending, "AtStart reveals nothing");
-        assert_eq!(app.window_floor, floor, "AtStart does not move the floor");
-    }
-
-    #[test]
-    fn a_pending_reveal_survives_a_live_snapshot_and_shows_the_page_that_lands() {
-        let (mut app, sent) = fullscreen_app();
-        app.snapshot.as_mut().unwrap().earlier = Earlier::Unread;
-        app.show_earlier();
-        assert!(matches!(sent.borrow().as_slice(), [Command::Earlier]));
-        assert!(app.reveal_pending);
-        // A live turn appends one row while the read is in flight.
+        drawn.draw();
+        assert_eq!(drawn.transcript(), before, "the request draws nothing");
         let mut rows = window_rows(HISTORY_WINDOW);
         let mut live = (*window_rows(1)[0]).clone();
         live.row_id = "live".into();
         live.text = "streamed".into();
         rows.push(std::sync::Arc::new(live));
-        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
             session_id: "s1".into(),
             rows,
             focus: "main".into(),
@@ -17689,15 +17718,19 @@ mod tests {
             earlier: Earlier::Reading,
             ..ViewSnapshot::default()
         })));
-        assert!(app.reveal_pending, "a live snapshot keeps the reveal");
-        assert_eq!(app.window_floor, 0, "a floor of 0 follows its row");
-        // The page lands above the drawn rows.
+        drawn.draw();
+        assert!(
+            !drawn.transcript().contains("older "),
+            "a live snapshot draws no page: {}",
+            drawn.transcript()
+        );
         let mut rows = older_rows(HISTORY_WINDOW);
         rows.extend(window_rows(HISTORY_WINDOW));
         let mut live = (*window_rows(1)[0]).clone();
         live.row_id = "live".into();
+        live.text = "streamed".into();
         rows.push(std::sync::Arc::new(live));
-        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+        drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
             session_id: "s1".into(),
             rows,
             focus: "main".into(),
@@ -17705,15 +17738,74 @@ mod tests {
             earlier: Earlier::Unread,
             ..ViewSnapshot::default()
         })));
-        assert!(!app.reveal_pending, "the landed page was revealed");
+        drawn.draw();
+        let text = drawn.transcript();
+        assert!(text.contains("older 0"), "the landed page is drawn: {text}");
         assert_eq!(
-            app.window_floor, 0,
+            drawn.app.hidden_messages(),
+            0,
             "the page is drawn, nothing left hidden"
         );
+        assert_eq!(drawn_top(&drawn.app), "older 0");
+        sent.borrow_mut().clear();
+        drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
+        drawn.app.show_earlier();
+        assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
+
+        // At the start nothing earlier exists and no read is in flight: a
+        // window opened on a short Session whose page it has not drawn yet.
+        // The call's frame is the window's first, so a floor it moved still
+        // changes the page; the twin draws without the call.
+        let at_start = || {
+            let mut drawn = Drawn::new((80, 40), None, true);
+            drawn.app.fullscreen = true;
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            drawn.app.snapshot = Some(ViewSnapshot {
+                session_id: "s1".into(),
+                rows: window_rows(HISTORY_WINDOW),
+                focus: "main".into(),
+                history_complete: true,
+                earlier: Earlier::AtStart,
+                ..ViewSnapshot::default()
+            });
+            (drawn, sent)
+        };
+        let (mut untouched, _) = at_start();
+        untouched.draw();
+        let page = untouched.transcript();
+        assert!(page.contains("ask 0"), "the window draws its page: {page}");
+        let (mut no_op, sent) = at_start();
+        no_op.app.show_earlier();
+        assert!(sent.borrow().is_empty(), "AtStart sends nothing");
+        no_op.draw();
+        assert_eq!(no_op.transcript(), page, "AtStart draws nothing");
+
+        // A page that lands afterwards draws what it draws without the call:
+        // the no-op armed no reveal.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        let later = |drawn: &mut Drawn| {
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                rows: rows.clone(),
+                focus: "main".into(),
+                history_complete: true,
+                earlier: Earlier::AtStart,
+                ..ViewSnapshot::default()
+            })));
+            drawn.draw();
+            drawn.transcript()
+        };
+        let text = later(&mut no_op);
+        assert!(
+            !text.contains("older ") && text.contains("ask 0"),
+            "the no-op armed no reveal: {text}"
+        );
         assert_eq!(
-            app.landing.as_ref().map(|(id, _)| id.as_str()),
-            Some("u0"),
-            "the oldest drawn message stays at the top of the view"
+            text,
+            later(&mut untouched),
+            "a page landing after the no-op draws what it draws without it"
         );
     }
 
@@ -17734,18 +17826,24 @@ mod tests {
             earlier: Earlier::Unread,
             ..ViewSnapshot::default()
         })));
-        assert!(!app.reveal_pending);
+        app.frame((80, 40));
         assert_eq!(app.hidden_messages(), 10, "one window of the page is drawn");
-        assert_eq!(
-            app.landing.as_ref().map(|(id, _)| id.as_str()),
-            Some("u0"),
-            "the oldest drawn message stays at the top of the view"
+        let at = app
+            .history
+            .iter()
+            .position(|block| matches!(block, Block::LoadMore(_)))
+            .expect("the load-more row");
+        assert!(
+            matches!(app.history[at], Block::LoadMore(10)),
+            "the load-more row names the ten the window does not draw"
         );
-        // The next action draws the rest without reading again.
+        assert!(
+            matches!(&app.history[at + 1], Block::User { text, .. } if text == "older 10"),
+            "the page is drawn from the first row the window does not hide"
+        );
         app.show_earlier();
         assert_eq!(sent.borrow().len(), 1, "no second read is requested");
         assert_eq!(app.hidden_messages(), 0, "the rest of the page is drawn");
-        assert_eq!(app.window_floor, 0);
     }
 
     #[test]

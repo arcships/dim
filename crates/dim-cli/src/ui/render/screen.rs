@@ -924,26 +924,6 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_taller_than_the_screen_scrolls_through_without_overflow() {
-        let (mut screen, mut emu) = setup(true);
-        screen.set_origin(0);
-        let live = ["composer", "status"];
-        drive(&mut screen, &mut emu, &frame(&[], &live, None));
-        let tall: Vec<String> = (1..=40).map(|n| format!("thought {n}")).collect();
-        let commit = tall.join("\n");
-        drive(&mut screen, &mut emu, &frame(&[&commit], &live, None));
-        let transcript = emu.transcript();
-        let written: Vec<&String> = transcript
-            .iter()
-            .filter(|l| l.starts_with("thought"))
-            .collect();
-        assert_eq!(written.len(), 40, "{transcript:?}");
-        assert_eq!(written.last().map(|s| s.as_str()), Some("thought 40"));
-        let rows = emu.rows_text();
-        assert_eq!(&rows[10..], ["composer", "status"], "live region intact");
-    }
-
-    #[test]
     fn newline_terminated_commits_do_not_double_the_gap() {
         let (mut screen, mut emu) = setup(true);
         let live = ["composer", "status"];
@@ -1439,6 +1419,7 @@ mod tests {
         assert!(joined.contains(&wide), "{rows:?}");
     }
 
+    /// Every row of a commit taller than the screen appears, live region intact.
     #[test]
     fn long_commit_wraps_softly_and_appears_once() {
         let (mut screen, mut emu) = setup(true);
@@ -1452,7 +1433,25 @@ mod tests {
             .filter(|l| l.starts_with('x'))
             .cloned()
             .collect();
-        assert_eq!(joined.len(), 95);
+        assert_eq!(joined.len(), 95, "the row appears once, wrapped softly");
+
+        let (mut screen, mut emu) = setup(true);
+        screen.set_origin(0);
+        let live = ["composer", "status"];
+        drive(&mut screen, &mut emu, &frame(&[], &live, None));
+        let tall: Vec<String> = (1..=40).map(|n| format!("thought {n}")).collect();
+        let commit = tall.join("\n");
+        drive(&mut screen, &mut emu, &frame(&[&commit], &live, None));
+        let transcript = emu.transcript();
+        let written: Vec<&String> = transcript
+            .iter()
+            .filter(|l| l.starts_with("thought"))
+            .collect();
+        assert_eq!(written.len(), 40, "each row appears once");
+        assert_eq!(written.first().map(|s| s.as_str()), Some("thought 1"));
+        assert_eq!(written.last().map(|s| s.as_str()), Some("thought 40"));
+        let rows = emu.rows_text();
+        assert_eq!(&rows[10..], ["composer", "status"], "live region intact");
     }
 
     #[test]
