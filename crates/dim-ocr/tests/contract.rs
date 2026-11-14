@@ -1,15 +1,21 @@
 //! The helper contract without an engine: argument parsing, artifact names,
 //! the result document and the typed failure line.
-#[cfg(target_os = "macos")]
-use dim_ocr::MAX_INPUT_BYTES;
 use dim_ocr::{
-    Document, DocumentText, HelperArguments, HelperErrorCode, OutputMode, Page, PageText, Region,
-    helper_main, read_pages,
+    Document, DocumentText, HelperArguments, HelperErrorCode, MAX_ARTIFACT_BYTES, MAX_INPUT_BYTES,
+    MAX_PAGE_PIXELS, MAX_PDF_PAGES, OutputMode, Page, PageText, Region, helper_main, read_pages,
 };
 use std::ffi::OsString;
 
 fn args(values: &[&str]) -> Vec<OsString> {
     values.iter().map(OsString::from).collect()
+}
+
+#[test]
+fn the_limits_are_named_constants_with_the_agreed_values() {
+    assert_eq!(MAX_PDF_PAGES, 500);
+    assert_eq!(MAX_PAGE_PIXELS, 25_000_000);
+    assert_eq!(MAX_ARTIFACT_BYTES, 1024 * 1024 * 1024);
+    assert_eq!(MAX_INPUT_BYTES, 100 * 1024 * 1024);
 }
 
 #[test]

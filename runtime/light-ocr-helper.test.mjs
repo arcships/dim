@@ -198,7 +198,13 @@ test('an image becomes one page, in text and layout mode', t => {
     assert.deepEqual(succeeded(result), { ok: true, pageCount: 1 })
     assert.deepEqual(result.calls.map(call => call.call),
       ['createEngine', 'recognizeEncoded', 'createEngine.close'], mode)
-    assert.equal(result.calls[0].options.reducedLimits.maxPixels, PAGE_PIXEL_BOUND, mode)
+    const engine = result.calls[0].options
+    assert.deepEqual(engine.execution, { provider: 'cpu' }, mode)
+    assert.deepEqual(Object.keys(engine.reducedLimits).sort(), [
+      'maxDetectionCandidates', 'maxDetectionSide', 'maxHeight', 'maxPixels',
+      'maxRecognitionBatchSize', 'maxRecognitionWidth', 'maxTemporaryBytes', 'maxWidth',
+    ], mode)
+    assert.equal(engine.reducedLimits.maxPixels, PAGE_PIXEL_BOUND, mode)
     assert.deepEqual(result.calls[1],
       { call: 'recognizeEncoded', length: PNG.length, options: { applyExif: true } }, mode)
     assert.deepEqual(artifactsOf(context), ['result.json', 'text.txt'])
@@ -215,7 +221,7 @@ test('an image at the page pixel bound is accepted and one pixel past it is refu
   const context = makeContext(t)
   const input = writeFile(context.root, 'photo.png', PNG)
   const refusedResult = run(context, ['--input', input, '--artifacts', context.artifacts], {
-    recognizeEncoded: { imageWidth: 6000, imageHeight: 5000 },
+    recognizeEncoded: { imageWidth: PAGE_PIXEL_BOUND + 1, imageHeight: 1 },
   })
   const error = refused(refusedResult, 'resource_limit_exceeded')
   assert.ok(error.message.includes('Decoded image dimensions exceed engine limits'), error.message)
@@ -295,7 +301,10 @@ test('a PDF in layout mode renders every page through its platform package', t =
 test('each platform package the lock installs loads for its own identity', t => {
   const context = makeContext(t, { platform: true })
   const input = writeFile(context.root, 'document.pdf', PDF)
-  assert.ok(platformPackages.length > 0, 'the lock installs no platform package')
+  assert.deepEqual(platformPackages.map(({ identity }) => identity).sort(), [
+    'linux-arm64', 'linux-arm64-musl', 'linux-x64', 'linux-x64-musl',
+    'macos-arm64', 'macos-x64', 'windows-arm64', 'windows-x64',
+  ], 'the lock no longer installs a package for every platform the helper names')
   for (const { identity, name } of platformPackages) {
     const result = run(context, layoutArguments(context, input), {
       platform: { id: identity },

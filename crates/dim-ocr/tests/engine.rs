@@ -176,6 +176,7 @@ fn an_unsupported_input_is_a_typed_failure() {
 }
 
 #[test]
+#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
 fn a_layout_run_stops_at_the_page_image_that_would_cross_the_bound() {
     // The size of the first page image decides the bound the second run uses:
     // page one fits exactly, page two would cross it.
