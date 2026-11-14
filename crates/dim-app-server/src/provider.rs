@@ -535,8 +535,9 @@ impl ProviderRecord {
     ///
     /// The record's own statements about its ids are what identification reads:
     /// its prefix and its aliases, on the same projection a static record
-    /// serves, so an account model gains the limits of the row it stands for
-    /// exactly as a listed id on any other provider does.
+    /// serves, so an account model is identified by the same steps, publishes
+    /// the same record of that answer and gains the limits of the row it stands
+    /// for exactly as a listed id on any other provider does.
     ///
     /// The stored reason records the base entry: `limits_undeclared` is
     /// derived from the effective limits, so a supplied limit makes the
@@ -564,7 +565,7 @@ impl ProviderRecord {
                     Some(replacement) => inherit_limits(replacement.clone(), &source.entry),
                     None => source.entry.clone(),
                 };
-                fill_bundled_limits(bundled, &projection, &mut entry);
+                bundled.identify_entry(&projection, &mut entry);
                 let missing_limits = entry.capabilities.missing_limits();
                 let unavailable = if source.excluded_from_every_use() {
                     // A stored limits reason is the weaker derived fact and
@@ -1542,27 +1543,6 @@ pub(crate) fn rewrite_stored_limits(
         }
     }
     Ok(())
-}
-
-/// The limits a model does not declare come from the bundled catalog, which
-/// owns the descriptors both the catalog and the management view publish. The
-/// id is read with the projection of the record that serves the model, so its
-/// prefix and its aliases take part.
-pub(crate) fn fill_bundled_limits(
-    bundled: &BundledCatalog,
-    provider: &ProviderProjection,
-    model: &mut ModelEntry,
-) {
-    if let Some(found) = bundled.fallback(provider, &model.model_id) {
-        model.capabilities.context_window = model
-            .capabilities
-            .context_window
-            .or(found.capabilities.context_window);
-        model.capabilities.max_output_tokens = model
-            .capabilities
-            .max_output_tokens
-            .or(found.capabilities.max_output_tokens);
-    }
 }
 
 /// A stored reason other than the limit-derived one stands; otherwise an

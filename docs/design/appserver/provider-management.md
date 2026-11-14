@@ -622,8 +622,18 @@ The managed account catalog follows the same rule, and identifies its models the
 same way any provider does: the record's own prefix and aliases are the
 projection identification reads, so an account model the catalog cannot name
 gains the limits of the row its alias states, and an alias-only edit is not a
-descriptor override. The relay's listing fills what it can on its own, before
-the record exists, so it projects a model with what the bundle alone says. A
+descriptor override. An account model's entry carries what any provider's entry
+carries: `metadata.identification` with the rule that named its row, the
+rows a refusal names, or nothing when no step named one; the matched
+provider, model, strategy and score; and `filled` naming the row that supplied
+each limit the entry does not state. The record is derived on every read, so a
+cleared alias or a refreshed listing recomputes it, and a statement that names
+nothing leaves neither a rule nor a stale row behind. What the account's listing
+and any override state itself stays theirs: a limit marked in
+`capabilityOverrideFields` is never filled or listed, and modalities, reasoning,
+pricing and `metadataSource` keep the account's own descriptor. The relay's
+listing fills what it can on its own, before the record exists, so it projects a
+model with what the bundle alone says. A
 model that neither the relay nor the bundled catalog declares a limit for is
 projected with that limit absent and keeps its `unavailableReason` by the
 [managed catalog projection](../../../crates/dim-oauth/src/models.rs); its own

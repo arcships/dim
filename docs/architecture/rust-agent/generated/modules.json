@@ -28718,11 +28718,13 @@
       "to": "dim_app_server::model_catalog::id",
       "references": [
         "mod id",
+        "path Lookup",
         "path id",
         "path id::IdIndex",
         "path id::IdIndex::new",
         "path id::is_placeholder",
         "path variants",
+        "use self::id::Lookup",
         "use self::id::variants"
       ]
     },
