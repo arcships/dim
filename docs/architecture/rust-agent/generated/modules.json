@@ -721,6 +721,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::hooks::testing",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::hooks",
+      "file": "crates/dim-agent-capabilities/src/hooks/mod.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::host",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -7185,6 +7194,17 @@
       ]
     },
     {
+      "id": "dim_ocr::helper::tests",
+      "crate": "dim_ocr",
+      "parent": "dim_ocr::helper",
+      "file": "crates/dim-ocr/src/helper.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format"
+      ]
+    },
+    {
       "id": "dim_ocr::pdf",
       "crate": "dim_ocr",
       "parent": "dim_ocr",
@@ -12367,6 +12387,13 @@
     },
     {
       "from": "dim_agent_capabilities::hooks",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "mod testing"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path dim_agent_runtime::AgentBuilder"
@@ -12461,6 +12488,13 @@
         "use crate::hooks::HookSourceId",
         "use crate::hooks::HookSourcesHost",
         "use crate::hooks::HookSourcesSnapshot"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::runner",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "path super::testing::settle"
       ]
     },
     {
@@ -12825,6 +12859,25 @@
         "path HostFuture",
         "use crate::host::HostError",
         "use crate::host::HostFuture"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::runner",
+      "references": [
+        "path HookResult",
+        "path HookResult::Blocked",
+        "path HookResult::Failed",
+        "path HookResult::Success",
+        "use super::runner::HookResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::sources",
+      "references": [
+        "path HookSourceId",
+        "use super::sources::HookSourceId"
       ]
     },
     {
@@ -51777,6 +51830,7 @@
         "path HelperErrorCode",
         "path MAX_ARTIFACT_BYTES",
         "path MAX_INPUT_BYTES",
+        "path OutputMode",
         "path OutputMode::Layout",
         "path OutputMode::Text",
         "path RESULT_FILE",
@@ -51797,6 +51851,13 @@
     },
     {
       "from": "dim_ocr::helper",
+      "to": "dim_ocr::helper::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper",
       "to": "dim_ocr::pdf",
       "references": [
         "path crate::pdf::PdfDocument",
@@ -51811,6 +51872,26 @@
         "path crate::vision::recognize_image",
         "path crate::vision::recognize_url",
         "path crate::vision::write_png"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper::tests",
+      "to": "dim_ocr::contract",
+      "references": [
+        "path HelperError",
+        "path HelperError::failed",
+        "path OutputMode::Layout",
+        "path OutputMode::Text",
+        "path Region",
+        "use crate::contract::Region"
+      ]
+    },
+    {
+      "from": "dim_ocr::helper::tests",
+      "to": "dim_ocr::helper",
+      "references": [
+        "path ArtifactWriter::new",
+        "path page_image_artifact"
       ]
     },
     {
