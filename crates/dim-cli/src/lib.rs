@@ -340,12 +340,7 @@ pub(crate) async fn session_create_from_options(
     let mut params = session_create_params(options);
     options.creation_startup(&mut params);
     add_creation_worktree(client, options, &mut params)?;
-    let saved = if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
-        session_host::saved_model_preferences(client, provider, model).await?
-    } else {
-        None
-    };
-    if let Some(preferences) = options.creation_preferences(saved) {
+    if let Some(preferences) = options.creation_preferences() {
         params["modelPreferences"] = preferences;
     }
     Ok(params)
@@ -374,19 +369,14 @@ pub(crate) fn add_creation_worktree(
     Ok(())
 }
 
-/// The failure of adopting `target` into a Session. When the target's
-/// catalog entry reports missing limits, the declaration command is appended;
-/// the catalog is read only on this failure path, never from the message.
+/// The failure of adopting `target` into a Session. When the target's catalog
+/// entry reports missing limits, the declaration command is appended; the
+/// catalog is read only on this failure path, never from the message.
 pub(crate) async fn model_adoption_error(
     client: &mut client::Client,
     target: Option<(&str, &str)>,
     error: Error,
-    preferences: Option<&serde_json::Value>,
 ) -> Error {
-    let error: Error = match preferences {
-        Some(preferences) => format!("Model adoption with saved preferences {preferences} failed: {error}. Clear them with Ctrl+X in /models or dimcode models PROVIDER --clear-preferences MODEL; saved preferences were kept.").into(),
-        None => error,
-    };
     let Some((provider_id, model_id)) = target else {
         return error;
     };

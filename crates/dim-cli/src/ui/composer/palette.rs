@@ -629,6 +629,7 @@ mod tests {
         ]
     }
 
+    /// A shared name is listed twice, the command first.
     #[test]
     fn skills_share_the_list_after_commands() {
         let skills = sample_skills();
@@ -648,20 +649,15 @@ mod tests {
         let panel = render(&state, &rows, 100, 18, &theme.palette);
         let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(text.iter().any(|r| r.contains("2 / 3")), "{text:#?}");
-    }
 
-    /// A Skill and a command of the same name are both offered, the command
-    /// first.
-    #[test]
-    fn a_shared_name_offers_the_command_first() {
-        let skills = vec![Skill {
+        let shared = vec![Skill {
             name: "new".into(),
             description: "Start a fresh session".into(),
             display_name: None,
             display_description: None,
         }];
         for query in ["new", "ne"] {
-            let rows = rows_for(query, SCROLLBACK, &skills);
+            let rows = rows_for(query, SCROLLBACK, &shared);
             assert!(
                 matches!(rows[0].kind, Kind::Command(_)),
                 "{query}: {:?}",
@@ -669,7 +665,8 @@ mod tests {
             );
             assert!(
                 rows.iter()
-                    .any(|row| matches!(&row.kind, Kind::Skill(name) if name == "new"))
+                    .any(|row| matches!(&row.kind, Kind::Skill(name) if name == "new")),
+                "{query}: the skill is offered too"
             );
         }
     }

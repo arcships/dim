@@ -69,7 +69,9 @@ No leader tool table or prompt content is copied.
 Inheritance preserves existing model options and metadata, including any Provider
 route stamp or its absence. It does not resolve a different default model or read
 Provider's saved client preferences. Fixed/agent selection also retains its current
-profile-resolution semantics; saved client preferences are not implicitly applied.
+profile-resolution semantics: it resolves at the model's declared defaults, because
+a consumer model never applies the preferences a person saved for their own
+Sessions.
 Actual execution still checks availability through the existing model owner.
 Inheritance performs no creation-time resolution: a disabled/deleted model or a
 mismatched present route stamp therefore fails the member's first request and

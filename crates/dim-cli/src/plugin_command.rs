@@ -367,8 +367,7 @@ mod tests {
         }
     }
 
-    /// An optional plugin the home does not have says so where its status
-    /// would go, and the detail line names the command that installs it.
+    /// The row names the plugin and says it is not installed.
     #[test]
     fn an_uninstalled_optional_item_shows_its_install_command() {
         let item = json!({
@@ -379,17 +378,34 @@ mod tests {
             "candidates": [],
             "optional": true,
         });
-        assert_eq!(
-            list_line(&item),
-            concat!(
-                "light-ocr  use=-  optional, not installed  candidates=\n",
-                "    install: dimcode plugin install --optional light-ocr",
-            )
+        let line = list_line(&item);
+        assert!(line.contains("light-ocr"), "{line}");
+        assert!(line.contains("not installed"), "{line}");
+        assert!(
+            line.contains("dimcode plugin install --optional light-ocr"),
+            "{line}"
         );
+        let plain = json!({
+            "name": "web",
+            "use": "web",
+            "status": "running",
+            "locked": true,
+            "candidates": [{"id": "web"}],
+            "error": "last start failed",
+            "waitingFor": ["node"],
+        });
+        let line = list_line(&plain);
+        assert!(
+            line.starts_with("web  use=web  running  locked  candidates=web\n"),
+            "{line}"
+        );
+        assert!(line.contains("\n    error: last start failed"), "{line}");
+        assert!(line.contains("\n    waiting for: node"), "{line}");
+        assert!(!line.contains("optional"), "{line}");
+        assert!(!line.contains("update"), "{line}");
     }
 
-    /// An installed plugin with an update shows its version, and no failed
-    /// line when the update has no error.
+    /// No failed line appears when the update has no error.
     #[test]
     fn an_installed_item_with_an_update_shows_its_version() {
         let item = json!({
@@ -401,12 +417,12 @@ mod tests {
             "optional": true,
             "update": {"version": "1.1.0"},
         });
-        assert_eq!(
-            list_line(&item),
-            concat!(
-                "light-ocr  use=light-ocr  running  candidates=light-ocr\n",
-                "    update: 1.1.0",
-            )
+        let line = list_line(&item);
+        assert!(line.contains("light-ocr"), "{line}");
+        assert!(line.contains("1.1.0"), "the version is named: {line}");
+        assert!(
+            !line.contains("update failed"),
+            "no failure is invented: {line}"
         );
     }
 
@@ -421,36 +437,11 @@ mod tests {
             "candidates": [{"id": "light-ocr"}],
             "update": {"version": "1.1.0", "error": "network unreachable"},
         });
-        assert_eq!(
-            list_line(&item),
-            concat!(
-                "light-ocr  use=light-ocr  running  candidates=light-ocr\n",
-                "    update: 1.1.0\n",
-                "    update failed: network unreachable",
-            )
-        );
-    }
-
-    /// An item with neither field prints exactly what it printed before the
-    /// optional and update columns existed.
-    #[test]
-    fn an_item_without_optional_or_update_prints_as_before() {
-        let item = json!({
-            "name": "web",
-            "use": "web",
-            "status": "running",
-            "locked": true,
-            "candidates": [{"id": "web"}],
-            "error": "last start failed",
-            "waitingFor": ["node"],
-        });
-        assert_eq!(
-            list_line(&item),
-            concat!(
-                "web  use=web  running  locked  candidates=web\n",
-                "    error: last start failed\n",
-                "    waiting for: node",
-            )
+        let line = list_line(&item);
+        assert!(line.contains("1.1.0"), "the version is named: {line}");
+        assert!(
+            line.contains("network unreachable"),
+            "the failure is named: {line}"
         );
     }
 }

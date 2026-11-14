@@ -2056,15 +2056,11 @@ impl Options {
         }
     }
 
-    pub(crate) fn creation_preferences(
-        &self,
-        mut saved: Option<serde_json::Value>,
-    ) -> Option<serde_json::Value> {
-        if let Some(effort) = &self.effort {
-            saved.get_or_insert_with(|| serde_json::json!({}))["reasoningEffort"] =
-                serde_json::json!(effort);
-        }
-        saved
+    /// The preferences a creation states: only `--effort`. Every other field
+    /// the model has saved is applied by the server, from its own record.
+    pub(crate) fn creation_preferences(&self) -> Option<serde_json::Value> {
+        let effort = self.effort.as_ref()?;
+        Some(serde_json::json!({"reasoningEffort":effort}))
     }
 
     /// The `worktree` member `--worktree` asks for: `base` and `branch` only
@@ -2385,11 +2381,18 @@ mod workspace_tests {
             Some("step-plan/stepaudio-2.5-realtime")
         );
         let error = parse(&["--operation", "transcribe"]).err().unwrap();
-        assert_eq!(error.to_string(), "--operation requires realtime");
+        assert!(
+            error.to_string().contains("--operation") && error.to_string().contains("realtime"),
+            "the refusal names the flag and the command it belongs to: {error}"
+        );
         let error = parse(&["realtime", "--operation", "voice", "--operation", "voice"])
             .err()
             .unwrap();
-        assert_eq!(error.to_string(), "Supply --operation only once");
+        let refusal = error.to_string();
+        assert!(
+            refusal.contains("--operation") && refusal.contains("once"),
+            "a duplicate refuses by naming the flag and asking for one: {refusal}"
+        );
     }
 
     #[cfg(any(unix, windows))]

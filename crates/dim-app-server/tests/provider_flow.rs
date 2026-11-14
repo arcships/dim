@@ -5081,7 +5081,19 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         )
         .await
         .unwrap();
-    assert_eq!(implicit.config.unwrap().reasoning, None);
+    assert_eq!(
+        implicit
+            .config
+            .as_ref()
+            .unwrap()
+            .reasoning
+            .as_ref()
+            .unwrap()
+            .effort
+            .as_deref(),
+        Some("high"),
+        "a client that states nothing applies the saved effort: {implicit:?}"
+    );
     let adopted = provider
         .configuration(
             Some(preference_target),
