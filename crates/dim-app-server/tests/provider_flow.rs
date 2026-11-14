@@ -8751,7 +8751,10 @@ async fn an_edited_merged_limit_stays_edited() {
     provider.create(relay, &cancel).await.unwrap();
     // What a relay outside the catalog projects for the same id: the merge,
     // read from the catalog rather than restated here.
-    let merged = BundledCatalog::load().unwrap().fallback(ID).unwrap();
+    let merged = BundledCatalog::load()
+        .unwrap()
+        .fallback(&Default::default(), ID)
+        .unwrap();
     let merged = (
         merged.capabilities.context_window,
         merged.capabilities.max_output_tokens,

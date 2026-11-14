@@ -618,9 +618,14 @@ the missing limits named, before credentials or network I/O. After both values a
 declared, selecting the model adopts them. Until that selection `/usage` reports
 the adopted snapshot, as for any descriptor edit (§6).
 
-The managed account catalog follows the same rule. A model that neither the relay
-nor the bundled catalog declares a limit for is projected with that limit absent
-and keeps its `unavailableReason` by the
+The managed account catalog follows the same rule, and identifies its models the
+same way any provider does: the record's own prefix and aliases are the
+projection identification reads, so an account model the catalog cannot name
+gains the limits of the row its alias states, and an alias-only edit is not a
+descriptor override. The relay's listing fills what it can on its own, before
+the record exists, so it projects a model with what the bundle alone says. A
+model that neither the relay nor the bundled catalog declares a limit for is
+projected with that limit absent and keeps its `unavailableReason` by the
 [managed catalog projection](../../../crates/dim-oauth/src/models.rs); its own
 family rule still declares a window where it applies. The host admits an absent
 limit only on a model that carries a reason. The

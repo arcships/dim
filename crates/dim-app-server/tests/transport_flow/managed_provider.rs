@@ -37,6 +37,9 @@ enum Limited {
     Available,
     /// A second model whose limits are undeclared, so it cannot be used.
     Unavailable,
+    /// A second model the catalog cannot identify, so only the provider's own
+    /// statement about the id can give it limits.
+    Unidentified,
     ProviderUnavailable,
 }
 
@@ -186,6 +189,19 @@ impl ManagedProvider for Provider {
                     "displayName":"Limited model","status":"active",
                     "capabilities":dim_agent_types::CatalogCapabilities::default()}))
                 .unwrap();
+                models.push(ManagedModel {
+                    entry,
+                    protocol: ModelProtocol::OpenaiCompatible,
+                    unavailable_reason: Some("limits_undeclared".into()),
+                    zdr: false,
+                });
+            }
+            Limited::Unidentified => {
+                let entry: ModelEntry =
+                    serde_json::from_value(json!({"modelId":"house-deployment",
+                    "displayName":"House deployment","status":"active",
+                    "capabilities":dim_agent_types::CatalogCapabilities::default()}))
+                    .unwrap();
                 models.push(ManagedModel {
                     entry,
                     protocol: ModelProtocol::OpenaiCompatible,
@@ -1159,6 +1175,169 @@ async fn a_managed_model_made_usable_by_its_edit_is_governed_by_its_effective_li
         .await;
     assert_ok(&omitted);
     assert_eq!(omitted["result"]["disabledModelIds"], json!([]));
+    assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// An account provider identifies its models with the statements its own
+/// record makes, exactly as any other provider does: an id the catalog cannot
+/// read gains the limits of the row its alias names, an alias-only edit writes
+/// no descriptor override, clearing the alias returns the model to
+/// `limits_undeclared`, and a refresh keeps the statement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_account_identifies_its_models_with_its_prefix_and_aliases() {
+    let home = std::env::temp_dir().join(format!(
+        "dm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let fixture = Arc::new(Fixture {
+        base_url: "http://127.0.0.1:1/v1".into(),
+        account: StdMutex::new(
+            serde_json::from_value(json!({
+                "credentialEpoch":"epoch", "generation":1,
+                "account":{"issuer":"https://accounts.example", "subject":"fixture",
+                    "email":"fixture@example.com", "name":"Fixture", "grantedScopes":["model"]}
+            }))
+            .unwrap(),
+        ),
+        limited: StdMutex::new(Limited::Unidentified),
+        recovered: AtomicUsize::new(0),
+        released: StdMutex::new(vec![]),
+    });
+    let provider = fixture.clone();
+    let server = launch(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+                let provider = provider.clone();
+                builtins
+                    .builtins
+                    .register::<Value, _, _>("ManagedFixture", move |_| {
+                        Ok(FixturePlugin(provider.clone()))
+                    });
+                "ManagedFixture".to_owned()
+            }))),
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let mut version = refreshed["result"]["version"].as_u64().unwrap();
+    let house = |catalog: &Value| -> usize {
+        catalog["result"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|model| model["id"] == "house-deployment")
+            .expect("the account lists the model no rule reads")
+    };
+    let at = house(&refreshed);
+    assert_eq!(
+        refreshed["result"]["models"][at]["unavailableReason"],
+        "limits_undeclared"
+    );
+    // The account's own statement about the id is what gives it the target
+    // row's limits, which the catalog alone cannot.
+    let aliased = client
+        .rpc(
+            "provider.models.edit",
+            json!({"providerId":"managed-fixture","expectedVersion":version,
+                "modelId":"house-deployment",
+                "edit":{"alias":{"action":"set","value":"kimi-k3"}}}),
+        )
+        .await;
+    assert_ok(&aliased);
+    let at = house(&aliased);
+    assert_eq!(
+        aliased["result"]["models"][at]["unavailableReason"],
+        Value::Null,
+        "{}",
+        aliased["result"]["models"][at]
+    );
+    assert_eq!(
+        aliased["result"]["models"][at]["capabilities"]["contextWindow"],
+        json!(1_048_576)
+    );
+    let stated = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":"managed-fixture"}),
+        )
+        .await;
+    assert_ok(&stated);
+    assert_eq!(
+        stated["result"]["providers"][0]["models"][at]["alias"], "kimi-k3",
+        "management says what the entry stands for"
+    );
+    let record = |home: &std::path::Path| -> Value {
+        let store = rusqlite::Connection::open(home.join("rust").join("dimcode.sqlite")).unwrap();
+        let body: String = store
+            .query_row(
+                "SELECT record FROM providers WHERE provider_id='managed-fixture'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&body).unwrap()
+    };
+    assert_eq!(
+        record(&home)["modelConfigOverrides"],
+        json!([]),
+        "an alias-only edit writes no override for the reset path to leave behind"
+    );
+    version = aliased["result"]["version"].as_u64().unwrap();
+    // Clearing the statement puts the model back where it was.
+    let cleared = client
+        .rpc(
+            "provider.models.edit",
+            json!({"providerId":"managed-fixture","expectedVersion":version,
+                "modelId":"house-deployment",
+                "edit":{"alias":{"action":"clear"}}}),
+        )
+        .await;
+    assert_ok(&cleared);
+    let at = house(&cleared);
+    assert_eq!(
+        cleared["result"]["models"][at]["unavailableReason"],
+        "limits_undeclared"
+    );
+    assert_eq!(cleared["result"]["models"][at].get("alias"), None);
+    version = cleared["result"]["version"].as_u64().unwrap();
+    // A refresh rewrites the account's listing, not the user's statement about
+    // its ids, so the alias still applies to the entry it names.
+    let aliased = client
+        .rpc(
+            "provider.models.edit",
+            json!({"providerId":"managed-fixture","expectedVersion":version,
+                "modelId":"house-deployment",
+                "edit":{"alias":{"action":"set","value":"kimi-k3"}}}),
+        )
+        .await;
+    assert_ok(&aliased);
+    let refreshed = client
+        .rpc("provider.refresh", json!({"providerId":"managed-fixture"}))
+        .await;
+    assert_ok(&refreshed);
+    let at = house(&refreshed);
+    assert_eq!(
+        refreshed["result"]["models"][at]["unavailableReason"],
+        Value::Null,
+        "{}",
+        refreshed["result"]["models"][at]
+    );
+    assert_eq!(
+        refreshed["result"]["models"][at]["capabilities"]["contextWindow"],
+        json!(1_048_576)
+    );
     assert_ok(&client.rpc("daemon.shutdown", json!({})).await);
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

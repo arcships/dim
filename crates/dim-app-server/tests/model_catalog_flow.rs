@@ -50,7 +50,7 @@ fn a_bundled_match_declares_both_limits_and_an_unmatched_descriptor_has_none() {
     assert_eq!(matched.capabilities.max_output_tokens, Some(128_000));
     assert!(matched.capabilities.missing_limits().is_empty());
     let id = "zzzz-private-descriptor";
-    assert!(catalog.fallback(id).is_none());
+    assert!(catalog.fallback(&Default::default(), id).is_none());
     let unmatched = catalog.project(&provider, &json!({ "id": id })).unwrap();
     assert_eq!(
         unmatched.capabilities.missing_limits(),

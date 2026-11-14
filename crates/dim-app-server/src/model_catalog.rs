@@ -696,10 +696,10 @@ impl BundledCatalog {
         model
     }
 
-    /// Bundled metadata for a model served by a relay outside the catalog.
-    pub fn fallback(&self, id: &str) -> Option<ModelEntry> {
-        self.lookup(&ProviderProjection::default(), id)
-            .map(|found| found.entry)
+    /// Bundled metadata for a model served by a relay outside the catalog,
+    /// read with the projection of the record that serves it.
+    pub fn fallback(&self, provider: &ProviderProjection, id: &str) -> Option<ModelEntry> {
+        self.lookup(provider, id).map(|found| found.entry)
     }
 
     fn apply_provider_rules(&self, provider: &ProviderProjection, entry: &mut ModelEntry) {

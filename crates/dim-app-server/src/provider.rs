@@ -533,6 +533,11 @@ impl ProviderRecord {
     /// management view and the whole-set write all read this one derivation,
     /// so the toggle a view offers is the toggle the write governs.
     ///
+    /// The record's own statements about its ids are what identification reads:
+    /// its prefix and its aliases, on the same projection a static record
+    /// serves, so an account model gains the limits of the row it stands for
+    /// exactly as a listed id on any other provider does.
+    ///
     /// The stored reason records the base entry: `limits_undeclared` is
     /// derived from the effective limits, so a supplied limit makes the
     /// model available again, while the stored value stays for the reset
@@ -543,6 +548,11 @@ impl ProviderRecord {
     /// stored reason (or the generic every-use one when the status alone is
     /// the cause) for both uses and neither selection lists it.
     pub(crate) fn effective_models(&self, bundled: &BundledCatalog) -> Vec<EffectiveModel<'_>> {
+        let projection = ProviderProjection {
+            glued_prefix: self.glued_prefix.clone(),
+            model_aliases: self.model_aliases.clone(),
+            ..Default::default()
+        };
         self.models
             .iter()
             .map(|source| {
@@ -554,7 +564,7 @@ impl ProviderRecord {
                     Some(replacement) => inherit_limits(replacement.clone(), &source.entry),
                     None => source.entry.clone(),
                 };
-                fill_bundled_limits(bundled, &mut entry);
+                fill_bundled_limits(bundled, &projection, &mut entry);
                 let missing_limits = entry.capabilities.missing_limits();
                 let unavailable = if source.excluded_from_every_use() {
                     // A stored limits reason is the weaker derived fact and
@@ -1535,9 +1545,15 @@ pub(crate) fn rewrite_stored_limits(
 }
 
 /// The limits a model does not declare come from the bundled catalog, which
-/// owns the descriptors both the catalog and the management view publish.
-pub(crate) fn fill_bundled_limits(bundled: &BundledCatalog, model: &mut ModelEntry) {
-    if let Some(found) = bundled.fallback(&model.model_id) {
+/// owns the descriptors both the catalog and the management view publish. The
+/// id is read with the projection of the record that serves the model, so its
+/// prefix and its aliases take part.
+pub(crate) fn fill_bundled_limits(
+    bundled: &BundledCatalog,
+    provider: &ProviderProjection,
+    model: &mut ModelEntry,
+) {
+    if let Some(found) = bundled.fallback(provider, &model.model_id) {
         model.capabilities.context_window = model
             .capabilities
             .context_window

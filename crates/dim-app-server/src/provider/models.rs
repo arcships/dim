@@ -512,7 +512,7 @@ impl ProviderService {
                                 }
                             }
                             match edit {
-                                Some(edit) => {
+                                Some(edit) if descriptor => {
                                     let next = bundled.merge_visible_edit(
                                         index
                                             .map(|index| &record.model_config_overrides[index])
@@ -525,6 +525,9 @@ impl ProviderService {
                                         record.model_config_overrides.push(next);
                                     }
                                 }
+                                // An alias-only edit writes no descriptor, the
+                                // same as on a static record.
+                                Some(_) => {}
                                 None => {
                                     record
                                         .model_config_overrides
