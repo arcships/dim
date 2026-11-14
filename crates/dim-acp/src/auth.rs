@@ -45,39 +45,34 @@ fn methods(
     browser: bool,
     terminal_args: Option<&[String]>,
 ) -> Vec<Method> {
+    let (flow, handler) = if terminal_args.is_some() {
+        ("device", "terminal")
+    } else if browser {
+        ("browser", "agent")
+    } else {
+        return Vec::new();
+    };
     let mut methods = Vec::new();
     for provider in providers {
-        for flow in provider
+        if !provider
             .login_methods
-            .into_iter()
-            .filter(|flow| matches!(flow.as_str(), "browser" | "device"))
+            .iter()
+            .any(|candidate| candidate == flow)
         {
-            for terminal in [false, true] {
-                if (terminal && terminal_args.is_none())
-                    || (!terminal && (flow != "browser" || !browser))
-                {
-                    continue;
-                }
-                let id = json!([
-                    "dim",
-                    provider.provider_id,
-                    flow,
-                    if terminal { "terminal" } else { "agent" }
-                ])
-                .to_string();
-                methods.push(Method {
-                    terminal: terminal.then(|| {
-                        let mut args = terminal_args.unwrap().to_vec();
-                        args.extend(["--auth-setup".into(), id.clone()]);
-                        args
-                    }),
-                    id,
-                    provider: provider.provider_id.clone(),
-                    flow: flow.clone(),
-                    name: format!("{} ({flow})", provider.display_name),
-                });
-            }
+            continue;
         }
+        let id = json!(["dim", provider.provider_id, flow, handler]).to_string();
+        methods.push(Method {
+            terminal: terminal_args.map(|args| {
+                let mut args = args.to_vec();
+                args.extend(["--auth-setup".into(), id.clone()]);
+                args
+            }),
+            id,
+            provider: provider.provider_id,
+            flow: flow.to_owned(),
+            name: format!("{} ({flow})", provider.display_name),
+        });
     }
     methods
 }

@@ -33,7 +33,6 @@
       "unexpandedMacros": [
         "format",
         "json",
-        "matches",
         "tokio::pin",
         "tokio::select"
       ]
