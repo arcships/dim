@@ -248,6 +248,8 @@ launch 目标的 Session 用任务可选的预设创建，由 `sessions.launch` 
 
 ## 4. 时序与冲突
 
+Scheduler 让每个时刻都以它自有的一个时钟判断，并让定时器、停止定时器与查询轮询的每一次等待都经该时钟跨越。因此记录携带的时刻，与之后某一代判断该记录所用的时刻，来自同一来源，跨重启亦然。该时钟是进程状态，不是跨越边界的数据：没有任何方法参数或已存记录随它改变。
+
 ```mermaid
 sequenceDiagram
   participant S as Scheduler
@@ -850,4 +852,5 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | guide 条目 | Session 部分取得 `GuideEntries` 并注册 §5.2 的条目，作用域为 Session，order 110 |
 | 可选行 | `AgentBuilder::optional_plugin`：宿主不等待该行，因此缺失依赖或不可读的投递存储只使 Scheduler 失败(附录 D 第 14 项) |
 | cron 与时区 | `croner` 与 `chrono-tz`，由 `deny.toml` 检查。Scheduler 跳过墙钟落在 DST 空档的发生，并把重复的秋季回溯时刻在较早的那一刻触发一次 |
+| 时钟与等待 | 一个 crate 内的 `Clock` trait(`src/clock.rs`)拥有进程部分读取的每个时刻与跨越的每次等待：`now()` 与 `wait_until(until, stop)`。`SystemClock` 是生产实现：产品 `install` 路径读取系统时间，并按真实时间等待。测试装入 `ManualClock`，它读真实时间加一个由 `advance` 加入的偏移，因此从不推进的流程按真实时间运行，而推进的流程只移动本 Scheduler 的截止时刻。位于 feature `testing` 之后。 |
 | 测试 | 经管理方法、`schedule` 工具与 CLI 线上测试的公开流程，使用能保持回合的脚本化模型；不新增私有辅助单元测试(AGENTS.md Testing) |

@@ -282,6 +282,8 @@ Automation never widens authority (E2). Because a job captures no policy and com
 
 ## 4. Timing and conflicts
 
+Scheduler judges every instant against one clock it owns, and crosses every wait of the timer, the stop timer and a lookup poll through that clock. The instant a record carries and the instant a later generation judges it by therefore come from the same source, across restarts. The clock is process state, not data crossing a boundary: no method parameter or stored record changes with it.
+
 ```mermaid
 sequenceDiagram
   participant S as Scheduler
@@ -896,4 +898,5 @@ no `schedule.*` methods or `schedule` tool. The process part is added with
 | Guide entry | The Session part keys `GuideEntries` and registers the §5.2 entry, session-scoped, order 110 |
 | Optional row | `AgentBuilder::optional_plugin`: the host does not wait for the row, so missing dependencies or an unreadable delivery store fail only Scheduler (Appendix D item 14) |
 | Cron and time zones | `croner` and `chrono-tz`, checked by `deny.toml`. Scheduler skips an occurrence whose wall time falls in a DST gap and fires a repeated fall-back time once, at its earlier instant |
+| Clock and waits | One crate-local `Clock` trait (`src/clock.rs`) owns every instant the process part reads and every wait it crosses: `now()` and `wait_until(until, stop)`. `SystemClock` is the production seat: the product `install` path reads the system time and waits in real time. A test seats `ManualClock`, which reads real time plus an offset `advance` adds, so a flow that never advances runs in real time and a flow that advances moves only this Scheduler's deadlines. Behind feature `testing`. |
 | Tests | Public flows through the management methods, the `schedule` tool and the CLI wire tests, with a scripted model that can hold a turn; private helper unit tests are not added (AGENTS.md Testing) |
