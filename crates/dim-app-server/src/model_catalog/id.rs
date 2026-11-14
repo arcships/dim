@@ -347,7 +347,7 @@ impl BundledCatalog {
             let strategy = Rule::ProviderExact.strategy(&provider_id, &entry.model_id, id);
             return self.one(provider_id, entry, strategy, Rule::ProviderExact);
         }
-        let Some(query) = Query::parse(id) else {
+        let Some(query) = Query::parse(id, provider.glued_prefix.as_deref()) else {
             return Outcome::None;
         };
         let namespace = namespace_of(id);
@@ -715,9 +715,15 @@ struct Query {
 }
 
 impl Query {
-    /// The id without its namespace segments, tag and bracket modifier,
-    /// lowercased and split on the separators a model name uses.
-    fn parse(id: &str) -> Option<Self> {
+    /// The id without its namespace segments, tag, bracket modifier and the
+    /// provider's glued prefix, lowercased and split on the separators a model
+    /// name uses.
+    ///
+    /// The prefix is the provider's statement about the ids it lists, so it is
+    /// stripped once, at the head of the name, and only when the name keeps a
+    /// token. A prefix that consumes the id leaves nothing to identify, and an
+    /// empty result tells the steps that no name is left.
+    fn parse(id: &str, glued_prefix: Option<&str>) -> Option<Self> {
         let lower = id.trim().to_lowercase();
         let mut name = lower.rsplit('/').next()?.to_owned();
         if let Some((head, _)) = name.rsplit_once(':') {
@@ -728,11 +734,20 @@ impl Query {
         {
             name.truncate(start);
         }
-        let tokens: Vec<_> = name
+        let mut tokens: Vec<_> = name
             .split(['-', '_', '.', ' '])
             .filter(|token| !token.is_empty())
             .map(str::to_owned)
             .collect();
+        if let Some(glued_prefix) = glued_prefix {
+            let prefix = split_tokens(&glued_prefix.to_lowercase());
+            // A prefix that consumes the whole name leaves none, so the strip
+            // keeps a statement about the ids a provider lists from turning
+            // one of them into no name at all.
+            if !prefix.is_empty() && tokens.starts_with(&prefix) {
+                tokens.drain(..prefix.len());
+            }
+        }
         (!tokens.is_empty()).then_some(Self { tokens })
     }
 }

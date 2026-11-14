@@ -258,6 +258,21 @@ fn stored_record(home: &Path, provider_id: &str) -> StaticProviderRecord {
     parse_static(provider_id, version, &body).unwrap()
 }
 
+/// The prefix a stored record carries, read from the record's own JSON: the
+/// field is the record owner's, and the store is where the statement lives.
+fn stored_prefix(home: &Path, provider_id: &str) -> Option<String> {
+    let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    let body: String = db
+        .query_row(
+            "SELECT record FROM providers WHERE provider_id=?1",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let value: Value = serde_json::from_str(&body).unwrap();
+    value["gluedPrefix"].as_str().map(str::to_owned)
+}
+
 #[tokio::test]
 async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies() {
     use axum::{
@@ -7991,6 +8006,149 @@ async fn a_refused_ambiguity_names_the_rows_that_disagree() {
         }
         other => panic!("{AMBIGUOUS}: {other:?}"),
     }
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// A provider states the prefix its ids carry, and the statement is what makes
+/// a prefixed id resolve: the stripped id answers through the same steps, the
+/// reply carries the statement back, and clearing it puts the id back where it
+/// was.
+#[tokio::test]
+async fn a_provider_states_the_prefix_its_ids_carry_and_that_statement_resolves_them() {
+    let home = std::env::temp_dir().join(format!("provider-prefix-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const PREFIXED: &str = "00000000-0000-4000-8000-000000000051";
+    const PREFIXED_ID: &str = "auto-kimi-k3";
+    let mut relay = input(
+        PREFIXED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "prefix",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":PREFIXED_ID, "displayName":PREFIXED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    // Without the statement the prefixed id names nothing, which is the entry
+    // a relay's own spelling gives the catalog today.
+    let catalog = provider
+        .catalog_for(PREFIXED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == PREFIXED_ID)
+        .expect("the relay lists the id it did not declare");
+    assert_eq!(
+        model.missing_limits,
+        ["contextWindow", "maxOutputTokens"],
+        "nothing names the prefixed id yet"
+    );
+    assert!(
+        model.metadata.as_ref().unwrap().identification.is_none(),
+        "nothing named the model"
+    );
+    // The statement is one write, and the reply carries it back.
+    let stated = provider
+        .update(
+            PREFIXED.into(),
+            catalog.version,
+            serde_json::from_value(json!({"gluedPrefix":"auto"})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stated
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto")
+    );
+    assert_eq!(
+        stored_prefix(&home, PREFIXED).as_deref(),
+        Some("auto"),
+        "the statement is in the record, not only in the reply"
+    );
+    // The stored id is what the provider lists, and the entry now names the
+    // model it stands for with that model's own numbers.
+    let catalog = provider
+        .catalog_for(PREFIXED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == PREFIXED_ID)
+        .expect("the stored id is the provider's own spelling");
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(model.capabilities.context_window, Some(1_048_576));
+    assert_eq!(model.capabilities.max_output_tokens, Some(1_048_576));
+    let identification = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .expect("the entry carries what identification found");
+    assert_eq!(identification.rule, "token");
+    assert_eq!(
+        model.metadata.as_ref().unwrap().matched_model_id.as_deref(),
+        Some("kimi-k3")
+    );
+    // Clearing the statement is one write too, and puts the id back where it
+    // was rather than leaving the record in a shape no client can undo.
+    let cleared = provider
+        .update(
+            PREFIXED.into(),
+            catalog.version,
+            serde_json::from_value(json!({"gluedPrefix":null})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        cleared
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix,
+        None
+    );
+    assert_eq!(stored_prefix(&home, PREFIXED), None);
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }

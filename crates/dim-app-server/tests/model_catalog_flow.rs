@@ -415,9 +415,15 @@ fn a_plan_provider_is_marked_and_its_api_entry_is_not() {
 /// Projects one id as a relay outside the catalog, which is the projection a
 /// gateway that ships no bundled list has.
 fn relay(catalog: &BundledCatalog, id: &str) -> ModelEntry {
+    prefixed_relay(catalog, id, None)
+}
+
+/// The same projection, with the prefix the provider states its ids carry.
+fn prefixed_relay(catalog: &BundledCatalog, id: &str, prefix: Option<&str>) -> ModelEntry {
     let provider = ProviderProjection {
         provider_id: "my-gateway".into(),
         source: Some(ModelSource::Custom),
+        glued_prefix: prefix.map(str::to_owned),
         ..Default::default()
     };
     catalog.project(&provider, &json!({ "id": id })).unwrap()
@@ -1399,5 +1405,111 @@ fn the_identification_reaches_the_entry_and_names_an_ambiguity() {
             .identification
             .is_none(),
         "nothing named the model, so there is no identification"
+    );
+}
+
+/// A relay whose ids carry its own prefix resolves the model under the
+/// stripped id: the strip happens once, at the head, so the numbers are the
+/// bare id's own and the step that named them is the token step.
+#[test]
+fn a_providers_glued_prefix_is_stripped_before_matching() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = prefixed_relay(&catalog, "auto-kimi-k3", Some("auto"));
+    assert_eq!(matched(&entry), ("moonshot", "kimi-k3"));
+    assert_eq!(numbers(&entry), (Some(1_048_576), Some(1_048_576)));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    // The strategy reports against the id the provider listed, not the
+    // stripped one, so the entry says how its own id was read.
+    assert_eq!(
+        entry.metadata.as_ref().unwrap().match_strategy.as_deref(),
+        Some("moonshot-token")
+    );
+}
+
+/// The same provider without the statement is unidentified, so the field is
+/// what identifies rather than a guess about the id shape.
+#[test]
+fn a_prefixed_id_without_the_statement_is_unidentified() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "auto-kimi-k3");
+    assert_eq!(matched(&entry), ("provider-default", "-"));
+    assert_eq!(
+        entry.capabilities.missing_limits(),
+        ["contextWindow", "maxOutputTokens"]
+    );
+    assert!(
+        entry.metadata.as_ref().unwrap().identification.is_none(),
+        "nothing named the model, so there is no identification"
+    );
+}
+
+/// Step 1 reads the whole id, so an exact row still wins with the prefix set,
+/// and an id the prefix does not head is left as it is.
+#[test]
+fn an_exact_row_still_wins_with_the_prefix_set() {
+    let catalog = BundledCatalog::load().unwrap();
+    // A stored list that carries the prefixed id itself, which is what step 1
+    // reads before any step breaks the id into tokens.
+    let provider = ProviderProjection {
+        provider_id: "moonshot".into(),
+        source: Some(ModelSource::Builtin),
+        models: vec![
+            catalog
+                .project(
+                    &ProviderProjection {
+                        provider_id: "moonshot".into(),
+                        source: Some(ModelSource::Custom),
+                        ..Default::default()
+                    },
+                    &json!({ "id": "auto-kimi-k3" }),
+                )
+                .unwrap(),
+        ],
+        glued_prefix: Some("auto".into()),
+        ..Default::default()
+    };
+    let entry = catalog
+        .project(&provider, &json!({ "id": "auto-kimi-k3" }))
+        .unwrap();
+    assert_eq!(
+        matched(&entry),
+        ("moonshot", "auto-kimi-k3"),
+        "the provider's own row answers before any step reads the prefix"
+    );
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "provider-exact");
+}
+
+/// The prefix is a token head, so `auto` and `auto-` are one statement, and a
+/// prefix that consumes the whole id leaves nothing to identify.
+#[test]
+fn the_prefix_is_normalised_and_must_leave_a_name() {
+    let catalog = BundledCatalog::load().unwrap();
+    for prefix in ["auto", "auto-", " AUTO "] {
+        let entry = prefixed_relay(&catalog, "auto-kimi-k3", Some(prefix));
+        assert_eq!(
+            matched(&entry),
+            ("moonshot", "kimi-k3"),
+            "the prefix {prefix:?} is the same statement"
+        );
+    }
+    let empty = prefixed_relay(&catalog, "auto-", Some("auto"));
+    assert_eq!(matched(&empty), ("provider-default", "-"));
+    assert!(
+        empty.metadata.as_ref().unwrap().identification.is_none(),
+        "a prefix that leaves no name identifies nothing"
     );
 }

@@ -276,6 +276,9 @@ struct ProviderRecord {
     disabled_model_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_preferences: BTreeMap<String, ModelPreferences>,
+    /// The prefix this account's listed ids carry, as the user states it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glued_prefix: Option<String>,
     version: u32,
 }
 
@@ -358,6 +361,10 @@ pub struct StaticProviderRecord {
     #[serde(default)]
     disabled_model_ids: Vec<String>,
     enabled: bool,
+    /// The prefix this Provider's listed ids carry, as the user states it,
+    /// stripped once before an id is matched. Absent means the ids carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glued_prefix: Option<String>,
     #[serde(default)]
     definition_fingerprint: Option<String>,
     version: u32,
@@ -462,6 +469,10 @@ pub struct ProviderSummary {
     pub credential_configured: bool,
     /// Whether `provider.refresh` can list this provider's models.
     pub remote_model_list: bool,
+    /// The prefix this provider's listed ids carry, absent when they carry
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glued_prefix: Option<String>,
     pub enabled: bool,
     pub version: u32,
 }
@@ -1041,6 +1052,7 @@ fn static_entries(
                     ModelSource::Custom
                 }),
                 models: models.clone(),
+                glued_prefix: record.glued_prefix.clone(),
                 ..Default::default()
             },
             &models,
@@ -1189,6 +1201,7 @@ fn static_summary(
         remote_model_list,
         proxy_configured: record.network.proxy.is_some(),
         timeout_ms: record.network.timeout_ms,
+        glued_prefix: record.glued_prefix,
         enabled: record.enabled,
         version: record.version,
     }
@@ -1308,6 +1321,7 @@ fn bundled_seed(provider: &CatalogProvider) -> Result<StaticProviderRecord, Host
         endpoint_overrides: BTreeMap::new(),
         disabled_model_ids: Vec::new(),
         enabled: authority != CredentialAuthority::Static,
+        glued_prefix: None,
         definition_fingerprint: Some(format!("{:x}", Sha256::digest(fingerprint))),
         version: 1,
     })
@@ -2066,17 +2080,25 @@ impl ProviderService {
                                 .ok_or(ProviderError::Failed)?;
                             let old = old
                                 .filter(|record| same_account(&record.account, &catalog.account));
-                            let (disabled_model_ids, model_config_overrides, model_preferences) =
-                                old.map_or_else(
-                                    || (Vec::new(), Vec::new(), BTreeMap::new()),
-                                    |record| {
-                                        (
-                                            record.disabled_model_ids,
-                                            record.model_config_overrides,
-                                            record.model_preferences,
-                                        )
-                                    },
-                                );
+                            let (
+                                disabled_model_ids,
+                                model_config_overrides,
+                                model_preferences,
+                                glued_prefix,
+                            ) = old.map_or_else(
+                                || (Vec::new(), Vec::new(), BTreeMap::new(), None),
+                                |record| {
+                                    (
+                                        record.disabled_model_ids,
+                                        record.model_config_overrides,
+                                        record.model_preferences,
+                                        // A refresh rewrites the account's
+                                        // listings, not the user's own
+                                        // statement about their ids.
+                                        record.glued_prefix,
+                                    )
+                                },
+                            );
                             let record = ProviderRecord {
                                 kind: ManagedRecordKind::Managed,
                                 account: catalog.account,
@@ -2084,6 +2106,7 @@ impl ProviderService {
                                 disabled_model_ids,
                                 model_config_overrides,
                                 model_preferences,
+                                glued_prefix,
                                 version,
                             };
                             save_catalog(&tx, &provider_id, &record)?;

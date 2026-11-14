@@ -80,6 +80,10 @@ pub struct ManagementConnection {
     pub proxy_url: Option<String>,
     pub proxy_auth_configured: bool,
     pub timeout_ms: Option<u64>,
+    /// The prefix this Provider's listed ids carry, absent when it states
+    /// none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glued_prefix: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +249,7 @@ impl ProviderService {
                 proxy_url,
                 proxy_auth_configured,
                 timeout_ms: record.network.timeout_ms,
+                glued_prefix: record.glued_prefix,
             }),
             models_listed: None,
         })

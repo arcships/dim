@@ -185,6 +185,9 @@ pub struct ProviderProjection {
     pub source: Option<ModelSource>,
     pub models: Vec<ModelEntry>,
     pub context_window_override: Option<u64>,
+    /// The prefix this provider's listed ids carry, stripped once before an id
+    /// is broken into the tokens the steps compare.
+    pub glued_prefix: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

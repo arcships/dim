@@ -64,6 +64,10 @@ pub struct ProviderPatch {
     pub headers: Option<Vec<HeaderUpdate>>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub network: Option<NetworkPatch>,
+    /// The prefix this Provider's listed ids carry: `null` clears it and an
+    /// omitted field leaves the stored statement alone.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub glued_prefix: Option<Option<String>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -176,6 +180,7 @@ impl ConnectionInput {
             endpoint_overrides: BTreeMap::new(),
             disabled_model_ids: Vec::new(),
             enabled,
+            glued_prefix: None,
             definition_fingerprint: None,
             version: 1,
         })
@@ -193,6 +198,7 @@ impl ProviderPatch {
                 .network
                 .as_ref()
                 .is_none_or(|network| network.proxy.is_none() && network.timeout_ms.is_none())
+            && self.glued_prefix.is_none()
     }
 
     /// Whether the patch changes the endpoint or the account the record
@@ -244,6 +250,12 @@ impl ProviderPatch {
                     record.headers.insert(name, value);
                 }
             }
+        }
+        if let Some(glued_prefix) = self.glued_prefix {
+            // A prefix is stated so that it is stripped, so an empty one and a
+            // blank one are the same statement as clearing it.
+            let glued_prefix = glued_prefix.filter(|prefix| !prefix.trim().is_empty());
+            record.glued_prefix = glued_prefix;
         }
         if let Some(network) = self.network {
             if let Some(proxy) = network.proxy {
