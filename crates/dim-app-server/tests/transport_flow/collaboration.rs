@@ -3993,7 +3993,9 @@ async fn a_client_cancel_after_the_member_input_is_applied_stops_the_turn_it_sta
 /// a request to that member decided while the stop is still pending is
 /// refused `busy`, and one sent after it returns is accepted. The store holds
 /// the (S) wait's own read of `input/consumed`, so the member's turn finishes
-/// and the request settles while the stop is still owed.
+/// and the request settles while the stop is still owed. The mark is
+/// Collaboration's process memory, so the cancellation is offered again while
+/// its answer is `busy`: taking it is what says the stop returned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() {
     let (store, _, _) = InputHoldStore::new();
@@ -4108,25 +4110,50 @@ async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() 
         }
     );
 
-    // Once the held read returns, the wait ends one way or another — with the
-    // stop, or from the request's own ending when its turn got there first —
-    // and the mark clears, so the member takes new work.
+    // The stopping mark is Collaboration's process memory: the carry-out task
+    // clears it after its last check of the member's facts returns, and no
+    // Timeline fact records it, so releasing the held read does not clear it
+    // in the same step — that unblocks the check, which the carry-out task
+    // then has to run. A delivery that reaches the busy check first is
+    // answered `busy`, the product's own statement that the stop is still
+    // owed, which is the state this test set up. So the request is offered
+    // again while that is the answer; the member taking it is what says the
+    // stop returned, and any other refusal still fails here. One request is
+    // in flight at a time, and a stop that never returns is caught by the
+    // deadline.
     release_read.release();
-    let accepted = count(&lead_session, false).await;
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "request", "agentId": holder, "sessionId": member,
-            "prompt": "tool:echo {\"text\":\"after\"}"}),
-        ),
-        "queue",
-    )
-    .await;
-    poll("the request after the cancel is accepted", async || {
-        (count(&lead_session, false).await > accepted).then_some(())
+    let asked = async |client: &mut Client| {
+        let before = deliveries(&lead_session).await.len();
+        say(
+            client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:echo {\"text\":\"after\"}"}),
+            ),
+            "queue",
+        )
+        .await;
+        poll("the request after the cancel is decided", async || {
+            let seen = deliveries(&lead_session).await;
+            (seen.len() > before).then(|| seen.last().cloned().expect("a new delivery"))
+        })
+        .await
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match asked(&mut client).await {
+                CollaborationDelivery::Ok { .. } => return,
+                CollaborationDelivery::Error { error } => assert_eq!(
+                    error,
+                    dim_agent_types::CollaborationErrorCode::Busy,
+                    "the request after the cancel is accepted"
+                ),
+            }
+        }
     })
-    .await;
+    .await
+    .unwrap_or_else(|_| panic!("deadline: the request after the cancel is accepted"));
 
     server.shutdown();
     server.join().await.unwrap();
