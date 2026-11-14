@@ -496,12 +496,24 @@ function textOf(blocks: unknown, at: string): string {
   }).join("\n")
 }
 
+function fileImages(value: unknown, at: string): import("./protocol").ImageBlock[] {
+  if (typeof value === "string") return []
+  return arr(value, at).flatMap((item, index) => {
+    const block = obj(item, `${at}[${index}]`)
+    if (block.type !== "image") return []
+    const source = obj(block.source, `${at}[${index}].source`)
+    if (source.type !== "file") return []
+    return [{ type: "image" as const, source: readUploadedImage({ image: source }) }]
+  })
+}
+
 function toolResult(value: unknown, at: string): ToolResult {
   const source = obj(value, at)
   const text = typeof source.content === "string" ? source.content : textOf(source.content, `${at}.content`)
   const structured = source.structuredContent === undefined || source.structuredContent === null ? undefined : obj(source.structuredContent, `${at}.structuredContent`)
   const diff = typeof structured?.diff === "string" ? structured.diff : undefined
-  return { text, isError: source.isError === true, ...(diff === undefined ? {} : { diff }) }
+  const images = fileImages(source.content, `${at}.content`)
+  return { text, ...(images.length === 0 ? {} : { images }), isError: source.isError === true, ...(diff === undefined ? {} : { diff }) }
 }
 
 function rawBlocks(blocks: unknown, at: string): RawBlock[] {
@@ -550,7 +562,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
       }
       const user = obj(data.user, `${at}.user`)
       const { text, skills, hooks } = userText(user.content, `${at}.user.content`)
-      return { kind: "input", text, user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
+      const images = fileImages(user.content, `${at}.user.content`)
+      return { kind: "input", text, ...(images.length === 0 ? {} : { images }), user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
     }
     case "input/applied":
       return { kind: "input-applied", inputId: str(data, "input_id", at) }
@@ -994,4 +1007,11 @@ export function readTool(value: unknown) {
   const data = obj(source.call, `${at}.call`)
   const call = obj(data.call, `${at}.call.call`)
   return { requestId: str(data, "request_id", `${at}.call`), callId: str(call, "id", `${at}.call.call`), name: str(call, "name", `${at}.call.call`), input: obj(call.input, `${at}.call.call.input`) }
+}
+
+export function readUploadedImage(value: unknown): { type: "file"; mediaType: string; fileId: string } {
+  const reply = obj(value, "upload")
+  const source = obj(reply.image, "upload.image")
+  if (str(source, "type", "upload.image") !== "file") throw new Error("Invalid uploaded image source")
+  return { type: "file", mediaType: str(source, "mediaType", "upload.image"), fileId: str(source, "fileId", "upload.image") }
 }

@@ -137,3 +137,19 @@ a continuation declines it.
 | 提供 | `B:ModelProvider`、`B:StateCell<ModelProgress>` |
 | 被注入于 | — |
 <!-- /generated -->
+
+## Durable images at model execution
+
+Request adaptation recognizes file-backed image sources and preserves their
+position in user content and tool results. A non-vision request replaces each
+image with the existing placeholder; subsequent vision requests reuse the
+canonical references still present in effective context.
+
+The native-storage profile gates Aimux on SessionStore's
+[`sessionFiles` data face](../../../design/appserver/session-files.md#9-interface).
+Immediately before provider conversion it reads referenced images for the
+request metadata's Session, applies the shared image scaling rule and builds
+a request-local inline representation. The stored request remains unchanged.
+Missing owner/session identity or unavailable content fails execution; it never
+silently substitutes a placeholder for a readable-model request. Cancellation
+propagates to bounded reads. Provider conversion rejects unresolved file references.

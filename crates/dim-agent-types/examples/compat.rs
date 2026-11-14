@@ -61,6 +61,7 @@ fn native_events() -> Vec<AgentEvent> {
             },
             ContentBlock::Image {
                 source: ImageSource {
+                    file_id: None,
                     source_type: ImageSourceType::Base64,
                     media_type: "image/png".into(),
                     data: Some("AA==".into()),

@@ -1045,7 +1045,13 @@ fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners()
         let conflict = wire.read("session.permission.update"); assert_eq!(conflict["params"]["expectedVersion"],5);
         wire.send(json!({"jsonrpc":"2.0","id":conflict["id"],"error":{"code":-32000,"message":"Concurrent policy change","data":{"appError":"permission_conflict"}}}));
         let refresh = wire.read("session.permission.get"); wire.reply(&refresh,json!({"version":6,"policy":{"preset":"read-only","allowedTools":["fixture"],"disallowedTools":["danger"]}}));
+        let import = wire.read("attachment.import");
+        assert_eq!(std::fs::read(import["params"]["path"].as_str().unwrap()).unwrap(), b"image");
+        assert_eq!(import["params"]["image"], true);
+        wire.reply(&import, json!({"attachmentId":"image-id","path":"/files/image-id","bytes":5,"image":{"type":"file","mediaType":"image/png","fileId":"image-id"}}));
         let submit = wire.read("session.submit");
+        assert_eq!(submit["params"]["user"]["content"][0]["source"]["fileId"], "image-id");
+        assert!(submit["params"]["user"]["content"][0]["source"].get("data").is_none());
         assert_eq!(submit["params"]["user"]["content"][0]["source"]["mediaType"],"image/png");
         let input = event(9,"input","input","message",json!({"submission_id":submit["params"]["submissionId"],"user":submit["params"]["user"],"mode":"queue"}));
         wire.reply(&submit,json!({"event":input}));
@@ -3270,6 +3276,65 @@ fn acp_load_and_resume_report_unavailable_sessions_without_listing_history() {
             serde_json::to_value(acp::Error::resource_not_found(Some("missing".into()))).unwrap();
         assert_eq!(response["error"], expected);
     }
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_load_materializes_user_and_tool_file_images_in_order() {
+    let home = Home::new();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(METHODS);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        let source = |id| json!({"type":"file","mediaType":"image/png","fileId":id});
+        wire.reply(&history, json!({"events":[
+            event(1,"input","input","message",json!({"user":{"content":[{"type":"text","text":"before"},{"type":"image","source":source("user-image")},{"type":"text","text":"after"}]},"mode":"queue"})),
+            event(2,"start","turn","start",json!({"turn_id":"turn"})),
+            event(3,"consumed","input","consumed",json!({"input_id":"input"})),
+            event(4,"result","step","tool-result",json!({"turn_id":"turn","request_id":"request","results":[{"call_id":"call","result":{"content":[{"type":"text","text":"caption"},{"type":"image","source":source("tool-image")}]}}]}))
+        ],"through":4,"nextAfter":4,"done":true}));
+        for file in ["user-image", "tool-image"] {
+            for (offset, data) in [(0, "aW1hZ2U="), (5, "")] {
+                let read = wire.read("attachment.read");
+                assert_eq!(read["params"], json!({"sessionId":"saved","fileId":file,"offset":offset}));
+                wire.reply(&read, json!({"data":data,"eof":data.is_empty()}));
+            }
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(
+        2,
+        "session/load",
+        json!({"sessionId":"saved","cwd":home.0,"mcpServers":[]}),
+    );
+    let loaded = peer.response(2);
+    assert!(loaded.get("error").is_none(), "{loaded}");
+    let updates: Vec<_> = peer
+        .updates
+        .iter()
+        .map(|frame| &frame["params"]["update"])
+        .collect();
+    let user: Vec<_> = updates
+        .iter()
+        .filter(|update| update["sessionUpdate"] == "user_message_chunk")
+        .collect();
+    assert_eq!(user.len(), 3);
+    assert_eq!(user[0]["content"]["text"], "before");
+    assert_eq!(
+        user[1]["content"],
+        json!({"type":"image","mimeType":"image/png","data":"aW1hZ2U="})
+    );
+    assert_eq!(user[2]["content"]["text"], "after");
+    let tool = updates
+        .iter()
+        .find(|update| update["sessionUpdate"] == "tool_call_update")
+        .unwrap();
+    assert_eq!(tool["content"][0]["content"]["text"], "caption");
+    assert_eq!(tool["content"][1]["content"], user[1]["content"]);
     peer.close();
     daemon.join().unwrap();
 }

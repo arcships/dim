@@ -250,3 +250,10 @@ interruption, pending-input restore and the manual compaction step.
 | 提供 | `B:AgentLoop`、`B:StateCell<LoopSnapshot>`、`B:dyn LoopState` |
 | 被注入于 | — |
 <!-- /generated -->
+
+## Request Session identity
+
+When Loop constructs `ContextPrepareData.request`, it writes the owning Timeline's
+Session ID into request metadata. This identity is fixed before context preparation
+and persisted with the model call. Final model execution uses it for Session-scoped
+file reads; model configuration cannot select another Session's files.

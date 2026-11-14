@@ -559,6 +559,112 @@ impl SessionFiles {
 }
 
 impl SessionFilesService for SessionFiles {
+    fn import(
+        &self,
+        session_id: String,
+        name: String,
+        source: String,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            if !valid_name(&name) || !Path::new(&source).is_absolute() {
+                return Err(file_error(
+                    SessionFileErrorCode::Invalid,
+                    "Invalid import name or source path",
+                ));
+            }
+            let metadata = tokio::fs::metadata(&source)
+                .await
+                .map_err(|e| file_error(SessionFileErrorCode::Invalid, e))?;
+            if !metadata.is_file() {
+                return Err(file_error(
+                    SessionFileErrorCode::Invalid,
+                    "Source must be a regular file",
+                ));
+            }
+            if metadata.len() > MAX_BYTES as u64 {
+                return Err(file_error(
+                    SessionFileErrorCode::TooLarge,
+                    "Session file exceeds 16 MiB",
+                ));
+            }
+            let call = cancel.child_token();
+            let task = {
+                let _admission = self.0.admission.lock().unwrap();
+                if self.0.stopping.is_cancelled() {
+                    return Err(cancelled());
+                }
+                let files = self.0.clone();
+                let call = call.clone();
+                self.0.tasks.spawn(async move {
+                    files
+                        .put(session_id, name, ImportContent::Path(source.into()), call)
+                        .await
+                })
+            };
+            let _dropped = call.drop_guard();
+            task.await
+                .unwrap_or_else(|join| Err(file_error(SessionFileErrorCode::Storage, join)))
+        })
+    }
+    fn read(
+        &self,
+        session_id: String,
+        file_id: String,
+        offset: u64,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SessionFileError>> + Send + '_>> {
+        Box::pin(async move {
+            if self.0.stopping.is_cancelled() || cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            if uuid::Uuid::parse_str(&file_id).is_err() {
+                return Err(file_error(SessionFileErrorCode::Invalid, "Invalid file id"));
+            }
+            let id = file_id.clone();
+            let owned = self.0.db.run_read(move |connection| {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)", params![session_id, id], |row| row.get::<_, bool>(0)).map_err(error)
+            }).await.map_err(|e| file_error(SessionFileErrorCode::Storage, e))?;
+            if !owned {
+                return Err(file_error(
+                    SessionFileErrorCode::NotFound,
+                    "Session file not found",
+                ));
+            }
+            let storage = self
+                .0
+                .ctx
+                .get::<FileStorage>()
+                .ok_or_else(node_unavailable)?;
+            let relative = Path::new(&self.0.directory).join(file_id);
+            let directory = storage
+                .path(self.0.root, &relative)
+                .map_err(storage_failure)?;
+            let entries = storage
+                .list(&directory, &cancel)
+                .await
+                .map_err(storage_failure)?;
+            let entry = entries
+                .into_iter()
+                .find(|entry| entry.kind == dim_agent_capabilities::file_storage::EntryKind::File)
+                .ok_or_else(|| {
+                    file_error(SessionFileErrorCode::Storage, "Session file is missing")
+                })?;
+            let path = storage
+                .path(self.0.root, relative.join(entry.name))
+                .map_err(storage_failure)?;
+            let reader = storage
+                .open_read(&path, &cancel)
+                .await
+                .map_err(storage_failure)?;
+            reader
+                .read_at(offset, 64 * 1024, &cancel)
+                .await
+                .map_err(storage_failure)
+        })
+    }
+
     fn put(
         &self,
         session_id: String,
@@ -588,9 +694,11 @@ impl SessionFilesService for SessionFiles {
                 }
                 let files = self.0.clone();
                 let call = call.clone();
-                self.0
-                    .tasks
-                    .spawn(async move { files.put(session_id, name, content, call).await })
+                self.0.tasks.spawn(async move {
+                    files
+                        .put(session_id, name, ImportContent::Bytes(content), call)
+                        .await
+                })
             };
             let _dropped = call.drop_guard();
             task.await
@@ -622,12 +730,17 @@ impl SessionFilesService for SessionFiles {
     }
 }
 
+enum ImportContent {
+    Bytes(Vec<u8>),
+    Path(PathBuf),
+}
+
 impl Files {
     async fn put(
         self: Arc<Self>,
         session_id: String,
         name: String,
-        content: Vec<u8>,
+        content: ImportContent,
         cancel: CancellationToken,
     ) -> Result<StoredSessionFile, SessionFileError> {
         let stopped = || cancel.is_cancelled() || self.stopping.is_cancelled();
@@ -681,19 +794,32 @@ impl Files {
             return Err(not_found());
         }
 
-        let bytes = content.len() as u64;
         let written = async {
             storage.create_directory(&directory, &cancel).await?;
             storage.create_directory(&file_path, &cancel).await?;
-            storage
-                .replace(&file, content, Some(permissions), &cancel)
-                .await
+            match content {
+                ImportContent::Bytes(content) => {
+                    let bytes = content.len() as u64;
+                    storage
+                        .replace(&file, content, Some(permissions), &cancel)
+                        .await?;
+                    Ok(bytes)
+                }
+                ImportContent::Path(source) => {
+                    storage
+                        .import(&file, source, MAX_BYTES as u64, Some(permissions), &cancel)
+                        .await
+                }
+            }
         }
         .await;
-        if let Err(failure) = written {
-            self.abandon(&file_id).await;
-            return Err(storage_failure(failure));
-        }
+        let bytes = match written {
+            Ok(bytes) => bytes,
+            Err(failure) => {
+                self.abandon(&file_id).await;
+                return Err(storage_failure(failure));
+            }
+        };
         #[cfg(test)]
         tests::before_commit(&session_id);
         if stopped() {
@@ -926,3 +1052,120 @@ impl Files {
 
 #[cfg(test)]
 mod tests;
+
+pub(super) struct SessionFilesFace(pub(super) SessionFiles);
+impl rutis_bridge::session::HostDispatch for SessionFilesFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(
+            serde_json::json!({"put":"async", "import":"async", "read":"async", "register":"async", "owns":"async", "owned_paths":"async"}),
+        )
+    }
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use rutis_bridge::session::{Error, Value};
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
+        enum Operation {
+            Put {
+                #[serde(rename = "sessionId")]
+                session: String,
+                name: String,
+                content: String,
+            },
+            Import {
+                #[serde(rename = "sessionId")]
+                session: String,
+                name: String,
+                source: String,
+            },
+            Read {
+                #[serde(rename = "sessionId")]
+                session: String,
+                #[serde(rename = "fileId")]
+                file: String,
+                offset: u64,
+            },
+            Register {
+                #[serde(rename = "sessionId")]
+                session: String,
+                path: String,
+            },
+            Owns {
+                #[serde(rename = "sessionId")]
+                session: String,
+                path: String,
+            },
+            OwnedPaths {
+                #[serde(rename = "sessionId")]
+                session: String,
+            },
+        }
+        let parameters = args.json()?;
+        let [mut object] = serde_json::from_value::<[serde_json::Value; 1]>(parameters)
+            .map_err(|e| Error::Value(e.to_string()))?;
+        object
+            .as_object_mut()
+            .ok_or_else(|| Error::Value("Expected one request object".into()))?
+            .insert("method".into(), method.into());
+        let operation: Operation =
+            serde_json::from_value(object).map_err(|e| Error::Value(e.to_string()))?;
+        let files = self.0.clone();
+        Ok(Value::cancellable_future(async move {
+            let cancel = CancellationToken::new();
+            let _drop = cancel.clone().drop_guard();
+            let result: Result<serde_json::Value, SessionFileError> = async {
+                Ok(match operation {
+                    Operation::Put {
+                        session,
+                        name,
+                        content,
+                    } => {
+                        let bytes = STANDARD
+                            .decode(content)
+                            .map_err(|e| file_error(SessionFileErrorCode::Invalid, e))?;
+                        serde_json::json!(files.put(session, name, bytes, cancel).await?)
+                    }
+                    Operation::Import {
+                        session,
+                        name,
+                        source,
+                    } => serde_json::json!(files.import(session, name, source, cancel).await?),
+                    Operation::Read {
+                        session,
+                        file,
+                        offset,
+                    } => {
+                        let bytes = files.read(session, file, offset, cancel).await?;
+                        serde_json::json!({"data":STANDARD.encode(&bytes),"eof":bytes.is_empty()})
+                    }
+                    Operation::Register { session, path } => {
+                        files.register(session, path.into()).await?;
+                        serde_json::json!({})
+                    }
+                    Operation::Owns { session, path } => {
+                        serde_json::json!({"owned":files.owns(session,path.into()).await?})
+                    }
+                    Operation::OwnedPaths { session } => {
+                        serde_json::json!({"paths":files.owned_paths(session).await?})
+                    }
+                })
+            }
+            .await;
+            result.map(Value::from).map_err(|error| {
+                let code = match error.code {
+                    SessionFileErrorCode::NotFound => "not_found",
+                    SessionFileErrorCode::Invalid => "invalid",
+                    SessionFileErrorCode::TooLarge => "too_large",
+                    SessionFileErrorCode::NodeUnavailable => "node_unavailable",
+                    SessionFileErrorCode::Cancelled => "cancelled",
+                    SessionFileErrorCode::Storage => "storage",
+                };
+                rutis_bridge::exports::failure("SessionFileError", code, error.message, None)
+            })
+        }))
+    }
+}

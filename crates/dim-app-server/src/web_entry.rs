@@ -3,6 +3,7 @@
 //! `docs/design/web-workspace.md` §2.
 
 mod resources;
+mod uploads;
 
 use crate::{
     connection::{ConnectionHub, Entry},
@@ -202,14 +203,24 @@ impl WebEntry {
         let stop = hub.closing().child_token();
         let site = Arc::new(Site {
             hub: hub.clone(),
+            stopping: stop.clone(),
             assets,
             port: address.port(),
             bootstrap: digest(&bootstrap),
             access: Mutex::new(HashSet::new()),
+            uploads: tokio::sync::Semaphore::new(4),
             throttle: Mutex::new(Throttle::default()),
         });
         let router = Router::new()
             .route("/api/health", get(health))
+            .route(
+                "/api/sessions/{session_id}/files",
+                post(uploads::upload).layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+            )
+            .route(
+                "/api/sessions/{session_id}/files/{file_id}",
+                get(uploads::download),
+            )
             .route("/api/auth/exchange", post(exchange))
             .route("/api/auth/session", get(session))
             .route("/api/auth/logout", post(logout))
@@ -391,6 +402,8 @@ impl Assets {
 }
 
 struct Site {
+    stopping: CancellationToken,
+    uploads: tokio::sync::Semaphore,
     hub: Arc<ConnectionHub>,
     assets: Assets,
     port: u16,

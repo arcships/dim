@@ -83,8 +83,9 @@ export type BranchSource =
   | { kind: "host"; operationId: string }
 
 export type ToolResult = {
-  /** Text the model read; image blocks are dropped at the boundary. */
+  /** Text and durable images from the tool result. */
   text: string
+  images?: ImageBlock[]
   isError: boolean
   /** The edit tool's display diff (`structuredContent.diff`). */
   diff?: string
@@ -96,11 +97,11 @@ export type RawBlock = { text: string; key?: string; retire: boolean }
 /** A user message as the server holds it: content blocks forwarded unchanged to `session.input.withdraw`. */
 export type UserInput = { content: Array<Record<string, unknown>> }
 
-/** A base64 image content block, as the server's `ContentBlock::Image` reads it. */
-export type ImageBlock = { type: "image"; source: { type: "base64"; mediaType: string; data: string } }
+/** A stored image content block. */
+export type ImageBlock = { type: "image"; source: { type: "file"; mediaType: string; fileId: string } }
 
-/** What a composer draft adds to its text: images as content blocks, and pasted texts stored as Session attachments. */
-export type DraftAttachments = { images: ImageBlock[]; pastes: string[] }
+/** Local files and pasted text held until the message is accepted. */
+export type DraftAttachments = { images: File[]; pastes: string[] }
 
 /** A file or directory the `@` mention picker offers: its path under the workspace and its absolute path. */
 export type FileCandidate = { relativePath: string; absolutePath: string; dir: boolean }
@@ -131,7 +132,7 @@ export type WithdrawResult =
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string; user?: UserInput; skills?: string[]; hooks?: number; blocks: RawBlock[] }
+  | { kind: "input"; text?: string; user?: UserInput; images?: ImageBlock[]; skills?: string[]; hooks?: number; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-consumed"; inputId: string }
   | { kind: "input-applied"; inputId: string }

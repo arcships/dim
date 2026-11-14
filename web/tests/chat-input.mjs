@@ -254,13 +254,11 @@ for (const branchId of ["main", "worker"]) {
   })
 
   test(`${branchId}: attachment-only drafts send images and long pastes during a run`, async (t) => {
-    const original = globalThis.FileReader
-    globalThis.FileReader = class { readAsDataURL() { this.result = "data:image/png;base64,aW1hZ2U="; this.onload() } }
-    t.after(() => { globalThis.FileReader = original })
+    const image = new File(["image"], "image.png", { type: "image/png" })
     const { root, submissions } = mount(t, branchId)
     const field = all(root).find((element) => element.type === "textarea")
     let prevented = false
-    field.props.onPaste({ clipboardData: { files: [{ type: "image/png" }] }, preventDefault() { prevented = true } })
+    field.props.onPaste({ clipboardData: { files: [image] }, preventDefault() { prevented = true } })
     await flush()
     assert.equal(prevented, true)
     assert(all(root).some((element) => element.type === "img"))
@@ -270,50 +268,31 @@ for (const branchId of ["main", "worker"]) {
     const send = button(root, "composer.send")
     assert.equal(send.props.disabled, false)
     await click(send)
-    assert.deepEqual(submissions, [{ sessionId: "session", branch: branchId, value: "", attachments: { images: [{ type: "image", source: { type: "base64", mediaType: "image/png", data: "aW1hZ2U=" } }], pastes: [paste] } }])
+    assert.deepEqual(submissions, [{ sessionId: "session", branch: branchId, value: "", attachments: { images: [image], pastes: [paste] } }])
   })
 }
 
-test("overlapping image reads preserve additions and removals in either completion order", async (t) => {
-  const original = globalThis.FileReader
-  const readers = []
-  globalThis.FileReader = class {
-    readAsDataURL(file) { this.result = `data:image/png;base64,${file.data}`; readers.push(this) }
-  }
-  t.after(() => { globalThis.FileReader = original })
-  for (const order of [[0, 1], [1, 0]]) {
-    const { root, submissions } = mount(t, "main")
-    const field = all(root).find((element) => element.type === "textarea")
-    const paste = (data) => field.props.onPaste({ clipboardData: { files: [{ type: "image/png", data }] }, preventDefault() {} })
-    paste("b2xk")
-    readers.shift().onload()
+test("adding and removing file attachments preserves selection order", async (t) => {
+  const { root, submissions } = mount(t, "main")
+  const field = all(root).find((element) => element.type === "textarea")
+  for (const name of ["old", "first", "second"]) {
+    field.props.onPaste({ clipboardData: { files: [new File([name], name, { type: "image/png" })] }, preventDefault() {} })
     await flush()
-    paste("Zmlyc3Q=")
-    paste("c2Vjb25k")
-    await click(button(root, "composer.removeAttachment"))
-    for (const index of order) {
-      readers[index].onload()
-      await flush()
-    }
-    readers.length = 0
-    assert.equal(all(root).filter((element) => element.type === "img").length, 2)
-    await click(button(root, "composer.send"))
-    assert.deepEqual(submissions[0].attachments.images.map((image) => image.source.data), order.map((index) => ["Zmlyc3Q=", "c2Vjb25k"][index]))
   }
+  await click(button(root, "composer.removeAttachment"))
+  await flush()
+  assert.equal(all(root).filter((element) => element.type === "img").length, 2)
+  await click(button(root, "composer.send"))
+  assert.deepEqual(submissions[0].attachments.images.map((image) => image.name), ["first", "second"])
 })
 
 test("send acknowledgments clear only submitted attachments, while failures preserve the whole draft", async (t) => {
-  const original = globalThis.FileReader
-  globalThis.FileReader = class {
-    readAsDataURL(file) { this.result = `data:image/png;base64,${file.data}`; this.onload() }
-  }
-  t.after(() => { globalThis.FileReader = original })
   for (const accepted of [true, false]) {
     const { root, submissions } = mount(t, "main")
     const field = all(root).find((element) => element.type === "textarea")
     const pastes = ["first paste\n".repeat(1700), "next paste\n".repeat(1800)]
     const add = async (data, value) => {
-      field.props.onPaste({ clipboardData: { files: [{ type: "image/png", data }] }, preventDefault() {} })
+      field.props.onPaste({ clipboardData: { files: [new File([data], data, { type: "image/png" })] }, preventDefault() {} })
       field.props.onPaste({ clipboardData: { files: [], getData: () => value }, preventDefault() {} })
       await flush()
     }
@@ -331,13 +310,13 @@ test("send acknowledgments clear only submitted attachments, while failures pres
     settle()
     await pending
     await flush()
-    assert.deepEqual(submissions[0].attachments.images.map((image) => image.source.data), ["Zmlyc3Q="])
+    assert.deepEqual(submissions[0].attachments.images.map((image) => image.name), ["Zmlyc3Q="])
     assert.deepEqual(submissions[0].attachments.pastes, [pastes[0]])
     assert.equal(all(root).filter((element) => element.type === "img").length, accepted ? 1 : 2)
     globalThis.chatInputStores.chat.submit = submit
     await click(button(root, "composer.send"))
     assert.equal(submissions[1].value, "next message")
-    assert.deepEqual(submissions[1].attachments.images.map((image) => image.source.data), accepted ? ["c2Vjb25k"] : ["Zmlyc3Q=", "c2Vjb25k"])
+    assert.deepEqual(submissions[1].attachments.images.map((image) => image.name), accepted ? ["c2Vjb25k"] : ["Zmlyc3Q=", "c2Vjb25k"])
     assert.deepEqual(submissions[1].attachments.pastes, accepted ? [pastes[1]] : pastes)
     assert.equal(button(root, "composer.removeAttachment"), undefined)
   }
@@ -481,4 +460,34 @@ test("files picked with overlapping names keep their own paths in the submitted 
   }
   await click(button(root, "composer.send"))
   assert.equal(submissions[0].value, "[@report.md](/repo/report.md) [@report.md copy](</repo/report.md copy>) ")
+})
+
+
+test("image submission uploads the File before sending only its durable reference", async t => {
+  const calls = [], uploads = []
+  globalThis.chatInputStores = { connection: { client: { async call(method, params, read) {
+    calls.push({ method, params }); return read({})
+  } } } }
+  const previousFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = previousFetch })
+  globalThis.fetch = async (url, request) => {
+    assert.equal(calls.length, 0)
+    uploads.push({ url, request })
+    assert(request.body instanceof FormData)
+    assert.equal(await request.body.get("file").text(), "image bytes")
+    return Response.json({ attachmentId: "image-1", path: "/files/image-1/image", bytes: 11,
+      image: { type: "file", mediaType: "image/png", fileId: "image-1" } })
+  }
+  setActivePinia(createPinia())
+  const chat = useChatStore()
+  t.after(() => chat.$dispose())
+  const image = new File(["image bytes"], "screen.png", { type: "image/png" })
+  await chat.submit("session", "main", "look", { images: [image], pastes: [] })
+  assert.equal(uploads[0].url, "/api/sessions/session/files?image=true")
+  assert.equal(calls[0].method, "session.submit")
+  assert.deepEqual(calls[0].params.user.content, [{ type: "text", text: "look" },
+    { type: "image", source: { type: "file", mediaType: "image/png", fileId: "image-1" } }])
+  globalThis.fetch = async () => new Response("failed", { status: 500 })
+  await assert.rejects(chat.submit("session", "main", "again", { images: [image], pastes: [] }), /upload failed/)
+  assert.equal(calls.length, 1)
 })

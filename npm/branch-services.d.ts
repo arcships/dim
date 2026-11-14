@@ -184,9 +184,10 @@ export interface TimelineInfo {
   source?: BranchSource | null
 }
 
-export type ImageSourceType = "base64" | "url"
+export type ImageSourceType = "base64" | "url" | "file"
 
 export interface ImageSource {
+  fileId?: string | null
   type: ImageSourceType
   mediaType: string
   data?: string | null

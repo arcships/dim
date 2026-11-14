@@ -11,7 +11,7 @@ The model reads that path with `read` like any file. Design:
 | Service | Purpose |
 | --- | --- |
 | `S:SessionIdentity` | The Session a put stores for; Rpc already resolved it from `sessionId`. |
-| `P:SessionFilesHost` | SessionStore's `sessionFiles.put`. In this graph it is a graph-only fixture that stores nothing. |
+| `P:SessionFilesHost` | SessionStore's `sessionFiles` data face (§9 of its owner contract). In this graph it is a graph-only fixture that stores nothing. |
 | `S:SessionMethods` | Register the `attachment` namespace from `apply`, until this part unloads. |
 
 ## Method
@@ -69,3 +69,19 @@ and an inactive node at the `sessionMethods` contract.
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->
+
+## File import and image reads
+
+`attachment.import {sessionId, path, name?, image?}` is mutating and drains on
+interruption. It calls `sessionFiles.import` for the owning Session. Names default
+to `image` when `image=true`, otherwise `attachment`. The reply is
+`{attachmentId, path, bytes, image}`; `image` is null for ordinary files, or
+`{type:"file",mediaType,fileId}` for a validated image. Image preparation applies
+the shared scaling rule to a pinned source before importing accepted bytes. Invalid
+images fail before any Session ownership is committed. Import errors use the existing attachment error mapping.
+
+`attachment.read {sessionId,fileId,offset}` is read-only and report-interrupted.
+It delegates to `sessionFiles.read`, returning `{data,eof}`. Both methods verify
+that the request's Session is the owning Session. Rpc admits path import only
+from the local transport. The Web entry invokes it internally after receiving
+an authenticated HTTP upload.

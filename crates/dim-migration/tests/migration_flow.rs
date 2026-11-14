@@ -806,7 +806,6 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_keeps_large_images_as_files_without_rejecting_session_history() {
-    use base64::Engine;
     use dim_agent_types::{ContextCompactionResult, MessageContent, MessagePart};
 
     for (small_size, large_size) in [
@@ -863,10 +862,10 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
             .unwrap();
         assert_eq!(imported.outcome, Outcome::Imported, "{report:?}");
         assert!(
-            imported
+            !imported
                 .omitted
                 .iter()
-                .any(|field| field == "attachment.inlineImage.large")
+                .any(|field| field.starts_with("attachment.inlineImage."))
         );
         assert!(
             !imported
@@ -886,7 +885,7 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
             ServerConfig {
                 startup_timeout: std::time::Duration::from_secs(60),
                 database_path: Some(target.join("rust/dimcode.sqlite")),
-                product_home: Some(target),
+                product_home: Some(target.clone()),
                 unix_path: Some(directory.path().join("native.sock")),
                 ..Default::default()
             },
@@ -920,24 +919,16 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
                 _ => None,
             })
             .collect();
-        assert_eq!(images.len(), 1);
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(images[0].data.as_ref().unwrap())
-                .unwrap(),
-            small
-        );
-        let path = parts
-            .iter()
-            .find_map(|part| match part {
-                MessagePart::Text { text, .. } => {
-                    text.strip_prefix("Attached imported blob large: ")
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(std::fs::read(path).unwrap(), large);
-        assert!(history.iter().any(|event| matches!(&event.kind, EventKind::InputMessage(input) if input.user.as_ref().is_some_and(|user| user.content.iter().any(|part|matches!(part, dim_agent_types::ContentBlock::Text {text} if text.contains("Attached imported blob large: ")))))));
+        assert_eq!(images.len(), 2);
+        for (source, expected) in images.iter().zip([&small, &large]) {
+            assert_eq!(source.source_type, dim_agent_types::ImageSourceType::File);
+            assert!(source.data.is_none());
+            let path = target
+                .join("rust/dimcode.sqlite.session-files")
+                .join(source.file_id.as_ref().unwrap())
+                .join("data");
+            assert_eq!(&std::fs::read(path).unwrap(), expected);
+        }
         assert!(
             history.iter().all(|event| !matches!(
                 event.kind,

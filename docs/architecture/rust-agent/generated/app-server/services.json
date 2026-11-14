@@ -245,7 +245,7 @@
         ]
       },
       {
-        "id": 76,
+        "id": 79,
         "parent": 72,
         "name": "eventhub-ready",
         "state": "Active",
@@ -3200,9 +3200,29 @@
         "name": "Aimux",
         "state": "Active",
         "generation": 1,
-        "injects": [],
-        "resolved": [],
-        "reads": []
+        "injects": [
+          {
+            "service": "dim_agent_capabilities::host::SessionFilesHost",
+            "scope": null,
+            "status": "Ready"
+          }
+        ],
+        "resolved": [
+          {
+            "service": "dim_agent_capabilities::host::SessionFilesHost",
+            "scope": null,
+            "provider": 8,
+            "generation": 1
+          }
+        ],
+        "reads": [
+          {
+            "service": "dim_agent_capabilities::host::SessionFilesHost",
+            "provider": 8,
+            "declared": true,
+            "external": true
+          }
+        ]
       },
       {
         "id": 4,
@@ -3667,6 +3687,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#sessionClientsHost",
         "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionFiles",
+        "provider": 8,
         "generation": 1,
         "removing": false
       },

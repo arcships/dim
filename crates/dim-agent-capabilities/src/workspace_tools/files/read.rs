@@ -631,6 +631,7 @@ fn image_result(display: &str, size: u64, input: &Input, image: ScaledImage) -> 
         structured["animated"] = json!(true);
     }
     let source = ImageSource {
+        file_id: None,
         source_type: ImageSourceType::Base64,
         media_type: image.media_type.to_string(),
         data: Some(STANDARD.encode(&image.bytes)),

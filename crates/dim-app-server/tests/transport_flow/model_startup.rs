@@ -253,6 +253,16 @@ async fn model_preview_resolves_startup_without_creating_sessions_or_saving_choi
 async fn temporary_startup_connections_execute_all_formats_without_sharing_or_persisting_secrets() {
     let home = std::env::temp_dir().join(format!("dim-startup-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();
+    use base64::Engine;
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==";
+    let image_path = home.join("image.png");
+    std::fs::write(
+        &image_path,
+        base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap(),
+    )
+    .unwrap();
     let seen = Seen::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/gateway/v1", listener.local_addr().unwrap());
@@ -308,7 +318,38 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 &home.join("startup-recordings"),
             ))
             .unwrap();
-            submit(&mut client, &sid, "main").await;
+            let session = server.agent().unwrap().get_session(&sid).unwrap();
+            let mut selection = session.config().model.clone();
+            selection
+                .capability_snapshot
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .vision = true;
+            session
+                .configure(
+                    dim_agent_runtime::ConfigureUpdate {
+                        model: Some(selection),
+                        ..Default::default()
+                    },
+                    "main",
+                )
+                .await
+                .unwrap();
+            let imported = client
+                .rpc(
+                    "attachment.import",
+                    json!({"sessionId":sid,"path":image_path,"image":true}),
+                )
+                .await;
+            assert_ok(&imported);
+            let image = imported["result"]["image"].clone();
+            assert_ok(&client.rpc("session.submit", json!({"sessionId":sid,"branchId":"main","user":{"content":[{"type":"text","text":"hello"},{"type":"image","source":image}]}})).await);
+            assert_ok(
+                &client
+                    .rpc("session.idle", json!({"sessionId":sid,"branchId":"main"}))
+                    .await,
+            );
             let history = client
                 .rpc(
                     "session.history",
@@ -330,6 +371,21 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 uri.path(),
                 format!("/gateway/v1{suffix}"),
                 "{format}: {uri}"
+            );
+            assert!(
+                body.to_string().contains(png),
+                "{format}: the provider receives image bytes: {body}"
+            );
+            assert!(!body.to_string().contains(image["fileId"].as_str().unwrap()));
+            assert!(
+                history
+                    .to_string()
+                    .contains(image["fileId"].as_str().unwrap()),
+                "History preserves the file reference"
+            );
+            assert!(
+                !history.to_string().contains(png),
+                "History must not expand image bytes"
             );
             let auth_header = if bearer { "authorization" } else { key_header };
             let expected = if auth_header == "authorization" {

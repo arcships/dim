@@ -17,7 +17,7 @@ use aimux_core::{
     shared::{FileBytes, FileData, SharedProviderOptions, provider_namespace},
     tool::{FunctionTool, Tool},
 };
-use dim_agent_capabilities::host::HostError;
+use dim_agent_capabilities::host::{HostError, HostErrorKind};
 use dim_agent_types::{
     ContentBlock, ContentMetadata, ImageSource, ImageSourceType, MessageContent, MessagePart,
     ModelRequest, Role, SystemPrompt, SystemPromptPart, ToolContent,
@@ -601,6 +601,12 @@ fn image_part(
     source: &ImageSource,
 ) -> Result<UserPart, HostError> {
     let data = match source.source_type {
+        ImageSourceType::File => {
+            return Err(HostError::classified(
+                HostErrorKind::InvalidRequest,
+                "Image file was not materialized at the model boundary",
+            ));
+        }
         ImageSourceType::Base64 => {
             let data = source.data.as_ref().ok_or_else(|| {
                 error(

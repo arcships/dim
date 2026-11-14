@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tempfile = "3"
 dim-client.workspace = true
 dim-migration.workspace = true
 dim-acp.workspace = true

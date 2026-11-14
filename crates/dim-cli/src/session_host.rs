@@ -1208,6 +1208,12 @@ impl Worker {
         if !text.is_empty() {
             content.push(ContentBlock::Text { text });
         }
+        if let Err(error) =
+            crate::images::import(&mut self.client, &self.session_id, &mut content).await
+        {
+            self.send(Update::Notice(format!("Image import failed: {error}")));
+            return;
+        }
         let mut params = json!({
             "sessionId": self.session_id,
             "branchId": self.focus,

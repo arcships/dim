@@ -490,6 +490,50 @@ impl FileStorage {
             .await
     }
 
+    /// Copies an authorized source into `path`, with bounded memory and atomic publication.
+    /// The source must be a regular file and stay at its initial length during copying.
+    pub async fn import(
+        self: &Arc<Self>,
+        path: &FilePath,
+        source: std::path::PathBuf,
+        limit: u64,
+        permissions: Option<Permissions>,
+        cancel: &CancellationToken,
+    ) -> Result<u64> {
+        self.check(cancel)?;
+        let (source, length) = tokio::task::spawn_blocking(move || {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+            }
+            let file = options.open(source)?;
+            let metadata = file.metadata()?;
+            if !metadata.is_file() || metadata.len() > limit {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Source is not a regular file within the size limit",
+                ));
+            }
+            let length = metadata.len();
+            Ok::<_, std::io::Error>((
+                ImportReader {
+                    file,
+                    remaining: length,
+                },
+                length,
+            ))
+        })
+        .await??;
+        self.lock(path, cancel)
+            .await?
+            .replace_from(source, permissions, cancel)
+            .await?;
+        Ok(length)
+    }
+
     /// Makes `path` an existing business directory: a missing one is created
     /// with mode 0700 (Windows inherits the parent's DACL), an existing one
     /// counts as created, and any other existing entry fails `Io` untouched.
@@ -774,6 +818,38 @@ impl FileLease {
             )
         })
         .await
+    }
+}
+
+struct ImportReader {
+    file: File,
+    remaining: u64,
+}
+impl Read for ImportReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            let mut extra = [0];
+            if self.file.read(&mut extra)? != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Source grew during import",
+                ));
+            }
+            return Ok(0);
+        }
+        let limit = buffer.len().min(self.remaining as usize);
+        let count = self.file.read(&mut buffer[..limit])?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Source shrank during import",
+            ));
+        }
+        self.remaining -= count as u64;
+        Ok(count)
     }
 }
 

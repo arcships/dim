@@ -9,7 +9,7 @@ import type { WorkItem } from "./work"
 
 // Panels scroll at 240px; the cap only keeps a huge result from flooding the DOM.
 const MAX_PANEL_CHARS = 20_000
-const props = defineProps<{ item: WorkItem; expanded: boolean }>()
+const props = defineProps<{ sessionId?: string; item: WorkItem; expanded: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
 const { t } = useI18n()
 
@@ -80,7 +80,7 @@ const sections = computed<PanelSection[]>(() => {
   }
 })
 
-const hasDetails = computed(() => props.item.kind === "thinking" ? thinkingText.value !== "" : sections.value.length > 0)
+const hasDetails = computed(() => props.item.kind === "thinking" ? thinkingText.value !== "" : (sections.value.length > 0 || (tool.value?.result?.images?.length ?? 0) > 0))
 
 const copiedId = ref<string>()
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
@@ -143,6 +143,7 @@ async function copy(section: PanelSection): Promise<void> {
           </div>
           <pre v-else class="tool-panel-pre" :class="{ 'is-error': isError && section.id === 'output' }">{{ section.copy }}</pre>
         </template>
+        <img v-for="image in tool?.result?.images" v-if="sessionId" :key="image.source.fileId" :src="`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(image.source.fileId)}`" alt="Tool image" loading="lazy" style="max-width: 100%; max-height: 24rem; object-fit: contain" />
       </div>
     </div>
   </div>

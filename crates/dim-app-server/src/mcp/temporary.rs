@@ -91,6 +91,8 @@ fn missing() -> RpcError {
 }
 
 pub(super) struct TemporaryMcp {
+    identity: Key<dim_agent_runtime::SessionIdentity>,
+    files: Key<dim_agent_capabilities::host::SessionFilesHost>,
     session: InstanceId,
     methods: Key<SessionMethods>,
     config: Key<SessionConfig>,
@@ -100,6 +102,8 @@ pub(super) struct TemporaryMcp {
 impl TemporaryMcp {
     pub(super) fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            identity: names.key()?,
+            files: names.key()?,
             session: names.instance(SESSION_GROUP)?,
             methods: names.key()?,
             config: names.key()?,
@@ -114,6 +118,7 @@ impl DynPlugin for TemporaryMcp {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.identity.erase(),
             self.methods.erase(),
             self.lifecycle.erase(),
             self.config.erase(),
@@ -166,10 +171,14 @@ impl DynPlugin for TemporaryMcp {
                     for binding in retired { if let Err(error) = binding.view.shutdown().await { tracing::warn!(%error, "temporary MCP cleanup failed"); } }
                 }
             });
+            let identity = ctx.require_at(&self.identity)?;
+            let files = ctx.get_at(&self.files);
             let context = ctx.clone();
             let (session, tools, lifecycle) =
                 (self.session, self.tools.clone(), self.lifecycle.clone());
             methods.register(ctx, NAMESPACE, ["attach","renew","detach"].into_iter().map(|name| MethodDecl::new(&format!("{NAMESPACE}.{name}"), true, Interruption::Drain)).collect(), Arc::new(move |call, cancelled, _| {
+                let session_id = identity.session_id.clone();
+                let files = files.clone();
                 let MethodCall { method, params, .. } = call;
                 let (bindings, changed, mutation, ctx, cwd, tools, lifecycle) = (bindings.clone(), changed.clone(), mutation.clone(), context.clone(), config.cwd.clone(), tools.clone(), lifecycle.clone());
                 Box::pin(async move {
@@ -197,7 +206,7 @@ impl DynPlugin for TemporaryMcp {
                                 binding.clone()
                             } else {
                                 let (ready, received) = watch::channel(None);
-                                let plugin = BindingPlugin { id: input.binding_id, session, servers: input.servers.clone(), tools, lifecycle, ready, changed: changed.clone() };
+                                let plugin = BindingPlugin { files, session_id, id: input.binding_id, session, servers: input.servers.clone(), tools, lifecycle, ready, changed: changed.clone() };
                                 let view = ctx.plugin(Box::new(plugin) as Box<dyn DynPlugin>);
                                 let binding = Arc::new(Binding { servers: input.servers, view, ready: received, deadline: Mutex::new(Instant::now()+LEASE) });
                                 bindings.insert(input.binding_id, binding.clone());
@@ -254,6 +263,8 @@ impl ToolProvider for Tools {
     }
 }
 struct BindingPlugin {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFilesHost>>,
+    session_id: String,
     id: uuid::Uuid,
     session: InstanceId,
     servers: BTreeMap<String, McpServerSettings>,
@@ -307,6 +318,8 @@ impl DynPlugin for BindingPlugin {
                 ctx.clone(),
                 self.session,
             );
+            let files = self.files.clone();
+            let session_id = self.session_id.clone();
             tasks.spawn(async move {
                 let operation = async {
                     if !lifecycle.activated().await { return Err(failed()); }
@@ -318,7 +331,7 @@ impl DynPlugin for BindingPlugin {
                         if previous.as_ref() != Some(&lists) {
                         let next = connections.iter().zip(&lists).map(|((id,connection),tools)| Arc::new(ToolSourceSet {
                             key: format!("{prefix}:{id}"), version: uuid::Uuid::new_v4().to_string(),
-                            tools: tools.iter().map(|tool| contribution(id,tool,connection.clone(),stop.clone())).collect(),
+                            tools: tools.iter().map(|tool| contribution(id,tool,connection.clone(),stop.clone(),files.clone(),session_id.clone())).collect(),
                         })).collect();
                         *sets.lock().unwrap() = next;
                         ctx.emit(ToolProviderChanged { name: tool_provider_changes(session) }).map_err(|_| failed())?;

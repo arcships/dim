@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n"
 import { copyText } from "../../clipboard"
 import { formatTimelineTimestamp } from "./timeline-time"
 
-const props = defineProps<{ text: string; skills?: string[]; hooks?: number; at: number; quotable: boolean; branchable: boolean }>()
+const props = defineProps<{ text: string; sessionId?: string; images?: import("../../rpc/protocol").ImageBlock[]; skills?: string[]; hooks?: number; at: number; quotable: boolean; branchable: boolean }>()
 const emit = defineEmits<{ quote: [text: string]; branch: [text: string] }>()
 const { t, locale } = useI18n()
 const content = ref<HTMLElement>()
@@ -33,6 +33,9 @@ async function copy(): Promise<void> {
 <template>
   <article class="user-message" data-role="user">
     <strong class="sr-only">{{ t("chat.you") }}</strong>
+    <div v-if="sessionId && images?.length" class="flex flex-wrap gap-2">
+      <img v-for="image in images" :key="image.source.fileId" :src="`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(image.source.fileId)}`" alt="Image attachment" loading="lazy" class="max-h-64 max-w-full rounded-lg" />
+    </div>
     <div class="user-bubble">
       <div ref="content" class="user-bubble-content" :class="{ 'is-clipped': overflows && !expanded }">{{ text }}</div>
       <UButton v-if="overflows" class="user-bubble-expand" color="neutral" variant="ghost" size="xs" :aria-expanded="expanded" @click="expanded = !expanded">

@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 pub enum ImageSourceType {
     Base64,
     Url,
+    File,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
     #[serde(rename = "type")]
     pub source_type: ImageSourceType,
     pub media_type: String,

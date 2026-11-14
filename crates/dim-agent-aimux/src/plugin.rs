@@ -7,26 +7,43 @@ use rutis::{Ctx, Plugin};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// Process-owned request execution; no catalog or Session dependencies.
-pub struct AimuxPlugin;
-impl Plugin for AimuxPlugin {
-    type Deps = ();
+/// Process-owned request execution; configured file references gate on their owner.
+#[derive(Default)]
+pub struct AimuxPlugin {
+    files: Option<Key<SessionFilesHost>>,
+}
+impl AimuxPlugin {
+    pub fn with_files(files: Key<SessionFilesHost>) -> Self {
+        Self { files: Some(files) }
+    }
+}
+impl DynPlugin for AimuxPlugin {
     fn name(&self) -> &str {
         "Aimux"
     }
-    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        let driver = AimuxDriver::new(ctx.cancellation_token())
-            .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
-        let owned = driver.clone();
-        if let Err(error) = ctx.effect(move || async move {
-            owned.close().await;
-            Ok(())
-        }) {
-            driver.close().await;
-            return Err(error);
-        }
-        ctx.provide(ModelHost(driver))?;
-        Ok(())
+    fn injects(&self) -> Vec<TypeKey> {
+        self.files.iter().map(Key::erase).collect()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let files = self
+                .files
+                .as_ref()
+                .map(|key| ctx.require_at(key))
+                .transpose()?;
+            let driver = AimuxDriver::with_files(ctx.cancellation_token(), files)
+                .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
+            let owned = driver.clone();
+            if let Err(error) = ctx.effect(move || async move {
+                owned.close().await;
+                Ok(())
+            }) {
+                driver.close().await;
+                return Err(error);
+            }
+            ctx.provide(ModelHost(driver))?;
+            Ok(Effect::Done)
+        })
     }
 }
 

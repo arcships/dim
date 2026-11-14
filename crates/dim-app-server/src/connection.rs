@@ -515,6 +515,15 @@ impl Connection {
     /// serve only `hello` and `daemon.ping` to the bare WebSocket, and the web
     /// entry serves Session methods plus explicitly permitted management.
     fn admit_entry(&self, rpc: &RpcService, call: &Call) -> Result<(), RpcError> {
+        if matches!(call, Call::Contributed { method, .. } if method == "attachment.import")
+            && self.entry != Entry::Local
+        {
+            return Err(RpcError::app(
+                -32000,
+                "local_transport_required",
+                "File-path import requires a local connection",
+            ));
+        }
         match self.entry {
             Entry::Local => Ok(()),
             Entry::Web => {

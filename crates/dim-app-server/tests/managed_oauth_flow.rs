@@ -911,7 +911,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         home.join("native.sqlite"),
     ));
     let provider_plugin = root.plugin(ProviderPlugin::new(&names).unwrap());
-    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin);
+    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin::default());
     for plugin in [&grok_plugin, &dim, &sqlite, &provider_plugin, &aimux] {
         active(plugin).await;
     }
@@ -1424,7 +1424,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             home.join("native.sqlite"),
         )),
         restarted.plugin(ProviderPlugin::new(&names).unwrap()),
-        restarted.plugin(dim_agent_aimux::AimuxPlugin),
+        restarted.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;

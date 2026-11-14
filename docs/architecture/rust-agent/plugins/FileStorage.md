@@ -308,3 +308,12 @@ accepted reads and closes retained descriptors. Caller cancellation is checked
 before and after each bounded read. This native interface does not export binary
 callbacks through the language bridge. UiResources uses it for the protected
 resource routes in the [client UI contract](../../../design/client-ui-extensions.md).
+
+## Path import
+
+`import(path, source, limit, permissions, cancel)` copies an authorized absolute
+source file into the authorized destination using `replace_from`. It opens and
+pins the source, requires a regular file within the caller's limit, and rejects
+length changes during copying. On Unix the open is nonblocking and rejects a
+terminal symlink. The destination follows the existing lease, atomic replacement,
+permissions and cancellation contract. The operation returns the copied byte count.

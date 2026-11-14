@@ -66,6 +66,7 @@
       "file": "crates/dim-acp/src/gateway.rs",
       "unexpandedMacros": [
         "eprintln",
+        "format",
         "json",
         "matches",
         "tokio::select",
@@ -128,7 +129,8 @@
       "unexpandedMacros": [
         "format",
         "json",
-        "matches"
+        "matches",
+        "vec"
       ]
     },
     {
@@ -336,6 +338,8 @@
       "parent": null,
       "file": "crates/dim-agent-attachments/src/lib.rs",
       "unexpandedMacros": [
+        "format",
+        "serde_json::json",
         "vec"
       ]
     },
@@ -1108,6 +1112,16 @@
         "format",
         "tracing::warn",
         "vec"
+      ]
+    },
+    {
+      "id": "dim_agent_capabilities::session_files",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities",
+      "file": "crates/dim-agent-capabilities/src/session_files.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches"
       ]
     },
     {
@@ -2557,6 +2571,7 @@
       "file": "crates/dim-app-server/src/connection/tree.rs",
       "unexpandedMacros": [
         "format",
+        "matches",
         "tokio::select",
         "tracing::warn",
         "unreachable",
@@ -3466,6 +3481,7 @@
         "format",
         "matches",
         "params",
+        "serde_json::json",
         "tokio::select",
         "tracing::warn"
       ]
@@ -3768,6 +3784,16 @@
       "file": "crates/dim-app-server/src/web_entry/resources.rs",
       "unexpandedMacros": [
         "format",
+        "tokio::select"
+      ]
+    },
+    {
+      "id": "dim_app_server::web_entry::uploads",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::web_entry",
+      "file": "crates/dim-app-server/src/web_entry/uploads.rs",
+      "unexpandedMacros": [
+        "json",
         "tokio::select"
       ]
     },
@@ -4115,7 +4141,8 @@
       "file": "crates/dim-cli/src/images.rs",
       "unexpandedMacros": [
         "format",
-        "matches"
+        "matches",
+        "serde_json::json"
       ]
     },
     {
@@ -8157,7 +8184,8 @@
         "path ModelConnection::Local",
         "path ModelDriver",
         "path ModelNetwork",
-        "path ModelStream"
+        "path ModelStream",
+        "path dim_agent_capabilities::host::SessionFilesHost"
       ]
     },
     {
@@ -8283,7 +8311,7 @@
       "from": "dim_agent_aimux::plugin",
       "to": "dim_agent_aimux::driver",
       "references": [
-        "path AimuxDriver::new",
+        "path AimuxDriver::with_files",
         "use crate::driver::AimuxDriver"
       ]
     },
@@ -8337,6 +8365,7 @@
         "path ResolvedModelConnection",
         "path SelectableModels",
         "path SelectableModelsHost",
+        "path SessionFilesHost",
         "path undeclared_modality_operation"
       ]
     },
@@ -8454,8 +8483,11 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
+        "path HostError::classified",
         "path HostError::failed",
-        "use dim_agent_capabilities::host::HostError"
+        "path HostErrorKind::InvalidRequest",
+        "use dim_agent_capabilities::host::HostError",
+        "use dim_agent_capabilities::host::HostErrorKind"
       ]
     },
     {
@@ -8474,6 +8506,7 @@
         "path ContentMetadata::XaiResponses",
         "path ImageSource",
         "path ImageSourceType::Base64",
+        "path ImageSourceType::File",
         "path ImageSourceType::Url",
         "path MessageContent",
         "path MessageContent::Parts",
@@ -8836,12 +8869,20 @@
     },
     {
       "from": "dim_agent_attachments",
+      "to": "dim_agent_capabilities::images",
+      "references": [
+        "path dim_agent_capabilities::images::scale_image"
+      ]
+    },
+    {
+      "from": "dim_agent_attachments",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path MethodCall",
         "path RpcError",
         "path RpcError::app",
         "path RpcError::closed",
+        "path RpcError::invalid",
         "path RpcError::reloading",
         "path SessionMethods",
         "path methods",
@@ -8884,6 +8925,14 @@
       "to": "dim_agent_runtime::parts",
       "references": [
         "path dim_agent_runtime::Feature::new"
+      ]
+    },
+    {
+      "from": "dim_agent_attachments",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path dim_agent_types::ImageSource",
+        "path dim_agent_types::ImageSourceType::File"
       ]
     },
     {
@@ -9179,6 +9228,13 @@
       "to": "dim_agent_capabilities::session_broadcast",
       "references": [
         "mod session_broadcast"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities",
+      "to": "dim_agent_capabilities::session_files",
+      "references": [
+        "mod session_files"
       ]
     },
     {
@@ -13944,6 +14000,7 @@
         "path ContentBlock::Text",
         "path ImageSource",
         "path ImageSourceType::Base64",
+        "path ImageSourceType::File",
         "path Message",
         "path MessageContent::Parts",
         "path MessagePart::Image",
@@ -15680,6 +15737,68 @@
       "references": [
         "path AgentEvent",
         "use dim_agent_types::AgentEvent"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::session_files",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path HostError",
+        "path HostError::Cancelled",
+        "path HostError::classified",
+        "path HostError::failed",
+        "path HostErrorKind::InvalidRequest",
+        "path HostErrorKind::Transport",
+        "path SessionFileErrorCode::Cancelled",
+        "path SessionFileErrorCode::NodeUnavailable",
+        "path SessionFilesHost",
+        "use crate::host::HostError",
+        "use crate::host::HostErrorKind",
+        "use crate::host::SessionFileErrorCode",
+        "use crate::host::SessionFilesHost"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::session_files",
+      "to": "dim_agent_capabilities::images",
+      "references": [
+        "path crate::images::base64_len",
+        "path crate::images::scale_image"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::session_files",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ContentBlock::Image",
+        "path ImageSource",
+        "path ImageSourceType::Base64",
+        "path ImageSourceType::File",
+        "path MessageContent::Parts",
+        "path MessagePart::Image",
+        "path MessagePart::ToolResult",
+        "path ToolContent::Blocks",
+        "use dim_agent_types::ContentBlock",
+        "use dim_agent_types::ImageSource",
+        "use dim_agent_types::ImageSourceType",
+        "use dim_agent_types::MessageContent",
+        "use dim_agent_types::MessagePart",
+        "use dim_agent_types::ToolContent"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::session_files",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path ModelRequest",
+        "use dim_agent_types::ModelRequest"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::session_files",
+      "to": "dim_agent_types::tool",
+      "references": [
+        "path dim_agent_types::ToolResult"
       ]
     },
     {
@@ -17947,6 +18066,13 @@
         "use crate::methods::SessionMethods",
         "use crate::methods::params",
         "use crate::methods::reply"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools",
+      "to": "dim_agent_capabilities::session_files",
+      "references": [
+        "path crate::session_files::store_result"
       ]
     },
     {
@@ -22718,7 +22844,8 @@
       "from": "dim_app_server",
       "to": "dim_agent_aimux::plugin",
       "references": [
-        "path dim_agent_aimux::AimuxPlugin",
+        "path dim_agent_aimux::AimuxPlugin::default",
+        "path dim_agent_aimux::AimuxPlugin::with_files",
         "path dim_agent_aimux::ConfiguredModelsPlugin"
       ]
     },
@@ -26248,6 +26375,13 @@
     },
     {
       "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path dim_agent_capabilities::host::SessionFilesHost"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
       "to": "dim_agent_capabilities::input_queue",
       "references": [
         "path SubmitCheckRequest",
@@ -26368,6 +26502,14 @@
         "path TimelinePosition",
         "path dim_agent_types::TimelinePosition",
         "use dim_agent_types::TimelinePosition"
+      ]
+    },
+    {
+      "from": "dim_app_server::connection::tree",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ContentBlock::Image",
+        "path dim_agent_types::ImageSourceType::File"
       ]
     },
     {
@@ -28325,9 +28467,17 @@
         "path HostError::failed",
         "path HostFuture",
         "path ToolExecutionContext",
+        "path dim_agent_capabilities::host::SessionFilesHost",
         "use dim_agent_capabilities::host::HostError",
         "use dim_agent_capabilities::host::HostFuture",
         "use dim_agent_capabilities::host::ToolExecutionContext"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp::session",
+      "to": "dim_agent_capabilities::session_files",
+      "references": [
+        "path dim_agent_capabilities::session_files::store_result"
       ]
     },
     {
@@ -28366,6 +28516,7 @@
       "references": [
         "path SessionConfig",
         "path SessionLifecycle",
+        "path dim_agent_runtime::SessionIdentity",
         "use dim_agent_runtime::SessionConfig",
         "use dim_agent_runtime::SessionLifecycle"
       ]
@@ -28506,6 +28657,13 @@
     },
     {
       "from": "dim_app_server::mcp::temporary",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path dim_agent_capabilities::host::SessionFilesHost"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp::temporary",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path Interruption::Drain",
@@ -28555,6 +28713,7 @@
       "references": [
         "path SessionConfig",
         "path SessionLifecycle",
+        "path dim_agent_runtime::SessionIdentity",
         "use dim_agent_runtime::SessionConfig",
         "use dim_agent_runtime::SessionLifecycle"
       ]
@@ -32312,6 +32471,7 @@
         "path FileStorageError::Cancelled",
         "path FileStorageError::Closed",
         "path FileStorageError::Io",
+        "path dim_agent_capabilities::file_storage::EntryKind::File",
         "use dim_agent_capabilities::file_storage::FileStorage",
         "use dim_agent_capabilities::file_storage::FileStorageError"
       ]
@@ -33162,6 +33322,7 @@
         "path SessionFiles",
         "path SessionFiles::new",
         "path files",
+        "path files::SessionFilesFace",
         "path files::release",
         "path files::share",
         "path files::share_output",
@@ -33998,6 +34159,15 @@
       ]
     },
     {
+      "from": "dim_app_server::web_entry",
+      "to": "dim_app_server::web_entry::uploads",
+      "references": [
+        "mod uploads",
+        "path uploads::download",
+        "path uploads::upload"
+      ]
+    },
+    {
       "from": "dim_app_server::web_entry::resources",
       "to": "dim_app_server::protocol",
       "references": [
@@ -34028,6 +34198,44 @@
       "references": [
         "path Site",
         "path error"
+      ]
+    },
+    {
+      "from": "dim_app_server::web_entry::uploads",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path SessionFilesHost",
+        "use dim_agent_capabilities::host::SessionFilesHost"
+      ]
+    },
+    {
+      "from": "dim_app_server::web_entry::uploads",
+      "to": "dim_agent_capabilities::images",
+      "references": [
+        "path dim_agent_capabilities::images::Sniffed::Image",
+        "path dim_agent_capabilities::images::sniff"
+      ]
+    },
+    {
+      "from": "dim_app_server::web_entry::uploads",
+      "to": "dim_agent_capabilities::methods",
+      "references": [
+        "path RpcError",
+        "path RpcError::from",
+        "path RpcError::interrupted",
+        "path RpcError::invalid",
+        "path RpcError::unknown_method",
+        "path SessionMethods",
+        "use dim_agent_capabilities::methods::SessionMethods"
+      ]
+    },
+    {
+      "from": "dim_app_server::web_entry::uploads",
+      "to": "dim_app_server::web_entry",
+      "references": [
+        "path Site",
+        "path error",
+        "path session"
       ]
     },
     {
@@ -35566,7 +35774,15 @@
       "references": [
         "path Result",
         "path crate::Error",
+        "path crate::Result",
         "use crate::Result"
+      ]
+    },
+    {
+      "from": "dim_cli::images",
+      "to": "dim_client",
+      "references": [
+        "path crate::client::Client"
       ]
     },
     {
@@ -38771,6 +38987,13 @@
     },
     {
       "from": "dim_cli::session",
+      "to": "dim_cli::images",
+      "references": [
+        "path crate::images::import"
+      ]
+    },
+    {
+      "from": "dim_cli::session",
       "to": "dim_cli::input",
       "references": [
         "path Input",
@@ -39153,6 +39376,13 @@
         "path crate::goal::call",
         "path crate::goal::objective",
         "path crate::goal::report"
+      ]
+    },
+    {
+      "from": "dim_cli::session_host",
+      "to": "dim_cli::images",
+      "references": [
+        "path crate::images::import"
       ]
     },
     {
@@ -50251,7 +50481,7 @@
       "references": [
         "path ContentBlock::Text",
         "path ImageSource",
-        "path ImageSourceType::Base64",
+        "path ImageSourceType::File",
         "path Message::text",
         "path MessageContent::Parts",
         "path MessagePart::Image",
@@ -50326,9 +50556,6 @@
       "references": [
         "path Native",
         "path Native::open",
-        "path crate::native::MAX_HISTORY_RECORD_BYTES",
-        "path crate::native::failure",
-        "path crate::native::history",
         "use crate::native::Native"
       ]
     },
@@ -52599,6 +52826,10 @@
       "path": "F::Output"
     },
     {
+      "module": "dim_agent_attachments",
+      "path": "BufReader::new"
+    },
+    {
       "module": "dim_agent_capabilities::adapters",
       "path": "AsRef::as_ref"
     },
@@ -53333,6 +53564,42 @@
     {
       "module": "dim_app_server::storage::codec",
       "path": "Field::Tools"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Error::Value"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::Import"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::OwnedPaths"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::Owns"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::Put"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::Read"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Operation::Register"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Value::cancellable_future"
+    },
+    {
+      "module": "dim_app_server::storage::files",
+      "path": "Value::from"
     },
     {
       "module": "dim_app_server::storage::files::tests",

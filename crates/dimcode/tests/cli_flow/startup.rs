@@ -1314,7 +1314,6 @@ fn a_first_prompt_is_submitted_once_and_the_interface_stays() {
 /// same composer a typed message uses.
 #[test]
 fn a_first_prompt_submits_its_image_with_the_text() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let image = home.0.join("shot.png");
     let bytes = image_fixture(image::ImageFormat::Png, 3, 2);
@@ -1322,7 +1321,7 @@ fn a_first_prompt_submits_its_image_with_the_text() {
     let expected = json!([
         {"type":"text","text":"hello "},
         {"type":"image","source":{
-            "type":"base64","mediaType":"image/png","data":STANDARD.encode(&bytes)}},
+            "type":"file","mediaType":"image/png","fileId":"image-file"}},
     ]);
     let (submitted, seen) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
@@ -1337,6 +1336,11 @@ fn a_first_prompt_submits_its_image_with_the_text() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
+        let import = wire.read("attachment.import");
+        assert_eq!(import["params"]["sessionId"], "session");
+        assert_eq!(import["params"]["image"], true);
+        assert_eq!(fs::read(import["params"]["path"].as_str().unwrap()).unwrap(), bytes);
+        wire.reply(&import, json!({"attachmentId":"image-file","path":"/owned/image","bytes":bytes.len(),"image":{"type":"file","mediaType":"image/png","fileId":"image-file"}}));
         let submit = wire.read("session.submit");
         assert_eq!(submit["params"]["mode"], "queue");
         assert!(

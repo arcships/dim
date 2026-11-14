@@ -3,7 +3,6 @@ use crate::{
     native::Native,
     source::{RecordedMessage, SessionData, Source, fingerprint},
 };
-use base64::Engine;
 use dim_agent_types::*;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -326,10 +325,11 @@ async fn session(
     let mut files = Vec::new();
     let result=async {
     let mut paths=BTreeMap::new();
+    let mut file_ids=BTreeMap::new();
     for (id,bytes) in &raw_files {
         check(owner,&task.id).await?;
         let (file,path)=target.put_file("data",bytes.clone(),&owner.stopping).await?;
-        paths.insert(id.clone(),path);files.push(file);
+        paths.insert(id.clone(),path);file_ids.insert(id.clone(),file.clone());files.push(file);
     }
     let metadata=archive.encode(&paths)?;
     let (file,metadata_path)=target.put_file("legacy-history.json",metadata,&owner.stopping).await?;
@@ -394,44 +394,15 @@ async fn session(
     let mut note_id="migration-metadata".to_owned();
     while data.records.iter().any(|record|record.id==note_id){note_id.push('-');}
     data.records.push(RecordedMessage{id:note_id,created_at:None,message:Message::text(Role::User,format!("Imported legacy historical metadata and available artifacts: {}. Execution is not resumed.",metadata_path)),in_context:false});
-    if !images.is_empty() {
-        let mut message_budgets = BTreeMap::new();
-        let mut context_budget = None;
-        for stored in crate::native::history(&data)? {
-            let bytes = serde_json::to_vec(&stored.event).map_err(crate::native::failure)?.len();
-            let remaining = crate::native::MAX_HISTORY_RECORD_BYTES.saturating_sub(bytes);
-            if matches!(stored.event.kind, EventKind::ContextCompaction(_)) {
-                context_budget = Some(remaining);
-            }
-            for tag in stored.event.tags.as_ref().unwrap() {
-                if let Some(id) = tag.strip_prefix("legacy-message:") {
-                    message_budgets.entry(id.to_owned())
-                        .and_modify(|budget: &mut usize| *budget = (*budget).min(remaining))
-                        .or_insert(remaining);
-                }
-            }
-        }
-        let mut context_budget = context_budget.unwrap();
-        for (record_index, part_index, id, media_type) in images {
-            let record = &mut data.records[record_index];
-            let MessageContent::Parts(parts) = &mut record.message.content else { unreachable!() };
-            let image = MessagePart::Image { source: ImageSource {
-                source_type: ImageSourceType::Base64,
-                media_type,
-                data: Some(base64::engine::general_purpose::STANDARD.encode(&raw_files[&id])),
-                url: None,
-            }};
-            let growth = serde_json::to_vec(&image).map_err(crate::native::failure)?.len()
-                .saturating_sub(serde_json::to_vec(&parts[part_index]).map_err(crate::native::failure)?.len());
-            let budget = message_budgets.get_mut(&record.id).unwrap();
-            if growth <= *budget && (!record.in_context || growth <= context_budget) {
-                parts[part_index] = image;
-                *budget -= growth;
-                if record.in_context { context_budget -= growth; }
-            } else {
-                omitted.push(format!("attachment.inlineImage.{id}"));
-            }
-        }
+    for (record_index, part_index, id, media_type) in images {
+        let MessageContent::Parts(parts) = &mut data.records[record_index].message.content else { unreachable!() };
+        parts[part_index] = MessagePart::Image { source: ImageSource {
+            file_id: Some(file_ids[&id].clone()),
+            source_type: ImageSourceType::File,
+            media_type,
+            data: None,
+            url: None,
+        }};
     }
     check(owner, &task.id).await?;
     let session = target.session(&data, &digest, &files)?;

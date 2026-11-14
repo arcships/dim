@@ -17,6 +17,7 @@ import { RAIL_MIN_MARKERS, timelineMarkers } from "../../timeline-markers"
  * `variant`: the main column or the narrower line panel.
  */
 const props = defineProps<{
+  sessionId?: string
   earlier?: boolean
   loadingEarlier?: boolean
   historyError?: string
@@ -165,6 +166,7 @@ onMounted(() => void toEnd())
         >
           <template v-for="entry in [display[item.index]!]" :key="entry.key">
             <TimelineWorkRow
+              :session-id="sessionId"
               v-if="entry.kind === 'work'"
               :items="entry.items"
               :expanded="expandedGroups[entry.key] === true"
@@ -172,7 +174,7 @@ onMounted(() => void toEnd())
               @toggle="toggleWork(expandedGroups, entry.key)"
               @toggle-item="toggleWork(expandedItems, $event)"
             />
-            <TimelineUserMessage v-else-if="entry.row.kind === 'user'" :text="entry.row.text" :skills="entry.row.skills" :hooks="entry.row.hooks" :at="entry.row.at" :quotable="quotable" :branchable="branchable === true" @branch="onBranch(entry.row, $event)" @quote="emit('quote', $event)" />
+            <TimelineUserMessage v-else-if="entry.row.kind === 'user'" :text="entry.row.text" :images="entry.row.images" :session-id="sessionId" :skills="entry.row.skills" :hooks="entry.row.hooks" :at="entry.row.at" :quotable="quotable" :branchable="branchable === true" @branch="onBranch(entry.row, $event)" @quote="emit('quote', $event)" />
             <article v-else-if="entry.row.kind === 'assistant'" class="timeline-row" data-role="assistant">
               <strong class="sr-only">{{ t("chat.assistant") }}</strong>
               <ChatMarkdown :content="entry.row.text" :final="!entry.row.streaming" :message-id="entry.row.key" />

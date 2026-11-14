@@ -58,6 +58,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
 | `serverControl` | process | ServerControl | internal(control) | — |
 | `sessionClientsHost` | process | Connection | data | `presences` async |
+| `sessionFiles` | process | SessionStore | data | `import` async, `owned_paths` async, `owns` async, `put` async, `read` async, `register` async |
 | `sessionFilesHost` | process | SessionStore | internal(owner-api) | — |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |

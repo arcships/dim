@@ -700,9 +700,18 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         move |_| Ok(Box::new(files.clone())),
     )?);
     if config.model_catalog.is_some() || product_root.is_some() {
-        rows.push(register_part(&mut builtins, builder.catalog(), |_| {
-            Ok(Box::new(dim_agent_aimux::AimuxPlugin))
-        })?);
+        let has_files = config.database_path.is_some();
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(if has_files {
+                    dim_agent_aimux::AimuxPlugin::with_files(names.key()?)
+                } else {
+                    dim_agent_aimux::AimuxPlugin::default()
+                }))
+            },
+        )?);
     }
     if let Some(models) = &config.model_catalog {
         dim_agent_aimux::register_names(&mut builder);
@@ -1371,6 +1380,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
         "processActivity",
         "sessions",
         "sessionMetadata",
+        "sessionFiles",
         "auxiliaryModel",
         "settings",
         "ocrHelper",

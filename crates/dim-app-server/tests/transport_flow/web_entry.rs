@@ -507,6 +507,64 @@ async fn web_entry_admits_token_holders_to_sessions_and_safe_management() {
         .await;
     assert_ok(&created);
     let session_id = created["result"]["sessionId"].as_str().unwrap();
+    let client = reqwest::Client::new();
+    let upload_url = format!("http://{address}/api/sessions/{session_id}/files");
+    let content = "x".repeat(16 * 1024 * 1024);
+    let multipart = format!(
+        "--dim-upload\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\n{content}\r\n--dim-upload--\r\n"
+    );
+    let upload = || {
+        client
+            .post(&upload_url)
+            .header("Origin", &origin)
+            .header("Content-Type", "multipart/form-data; boundary=dim-upload")
+            .body(multipart.clone())
+    };
+    assert_eq!(upload().send().await.unwrap().status(), 401);
+    let response = upload().header("Cookie", &cookie).send().await.unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let imported: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(imported["bytes"], 16);
+    let file_id = imported["attachmentId"].as_str().unwrap();
+    let file_url = format!("{upload_url}/{file_id}");
+    assert_eq!(client.get(&file_url).send().await.unwrap().status(), 401);
+    assert_eq!(
+        client
+            .get(&file_url)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        content
+    );
+    let other = web.rpc("session.create", json!({"cwd":home})).await;
+    assert_ok(&other);
+    let other_id = other["result"]["sessionId"].as_str().unwrap();
+    let forbidden = format!("http://{address}/api/sessions/{other_id}/files/{file_id}");
+    assert_eq!(
+        client
+            .get(forbidden)
+            .header("Cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert!(
+        web.rpc(
+            "attachment.import",
+            json!({"sessionId":session_id,"path":home.join("secret.txt")})
+        )
+        .await
+        .get("error")
+        .is_some()
+    );
     let branch = web
         .rpc(
             "session.branch_create",

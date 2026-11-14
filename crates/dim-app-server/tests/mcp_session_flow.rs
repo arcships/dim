@@ -2461,7 +2461,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
         mcp::install(&mut builder);
         mcp_host_rows(&mut builder, &home);
         builder
-            .plugin(|_| Ok(Box::new(AimuxPlugin)))
+            .plugin(|_| Ok(Box::new(AimuxPlugin::default())))
             .plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
         let agent = MinimalHost::start_with(&builder, |root, _| {
             root.provide(credentials_host(BTreeSet::new()))

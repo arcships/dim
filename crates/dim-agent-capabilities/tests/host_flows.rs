@@ -4250,6 +4250,7 @@ fn model_with_vision(model_id: &str, vision: bool) -> ModelSelection {
 fn image(media_type: &str, data: Option<&str>, url: Option<&str>) -> ContentBlock {
     ContentBlock::Image {
         source: ImageSource {
+            file_id: None,
             source_type: if url.is_some() {
                 ImageSourceType::Url
             } else {
@@ -4296,7 +4297,11 @@ async fn a_session_switched_to_a_text_only_model_sends_image_placeholders() {
                     user: Some(UserInput {
                         content: vec![
                             ContentBlock::Text { text: "look".into() },
-                            image("image/png", Some(png), None),
+                            ContentBlock::Image { source: ImageSource {
+                                source_type: ImageSourceType::File,
+                                media_type: "image/png".into(),
+                                file_id: Some("persisted-image".into()), data: None, url: None,
+                            } },
                             image("image/png", None, Some("https://example.test/a.png")),
                             image("image/bmp", Some(png), None),
                             image("image/png", Some("not base64!"), None),
@@ -4336,6 +4341,13 @@ async fn a_session_switched_to_a_text_only_model_sends_image_placeholders() {
             EventKind::ModelCall(call) if call.request.model_id == "text-only"
                 && call.request.messages.iter().any(|message| matches!(&message.content,
                     MessageContent::Parts(parts) if parts.iter().any(|part| matches!(part, MessagePart::Image { .. })))))));
+        session.configure(ConfigureUpdate { model: Some(model_with_vision("seeing-again", true)), ..Default::default() }, "main").await.unwrap();
+        session.submit("look again".into(), InputMode::Queue, "main").await.unwrap();
+        session.idle("main").await.unwrap();
+        let restored = requests.lock().unwrap().last().unwrap().clone();
+        assert_eq!(restored.model_id, "seeing-again");
+        assert_eq!(sent_parts(&restored)[1], "image:image/png");
+        assert!(restored.messages.iter().any(|message| matches!(&message.content, MessageContent::Parts(parts) if parts.iter().any(|part| matches!(part, MessagePart::Image {source} if source.file_id.as_deref() == Some("persisted-image"))))));
         agent.close().await.unwrap();
     })
     .await
@@ -4446,6 +4458,7 @@ impl ToolDriver for Screenshot {
             if image {
                 blocks.push(ContentBlock::Image {
                     source: ImageSource {
+                        file_id: None,
                         source_type: ImageSourceType::Base64,
                         media_type: "image/png".into(),
                         data: Some(TOOL_IMAGE.into()),

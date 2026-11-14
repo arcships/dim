@@ -534,3 +534,61 @@ async fn an_inactive_node_storage_answers_node_unavailable() {
     );
     contract.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn imported_image_is_a_session_reference_and_reads_are_scoped() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let home = Home::new();
+    let server = launch(&home, true).await;
+    let mut client = Client::connect(&server).await;
+    let session = client.create(&home.0.join("work")).await;
+    let other = client.create(&home.0.join("work")).await;
+    let bytes = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==").unwrap();
+    let source = home.0.join("input.png");
+    std::fs::write(&source, &bytes).unwrap();
+    let imported = client
+        .rpc(
+            "attachment.import",
+            json!({"sessionId":session,"path":source,"image":true}),
+        )
+        .await;
+    assert!(imported.get("error").is_none(), "{imported}");
+    let image = &imported["result"]["image"];
+    assert_eq!(image["type"], "file");
+    assert_eq!(image["mediaType"], "image/png");
+    assert!(image.get("data").is_none());
+    std::fs::remove_file(source).unwrap();
+    let read = client
+        .rpc(
+            "attachment.read",
+            json!({"sessionId":session,"fileId":image["fileId"],"offset":0}),
+        )
+        .await;
+    assert_eq!(
+        STANDARD
+            .decode(read["result"]["data"].as_str().unwrap())
+            .unwrap(),
+        bytes
+    );
+    assert!(
+        client
+            .rpc(
+                "attachment.read",
+                json!({"sessionId":other,"fileId":image["fileId"],"offset":0})
+            )
+            .await
+            .get("error")
+            .is_some()
+    );
+    assert!(
+        client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":other,"user":{"content":[{"type":"image","source":image}]}})
+            )
+            .await
+            .get("error")
+            .is_some()
+    );
+    server.shutdown();
+}

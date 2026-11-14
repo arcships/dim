@@ -1681,6 +1681,10 @@ impl DynPlugin for SessionStorePlugin {
                     })
                 },
             ))))?;
+            ctx.provide_at(
+                host_key("sessionFiles"),
+                Arc::new(files::SessionFilesFace(files.clone())) as Arc<dyn HostDispatch>,
+            )?;
             ctx.provide_as::<SessionFilesHost>(Arc::new(SessionFilesHost(Arc::new(files))))?;
             ctx.provide_at(
                 host_key("sessionMetadata"),

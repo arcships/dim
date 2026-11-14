@@ -483,3 +483,14 @@ export interface CallChannel {
    * call unloads. An id the row never received a call from rejects `gone`. */
   closed(request: { connectionId: string }): Promise<void>;
 }
+
+/** Process data face `sessionFiles`; errors reject with SessionFileError {code,message}. */
+export interface SessionFiles {
+  put(request: { sessionId: string; name: string; content: string }): Promise<StoredSessionFile>;
+  import(request: { sessionId: string; name: string; source: string }): Promise<StoredSessionFile>;
+  read(request: { sessionId: string; fileId: string; offset: number }): Promise<{ data: string; eof: boolean }>;
+  register(request: { sessionId: string; path: string }): Promise<Record<string, never>>;
+  owns(request: { sessionId: string; path: string }): Promise<{ owned: boolean }>;
+  owned_paths(request: { sessionId: string }): Promise<{ paths: string[] }>;
+}
+export interface StoredSessionFile { fileId: string; path: string; bytes: number }
