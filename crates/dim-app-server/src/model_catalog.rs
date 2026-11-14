@@ -558,6 +558,17 @@ impl BundledCatalog {
                     model.metadata.get_or_insert_default().identification = identification;
                     self.fill_undeclared(&mut model, &provider_id);
                 } else {
+                    // Nothing named the model, so its descriptor is the only
+                    // statement of what it supports, and the two fields that
+                    // carry reasoning must not disagree.
+                    if let Some(supported) = model
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.reasoning.as_ref())
+                        .map(|reasoning| reasoning.supported)
+                    {
+                        model.capabilities.reasoning = supported;
+                    }
                     model.metadata.get_or_insert_default().identification = identification;
                 }
                 self.apply_provider_rules(provider, &mut model);
@@ -706,7 +717,13 @@ fn descriptor_entry(
 ) -> Result<ModelEntry, ProjectionError> {
     let capabilities = input.get("capabilities").and_then(Value::as_object);
     let (context, output) = declared_limits(input);
-    let reasoning_value = input.get("reasoning");
+    // A descriptor states its reasoning at the top level, and a stored entry
+    // sent back carries the same object under `metadata`.
+    let reasoning_value = input.get("reasoning").or_else(|| {
+        input
+            .get("metadata")
+            .and_then(|metadata| metadata.get("reasoning"))
+    });
     let reasoning_options = input.get("reasoning_options").or_else(|| {
         input
             .get("raw")
