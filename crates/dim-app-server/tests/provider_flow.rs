@@ -237,6 +237,7 @@ fn input(
         },
         models: vec![model("same", max)],
         enabled: true,
+        glued_prefix: None,
     }
 }
 fn target(provider: &str) -> ModelId {
@@ -256,6 +257,33 @@ fn stored_record(home: &Path, provider_id: &str) -> StaticProviderRecord {
         )
         .unwrap();
     parse_static(provider_id, version, &body).unwrap()
+}
+
+/// One stored record's own JSON, for the fields the record owner keeps
+/// private to its module.
+fn stored_record_json(home: &Path, provider_id: &str) -> String {
+    let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    db.query_row(
+        "SELECT record FROM providers WHERE provider_id=?1",
+        [provider_id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// The prefix a stored record carries, read from the record's own JSON: the
+/// field is the record owner's, and the store is where the statement lives.
+fn stored_prefix(home: &Path, provider_id: &str) -> Option<String> {
+    let db = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    let body: String = db
+        .query_row(
+            "SELECT record FROM providers WHERE provider_id=?1",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let value: Value = serde_json::from_str(&body).unwrap();
+    value["gluedPrefix"].as_str().map(str::to_owned)
 }
 
 #[tokio::test]
@@ -7995,6 +8023,449 @@ async fn a_refused_ambiguity_names_the_rows_that_disagree() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// A provider states the prefix its ids carry, and the statement is what makes
+/// a prefixed id resolve: the stripped id answers through the same steps, the
+/// reply carries the statement back, and clearing it puts the id back where it
+/// was.
+#[tokio::test]
+async fn a_provider_states_the_prefix_its_ids_carry_and_that_statement_resolves_them() {
+    let home = std::env::temp_dir().join(format!("provider-prefix-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const PREFIXED: &str = "00000000-0000-4000-8000-000000000051";
+    const PREFIXED_ID: &str = "auto-kimi-k3";
+    let mut relay = input(
+        PREFIXED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "prefix",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":PREFIXED_ID, "displayName":PREFIXED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    // Without the statement the prefixed id names nothing, which is the entry
+    // a relay's own spelling gives the catalog today.
+    let catalog = provider
+        .catalog_for(PREFIXED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == PREFIXED_ID)
+        .expect("the relay lists the id it did not declare");
+    assert_eq!(
+        model.missing_limits,
+        ["contextWindow", "maxOutputTokens"],
+        "nothing names the prefixed id yet"
+    );
+    assert!(
+        model.metadata.as_ref().unwrap().identification.is_none(),
+        "nothing named the model"
+    );
+    // The statement is one write, and the reply carries it back.
+    let stated = provider
+        .update(
+            PREFIXED.into(),
+            catalog.version,
+            serde_json::from_value(json!({"gluedPrefix":"auto"})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        stated
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto")
+    );
+    assert_eq!(
+        stored_prefix(&home, PREFIXED).as_deref(),
+        Some("auto"),
+        "the statement is in the record, not only in the reply"
+    );
+    // The stored id is what the provider lists, and the entry now names the
+    // model it stands for with that model's own numbers.
+    let catalog = provider
+        .catalog_for(PREFIXED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == PREFIXED_ID)
+        .expect("the stored id is the provider's own spelling");
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(model.capabilities.context_window, Some(1_048_576));
+    assert_eq!(model.capabilities.max_output_tokens, Some(1_048_576));
+    let identification = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .expect("the entry carries what identification found");
+    assert_eq!(identification.rule, "token");
+    assert_eq!(
+        model.metadata.as_ref().unwrap().matched_model_id.as_deref(),
+        Some("kimi-k3")
+    );
+    // Clearing the statement is one write too, and puts the id back where it
+    // was rather than leaving the record in a shape no client can undo.
+    let cleared = provider
+        .update(
+            PREFIXED.into(),
+            catalog.version,
+            serde_json::from_value(json!({"gluedPrefix":null})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        cleared
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix,
+        None
+    );
+    assert_eq!(stored_prefix(&home, PREFIXED), None);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The prefix is one statement about a provider's ids, so creation accepts it
+/// on the same terms as the partial update: the created record stores it,
+/// `provider.list` and `provider.management` read it back, and the id it
+/// prefixes is identified from the first read rather than after a second
+/// write.
+#[tokio::test]
+async fn a_created_provider_states_the_prefix_its_ids_carry() {
+    let home = std::env::temp_dir().join(format!("provider-created-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const CREATED: &str = "00000000-0000-4000-8000-000000000052";
+    const CREATED_ID: &str = "auto-kimi-k3";
+    let mut relay = input(
+        CREATED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":CREATED_ID, "displayName":CREATED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    relay.glued_prefix = Some("auto".into());
+    let created = provider.create(relay, &cancel).await.unwrap();
+    assert_eq!(
+        created
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto"),
+        "the reply carries the statement the creation made"
+    );
+    assert_eq!(stored_prefix(&home, CREATED).as_deref(), Some("auto"));
+    let listed = provider
+        .list(&cancel)
+        .await
+        .unwrap()
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_id == CREATED)
+        .expect("the created provider is in the list");
+    assert_eq!(listed.glued_prefix.as_deref(), Some("auto"));
+    let managed = provider
+        .management(Some(CREATED.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(
+        managed
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto")
+    );
+    // The statement is in force from the creation: the model the id names
+    // answers with that row's numbers without a second write.
+    let catalog = provider
+        .catalog_for(CREATED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == CREATED_ID)
+        .expect("the provider lists the id it prefixed");
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(
+        model.metadata.as_ref().unwrap().matched_model_id.as_deref(),
+        Some("kimi-k3")
+    );
+    // A blank statement is no statement, the same as the patch's empty one.
+    let mut blank = input(
+        "00000000-0000-4000-8000-000000000053",
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    blank.glued_prefix = Some("   ".into());
+    let blank = provider.create(blank, &cancel).await.unwrap();
+    assert_eq!(
+        blank
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix,
+        None
+    );
+    // A padded statement is the statement it surrounds, as the alias edit
+    // stores it: the record keeps `auto`, not the padding it arrived in.
+    const PADDED: &str = "00000000-0000-4000-8000-000000000054";
+    let mut padded = input(
+        PADDED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    padded.glued_prefix = Some("  auto  ".into());
+    let padded = provider.create(padded, &cancel).await.unwrap();
+    assert_eq!(
+        padded
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto"),
+        "the stored and returned statement is the trimmed prefix"
+    );
+    assert_eq!(stored_prefix(&home, PADDED).as_deref(), Some("auto"));
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// `provider.models.edit` sets and clears a model's alias on the record, and an
+/// alias is not a descriptor override: the edit writes none, so the reset path
+/// has nothing to leave behind and the id becomes selectable while the alias
+/// stands.
+///
+/// The reply is the target's rule and numbers, because the alias resolves
+/// through the pipeline rather than beside it.
+#[tokio::test]
+async fn a_model_edit_sets_an_alias_on_the_record_and_creates_no_override() {
+    let home = std::env::temp_dir().join(format!("provider-alias-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const ALIASED: &str = "00000000-0000-4000-8000-000000000061";
+    const ALIASED_ID: &str = "ark-code-latest";
+    let mut relay = input(
+        ALIASED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "alias",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":ALIASED_ID, "displayName":ALIASED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    provider.create(relay, &cancel).await.unwrap();
+    let catalog = provider
+        .catalog_for(ALIASED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        catalog.models[0].missing_limits,
+        ["contextWindow", "maxOutputTokens"],
+        "the rows that name the id disagree, so none supplies numbers"
+    );
+    // Setting the alias is one edit, and it writes the record's map rather
+    // than a descriptor override.
+    let aliased = provider
+        .update_model_config(
+            ALIASED.into(),
+            catalog.version,
+            ALIASED_ID.into(),
+            serde_json::from_value(
+                json!({"alias":{"action":"set","value":"ark-code/ark-code-latest"}}),
+            )
+            .unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record: Value = serde_json::from_str(&stored_record_json(&home, ALIASED)).unwrap();
+    assert_eq!(
+        record["modelAliases"][ALIASED_ID],
+        json!("ark-code/ark-code-latest"),
+        "the statement is on the record"
+    );
+    let managed = provider
+        .management(Some(ALIASED.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(
+        managed.models.as_ref().unwrap()[0].alias.as_deref(),
+        Some("ark-code/ark-code-latest"),
+        "the management reply says what the entry stands for"
+    );
+    assert_eq!(
+        record["modelConfigOverrides"],
+        json!([]),
+        "an alias edit writes no override for the reset path to leave behind"
+    );
+    // The id is selectable now, with the target's own numbers and rule.
+    let model = &aliased.models[0];
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(model.capabilities.context_window, Some(204_800));
+    assert_eq!(model.capabilities.max_output_tokens, Some(60_000));
+    let identification = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    assert_eq!(identification.rule, "token");
+    provider
+        .select(
+            None,
+            ModelId {
+                provider_id: ALIASED.into(),
+                model_id: ALIASED_ID.into(),
+            },
+            None,
+            &cancel,
+        )
+        .await
+        .expect("the aliased id is selectable");
+    // Clearing it is one edit too, and the id goes back to the ambiguity it
+    // had, with the candidates it named.
+    let cleared = provider
+        .update_model_config(
+            ALIASED.into(),
+            aliased.version,
+            ALIASED_ID.into(),
+            serde_json::from_value(json!({"alias":{"action":"clear"}})).unwrap(),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let record: Value = serde_json::from_str(&stored_record_json(&home, ALIASED)).unwrap();
+    assert_eq!(record.get("modelAliases"), None);
+    let model = &cleared.models[0];
+    assert_eq!(model.missing_limits, ["contextWindow", "maxOutputTokens"]);
+    assert_eq!(
+        model
+            .metadata
+            .as_ref()
+            .unwrap()
+            .identification
+            .as_ref()
+            .unwrap()
+            .rule,
+        "ambiguous"
+    );
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
 /// #522: a v25 store holds the seed with the assumed pair, because its daemon
 /// copied the bundle as it was. The v26 upgrade and the next start's reseed
 /// leave the same record a fresh home seeds: the bundle's current models and
@@ -8280,7 +8751,10 @@ async fn an_edited_merged_limit_stays_edited() {
     provider.create(relay, &cancel).await.unwrap();
     // What a relay outside the catalog projects for the same id: the merge,
     // read from the catalog rather than restated here.
-    let merged = BundledCatalog::load().unwrap().fallback(ID).unwrap();
+    let merged = BundledCatalog::load()
+        .unwrap()
+        .fallback(&Default::default(), ID)
+        .unwrap();
     let merged = (
         merged.capabilities.context_window,
         merged.capabilities.max_output_tokens,

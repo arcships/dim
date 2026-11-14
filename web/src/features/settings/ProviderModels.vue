@@ -29,6 +29,7 @@ const efforts = ref("")
 const effort = ref("")
 const tier = ref("")
 const endpoint = ref("")
+const alias = ref("")
 const busy = ref(false)
 const error = ref("")
 const expectedVersion = ref<number | null>(null)
@@ -37,6 +38,18 @@ const confirm = ref<InstanceType<typeof ConfirmDialog>>()
 const models = computed(() => (props.provider.models ?? []).filter((m) => `${m.model.modelId} ${m.model.displayName}`.toLowerCase().includes(query.value.toLowerCase())))
 const allowedEfforts = computed(() => original.value?.model.metadata?.reasoning?.effortOptions ?? [])
 const tiers = computed(() => original.value?.model.metadata?.serviceTier?.options ?? [])
+/// What identification made of one entry's id, as the row's suffix. The
+/// outcome is a suffix, not a replacement: a row keeps its reason or its
+/// limits, and this says which model it was taken to be.
+function identified(entry: ManagementModel): string {
+  const found = entry.model.metadata?.identification
+  if (!found) return t("identifiedNone")
+  if (found.rule === "ambiguous") return t("identifiedAmbiguous", { candidates: found.candidates.map((candidate) => `${candidate.providerId}/${candidate.modelId}`).join(", ") })
+  const model = entry.model.metadata?.matchedModelId ?? entry.model.modelId
+  const provider = entry.model.metadata?.matchedProviderId ?? props.provider.providerId
+  const words = found.rule === "merge" ? "identifiedInferred" : "identifiedAt"
+  return t(words, { model, provider })
+}
 const endpointItems = computed(() => [
   { label: t("inherit"), value: INHERIT },
   ...["openai", "openai-response", "openai-response-compact", "anthropic", "gemini"].map((kind) => ({ label: kind, value: kind })),
@@ -50,7 +63,7 @@ const tierItems = computed(() => [
   ...tiers.value.map((value) => ({ label: value, value })),
 ])
 function fromInherit(value: unknown): string { return value === INHERIT ? "" : String(value ?? "") }
-function snapshot(): string { return JSON.stringify([modelId.value, name.value, context.value, output.value, tools.value, vision.value, reasoning.value, efforts.value, effort.value, tier.value, endpoint.value]) }
+function snapshot(): string { return JSON.stringify([modelId.value, name.value, context.value, output.value, tools.value, vision.value, reasoning.value, efforts.value, effort.value, tier.value, endpoint.value, alias.value]) }
 watch(() => editing.value && snapshot() !== baseline.value, (value) => { dirty.value = value }, { flush: "sync" })
 function open(model?: ManagementModel): void {
   original.value = model
@@ -66,6 +79,7 @@ function open(model?: ManagementModel): void {
   effort.value = preferences?.reasoningEffort ?? ""
   tier.value = preferences?.serviceTier ?? ""
   endpoint.value = model?.endpointOverride ?? ""
+  alias.value = model?.alias ?? ""
   expectedVersion.value = props.provider.version
   error.value = ""
   baseline.value = snapshot()
@@ -120,6 +134,9 @@ async function save(): Promise<void> {
     if (vision.value !== c?.vision) edit.vision = vision.value
     if (reasoning.value !== c?.reasoning || efforts.value !== (existing?.model.metadata?.reasoning?.effortOptions ?? []).join(", ")) edit.reasoning = { supported: reasoning.value, effortOptions: efforts.value.split(",").map((s) => s.trim()).filter(Boolean) }
     if (endpoint.value !== (existing?.endpointOverride ?? "")) edit.endpoint = endpoint.value ? { action: "set", value: endpoint.value } : { action: "clear" }
+    // An alias is the provider's statement about its ids, so it is written
+    // beside the descriptor fields rather than as one of them.
+    if (existing && alias.value !== (existing.alias ?? "")) edit.alias = alias.value ? { action: "set", value: alias.value } : { action: "clear" }
     const model = { modelId: modelId.value, displayName: name.value, status: "active", capabilities: { modalities: ["text"], toolCalling: tools.value, streaming: true, structuredOutput: true, vision: vision.value, audio: false, reasoning: reasoning.value, ...(context.value ? { contextWindow: Number(context.value) } : {}), ...(output.value ? { maxOutputTokens: Number(output.value) } : {}) }, ...(reasoning.value ? { metadata: { reasoning: { supported: true, effortOptions: efforts.value.split(",").map((s) => s.trim()).filter(Boolean) } } } : {}) }
     const currentPreferences = props.provider.preferences[modelId.value]
     if (!existing || Object.keys(edit).length) {
@@ -182,6 +199,9 @@ async function save(): Promise<void> {
         <UFormField v-if="original && provider.connection?.driverKind === 'new-api-router'" :label="t('endpoint')">
           <USelect :model-value="endpoint || INHERIT" :items="endpointItems" class="w-full" @update:model-value="endpoint = fromInherit($event)" />
         </UFormField>
+        <UFormField v-if="original" :label="t('alias')" :help="t('aliasHint')">
+          <UInput v-model="alias" :placeholder="t('inherit')" class="w-full" />
+        </UFormField>
       </fieldset>
       <template v-if="original && provider.actions.includes('preferences.update') && (allowedEfforts.length || tiers.length)">
         <h3>{{ t("preferences") }}</h3>
@@ -209,6 +229,7 @@ async function save(): Promise<void> {
             <small>{{ entry.model.modelId }}</small>
             <small v-if="entry.unavailableReason">{{ entry.unavailableReason }}</small>
             <small v-else>{{ entry.model.capabilities.contextWindow?.toLocaleString() ?? t('unknownLimits') }} · {{ entry.source }}</small>
+            <small class="settings-help">{{ identified(entry) }}</small>
           </div>
           <div class="settings-inline-actions">
             <UButton v-if="entry.actions.includes('edit')" color="neutral" variant="ghost" size="sm" :disabled="busy" @click="open(entry)">{{ t("edit") }}</UButton>

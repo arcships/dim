@@ -563,8 +563,8 @@ const components = {
 }
 
 export const nuxtUiTestPlugin = {
-  install(app) {
-    for (const [name, component] of Object.entries(components)) {
+  install(app, overrides = {}) {
+    for (const [name, component] of Object.entries({ ...components, ...overrides })) {
       app.component(name, component)
     }
   },

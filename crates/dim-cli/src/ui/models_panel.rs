@@ -35,8 +35,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::session::{
-    Area, EmptyProvider, EmptyReason, ModelItem, ModelList, ModelPolicyUpdate, NeedsLimitsProvider,
-    SubagentModelPolicy,
+    Area, EmptyProvider, EmptyReason, ModelItem, ModelList, ModelOutcome, ModelPolicyUpdate,
+    NeedsLimitsProvider, SubagentModelPolicy,
 };
 use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
@@ -509,11 +509,47 @@ fn effort_detail(model: &ModelItem, chosen: Option<&str>, focused: bool, current
     } else {
         shown.unwrap_or("").to_owned()
     };
-    match (effort.is_empty(), current) {
+    let state = match (effort.is_empty(), current) {
         (true, true) => t("current").to_owned(),
         (false, true) => format!("{effort}  {}", t("current")),
         (false, false) => effort,
         (true, false) => String::new(),
+    };
+    // How the id was identified is the row's own statement about the model, so
+    // it rides after the effort: a user reading an unusable row sees which
+    // model it was taken to be, or the rows that disagreed.
+    let outcome = outcome_text(&model.outcome);
+    match (state.is_empty(), outcome.is_empty()) {
+        (true, _) => outcome,
+        (_, true) => state,
+        (false, false) => format!("{state}  {outcome}"),
+    }
+}
+
+/// What identification made of one row's id, as the row's suffix.
+fn outcome_text(outcome: &ModelOutcome) -> String {
+    match outcome {
+        ModelOutcome::Identified {
+            provider_id,
+            model_id,
+            inferred: false,
+        } => tf(
+            "identified: {model} at {provider}",
+            &[("model", model_id), ("provider", provider_id)],
+        ),
+        ModelOutcome::Identified {
+            provider_id,
+            model_id,
+            inferred: true,
+        } => tf(
+            "inferred from several rows: {model} at {provider}",
+            &[("model", model_id), ("provider", provider_id)],
+        ),
+        ModelOutcome::Ambiguous { candidates } => tf(
+            "ambiguous: {candidates}",
+            &[("candidates", &candidates.join(", "))],
+        ),
+        ModelOutcome::Unidentified => t("unidentified").to_owned(),
     }
 }
 
@@ -598,7 +634,7 @@ fn limits_rows(
     for provider in providers {
         let name = ("provider", provider.provider_name.as_str());
         let id = ("id", provider.provider_id.as_str());
-        let text = if provider.count == 1 {
+        let mut text = if provider.count == 1 {
             tf(
                 "{provider}: 1 model needs a window · dimcode models {id} --set-missing-limits",
                 &[name, id],
@@ -610,6 +646,12 @@ fn limits_rows(
                 &[name, ("count", &count), id],
             )
         };
+        // The reason and the rows that disagree appear together, so a user
+        // choosing what an id stands for reads the candidates here rather than
+        // only in the refusal text.
+        if !provider.candidates.is_empty() {
+            text.push_str(&format!(" · {}", provider.candidates.join(", ")));
+        }
         let mut row = Item::heading(text);
         row.sticky = true;
         items.push(row);
@@ -684,6 +726,11 @@ mod tests {
             efforts: efforts.iter().map(|effort| (*effort).to_owned()).collect(),
             default_effort: default_effort.map(str::to_owned),
             saved_effort: saved.map(str::to_owned),
+            outcome: ModelOutcome::Identified {
+                provider_id: provider.into(),
+                model_id: id.into(),
+                inferred: false,
+            },
         }
     }
 
@@ -748,6 +795,76 @@ mod tests {
         let screen = drawn(&panel);
         assert!(screen.contains("No matching models."), "{screen}");
         assert!(!screen.contains("ZDR"), "{screen}");
+    }
+
+    /// The row says how its id was identified, in the four wordings: one row,
+    /// several agreeing rows, a disagreement, and nothing.
+    #[test]
+    fn a_rows_suffix_says_how_its_id_was_identified() {
+        let mut panel = ModelsPanel::new();
+        let outcome = |outcome| ModelItem {
+            provider_id: "relay".into(),
+            provider_name: "Relay".into(),
+            provider_version: 1,
+            model_id: "listed-id".into(),
+            display_name: "listed-id".into(),
+            zdr: false,
+            efforts: Vec::new(),
+            default_effort: None,
+            saved_effort: None,
+            outcome,
+        };
+        panel.set_models(Ok(ModelList {
+            manage: false,
+            models: vec![
+                outcome(ModelOutcome::Identified {
+                    provider_id: "moonshot".into(),
+                    model_id: "kimi-k3".into(),
+                    inferred: false,
+                }),
+                outcome(ModelOutcome::Identified {
+                    provider_id: "openai".into(),
+                    model_id: "gpt-5.5".into(),
+                    inferred: true,
+                }),
+                outcome(ModelOutcome::Ambiguous {
+                    candidates: vec![
+                        "ark-code/ark-code-latest".into(),
+                        "byteplus-coding-plan/ark-code-latest".into(),
+                    ],
+                }),
+                outcome(ModelOutcome::Unidentified),
+            ],
+            current: None,
+            empty: Vec::new(),
+            limits: Vec::new(),
+        }));
+        // Wide enough that the candidates a row names are not cut off.
+        let screen = panel
+            .render(
+                120,
+                16,
+                &crate::ui::theme::palette::terminal_palette(
+                    ColorMode::TrueColor,
+                    Appearance::Dark,
+                ),
+            )
+            .join("\n");
+        assert!(
+            screen.contains("identified: kimi-k3 at moonshot"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("inferred from several rows: gpt-5.5 at openai"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains(
+                "ambiguous: ark-code/ark-code-latest, byteplus-coding-plan/ark-code-latest"
+            ),
+            "{screen}"
+        );
+        assert!(screen.contains("unidentified"), "{screen}");
     }
 
     #[test]
@@ -920,6 +1037,7 @@ mod tests {
                 provider_id: "dim".into(),
                 provider_name: "Dim OAuth".into(),
                 count: 2,
+                candidates: Vec::new(),
             }],
         }));
         let screen = drawn(&panel);
@@ -941,6 +1059,7 @@ mod tests {
                 provider_id: "dim".into(),
                 provider_name: "Dim OAuth".into(),
                 count: 1,
+                candidates: Vec::new(),
             }],
         }));
         assert!(
@@ -968,6 +1087,7 @@ mod tests {
                 provider_id: "dim".into(),
                 provider_name: "Dim OAuth".into(),
                 count: 3,
+                candidates: Vec::new(),
             }],
         }));
         let screen = drawn(&panel);

@@ -52,11 +52,52 @@ pub struct CatalogModel {
     pub metadata: Option<CatalogPreferences>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogPreferences {
     pub reasoning: Option<dim_agent_types::ModelReasoning>,
     pub service_tier: Option<dim_agent_types::ModelServiceTier>,
+    /// How the catalog identified this entry's id.
+    #[serde(default)]
+    pub identification: Option<Identification>,
+    /// The row the projected entry is copied from.
+    #[serde(default)]
+    pub matched_provider_id: Option<String>,
+    #[serde(default)]
+    pub matched_model_id: Option<String>,
+}
+
+/// What identification made of one id, as the catalog and the management view
+/// carry it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identification {
+    /// The step's own word: `provider-exact`, `qualified`, `token`,
+    /// `canonical`, `custom-provider`, `merge` or `ambiguous`.
+    pub rule: String,
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
+    /// One entry per limit the row did not declare, naming what supplied it.
+    #[serde(default)]
+    pub filled: Vec<Filled>,
+}
+
+/// One limit the row did not declare, and the entry that supplied it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filled {
+    pub field: String,
+    pub value: u64,
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+/// One row an ambiguity refused.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 /// A Workflow run as `workflow.status` and `workflow.stop` return it: the

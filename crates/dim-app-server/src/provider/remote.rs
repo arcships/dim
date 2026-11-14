@@ -69,6 +69,9 @@ impl ProviderService {
         } else {
             client(&record.network)?
         };
+        // Discovery writes the ids the provider reports, so it reads the
+        // bundle without the record's prefix: a prefix is the user's statement
+        // about the ids they see, not something a listing may infer.
         let projection = ProviderProjection {
             provider_id: provider_id.to_owned(),
             source: Some(if record.kind == StaticRecordKind::Builtin {

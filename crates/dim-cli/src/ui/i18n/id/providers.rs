@@ -83,6 +83,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ pindah · enter aktifkan · esc kembali",
         "↑↓ move · enter activate · esc close" => "↑↓ pindah · enter aktifkan · esc tutup",
+        "Model id prefix" => "Prefiks id model",
+        "(none)" => "(tidak ada)",
+        "identified: {model} at {provider}" => "teridentifikasi: {model} di {provider}",
+        "inferred from several rows: {model} at {provider}" => {
+            "disimpulkan dari beberapa baris: {model} di {provider}"
+        }
+        "ambiguous: {candidates}" => "ambigu: {candidates}",
+        "unidentified" => "tidak teridentifikasi",
+        "Identified {rule}" => "Teridentifikasi {rule}",
+        "from the Provider's own list" => "dari daftar milik penyedia",
+        "from the whole qualified id" => "dari id terkualifikasi lengkap",
+        "by its tokens" => "melalui tokennya",
+        "by its canonical id or display name" => "melalui id kanonis atau nama tampilannya",
+        "from the custom-provider list" => "dari daftar custom-provider",
+        "by merging the rows that name it" => "dengan menggabungkan baris yang menyebutnya",
+        "ambiguous" => "ambigu",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} disediakan oleh {provider}/{model}"
+        }
         "(paste here)" => "(tempel di sini)",
         _ => return None,
     })
