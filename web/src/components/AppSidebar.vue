@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
-import { useRoute } from "vue-router"
+import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
 import { settingsMessages } from "../i18n/settings"
 import BrandMark from "./BrandMark.vue"
 import ConnectionBadge from "./ConnectionBadge.vue"
 import SidebarWorkspaceGroup from "./SidebarWorkspaceGroup.vue"
 import { sortKey } from "./sidebar-sort"
-import { useSessionsStore } from "../stores/sessions"
+import { useArchiveStore } from "../stores/archive"
+import { groupWorkspaces, useSessionsStore } from "../stores/sessions"
+import { useToastStore } from "../stores/toast"
 import { useUiStore } from "../stores/ui"
 
-defineEmits<{ navigate: [] }>()
+const emit = defineEmits<{ navigate: [] }>()
 const { t } = useI18n()
 const { t: settingsText } = useI18n({ messages: settingsMessages })
 const route = useRoute()
+const router = useRouter()
 const sessions = useSessionsStore()
+const archive = useArchiveStore()
+const toast = useToastStore()
 const ui = useUiStore()
 const search = ref("")
 // Relative times re-render each minute without a reload.
@@ -29,13 +34,24 @@ const activeCwd = computed(() => activeSessionId.value === undefined ? undefined
 const newSessionTo = computed(() => ({ name: "chat-new" as const, ...(activeCwd.value === undefined ? {} : { query: { cwd: activeCwd.value } }) }))
 
 const query = computed(() => search.value.trim().toLocaleLowerCase())
-/** The filter matches the workspace name or path, or the session title or preview. Workspaces and their sessions order by the chosen sort. */
-const visible = computed(() => sessions.workspaces.flatMap((workspace) => {
+/** Hidden rows are dropped before grouping and search; workspaces and their sessions order by the chosen sort. */
+const visible = computed(() => groupWorkspaces(sessions.summaries.filter((session) => !archive.has(session.sessionId))).flatMap((workspace) => {
   const matched = query.value === "" || workspace.name.toLocaleLowerCase().includes(query.value) || workspace.cwd.toLocaleLowerCase().includes(query.value)
   const matching = query.value === "" || matched ? workspace.sessions : workspace.sessions.filter((session) => [session.title, session.preview].some((text) => text?.toLocaleLowerCase().includes(query.value)))
   if (matching.length === 0) return []
   return [{ ...workspace, sessions: [...matching].sort((left, right) => sortKey(right, ui.sidebarSortBy) - sortKey(left, ui.sidebarSortBy)) }]
 }).sort((left, right) => sortKey(right.sessions[0]!, ui.sidebarSortBy) - sortKey(left.sessions[0]!, ui.sidebarSortBy)))
+
+function archiveSession(sessionId: string): void {
+  if (!archive.archive(sessionId)) {
+    toast.push({ tone: "danger", title: t("sidebar.archiveFailed") })
+    return
+  }
+  if (sessionId === activeSessionId.value) {
+    void router.push(newSessionTo.value)
+    emit("navigate")
+  }
+}
 
 const sortItems = computed(() => (["recentActive", "recentCreated"] as const).map((value) => ({
   label: t(`sidebar.${value}`),
@@ -115,6 +131,7 @@ const sortItems = computed(() => (["recentActive", "recentCreated"] as const).ma
         :active-session-id="activeSessionId"
         :now-ms="nowMs"
         @toggle="ui.toggleWorkspace(workspace.cwd)"
+        @archive="archiveSession"
         @navigate="$emit('navigate')"
       />
     </div>

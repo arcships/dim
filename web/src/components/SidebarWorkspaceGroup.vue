@@ -7,7 +7,7 @@ import { formatRelativeTimeShort } from "../features/chat/timeline-time"
 
 /** One workspace (a working directory) and its sessions, most recent first. */
 const props = defineProps<{ workspace: Workspace; expanded: boolean; activeSessionId?: string; nowMs: number }>()
-const emit = defineEmits<{ toggle: []; navigate: [] }>()
+const emit = defineEmits<{ toggle: []; navigate: []; archive: [sessionId: string] }>()
 const { t } = useI18n()
 
 // A group shows five sessions until "show more" walks out twenty at a time.
@@ -64,7 +64,7 @@ function toggleReveal(): void {
       </div>
     </div>
     <ul v-if="expanded" class="session-list">
-      <li v-for="session in shown" :key="session.sessionId">
+      <li v-for="session in shown" :key="session.sessionId" class="session-row">
         <RouterLink
           class="session-open"
           :to="{ name: 'chat-session', params: { sessionId: session.sessionId } }"
@@ -77,6 +77,18 @@ function toggleReveal(): void {
           <strong>{{ session.title ?? session.preview ?? t("sidebar.untitled") }}</strong>
           <small>{{ formatRelativeTimeShort(new Date(session.updatedAt), nowMs) }}</small>
         </RouterLink>
+        <UTooltip v-if="!session.running" :text="t('sidebar.archive')">
+          <UButton
+            class="session-row-action"
+            variant="ghost"
+            color="neutral"
+            size="sm"
+            square
+            icon="i-lucide-archive"
+            :aria-label="t('sidebar.archiveSession', { name: session.title ?? session.preview ?? t('sidebar.untitled') })"
+            @click.stop="emit('archive', session.sessionId)"
+          />
+        </UTooltip>
       </li>
       <li v-if="workspace.sessions.length > FIRST">
         <UButton
@@ -112,12 +124,16 @@ function toggleReveal(): void {
 .workspace-running { position: absolute; top: 0; right: 0; bottom: 0; display: grid; width: var(--control-sm); place-items: center; color: var(--muted-foreground); pointer-events: none; }
 .workspace-row:is(:hover, :focus-within) .workspace-running { opacity: 0; }
 /* The session link reuses the row geometry of the kit's .session-open. */
+.session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .session-list .session-open { grid-template-columns: var(--control-xs) minmax(0, 1fr) auto; border-radius: var(--control-sm-radius); color: inherit; text-decoration: none; }
 .session-list .session-open .status-dot { justify-self: center; }
 .session-list .session-open:hover { background: var(--hover); }
 .session-list .session-open[data-open="true"] { background: var(--card); box-shadow: var(--shadow-xs), 0 0 0 1px var(--border); }
+.session-row-action { opacity: 0; transition: opacity var(--duration-hover) ease; }
+.session-row:is(:hover, :focus-within) .session-row-action { opacity: 1; }
 @media (hover: none) {
   .workspace-row-actions { opacity: 1; }
   .workspace-running { display: none; }
+  .session-row-action { opacity: 1; }
 }
 </style>

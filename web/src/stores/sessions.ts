@@ -19,19 +19,7 @@ export const useSessionsStore = defineStore("sessions", () => {
   const byId = computed(() => new Map(summaries.value.map((session) => [session.sessionId, session])))
 
   /** Workspaces by latest activity; sessions in each by latest activity. */
-  const workspaces = computed<Workspace[]>(() => {
-    const groups = new Map<string, SessionSummary[]>()
-    for (const session of summaries.value) {
-      if (session.origin === "internal" || session.origin === "automation") continue
-      const group = groups.get(session.cwd)
-      if (group === undefined) groups.set(session.cwd, [session])
-      else group.push(session)
-    }
-    return [...groups].map(([cwd, sessions]) => {
-      sessions.sort((left, right) => right.updatedAt - left.updatedAt)
-      return { cwd, name: workspaceName(cwd), sessions, updatedAt: sessions[0]!.updatedAt }
-    }).sort((left, right) => right.updatedAt - left.updatedAt)
-  })
+  const workspaces = computed<Workspace[]>(() => groupWorkspaces(summaries.value))
 
   /** Reloads the directory; concurrent callers share one request. */
   function refresh(): Promise<void> {
@@ -92,4 +80,19 @@ export const useSessionsStore = defineStore("sessions", () => {
 export function workspaceName(cwd: string): string {
   const trimmed = cwd.replace(/[\\/]+$/, "")
   return trimmed.split(/[\\/]/).at(-1) || cwd
+}
+
+/** Groups directory rows into workspaces, leaving out the origins the sidebar never lists. */
+export function groupWorkspaces(list: SessionSummary[]): Workspace[] {
+  const groups = new Map<string, SessionSummary[]>()
+  for (const session of list) {
+    if (session.origin === "internal" || session.origin === "automation") continue
+    const group = groups.get(session.cwd)
+    if (group === undefined) groups.set(session.cwd, [session])
+    else group.push(session)
+  }
+  return [...groups].map(([cwd, sessions]) => {
+    sessions.sort((left, right) => right.updatedAt - left.updatedAt)
+    return { cwd, name: workspaceName(cwd), sessions, updatedAt: sessions[0]!.updatedAt }
+  }).sort((left, right) => right.updatedAt - left.updatedAt)
 }

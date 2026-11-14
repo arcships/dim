@@ -1,5 +1,5 @@
-import { ProtocolError, readSummaries } from "./read"
-import type { ModelId, SessionSummary } from "./protocol"
+import { ProtocolError } from "./read"
+import type { ModelId } from "./protocol"
 
 type ObjectValue = Record<string, unknown>
 
@@ -278,11 +278,6 @@ export type McpImportResolution = { id: string; action: McpImportAction; newId?:
 /** The apply's reply: the source revision the import wrote. */
 export function readMcpImportApplied(value: unknown): string { return string(object(value).revision) }
 
-export type SavedSessions = { sessions: SessionSummary[]; nextCursor: string | undefined }
-export function readSavedSessions(value: unknown): SavedSessions {
-  const source = object(value)
-  return { sessions: readSummaries(source.sessions), nextCursor: optionalString(source.nextCursor) }
-}
 export function readPing(value: unknown): { sessions: number; connections: number; serverVersion: string } {
   const source = object(value)
   return { sessions: number(source.sessions), connections: number(source.connections), serverVersion: string(source.serverVersion) }

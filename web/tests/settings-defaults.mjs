@@ -14,7 +14,6 @@ registerHooks({
     if (specifier === "../../stores/sessions") return { url: "data:text/javascript,export const useSessionsStore=()=>({workspaces:[{cwd:'/project',name:'Project'}]})", shortCircuit: true }
     if (specifier === "../../stores/models") return { url: "data:text/javascript,export const useModelsStore=()=>({providers:[{providerId:'fixture',name:'Fixture',models:[{id:'a',name:'A'},{id:'b',name:'B'}]}],load:async()=>{},error:''})", shortCircuit: true }
     if (specifier === "vue-i18n") return { url: "data:text/javascript,export const useI18n=()=>({locale:{value:'en'}})", shortCircuit: true }
-    if (specifier === "vue-router" && context.parentURL?.endsWith("ArchivedSettings.vue")) return { url: "data:text/javascript,export const RouterLink={inheritAttrs:false,setup:(_,ctx)=>()=>ctx.slots.default?.()}", shortCircuit: true }
     try { return next(specifier, context) } catch (error) {
       if (specifier.startsWith(".") && !/\.(ts|vue)$/.test(specifier)) return next(`${specifier}.ts`, context)
       throw error
@@ -29,7 +28,6 @@ registerHooks({
 })
 const { default: PermissionsSettings } = await import("../src/features/settings/PermissionsSettings.vue")
 const { default: AgentSettings } = await import("../src/features/settings/AgentSettings.vue")
-const { default: ArchivedSettings } = await import("../src/features/settings/ArchivedSettings.vue")
 const { RpcError } = await import("../src/rpc/client.ts")
 const node = (type, text = "") => ({ type, text, children: [], props: {}, parent: undefined, options: [], selectedIndex: -1, addEventListener() {}, getRootNode() { return {} } })
 const renderer = createRenderer({
@@ -54,48 +52,6 @@ function mount(t, component, call, supports = () => true) {
   t.after(() => { app.unmount(); delete globalThis.window; delete globalThis.defaultsConnection })
   return root
 }
-
-test("saved-session pagination waits for Search when workspace or text filters change", async t => {
-  const reads = []
-  let fail = false
-  const root = mount(t, ArchivedSettings, async (method, params) => {
-    assert.equal(method, "session.catalog")
-    reads.push(params)
-    if (fail) throw new Error("Search failed")
-    const id = `${params.cwd ?? "all"}:${params.query ?? "any"}:${params.cursor ?? "first"}`
-    return { sessions: [{ sessionId: id, cwd: params.cwd ?? "/other", model: { providerId: "fixture", modelId: "a" }, createdAt: 1, updatedAt: 2, sequence: 1, running: false, preview: id, title: null, titleSource: null, titleRevision: 0 }], nextCursor: params.cursor ? null : "next" }
-  })
-  await flush()
-  const more = () => button(root, "Load more")
-  const workspace = field(root, "Workspace filter")
-  const query = all(root).find(el => el.type === "input")
-  assert.equal(more().props.disabled, false)
-  workspace.props["onUpdate:modelValue"]("/project"); await flush()
-  assert.equal(more().props.disabled, true)
-  await more().props.onClick(); await flush()
-  assert.equal(reads.length, 1, "a changed filter must not page through the previous workspace")
-  fail = true
-  await submit(root, "Search")
-  assert.match(text(root), /Search failed/)
-  assert.equal(more().props.disabled, true)
-  fail = false
-  await submit(root, "Search")
-  assert.deepEqual(reads.at(-1), { limit: 50, withPreview: true, cwd: "/project" })
-  assert.doesNotMatch(text(root), /all:any:first/)
-  assert.match(text(root), /\/project:any:first/)
-  query.props["onUpdate:modelValue"]("needle"); await flush()
-  assert.equal(more().props.disabled, true)
-  query.props["onUpdate:modelValue"]("  "); await flush()
-  assert.equal(more().props.disabled, false, "unchanged effective filters allow pagination")
-  query.props["onUpdate:modelValue"](" needle "); await flush()
-  await submit(root, "Search")
-  assert.deepEqual(reads.at(-1), { limit: 50, withPreview: true, cwd: "/project", query: "needle" })
-  await more().props.onClick(); await flush()
-  assert.deepEqual(reads.at(-1), { limit: 50, withPreview: true, cwd: "/project", query: "needle", cursor: "next" })
-  assert.match(text(root), /\/project:needle:first/)
-  assert.match(text(root), /\/project:needle:next/)
-  assert.equal(more(), undefined)
-})
 
 test("isolation modes preserve inactive network, reset both flags and retain conflicting drafts without retry", async t => {
   let document = { sandbox: true, network: true }, revision = "exec:1", conflict = false, failRead = false

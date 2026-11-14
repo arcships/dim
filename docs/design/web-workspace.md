@@ -153,7 +153,7 @@ The frontend directory is fixed when the daemon starts (§2.4); a daemon started
 | `rpc/client.ts` | JSON-RPC over `/ws`: `hello` v3 (`clientKind: "web"`), request timeout, heartbeat with `daemon.ping`, reconnect with backoff and re-attach. Strict readers at this boundary; the rest of the app uses typed data |
 | `rpc/protocol.ts` | Hand-written types for the v3 methods and notifications the UI uses (`session.*`, `approval.*`, `session.event`, `session.state`, `session.model.progress`) |
 | `projection.ts` | Folds `session.history` pages, `session.event` and `session.model.progress` into timeline rows (user, assistant text, thinking, tool call and result, approval), following `crates/dim-cli/src/projection.rs`; also tracks the waiting `ask_user` calls of each branch (`step/tool-call` until its batch's `step/tool-result`) and applies owner reads for pending inputs/questions and current Goal state |
-| Sidebar | Workspaces group Session summaries by `cwd` after excluding rows with the [internal origin](appserver/session-classification.md#31-the-origin) and the [automation origin](appserver/session-classification.md#31-the-origin); new Session by `session.create {cwd}` with a typed path or a known workspace |
+| Sidebar | Workspaces group Session summaries by `cwd` after excluding rows with the [internal origin](appserver/session-classification.md#31-the-origin) and the [automation origin](appserver/session-classification.md#31-the-origin); new Session by `session.create {cwd}` with a typed path or a known workspace; a row can be hidden by the browser-local archive (§4.4) |
 | Chat | Timeline (markdown, Shiki) with a message rail (one marker per user message from three messages on, as dim-agent's rail: hover shows the message and its first reply, a click scrolls it into view and marks it for a moment; `/timeline` is not offered, dim-agent has none), composer (submit, stop, model menu and permission preset picker, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place; queued messages of the main line above the composer (`input/message` until `input/consumed` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
 | Session permissions | The composer and `/permissions` select the `main` preset under [ADR 018](../adr/018-permission-is-the-preset.md) and the [Permission policy contract](../architecture/rust-agent/plugins/Permission.md#policy-contract). The client reads `session.permission.get` and `permission/changed`, displays the preset and tool lists, and preserves both lists in a versioned `session.permission.update`. Conflicts refresh without retrying. Choosing Full access requires confirmation. Process isolation links to its Settings control. |
 | Lines | Right detail panel with a Lines tree and one tab per opened line; each tab folds that line's own history and sends, stops, approves and ends on its `branchId` (§4.1) |
@@ -459,7 +459,7 @@ optional account feature must not prevent identity or usage from loading.
 | Skills | Manage already installed skills: search, inspect details, enable/disable and reload discovery; choose user scope or an existing workspace without entering filesystem paths. Source installation and plugin-package controls are not part of this page |
 | Permissions | Process isolation and user-scope command-rule management (exact/prefix allow/deny; project scope, patterns and per-rule ask are rejected, [§10.1](appserver/permission-command-rules.md#101-legacy-rule-kinds)), with confirmation for privilege increases. The isolation card follows [the CLI isolation choices](cli-commands.md#process-isolation-settings), reads `host.execution.backend` and shows the owner's reason when the host has none; the browser never infers the platform |
 | Scheduled tasks | List, create/edit, pause/resume, run now, recent runs and confirmed deletion through the [Scheduler management contract](plugins/Scheduler.md#a3-management-methods); no raw Settings document access |
-| Archived sessions | Search, restore/open and confirmed permanent deletion |
+| Archived sessions | The browser-local hidden list only: search and workspace filter over it, restore/open, and confirmed deletion of one row or all of them (§4.4) |
 | Diagnostics | Safe version, protocol, connection and metadata with refresh, the model-request recording switch, and the start-up rule for process logs instead of a log-mode control ([logging controls](#diagnostics-the-legacy-logging-controls)) |
 
 Use the current owner's semantics when old terminology no longer describes the
@@ -473,7 +473,7 @@ the host path identifying each workspace. They do not ask for browser-local path
 Agent's scope applies only to the default model for new Sessions; collaboration
 policy and the command shell remain user-wide. MCP's workspace adds that project's
 servers to the catalog, not a working-directory override for any server. Skills'
-workspace includes project discovery. Saved sessions instead has an all-workspace
+workspace includes project discovery. Archived sessions instead has an all-workspace
 filter; it never changes configuration. Switching configuration scope confirms
 discarding unsaved edits, and a cancelled or failed load keeps the previous scope.
 
@@ -837,6 +837,144 @@ owners. No new plugin, catalog, event format or generic form framework is needed
 shared login presentation serves account and Provider pages. Additional helpers
 must justify a responsibility beyond translating an already typed owner reply.
 
+### 4.4 Session archive
+
+[#279](https://github.com/arcships/dim/issues/279) decided that archive is a client-local hidden list over the existing
+Session methods. A Session's close, its saved history and its archive are three different things: closing is a daemon
+fact, saved history is the daemon's rows, and the archive is one client's decision not to show a row. The Web workspace
+therefore keeps its own list of hidden Session ids in the browser and adds no App Server method, field, catalog filter,
+storage format or Timeline event. Archiving changes nothing the daemon owns.
+
+| Item | Contract |
+| --- | --- |
+| State | `localStorage["dim-web.archive.v1"]`: a JSON array of the Session ids this browser hides. It holds no preview, workspace, title, model, running or closed state |
+| Owner | `web/src/stores/archive.ts`, beside `stores/ui.ts` and `stores/appearance.ts`, which own the other browser-local values. Rows always come from the daemon's reply; the store decides which of them are hidden |
+| Read | Once at start and again before each change: a value that is not an array contributes nothing, and a non-string item is dropped, as `ui.ts` reads its own key. A `storage` event for this key refreshes the in-memory list |
+| Write | Best effort. Each change re-reads the key, applies the change and writes the result, so sequential changes from two open tabs are preserved; simultaneous writes remain last-writer-wins because `localStorage` has no cross-tab compare-and-set. A read or write that storage refuses (disabled or full) is reported at the action and the row stays visible, so a reload cannot bring back a row the user saw disappear |
+| Identity | `localStorage` is per browser origin, and the entry serves at `http://127.0.0.1:<port>` (§2.1). One daemon keeps its list across browser reloads and every restart that reaches the same address; two daemons, or a restart that takes another port because the old address is busy, are separate origins with separate lists. Two product homes served one after another on the same address cannot be told apart by the browser and share the key, so a marker is an id and nothing more: a foreign id hides nothing and is reported as unavailable (below) instead of hiding another home's Session |
+| Lifecycle | A marker leaves the list on Restore, on a confirmed delete of that Session from this page, or on Remove unavailable. Nothing else removes it: a Session closed elsewhere is not listed by a read without `includeClosed`, which is why the archived page asks for those rows (below) instead of treating them as gone |
+
+**Ordinary list.** The sidebar lists `session.summaries`; a hidden id is dropped before grouping and search, so a
+workspace group disappears with its last visible Session. The sidebar keeps its own rule of excluding the internal and
+automation origins (§4), so a Session of those origins is never listed and cannot be archived from here. A row offers
+Archive while the Session is not `running`: the row is the only place its run state and a pending approval are visible
+for a Session the user is not looking at, so hiding a working Session would hide work in flight. Under that condition
+Archive needs no confirmation and makes no server call. Archiving the Session the page shows navigates to the
+new-Session page, because a Session the workspace does not list should not stay on screen as if it were still there;
+history, branches and queued input are untouched. The root route treats a hidden last Session as absent and opens a new
+one.
+
+**Archived list.** Settings → Archived sessions shows the hidden ids the current daemon stores and nothing else, so the
+ordinary list is the only place a Session that is not hidden appears. The page that today lists every saved Session
+becomes this subset. It reads one `session.summaries {includeClosed: true}` reply — the catalog projection, not history
+— and intersects it with the markers on the client, because the archive is browser state and the server cannot filter
+or page by it. The consequences are deliberate:
+
+- No paging: the archived set is bounded by what this browser hid, not by the store's size.
+- Search and the workspace filter run on the client over the resolved rows, as the sidebar's search does. Search folds
+  the workspace name, its path and the preview; the filter lists the archived workspaces, so a workspace whose
+  Sessions are all archived still appears here.
+- [`session.summaries`](appserver/session-catalog.md#33-sessionsummaries) applies no classification filter —
+  `withInternal`, `withAcpSessions` and `withAutomationSessions` belong to `session.catalog` — so the page lists the
+  row of any origin this browser hid. [#557's](https://github.com/arcships/dim/issues/557) filters do not apply: archive
+  is not a classification, and it writes no `origin` and selects none.
+- A row keeps the sidebar's fields — preview or id, workspace, last activity, model, running state — adds the `closed`
+  fact this read returns, and offers Restore, Open and Delete.
+
+**Closed Sessions.** A Session this daemon closed keeps its stored rows but is absent from a read without
+`includeClosed` ([session catalog §3.3](appserver/session-catalog.md#33-sessionsummaries)), and the closed fact lasts
+only as long as the daemon does. Such a Session stays a row on this page: it is stored, a restart lists it again, and
+dropping its marker as unavailable would discard the user's decision about a Session that still exists. A closed row
+therefore shows that state, offers Restore and Delete, and does not offer Open, because the daemon refuses to attach
+it. A daemon that refuses the member (`invalid_params`, an App Server older than it) is read once without it; its
+closed Sessions then appear as unavailable, which is the same read a client on that daemon has today.
+
+**Restore.** Restore removes the id from the browser list, the row leaves this page and the Session returns to the
+sidebar; no server call and no re-read, since the row already comes from the current listing. A closed Session leaves
+this page but stays out of the sidebar until the daemon lists it again, which is the same state the ordinary list shows
+for every closed Session. Open does the same and then navigates to the Session, so a Session opened from here is never
+left hidden.
+
+**Deletion.** Single Delete and Delete all archived are the only destructive actions, both through
+`session.delete {sessionId, requireInactive: true}`, so a Session in use is refused `session_active` rather than
+closed under its turn. Delete is offered only while the connection serves `session.delete`, as today, and is disabled
+while the row reports `running`; `requireInactive` covers the gap between that read and the call. The confirmation
+names the target set: one row's preview for a single delete; the count and up to three previews for the bulk action.
+Targets are the rows this page resolved from the current listing, never the stored marker list, so an unavailable id
+is not sent and no Session the page does not show is named.
+
+The bulk action deletes its targets one call at a time and continues after a failure, because each delete settles its
+own Session:
+
+| Outcome | Effect on the list and the page |
+| --- | --- |
+| `{deleted: true}` or `{deleted: false}` | The Session is gone: its marker leaves the list, its row leaves the page, and the sidebar forgets it |
+| `session_active` | The row stays and is marked as in use; nothing was closed or removed |
+| Any other error (I/O, SQLite, `product_integration_pending`) | The row stays with the server's message, in the state [Session deletion and fork §3.5](appserver/session-deletion-and-fork.md#35-idempotence-and-errors) describes |
+| No reply | The rows stay; the action is offered again once the connection returns |
+
+After the loop the page reports how many of how many were deleted and lists each failure beside its row, so a partial
+result is never presented as success and a retry targets only what is left. A Session that is not hidden is never in
+the target set: the markers and the current listing decide it together.
+
+**Unavailable entries.** A marker whose id the current listing does not hold is not a row. The page reports their count
+and offers one Remove unavailable action that drops those ids from the browser list only and deletes no Session.
+Without it the key could only grow, and the count is also how a user sees that the archive list partly belongs to
+another home or daemon. No marker is removed implicitly, because a missing id can mean deleted, or another home served
+at this address. A closed Session is not unavailable — the page asks for closed rows, so it stays a row until the
+daemon no longer stores it.
+
+**Daemon without a store.** A daemon without a native store answers `session.summaries` from its loaded Sessions
+([session catalog §3.3](appserver/session-catalog.md#33-sessionsummaries)). There an archived Session that is not
+loaded cannot be told apart from a deleted one, so the page reports it as unavailable; the ordinary Web entry runs on a
+daemon with a store, where this does not arise.
+
+**Connection loss.** Archive, Restore and Remove unavailable are browser-owned and stay available, as appearance
+settings do (§4.3). Delete is a host action and is disabled while disconnected; the page keeps the rows it read.
+
+```text
+┌─ Workspaces ──────────────────────┐   ┌─ Settings · Archived sessions ──────────────┐
+│ ▾ dim                  [search]   │   │ [search…………] [all workspaces ▾]             │
+│   ● Fix the parser     2h ago ⊘   │   │ ┌─────────────────────────────────────────┐ │
+│   ○ Old experiment     3d ago     │   │ │ Old experiment  /home/u/dim     3d ago  │ │
+│                                   │   │ │ [Restore] [Open] [Delete]               │ │
+│                                   │   │ └─────────────────────────────────────────┘ │
+└───────────────────────────────────┘   │ ┌─────────────────────────────────────────┐ │
+                                        │ │ Closed probe   /home/u/dim     1w ago   │ │
+                                        │ │ closed in this daemon                   │ │
+                                        │ │ [Restore] [Delete]                      │ │
+                                        │ └─────────────────────────────────────────┘ │
+                                        │ 2 archived entries are not available here   │
+                                        │ [Remove unavailable]  [Delete all archived] │
+                                        └─────────────────────────────────────────────┘
+
+        ⊘ Archive (row hover or focus)   Restore unhides · Open unhides and navigates
+```
+
+**What does not change.** Session history, `session.summaries`, `session.catalog`, `session.close`, `session.delete`'s
+own contract, titles and previews, and the store's format. Archiving keeps the Session open with its branches, queued
+input and leases, and writes no Timeline fact, so nothing in model context changes. Deleting a hidden leader Session
+still ends its Team, because that is the delete contract and not a client decision; the confirmation names the
+archived targets only.
+
+**Out of scope.** An archive in the TUI or CLI; a daemon-side archive or catalog filter (#279); migrating the legacy
+TypeScript Web's archive list, which is separate browser storage this client never reads; hiding by creation origin;
+bulk archive by workspace.
+
+**Verification.** Archive one Session, reload the page, restart the daemon on the same address: the row is still
+hidden and its history is intact after Restore. Serve two entries (two ports) and check that each keeps its own list.
+Hide every Session of one workspace: the workspace leaves the sidebar and stays in the archived page's workspace
+filter, where search and that filter still find its rows. Cancel and confirm both delete actions. Refuse a running
+Session. Close a hidden Session from another client and check that it stays a row with the closed state rather than
+becoming unavailable; a still-hidden Session stays hidden after a daemon restart, and after Restore it returns to the
+sidebar. Let the listing stay pending or fail, including on refresh, and check that the page claims no unavailable
+entries and cannot remove markers. Delete a hidden Session from another
+client so its marker becomes unavailable, then check that Delete all archived skips it and that a failure (an in-use
+target, or a lost reply) is reported while the remaining targets are deleted and the rows that are not hidden are
+untouched. Render the sidebar row action and the page in desktop and compact layouts; the page's states get a
+`web/tests/settings-archive.mjs` render test beside the existing settings pages, and the flows above are browser checks
+against a running entry.
+
 ## 5. Build and release
 
 `cargo build`, `./dev` and the CI workspace build need neither Node nor npm: the frontend is not part of the App Server crate unless `--features embedded-web` is given. The PR check builds the frontend once with `scripts/stage-web.mjs` (which type-checks `web/` through `vue-tsc`), and the release workflow runs the same script in its assembly job, so the frontend is built once per release, not once per platform. `collect-release.mjs` takes its `release-web` directory beside the six platform directories, adds `dimcode-web` to the wrapper's optional dependencies, and `publish-npm.mjs` and `check-native.mjs` expect its npm package and native archive ([release packaging](../release/README.md)).
@@ -847,6 +985,7 @@ must justify a responsibility beyond translating an already typed owner reply.
 | --- | --- | --- |
 | Q1 | Model selection needs the model list, which only management methods return | Decided: serve `provider.list`, `provider.catalog`, `provider.selection` and `account.providers` read-only on the web entry (§2.5) |
 | Q2 | Settings pages (providers, MCP, skills) are management | Decided: serve an explicit settings allowlist on the authenticated local Web entry (§4.3); paired RemoteGateway devices remain Session-only |
+| Q3 | A browser-local archive list is scoped by storage origin, so a daemon that comes back on another port starts with an empty list, and two homes served one after another on the same address share the key | Decided for now: no daemon identity is added for a browser-owned list (#279). Markers the current daemon does not store are reported as unavailable with a browser-only cleanup, so a foreign or unreachable list is visible instead of hiding Sessions. A stable per-home identity would be a protocol addition owned by the App Server and must be raised there, not decided in the browser |
 
 ## 7. Rule check
 
@@ -856,6 +995,7 @@ must justify a responsibility beyond translating an already typed owner reply.
 | §4.1, §4.9 Timeline writes | WebEntry writes no Timeline event; web calls reach Session owners exactly like local calls |
 | §4.3 Before callbacks | No check at a Session entry; only the HTTP upgrade is authenticated |
 | §4.7 Public events and services | The browser uses protocol v4 Session methods and notifications, and the explicit typed settings methods of existing owners |
+| §4.9 Timeline and browser-owned state | The archive list is browser display state, beside the layout and appearance keys: it stores Session ids only, writes no event and is never read by the daemon |
 | ADR 002 D1 Scope | Process-scoped: one entry per daemon |
 | ADR 002 D4 Configuration | No configuration is persisted in phase 1; the port is a `web.open` parameter |
 | ADR 002 D5 Language-neutral contracts | The HTTP surface and `web.*` methods are given in neutral form above |
@@ -863,13 +1003,17 @@ must justify a responsibility beyond translating an already typed owner reply.
 ## 8. Requirements raised to mechanism owners
 
 Settings parity raises these requirements to the existing owners. Browser-only
-defaults, archive flags or copied credentials cannot substitute for owner behavior.
+defaults or copied credentials cannot substitute for owner behavior.
 
 | Owner | Problem and why existing mechanisms do not suffice | Required capability and ordering |
 | --- | --- | --- |
 | [Modality](plugins/Modality.md) | Model capability declarations do not select or execute image generation, editing, enhancement or understanding tasks | Typed per-operation defaults with owner-computed options, effective automatic resolution and actionable reasons; `modality.capabilities`/`modality.configure` consumed by task dispatch; save persists before success; exactly those two methods admitted on the Web entry. Understanding's Session consumer is the Agent/Prompt requirement in Modality §9.4. |
-| [Session catalog](appserver/session-catalog.md) | A saved Session is not necessarily archived; reopening it cannot represent restore | Durable archive classification with search, restore and confirmed deletion; commit classification before publishing the new catalog view |
 | MCP | User and project sources have independent revisions, and safe projections deliberately hide credentials | `mcp.move` reads the complete entry internally, checks both source revisions, keeps withheld values in the user-scope `mcp-secrets` overlay instead of `.mcp.json`, starts a project destination disabled, and reports a partial move as an error recovered by direction (remove destination and retry, or remove source); exactly `mcp.move` is admitted for the control. |
+
+Archive raises no requirement (§4.4): [#279](https://github.com/arcships/dim/issues/279) decided it is a client-local
+hidden list over `session.summaries`, `session.close` and `session.delete`, so the catalog, the stored Session record
+and the storage format stay as they are and no owner adds an archive field or method. The earlier requirement that the
+Session catalog carry a durable archive classification is withdrawn.
 
 Legacy permission patterns and tracing behavior do not override the current
 [command-rule design](appserver/permission-command-rules.md) or accepted ADR 016;
