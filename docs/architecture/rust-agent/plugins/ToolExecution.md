@@ -105,6 +105,17 @@ Owner: [tool_executor.rs](../../../../crates/dim-agent-capabilities/src/tool_exe
 Executes a committed tool batch against pinned handlers after approval, isolates
 individual call failures and publishes correlated results.
 
+The claim of a call exists before its batch is published: Loop asks each
+handler for one immediately before appending `step/tool-call`
+([Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)),
+and ToolBinding holds the claims with the request's tool snapshot. AgentLoop
+drops them with that snapshot, so a batch that never dispatches releases every
+claim without a separate step; a claim that reaches execution is taken from the
+binding and consumed by `ToolClaim::dispatch`, which runs the call as resolved
+and approved and keeps whatever the handler registered until it settles. An `execute` without a claim, which is the
+rebuilt batch after a reload, claims for itself through the same handler
+callback.
+
 Before admitting a `write_filesystem` call, the pinned handler's `resolve_write`
 may resolve its target using metadata only. Approval and execution receive that
 same resolved call; the committed model call is unchanged. A resolver cannot

@@ -30,6 +30,18 @@ with the flow test that asserts it.
 | `S:SessionIdentity` | Supply the owning Session id in a foreign tool's neutral call and the `tool.attach` span. |
 | `S:SessionLifecycle` | `activated()` starts the background refresh task once the Session is published; `closing()` ends it. |
 
+## Handler contract
+
+A handler is `ToolHandler`. Besides `execute`, it answers two optional
+questions, both defaulted so a handler that needs neither writes neither:
+`resolve_write` resolves a filesystem write's target without effects, and
+`risk` names the risk Approval admits the call under. `claim(call, caller)`
+returns what a handler must register before its call is published; its guard
+releases on drop, and `ToolClaim::dispatch` consumes it to run the call as
+resolved and approved. The
+publish and release order is [ToolExecution](ToolExecution.md) and
+[Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact).
+
 ## Events and lifetime
 
 No Timeline events. The fixed table holds every host tool in the host's order.

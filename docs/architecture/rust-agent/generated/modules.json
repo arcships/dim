@@ -9488,11 +9488,13 @@
         "path ContextModelHost",
         "path HostError::Cancelled",
         "path PrepareModelHost",
+        "path ToolExecutionContext",
         "path crate::host::ModelSettings",
         "use crate::host::CompactionStrategyHost",
         "use crate::host::ContextModelHost",
         "use crate::host::HostError",
-        "use crate::host::PrepareModelHost"
+        "use crate::host::PrepareModelHost",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -17147,7 +17149,9 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path ModelSettings",
-        "use crate::host::ModelSettings"
+        "path ToolExecutionContext",
+        "use crate::host::ModelSettings",
+        "use crate::host::ToolExecutionContext"
       ]
     },
     {
@@ -17166,10 +17170,12 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolRegistry",
         "path ToolSourceSet",
         "path crate::tool_registry::is_contributed",
+        "use crate::tool_registry::ToolClaim",
         "use crate::tool_registry::ToolContribution",
         "use crate::tool_registry::ToolRegistry",
         "use crate::tool_registry::ToolSourceSet"
@@ -17272,6 +17278,7 @@
       "from": "dim_agent_capabilities::tool_binding",
       "to": "dim_agent_types::tool",
       "references": [
+        "path ToolCall",
         "path ToolDefinition",
         "path tool"
       ]
@@ -19248,10 +19255,12 @@
       "from": "dim_agent_questions",
       "to": "dim_agent_capabilities::tool_registry",
       "references": [
+        "path ToolClaim",
         "path ToolContribution",
         "path ToolHandler",
         "path ToolRegistry",
         "path definition",
+        "use dim_agent_capabilities::tool_registry::ToolClaim",
         "use dim_agent_capabilities::tool_registry::ToolContribution",
         "use dim_agent_capabilities::tool_registry::ToolHandler",
         "use dim_agent_capabilities::tool_registry::ToolRegistry",

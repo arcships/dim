@@ -68,17 +68,26 @@ the `sessionId`; the answer is checked here, against the call it answers.
 
 No Timeline writes, no `StateCell`, no Dispatcher subscription. The Session
 part keeps one table, `(branchId, requestId, callId) -> {questions, sender}`,
-under a mutex. An entry lives exactly as long as its handler waits, and whoever
-removes it under the lock decides the call's output:
+under a mutex. An entry is created by the handler's claim, immediately before
+Loop appends the `step/tool-call`, and lives until the call's answer or the end
+of the claim; whoever removes it under the lock decides the call's output:
 
 ```text
-                         ask_user handler
+                 claim, before the append        dispatch keeps it
 input valid, interactive ──> insert entry ──> wait ─┬─ respond removes it ───> answer or decline
                                                     ├─ batch token fires ────> handler removes it:
                                                     │                          "question was cancelled"
+                                                    ├─ claim dropped ────────> entry removed
                                                     └─ part unloads ─────────> table drained, senders
                                                                                dropped: reloading
 ```
+
+A batch that is never dispatched (the append is refused, `stop/interrupt` arrives
+first, the turn ends, the capability reloads) never reaches the wait: the claim
+is dropped with the request's tool snapshot and the entry goes with it. An
+`execute` without a claim, which is the rebuilt batch after a reload, claims for
+itself before waiting. [Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)
+states the order.
 
 `respond` sends under the lock, so a cancel that finds no entry receives the
 answer and returns it; ToolExecutor keeps a returned result and the turn still
