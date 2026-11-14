@@ -26,8 +26,9 @@ fn new_style_features() -> Value {
 }
 
 /// Serves one connection that the CLI makes after a replacement: hello at
-/// this build, then the command's next call.
-pub(super) fn serve_successor(successor: &UnixListener) {
+/// this build, then the command's next call. Returns the hello it read, for a
+/// flow that checks what the successor was greeted with.
+pub(super) fn serve_successor(successor: &UnixListener) -> Value {
     let deadline = Instant::now() + HANG_GUARD;
     loop {
         let stream = match successor.accept() {
@@ -53,7 +54,7 @@ pub(super) fn serve_successor(successor: &UnixListener) {
         );
         let catalog = wire.read("provider.catalog");
         wire.reply(&catalog, json!({"catalog":null}));
-        return;
+        return hello;
     }
 }
 

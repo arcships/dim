@@ -4108,25 +4108,41 @@ async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() 
         }
     );
 
-    // Once the held read returns, the wait ends one way or another — with the
-    // stop, or from the request's own ending when its turn got there first —
-    // and the mark clears, so the member takes new work.
+    // Releasing the read wakes the carry-out task, which drops the stopping
+    // mark only at its next check, so a request can still be answered `busy`.
     release_read.release();
-    let accepted = count(&lead_session, false).await;
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "request", "agentId": holder, "sessionId": member,
-            "prompt": "tool:echo {\"text\":\"after\"}"}),
-        ),
-        "queue",
-    )
-    .await;
-    poll("the request after the cancel is accepted", async || {
-        (count(&lead_session, false).await > accepted).then_some(())
+    let asked = async |client: &mut Client| {
+        let before = deliveries(&lead_session).await.len();
+        say(
+            client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:echo {\"text\":\"after\"}"}),
+            ),
+            "queue",
+        )
+        .await;
+        poll("the request after the cancel is decided", async || {
+            let seen = deliveries(&lead_session).await;
+            (seen.len() > before).then(|| seen.last().cloned().expect("a new delivery"))
+        })
+        .await
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match asked(&mut client).await {
+                CollaborationDelivery::Ok { .. } => return,
+                CollaborationDelivery::Error { error } => assert_eq!(
+                    error,
+                    dim_agent_types::CollaborationErrorCode::Busy,
+                    "the request after the cancel is accepted"
+                ),
+            }
+        }
     })
-    .await;
+    .await
+    .unwrap_or_else(|_| panic!("deadline: the request after the cancel is accepted"));
 
     server.shutdown();
     server.join().await.unwrap();

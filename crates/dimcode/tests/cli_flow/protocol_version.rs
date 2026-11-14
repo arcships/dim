@@ -234,7 +234,16 @@ fn an_idle_v3_daemon_of_this_version_is_replaced() {
             .get_mut()
             .shutdown(std::net::Shutdown::Write)
             .unwrap();
-        serve_successor(&successor);
+        assert_eq!(
+            wire.trailing_request(),
+            None,
+            "the CLI kept the stopped daemon's connection open"
+        );
+        let hello = serve_successor(&successor);
+        assert_eq!(
+            hello["params"]["protocolVersion"], 4,
+            "the successor was reached at this build's protocol: {hello}"
+        );
     });
     let output = home.command().args(["models", "fixture"]).output().unwrap();
     daemon.join().unwrap();

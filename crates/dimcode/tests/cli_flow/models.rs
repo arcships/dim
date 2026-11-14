@@ -455,6 +455,11 @@ fn models_uses_each_saved_interface_language() {
             let request = wire.read("provider.management");
             wire.reply(&request, provider(models(true), 3));
             let request = wire.read("provider.models.set_enabled");
+            assert_eq!(
+                request["params"],
+                json!({"providerId":"fixture","expectedVersion":3,"modelIds":["custom","tuned"]}),
+                "every locale sends the same frame"
+            );
             wire.reply(&request, json!({}));
             let request = wire.read("provider.management");
             wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
@@ -600,59 +605,6 @@ fn models_area_set_writes_the_revision_it_read_and_only_the_changed_fields() {
         stderr.contains("The models changed since they were read; nothing was written."),
         "{stderr}"
     );
-    assert!(stderr.contains(&kept), "{stderr}");
-}
-
-/// A conflict whose re-read fails is still a conflict: the command prints
-/// the owner's sentence, then the read error, and says where the text is.
-#[test]
-fn models_area_reports_a_conflict_whose_reread_fails() {
-    let home = Home::new();
-    let path = home.0.join("flash.json");
-    let kept = path.display().to_string();
-    fs::write(
-        &path,
-        json!({
-            "displayName": "Renamed",
-            "contextWindow": 128000,
-            "maxOutputTokens": 16384,
-            "toolCalling": true,
-            "vision": false,
-            "reasoning": {"supported": false}
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let daemon = home.daemon(|wire| {
-        hello(wire);
-        for _ in 0..2 {
-            let request = wire.read("provider.management");
-            wire.reply(&request, provider(models(true), 3));
-        }
-        let request = wire.read("provider.models.edit");
-        wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-            "code":-32000,
-            "message":"Provider version changed; reread before retrying",
-            "data":{"appError":"provider_conflict"}}}));
-        // The read that would classify the conflict fails.
-        let request = wire.read("provider.management");
-        wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-            "code":-32000,
-            "message":"the provider is unavailable"}}));
-    });
-    let output = home
-        .command()
-        .args(["models", "fixture", "set", "flash", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("The models changed since they were read; nothing was written."),
-        "{stderr}"
-    );
-    assert!(stderr.contains("the provider is unavailable"), "{stderr}");
     assert!(stderr.contains(&kept), "{stderr}");
 }
 
@@ -1388,10 +1340,7 @@ fn tui_models_area_rereads_after_a_conflict() {
     );
 }
 
-/// A conflict whose re-read fails is still a conflict: the panel shows the
-/// owner's sentence and the read error once, drops the view and the stale
-/// link, and Ctrl+R reads the area again; the next edit opens the current
-/// document.
+/// Both surfaces report the conflict, then the failed re-read.
 #[test]
 fn tui_models_area_reports_a_conflict_whose_reread_fails() {
     let home = Home::new();
@@ -1519,4 +1468,51 @@ fn tui_models_area_reports_a_conflict_whose_reread_fails() {
             .contains("Edited by hand")),
         "no kept file holds the user's text: {kept:?}"
     );
+
+    let home = Home::new();
+    let path = home.0.join("flash.json");
+    let kept = path.display().to_string();
+    fs::write(
+        &path,
+        json!({
+            "displayName": "Renamed",
+            "contextWindow": 128000,
+            "maxOutputTokens": 16384,
+            "toolCalling": true,
+            "vision": false,
+            "reasoning": {"supported": false}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let daemon = home.daemon(|wire| {
+        hello(wire);
+        for _ in 0..2 {
+            let request = wire.read("provider.management");
+            wire.reply(&request, provider(models(true), 3));
+        }
+        let request = wire.read("provider.models.edit");
+        wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+            "code":-32000,
+            "message":"Provider version changed; reread before retrying",
+            "data":{"appError":"provider_conflict"}}}));
+        let request = wire.read("provider.management");
+        wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+            "code":-32000,
+            "message":"the provider is unavailable"}}));
+    });
+    let output = home
+        .command()
+        .args(["models", "fixture", "set", "flash", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("The models changed since they were read; nothing was written."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("the provider is unavailable"), "{stderr}");
+    assert!(stderr.contains(&kept), "{stderr}");
 }
