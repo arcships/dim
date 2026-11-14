@@ -37,6 +37,12 @@ use tokio::sync::{Notify, oneshot};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const RETAINED_BUFFER_LIMIT: usize = 64 * 1024;
+/// The size `retained` must pass before it is cut back to
+/// `RETAINED_BUFFER_LIMIT`. A burst arrives in thousands of small chunks, so
+/// trimming at the limit itself would re-copy the buffer once per chunk; the
+/// slack makes the cut amortized while the buffer stays bounded by twice the
+/// limit, which is still far below a marker's own line.
+const RETAINED_BUFFER_TRIM: usize = 2 * RETAINED_BUFFER_LIMIT;
 const OUTPUT_LIMIT: usize = 16_000;
 const MAX_TIMEOUT_MS: u64 = 3_600_000;
 const DESCRIPTION_CHARS: usize = 200;
@@ -118,7 +124,7 @@ struct Capture {
     /// The end marker's exit token once its line is complete.
     code: Option<String>,
     /// Where settled bytes also go: the task log once the call occupies.
-    file: Option<PathBuf>,
+    file: Option<std::fs::File>,
     /// How much of `output` a waiting caller has already been given.
     delivered: usize,
 }
@@ -186,8 +192,8 @@ impl Capture {
     /// counts the rest as omitted.
     fn settle(&mut self, upto: usize) {
         let text: String = self.pending.drain(..upto).collect();
-        if let Some(path) = &self.file {
-            append_file(path, &text);
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write_all(text.as_bytes());
         }
         let room = OUTPUT_LIMIT.saturating_sub(self.output.len());
         let mut end = room.min(text.len());
@@ -199,18 +205,28 @@ impl Capture {
     }
 
     /// Makes the task log receive everything settled from now on, starting
-    /// with the output already held and the bytes already dropped.
+    /// with the output already held and the bytes already dropped. The file
+    /// stays open for the task's life: the burst arrives in thousands of
+    /// chunks, and opening it once per chunk costs more than the read that
+    /// produced them.
     fn bind(&mut self, path: &Path) {
-        append_file(path, &self.output);
+        let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        else {
+            return;
+        };
+        let _ = file.write_all(self.output.as_bytes());
         if let Some(omitted) = self.omitted() {
             let mut note = String::new();
             if !self.output.is_empty() && !self.output.ends_with('\n') {
                 note.push('\n');
             }
             note.push_str(&format!("[Output truncated: {omitted} bytes omitted]\n"));
-            append_file(path, &note);
+            let _ = file.write_all(note.as_bytes());
         }
-        self.file = Some(path.to_owned());
+        self.file = Some(file);
     }
 
     fn omitted(&self) -> Option<usize> {
@@ -763,7 +779,7 @@ impl ShellSession {
                     ended: None,
                 });
             }
-            if inner.retained.len() > RETAINED_BUFFER_LIMIT {
+            if inner.retained.len() > RETAINED_BUFFER_TRIM {
                 inner.retained = tail_bytes(&inner.retained, RETAINED_BUFFER_LIMIT).to_owned();
             }
             if let Some(capture) = inner.capture.as_mut() {
@@ -1611,17 +1627,6 @@ fn push_output(text: &mut String, output: &str) {
     if !output.ends_with('\n') {
         text.push('\n');
     }
-}
-
-fn append_file(path: &Path, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(text.as_bytes()));
 }
 
 fn file_tail(path: &Path, limit: usize) -> String {
