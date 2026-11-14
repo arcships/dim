@@ -7264,6 +7264,17 @@ impl App {
         }
     }
 
+    fn slot_outranks_model(&self) -> bool {
+        match &self.notice {
+            Some(_) => true,
+            None if self.failure.is_some() => true,
+            None => matches!(
+                &self.snapshot,
+                Some(s) if !s.questions.is_empty() || !s.approvals.is_empty()
+            ),
+        }
+    }
+
     /// How many tasks the Session runs apart from the turn, as its own
     /// status segment: none while every task has ended, so an idle Session
     /// with nothing in the background draws no segment at all.
@@ -7411,50 +7422,85 @@ impl App {
         };
         let permission = fg(&format!("⏵⏵ {}", permission_label(preset)), color);
         let hint = fg(t("(shift+tab to cycle)"), &p.muted);
-        let mut left = format!("{}{permission} {hint}", " ".repeat(MARGIN));
         let total = cols.saturating_sub(2);
+        let prefix = format!("{}{permission}", " ".repeat(MARGIN));
         if self.fullscreen {
-            return clip(&left, total).0;
+            return clip(&format!("{prefix} {hint}"), total).0;
         }
-        let prefix_width = width_of(&left);
-        let slot = self.slot();
-        if let Some(goal) = self.goal_label() {
-            left.push_str(&fg(&format!("  {goal}"), &p.muted));
-        }
-        if let Some(context) = self.context_label() {
+        let goal = self
+            .goal_label()
+            .map(|goal| fg(&format!("  {goal}"), &p.muted));
+        let context = self.context_label().map(|context| {
             let color = if self.context_near() {
                 &p.warning
             } else {
                 &p.muted
             };
-            left.push_str(&fg(&format!("  {context}"), color));
-        }
-        if let Some(slot) = slot {
+            fg(&format!("  {context}"), color)
+        });
+        let slot = self.slot().map(|slot| {
             let color = if self.notice.is_some() {
                 &p.highlight
             } else {
                 &p.muted
             };
-            left.push_str(&fg(&format!("  {slot}"), color));
-        }
-        if let Some(background) = self.background_label() {
-            left.push_str(&fg(&format!("  {background}"), &p.muted));
-        }
-        let label = self
-            .label
-            .as_ref()
-            .and_then(|label| label.fitted(|text| prefix_width + 2 + width_of(text) <= total));
-        let line = match label {
-            Some(ref label) => {
-                let (left, width) = clip(&left, total - width_of(label) - 2);
-                let gap = total - width - width_of(label);
-                format!("{left}{}", " ".repeat(gap))
-            }
-            None => clip(&left, total).0,
+            fg(&format!("  {slot}"), color)
+        });
+        let background = self
+            .background_label()
+            .map(|background| fg(&format!("  {background}"), &p.muted));
+        let width = |part: &Option<String>| part.as_ref().map_or(0, |text| width_of(text));
+        let prefix_width = width_of(&prefix);
+        let kept = if self.slot_outranks_model() {
+            width(&slot)
+        } else {
+            0
         };
-        match label {
-            Some(label) => format!("{line}{}", fg(&label, &self.palette.highlight)),
-            None => line,
+        let label = self.label.as_ref().and_then(|label| {
+            label.fitted(|text| prefix_width + kept + 2 + width_of(text) <= total)
+        });
+        let render = |with_hint: bool| {
+            let mut head = prefix.clone();
+            if with_hint {
+                head.push_str(&format!(" {hint}"));
+            }
+            let head_width = width_of(&head);
+            let label_width = label.as_ref().map_or(0, |text| width_of(text) + 2);
+            let room = total.saturating_sub(head_width + label_width);
+            let lead: String = [goal.clone(), context.clone()]
+                .into_iter()
+                .flatten()
+                .collect();
+            let lead = if kept == 0 {
+                lead
+            } else {
+                clip(&lead, room.saturating_sub(kept + width(&background))).0
+            };
+            let mut rest = lead;
+            rest.push_str(slot.as_deref().unwrap_or_default());
+            rest.push_str(background.as_deref().unwrap_or_default());
+            let (rest, rest_used) = clip(&rest, room);
+            let content = head_width + rest_used;
+            let line = format!("{head}{rest}");
+            match label {
+                Some(ref text) => {
+                    let gap = total - content - width_of(text);
+                    let line = format!(
+                        "{line}{}{}",
+                        " ".repeat(gap),
+                        fg(text, &self.palette.highlight)
+                    );
+                    (line, content)
+                }
+                None => (line, content),
+            }
+        };
+        let (line, used) = render(false);
+        let label_room = label.as_ref().map_or(0, |text| 2 + width_of(text));
+        if used + 1 + width_of(&hint) + label_room <= total {
+            render(true).0
+        } else {
+            line
         }
     }
 }
@@ -10676,6 +10722,103 @@ mod tests {
 
     /// A session that keeps every command the interface sends.
     struct Recorder(std::rc::Rc<std::cell::RefCell<Vec<Command>>>);
+
+    /// An 80-column scrollback app carrying `provider / model` with `effort`.
+    fn status_app(provider: &str, model: &str, effort: Option<&str>) -> (App, tempfile::TempDir) {
+        let theme = test_theme();
+        let home = tempfile::tempdir().unwrap();
+        let mut app = App::new(
+            Box::new(Idle),
+            MarkdownRenderer::new(&theme),
+            theme.palette.clone(),
+            home.path().to_path_buf(),
+            "/work".into(),
+        );
+        app.apply(Update::Ready(Configuration {
+            provider_id: provider.into(),
+            model_id: model.into(),
+            model_preferences: effort.map(|effort| dim_agent_types::ModelPreferences {
+                reasoning_effort: Some(effort.into()),
+                ..Default::default()
+            }),
+            capability_snapshot: None,
+        }));
+        (app, home)
+    }
+
+    fn status_rows(app: &App) -> String {
+        use crate::ui::render::panel::strip_escapes;
+        strip_escapes(&app.status_line(80))
+    }
+
+    #[test]
+    fn a_slot_that_asks_the_user_keeps_its_text_before_the_shortcut_hint() {
+        let (mut app, _home) = status_app("test", "model", None);
+        app.set_notice("Press Ctrl+C again to exit");
+        let line = status_rows(&app);
+        assert!(line.contains("Press Ctrl+C again to exit"), "{line}");
+        assert!(line.contains("test / model"), "{line}");
+        assert!(!line.contains("(shift+tab to cycle)"), "{line}");
+        assert!(line.starts_with(" ⏵⏵ Workspace write"), "{line}");
+
+        app.set_notice("/rename needs a session");
+        let line = status_rows(&app);
+        assert!(line.contains("/rename needs a session"), "{line}");
+        assert!(line.contains("test / model"), "{line}");
+        assert!(!line.contains("(shift+tab to cycle)"), "{line}");
+    }
+
+    #[test]
+    fn a_slot_that_asks_the_user_outranks_a_long_model_label() {
+        let (mut app, _home) = status_app("deepseek", "deepseek-v4.1-flash", Some("max"));
+        app.set_notice("Press Ctrl+C again to exit");
+        let line = status_rows(&app);
+        assert!(line.contains("Press Ctrl+C again to exit"), "{line}");
+        assert!(
+            !line.contains("deepseek / deepseek-v4.1-flash"),
+            "the model name gives up its cells and then its place: {line}"
+        );
+    }
+
+    #[test]
+    fn a_run_state_slot_still_yields_to_the_model_label() {
+        let (mut app, _home) = status_app("deepseek", "deepseek-v4.1-flash", Some("max"));
+        app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            ..ViewSnapshot::default()
+        })));
+        let line = status_rows(&app);
+        assert!(line.contains("esc interrupt"), "{line}");
+        assert!(
+            line.contains("deepseek / deepseek-v4.1-flash · max"),
+            "the model keeps its place and its effort: {line}"
+        );
+
+        let (mut wide, _home) =
+            status_app("anthropic", "gpt-5-codex-long-context-preview-2026", None);
+        wide.apply(Update::Snapshot(Box::new(ViewSnapshot {
+            session_id: "s1".into(),
+            running: true,
+            ..ViewSnapshot::default()
+        })));
+        let line = status_rows(&wide);
+        assert!(
+            line.contains("anthropic / gpt-5-codex-long-context-preview-2026"),
+            "a run state yields to the model label: {line}"
+        );
+    }
+
+    #[test]
+    fn a_wide_status_line_shows_the_hint_the_model_and_the_slot() {
+        use crate::ui::render::panel::strip_escapes;
+        let (mut app, _home) = status_app("test", "model", None);
+        app.set_notice("Press Ctrl+C again to exit");
+        let line = strip_escapes(&app.status_line(160));
+        assert!(line.contains("(shift+tab to cycle)"), "{line}");
+        assert!(line.contains("Press Ctrl+C again to exit"), "{line}");
+        assert!(line.contains("test / model"), "{line}");
+    }
 
     impl SessionPort for Recorder {
         fn send(&self, command: Command) {
