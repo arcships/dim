@@ -1089,8 +1089,9 @@ enum Judged {
     /// the run is a failed run, the same event as the scenario runner's
     /// `call_failed`. The evaluation goes on (ContextCompaction §13.4).
     Failed(String),
-    /// The judge answered and its reply holds no verdict list: the run is
-    /// unjudged, and enters none of its arm's probe rates.
+    /// The judge answered and gave no usable verdicts: its reply holds no
+    /// verdict list, or a verdict that does not read. The run is unjudged, and
+    /// enters none of its arm's probe rates.
     Unreadable(String),
 }
 impl Judged {
@@ -1188,7 +1189,7 @@ async fn judge_run(
 enum JudgeError {
     /// A call failed: a window overflow, a transport or an HTTP error.
     Call(String),
-    /// The judge answered, and the reply holds no verdict list.
+    /// The judge answered, and its reply holds no usable verdict list.
     Unreadable(String),
 }
 
@@ -1247,8 +1248,10 @@ async fn judge_probes(
             }
         }
     };
-    let parsed = parse_judgements(&reply).map_err(|_| {
-        JudgeError::Unreadable(format!("the judge answered with no verdict list: {reply}"))
+    let parsed = parse_judgements(&reply).map_err(|error| {
+        JudgeError::Unreadable(format!(
+            "the judge answered with no usable verdicts: {error}\n{reply}"
+        ))
     })?;
     Ok(parsed
         .into_iter()
@@ -2324,6 +2327,63 @@ mod tests {
             "the column lists both judged probes"
         );
         assert_eq!(metrics.judged.get("case").copied().unwrap_or(0), 0);
+    }
+
+    /// A malformed verdict array leaves the run unjudged, and the error the
+    /// report writes under `judgeError` is the parser's own: it names the
+    /// probe that did not read (model-prompts §8.1).
+    #[tokio::test]
+    async fn a_malformed_verdict_array_reaches_the_report_with_its_parse_error() {
+        const MALFORMED: &str =
+            r#"[{"id": "ran", "verdict": "present"}, {"id": "floods", "verdict": "maybe"}]"#;
+        struct Malformed;
+        impl ModelDriver for Malformed {
+            fn invoke(
+                &self,
+                _: Arc<ModelRequest>,
+                _: ModelConnection,
+                _: CancellationToken,
+            ) -> HostFuture<'_, ModelStream> {
+                Box::pin(async move {
+                    Ok(Box::pin(futures_util::stream::iter(vec![
+                        Ok(ModelChunk::MessageStart {
+                            message_id: "reply".into(),
+                        }),
+                        Ok(ModelChunk::Text(MALFORMED.into())),
+                        Ok(ModelChunk::MessageStop {
+                            message_id: "reply".into(),
+                            reason: ModelStopReason::EndTurn,
+                        }),
+                    ])) as ModelStream)
+                })
+            }
+        }
+        let case = prepared("case", vec![probe("floods", ProbeKind::Fact)]);
+        let mut no_temperature = false;
+        let judged = judge_run(
+            &Arc::new(ModelHost(Arc::new(Malformed))),
+            &Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            &fake_selection(),
+            &case,
+            &completed(),
+            &CancellationToken::new(),
+            &mut no_temperature,
+        )
+        .await;
+        assert!(
+            !judged.failed_call(),
+            "an answer that does not read is unjudged, not a failed call"
+        );
+        let error = judged
+            .error()
+            .expect("an unjudged run carries the error the report writes");
+        let parse_error = parse_judgements(MALFORMED)
+            .err()
+            .expect("the verdict array does not read");
+        assert!(
+            error.contains(&parse_error),
+            "the report carries the parser's own error:\n{error}"
+        );
     }
 
     /// A reply that answers some probes only leaves the run unjudged too: the
