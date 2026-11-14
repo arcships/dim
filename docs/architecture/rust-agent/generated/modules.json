@@ -1942,6 +1942,15 @@
       "unexpandedMacros": []
     },
     {
+      "id": "dim_agent_scheduler::clock",
+      "crate": "dim_agent_scheduler",
+      "parent": "dim_agent_scheduler",
+      "file": "crates/dim-agent-scheduler/src/clock.rs",
+      "unexpandedMacros": [
+        "tokio::select"
+      ]
+    },
+    {
       "id": "dim_agent_scheduler::document",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
@@ -21165,6 +21174,13 @@
     },
     {
       "from": "dim_agent_scheduler",
+      "to": "dim_agent_scheduler::clock",
+      "references": [
+        "mod clock"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler",
       "to": "dim_agent_scheduler::document",
       "references": [
         "mod document",
@@ -21554,6 +21570,15 @@
       "to": "dim_agent_scheduler",
       "references": [
         "path crate::SchedulerTexts"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_agent_scheduler::clock",
+      "references": [
+        "path Clock",
+        "path crate::clock::SystemClock",
+        "use crate::clock::Clock"
       ]
     },
     {

@@ -229,7 +229,7 @@ impl Wakeups {
         if let Some(holds) = &self.shared.holds {
             holds.wakeup_create.notify_one();
         }
-        let now = Utc::now();
+        let now = self.shared.now();
         let expired = now - request.at >= Duration::seconds(GRACE_SECONDS);
         let created = Wakeup {
             wakeup_id: uuid::Uuid::new_v4().to_string(),
@@ -285,6 +285,7 @@ impl Wakeups {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
         let _hold = self.shared.wakeups.lock().await;
+        let now = self.shared.now();
         let session_id = session_id.to_owned();
         let wakeup_id = wakeup_id.to_owned();
         let (record, settled) = update(&self.shared.files, move |wakeups| {
@@ -307,7 +308,7 @@ impl Wakeups {
             let settled = record.state == WakeupState::Scheduled;
             if settled {
                 record.state = WakeupState::Cancelled;
-                record.settled_at = Some(stamp(Utc::now()));
+                record.settled_at = Some(stamp(now));
             }
             let record = record.clone();
             Ok((settled, (record, settled)))
@@ -346,7 +347,7 @@ impl Wakeups {
             return Ok(());
         };
         let _hold = self.shared.wakeups.lock().await;
-        let now = Utc::now();
+        let now = self.shared.now();
         let snapshot = read(&self.shared.files).await?;
         let grace = Duration::seconds(GRACE_SECONDS);
         // Overdue records reach one Session in `at` order, which is the order

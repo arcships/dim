@@ -4,6 +4,7 @@
 //! The process owner keeps jobs in the `schedule` settings document and run
 //! history in `scheduler/runs.json`, and serves the `schedule` management
 //! namespace.
+mod clock;
 mod document;
 mod engine;
 mod loops;

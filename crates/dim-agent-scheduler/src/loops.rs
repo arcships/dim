@@ -398,7 +398,7 @@ impl Loops {
             holds.loop_start.notify_one();
         }
         let _hold = self.shared.loops.lock().await;
-        let now = Utc::now();
+        let now = self.shared.now();
         let cadence = match request.every_seconds {
             Some(seconds) => Cadence::Every {
                 every_seconds: fixed_seconds(seconds)
@@ -457,7 +457,7 @@ impl Loops {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
-        let at = Utc::now() + Duration::seconds(clamp_next(delay_seconds));
+        let at = self.shared.now() + Duration::seconds(clamp_next(delay_seconds));
         let (record, _) = self
             .change(session_id, loop_id, move |record| {
                 if !record.state.is_live() {
@@ -483,15 +483,16 @@ impl Loops {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
+        let now = self.shared.now();
         let (record, settled) = self
-            .change(session_id, loop_id, |record| {
+            .change(session_id, loop_id, move |record| {
                 if record.state.is_terminal() {
                     return Ok((false, false));
                 }
                 record.state = LoopState::Stopped;
                 record.next_at = None;
                 record.delivering_round = None;
-                record.settled_at = Some(stamp(Utc::now()));
+                record.settled_at = Some(stamp(now));
                 Ok((true, true))
             })
             .await?;
@@ -537,6 +538,7 @@ impl Loops {
         R: Send + 'static,
     {
         let _hold = self.shared.loops.lock().await;
+        let now = self.shared.now();
         let session_id = session_id.to_owned();
         let loop_id = loop_id.to_owned();
         let (record, answer, changed) = update(&self.shared.files, move |loops| {
@@ -551,7 +553,7 @@ impl Loops {
             };
             let (changed, answer) = change(record)?;
             if record.state.is_terminal() && record.settled_at.is_none() {
-                record.settled_at = Some(stamp(Utc::now()));
+                record.settled_at = Some(stamp(now));
             }
             record.validate().map_err(SchedulerError::invalid_data)?;
             let snapshot = record.clone();
@@ -640,7 +642,7 @@ impl Change {
         }
     }
 
-    fn apply(self, record: &mut Loop) {
+    fn apply(self, record: &mut Loop, now: DateTime<Utc>) {
         if let Some(state) = self.state {
             record.state = state;
         }
@@ -663,7 +665,7 @@ impl Change {
             record.last_input_id = input;
         }
         if record.state.is_terminal() && record.settled_at.is_none() {
-            record.settled_at = Some(stamp(Utc::now()));
+            record.settled_at = Some(stamp(now));
         }
     }
 }
@@ -769,7 +771,7 @@ impl Loops {
             return Ok(());
         };
         let _hold = self.shared.loops.lock().await;
-        let now = Utc::now();
+        let now = self.shared.now();
         let snapshot = read(&self.shared.files).await?;
         let retention_cut = now - RETENTION_AFTER_TERMINAL;
 
@@ -936,7 +938,7 @@ impl Loops {
             return Ok(Lookup::NextTick);
         };
         let _hold = self.shared.loops.lock().await;
-        let now = Utc::now();
+        let now = self.shared.now();
         let snapshot = read(&self.shared.files).await?;
         let mut changes: Vec<Change> = Vec::new();
         let mut cadence = Lookup::Settled;
@@ -1053,6 +1055,7 @@ impl Loops {
         if changes.is_empty() && prune.is_empty() {
             return Ok(());
         }
+        let now = self.shared.now();
         let announced = update(&self.shared.files, move |loops| {
             let mut touched: Vec<Loop> = Vec::new();
             for change in changes {
@@ -1062,7 +1065,7 @@ impl Loops {
                 else {
                     continue;
                 };
-                change.apply(record);
+                change.apply(record, now);
                 record.validate().map_err(SchedulerError::invalid_data)?;
                 touched.push(record.clone());
             }
@@ -1241,7 +1244,10 @@ mod tests {
     /// A self-paced loop has no window.
     #[test]
     fn a_self_paced_loop_has_no_window() {
-        assert_eq!(Cadence::SelfPaced.next_window_at(Utc::now()), None);
+        assert_eq!(
+            Cadence::SelfPaced.next_window_at("2030-01-01T00:00:00Z".parse().unwrap()),
+            None
+        );
     }
 
     /// Only an answer that may clear by itself is worth the next tick. A code
