@@ -332,6 +332,18 @@ or a new unload exemption. Switching/detaching the leader releases the owned
 observations; stopping a member or closing only detail does not by itself
 release an unfinished card's reference. Provider cards take no member lease.
 
+Leader replacement immediately drops each old observation's transcript, model,
+buffered notices and history window. Only the admitted request and attachment
+cleanup remain until their replies settle; late replies cannot rebuild display
+state or queue another history page. The same member cannot be attached again
+until its old cleanup finishes, so an old detach reply cannot remove its new view.
+
+```text
+replace leader -> release old member display data immediately
+               -> settle admitted attach/read -> detach once
+               -> settle detach -> allow a fresh view of the same member
+```
+
 Reuse the existing attach/main-history/live-notice/detach flow, decoder,
 conversation projection and progress offsets. Serialize member history pages
 through one worker-owned member-page slot and fair pending queue, including

@@ -4826,7 +4826,9 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq",
-        "json"
+        "format",
+        "json",
+        "panic"
       ]
     },
     {
@@ -39975,9 +39977,14 @@
       "references": [
         "path EarlierRead::None",
         "path EarlierRead::Reading",
+        "path Notice::State",
         "path Observation",
         "path Pending",
+        "path Pending::Attach",
+        "path Pending::Detach",
         "path Pending::Goal",
+        "path Pending::History",
+        "path Pending::Methods",
         "path Pending::Turn"
       ]
     },
@@ -39985,6 +39992,7 @@
       "from": "dim_cli::session_host::member::tests",
       "to": "dim_client",
       "references": [
+        "path Message::Notice",
         "path Message::Response",
         "use crate::client::Message"
       ]
