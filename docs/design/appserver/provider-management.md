@@ -430,6 +430,28 @@ already records:
 | Bundled catalog | `metadataSource` naming the matched bundled provider: an entry declares a limit only where its `metadata.raw` does, and the bundle drops every other limit when it is loaded; that provider's `contextWindowOverride` and `contextWindowFallback` metadata stay declarations | The models the lookup matches, or every model of the provider |
 | User | The same `capabilityOverrideFields` field on the descriptor override or user model: `models.edit` writes it for each limit it edits, and either legacy importer for an imported value it keeps | The model the override names |
 
+The model is identified first, and the numbers are read from the entry that
+identification named. Identification runs over the catalog, and the first step
+that leaves one model wins: the provider's own list by exact id; then a vendor
+entry whose own tokens are the head of the id, its tail no more than a date,
+`latest`, a tag suffix or a bracketed context modifier; then the vendor's
+upstream canonical id and display name read together, where the display name
+narrows several canonical hits and a remaining disagreement is an ambiguity
+rather than a guess; then the `custom-provider` rows by those same two rules;
+and last, for a model that no vendor entry and no `custom-provider` row names,
+a merge of the aggregator rows whose own id names the same model with the same
+tag, taken in the safe direction: the smallest window, the smallest output cap
+and the intersection of the effort choices. A provider default is not a
+declaration, so a row carrying the pair its provider writes across many of its
+rows declares no limit there. The projection records the outcome in
+`metadata.identification`: `rule` is one of `provider-exact`, `token`,
+`canonical`, `custom-provider`, `merge` or `ambiguous`; `narrowedByDisplayName`
+says the display name settled several canonical hits; `candidates` names the
+rows an ambiguity refused; and `filled` names the entry and rule that supplied
+each limit the row did not declare. A refusal names the provider and the model
+id, the limits that are missing, the candidates that still disagree, and
+`provider.models.edit` as the write that declares them.
+
 Absence is a value of the type, not a number. The catalog carries
 `CatalogCapabilities`, whose two limits are optional and absent when no source
 declares them; the stored descriptor, its overrides, user models, the projected
