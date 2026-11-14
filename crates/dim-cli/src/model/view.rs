@@ -470,6 +470,8 @@ pub struct ViewSnapshot {
     pub queued: Vec<QueuedInput>,
     /// Unfinished tasks followed by the latest 50 terminal facts.
     pub tasks: Vec<TaskView>,
+    /// Native Agent identities whose shared name lookup has not settled.
+    pub pending_agent_names: Vec<String>,
     pub task_history_loading: usize,
     pub task_history_errors: Vec<String>,
     pub workflow: WorkflowInventory,
