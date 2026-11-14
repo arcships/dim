@@ -28648,10 +28648,18 @@
     },
     {
       "from": "dim_app_server::model_catalog::id",
+      "to": "dim_agent_types::model",
+      "references": [
+        "path CatalogCapabilities"
+      ]
+    },
+    {
+      "from": "dim_app_server::model_catalog::id",
       "to": "dim_app_server::model_catalog",
       "references": [
         "path BundledCatalog",
         "path CatalogProvider",
+        "path FilledLimit",
         "path ModelEntry",
         "path ModelSource::Custom",
         "path ProviderProjection",
