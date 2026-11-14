@@ -36151,6 +36151,13 @@
     },
     {
       "from": "dim_cli::management::models",
+      "to": "dim_cli::wire",
+      "references": [
+        "path crate::wire::Identification"
+      ]
+    },
+    {
+      "from": "dim_cli::management::models",
       "to": "dim_client",
       "references": [
         "path Client",
@@ -39274,6 +39281,10 @@
         "path ManagementReply",
         "path ModelItem",
         "path ModelList",
+        "path ModelOutcome",
+        "path ModelOutcome::Ambiguous",
+        "path ModelOutcome::Identified",
+        "path ModelOutcome::Unidentified",
         "path ModelPolicyUpdate::Conflict",
         "path ModelPolicyUpdate::Failed",
         "path ModelPolicyUpdate::Read",
@@ -39384,6 +39395,7 @@
         "use crate::model::session::ManagementReply",
         "use crate::model::session::ModelItem",
         "use crate::model::session::ModelList",
+        "use crate::model::session::ModelOutcome",
         "use crate::model::session::ModelPolicyUpdate",
         "use crate::model::session::NeedsLimitsProvider",
         "use crate::model::session::OauthEvent",
@@ -39587,6 +39599,7 @@
         "path CatalogModel",
         "path Created",
         "path ProviderCatalogSnapshot",
+        "path crate::wire::CatalogPreferences",
         "path crate::wire::warnings",
         "use crate::wire::CatalogModel",
         "use crate::wire::Created",
@@ -42976,6 +42989,10 @@
         "path EmptyReason::Unreadable",
         "path ModelItem",
         "path ModelList",
+        "path ModelOutcome",
+        "path ModelOutcome::Ambiguous",
+        "path ModelOutcome::Identified",
+        "path ModelOutcome::Unidentified",
         "path ModelPolicyUpdate",
         "path ModelPolicyUpdate::Conflict",
         "path ModelPolicyUpdate::Failed",
@@ -42990,6 +43007,7 @@
         "use crate::model::session::EmptyReason",
         "use crate::model::session::ModelItem",
         "use crate::model::session::ModelList",
+        "use crate::model::session::ModelOutcome",
         "use crate::model::session::ModelPolicyUpdate",
         "use crate::model::session::NeedsLimitsProvider",
         "use crate::model::session::SubagentModelPolicy"
@@ -43072,7 +43090,8 @@
       "references": [
         "path Area::Models",
         "path ModelItem",
-        "path ModelList"
+        "path ModelList",
+        "path ModelOutcome::Identified"
       ]
     },
     {

@@ -203,6 +203,68 @@ mod tests {
         lookup(english)
     }
 
+    /// The identification and prefix strings, translated in every locale with
+    /// their arguments kept.
+    #[test]
+    fn every_locale_translates_the_identification_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "Model id prefix",
+                "(none)",
+                "identified: {model} at {provider}",
+                "inferred from several rows: {model} at {provider}",
+                "ambiguous: {candidates}",
+                "unidentified",
+                "Identified {rule}",
+                "from the Provider's own list",
+                "from the whole qualified id",
+                "by its tokens",
+                "by its canonical id or display name",
+                "from the custom-provider list",
+                "by merging the rows that name it",
+                "ambiguous",
+                "{field} {value} supplied by {provider}/{model}",
+            ] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+            }
+            set(locale);
+            for (key, args) in [
+                (
+                    "identified: {model} at {provider}",
+                    vec![("model", "fixture-model"), ("provider", "fixture-provider")],
+                ),
+                (
+                    "inferred from several rows: {model} at {provider}",
+                    vec![("model", "fixture-model"), ("provider", "fixture-provider")],
+                ),
+                (
+                    "ambiguous: {candidates}",
+                    vec![("candidates", "fixture-candidate")],
+                ),
+                ("Identified {rule}", vec![("rule", "fixture-rule")]),
+                (
+                    "{field} {value} supplied by {provider}/{model}",
+                    vec![
+                        ("field", "fixture-field"),
+                        ("value", "fixture-value"),
+                        ("provider", "fixture-provider"),
+                        ("model", "fixture-model"),
+                    ],
+                ),
+            ] {
+                let text = tf(key, &args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
+        }
+        set(previous);
+    }
+
     #[test]
     fn every_locale_translates_the_model_failure_strings() {
         let previous = active();

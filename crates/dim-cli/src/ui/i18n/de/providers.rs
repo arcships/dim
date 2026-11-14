@@ -87,6 +87,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "↑↓ move · enter activate · esc close" => {
             "↑↓ bewegen · enter ausführen · esc schließen"
         }
+        "Model id prefix" => "Modell-ID-Präfix",
+        "(none)" => "(keins)",
+        "identified: {model} at {provider}" => "erkannt: {model} bei {provider}",
+        "inferred from several rows: {model} at {provider}" => {
+            "aus mehreren Zeilen abgeleitet: {model} bei {provider}"
+        }
+        "ambiguous: {candidates}" => "mehrdeutig: {candidates}",
+        "unidentified" => "nicht erkannt",
+        "Identified {rule}" => "Erkannt {rule}",
+        "from the Provider's own list" => "aus der eigenen Liste des Anbieters",
+        "from the whole qualified id" => "aus der vollständigen qualifizierten ID",
+        "by its tokens" => "über seine Tokens",
+        "by its canonical id or display name" => "über kanonische ID oder Anzeigename",
+        "from the custom-provider list" => "aus der custom-provider-Liste",
+        "by merging the rows that name it" => "durch Zusammenführen der benennenden Zeilen",
+        "ambiguous" => "mehrdeutig",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} geliefert von {provider}/{model}"
+        }
         "(paste here)" => "(hier einfügen)",
         _ => return None,
     })

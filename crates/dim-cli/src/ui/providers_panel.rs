@@ -35,6 +35,7 @@ enum Field {
     Name,
     BaseUrl,
     ApiKey,
+    ModelPrefix,
     Apply,
     Disconnect,
     ToggleEnabled,
@@ -45,6 +46,9 @@ struct Form {
     provider_id: String,
     version: Option<u32>,
     original_base_url: String,
+    /// The prefix the record states, as it was read: a changed field is what
+    /// the patch sends.
+    original_model_prefix: String,
     /// `Add custom provider`: the display name field; the record does not
     /// exist until its connection has been probed successfully.
     name: Option<LineInput>,
@@ -54,6 +58,8 @@ struct Form {
     /// pastes; the hardware cursor sits in the focused one.
     base_url: LineInput,
     api_key: LineInput,
+    /// The prefix the Provider's listed ids carry, as the user states it.
+    model_prefix: LineInput,
     api_key_preview: Option<String>,
     active: usize,
     /// The last outcome: a notice, or an error shown in the danger colour.
@@ -73,12 +79,13 @@ impl Form {
             }
             return rows;
         }
-        let mut rows = vec![Field::BaseUrl, Field::ApiKey];
+        let mut rows = vec![Field::BaseUrl, Field::ApiKey, Field::ModelPrefix];
         if self.version.is_none() {
             return rows;
         }
         let changed = !self.api_key.text().trim().is_empty()
-            || self.base_url.text().trim() != self.original_base_url;
+            || self.base_url.text().trim() != self.original_base_url
+            || self.model_prefix.text().trim() != self.original_model_prefix;
         if changed {
             rows.push(Field::Apply);
         }
@@ -91,6 +98,13 @@ impl Form {
         }
         rows
     }
+}
+
+/// The prefix the form asks for: `None` leaves the stored statement alone, and
+/// an emptied field clears it.
+fn prefix_change(form: &Form) -> Option<Option<String>> {
+    let typed = form.model_prefix.text().trim();
+    (typed != form.original_model_prefix).then(|| (!typed.is_empty()).then(|| typed.to_owned()))
 }
 
 impl ProvidersPanel {
@@ -130,7 +144,8 @@ impl ProvidersPanel {
             {
                 let failed = matches!(form.message, Some(Err(_)));
                 let edited = !form.api_key.text().is_empty()
-                    || form.base_url.text().trim() != form.original_base_url;
+                    || form.base_url.text().trim() != form.original_base_url
+                    || form.model_prefix.text().trim() != form.original_model_prefix;
                 if failed && form.version != Some(entry.version) {
                     form.message = Some(Err(t(
                         "Provider changed; review the retained draft and press Apply again",
@@ -141,8 +156,10 @@ impl ProvidersPanel {
                 form.enabled = entry.enabled;
                 form.version = Some(entry.version);
                 form.original_base_url = entry.base_url.clone().unwrap_or_default();
+                form.original_model_prefix = entry.glued_prefix.clone().unwrap_or_default();
                 if !failed && !edited {
                     form.base_url = LineInput::new(&form.original_base_url);
+                    form.model_prefix = LineInput::new(&form.original_model_prefix);
                 }
                 if form.name.take().is_some() {
                     form.active = 2;
@@ -241,11 +258,13 @@ impl ProvidersPanel {
                     provider_id: uuid::Uuid::new_v4().to_string(),
                     version: None,
                     original_base_url: String::new(),
+                    original_model_prefix: String::new(),
                     name: Some(LineInput::new("")),
                     connected: false,
                     enabled: true,
                     base_url: LineInput::new(""),
                     api_key: LineInput::new(""),
+                    model_prefix: LineInput::new(""),
                     api_key_preview: None,
                     active: 0,
                     message: None,
@@ -265,11 +284,13 @@ impl ProvidersPanel {
                     provider_id: entry.id.clone(),
                     version: Some(entry.version),
                     original_base_url: entry.base_url.clone().unwrap_or_default(),
+                    original_model_prefix: entry.glued_prefix.clone().unwrap_or_default(),
                     name: None,
                     connected: entry.status == "connected",
                     enabled: entry.enabled,
                     base_url: LineInput::new(entry.base_url.as_deref().unwrap_or_default()),
                     api_key: LineInput::new(""),
+                    model_prefix: LineInput::new(entry.glued_prefix.as_deref().unwrap_or_default()),
                     api_key_preview: entry.api_key_preview.clone(),
                     active: 1,
                     message: None,
@@ -324,6 +345,7 @@ impl ProvidersPanel {
             Some(Field::Name) => form.name.as_mut().is_some_and(|name| name.handle_key(key)),
             Some(Field::BaseUrl) => form.base_url.handle_key(key),
             Some(Field::ApiKey) => form.api_key.handle_key(key),
+            Some(Field::ModelPrefix) => form.model_prefix.handle_key(key),
             _ => false,
         };
         if edited {
@@ -347,7 +369,7 @@ impl ProvidersPanel {
                     return Effect::None;
                 };
                 match field {
-                    Field::Name | Field::BaseUrl | Field::ApiKey => {
+                    Field::Name | Field::BaseUrl | Field::ApiKey | Field::ModelPrefix => {
                         form.active = (form.active + 1) % count;
                         Effect::None
                     }
@@ -380,6 +402,7 @@ impl ProvidersPanel {
                             base_url: Some(form.base_url.text().trim().to_owned())
                                 .filter(|url| url != &form.original_base_url),
                             enabled: (!form.enabled).then_some(true),
+                            glued_prefix: prefix_change(form),
                         })
                     }
                     Field::Disconnect => {
@@ -401,6 +424,7 @@ impl ProvidersPanel {
                             api_key: None,
                             base_url: None,
                             enabled: Some(!form.enabled),
+                            glued_prefix: prefix_change(form),
                         })
                     }
                     Field::EditModels => Effect::OpenArea {
@@ -432,6 +456,7 @@ impl ProvidersPanel {
                 }
                 Some(Field::BaseUrl) => form.base_url.paste(text),
                 Some(Field::ApiKey) => form.api_key.paste(text),
+                Some(Field::ModelPrefix) => form.model_prefix.paste(text),
                 _ => {}
             }
         }
@@ -460,6 +485,12 @@ impl ProvidersPanel {
             Field::ApiKey => (
                 "API Key",
                 masked(&form.api_key, field_room(inner, "API Key")).1,
+            ),
+            Field::ModelPrefix => (
+                "Model id prefix",
+                form.model_prefix
+                    .view(field_room(inner, "Model id prefix"))
+                    .1,
             ),
             _ => return None,
         };
@@ -490,7 +521,12 @@ impl ProvidersPanel {
         let mut content = vec![String::new()];
         let last_input = fields
             .iter()
-            .rposition(|f| matches!(f, Field::Name | Field::BaseUrl | Field::ApiKey))
+            .rposition(|f| {
+                matches!(
+                    f,
+                    Field::Name | Field::BaseUrl | Field::ApiKey | Field::ModelPrefix
+                )
+            })
             .unwrap_or(0);
         for (index, field) in fields.iter().enumerate() {
             let focused = index == form.active;
@@ -519,6 +555,10 @@ impl ProvidersPanel {
                         masked(&form.api_key, field_room(inner, "API Key"))
                     };
                     input_row("API Key", &shown, t("(required)"), focused, inner, p)
+                }
+                Field::ModelPrefix => {
+                    let (shown, _) = form.model_prefix.view(field_room(inner, "Model id prefix"));
+                    input_row("Model id prefix", &shown, t("(none)"), focused, inner, p)
                 }
                 Field::Apply => action_row(t("Test + apply"), focused, inner, p),
                 Field::Disconnect => action_row(t("Disconnect"), focused, inner, p),
@@ -700,6 +740,7 @@ mod tests {
             custom: false,
             base_url: None,
             api_key_preview: None,
+            glued_prefix: None,
             account: None,
         }
     }
@@ -866,11 +907,13 @@ mod tests {
             provider_id: "p".into(),
             version: Some(3),
             original_base_url: String::new(),
+            original_model_prefix: String::new(),
             name: None,
             connected: false,
             enabled: false,
             base_url: LineInput::new(""),
             api_key: LineInput::new(""),
+            model_prefix: LineInput::new(""),
             api_key_preview: None,
             active: 1,
             message: None,
@@ -881,6 +924,7 @@ mod tests {
             vec![
                 Field::BaseUrl,
                 Field::ApiKey,
+                Field::ModelPrefix,
                 Field::ToggleEnabled,
                 Field::EditModels
             ]
@@ -892,6 +936,7 @@ mod tests {
             vec![
                 Field::BaseUrl,
                 Field::ApiKey,
+                Field::ModelPrefix,
                 Field::Apply,
                 Field::Disconnect,
                 Field::ToggleEnabled
@@ -961,6 +1006,7 @@ mod tests {
             vec![
                 Field::BaseUrl,
                 Field::ApiKey,
+                Field::ModelPrefix,
                 Field::Disconnect,
                 Field::ToggleEnabled,
                 Field::EditModels,
@@ -972,6 +1018,9 @@ mod tests {
         panel.paste("http://draft.test/v1");
         panel.handle_key(key(KeyCode::Enter));
         panel.paste("retry-key");
+        // The prefix field sits between the key and the actions, and it is
+        // untouched here, so the patch must not name it.
+        panel.handle_key(key(KeyCode::Enter));
         panel.handle_key(key(KeyCode::Enter));
         assert!(matches!(
             panel.handle_key(key(KeyCode::Enter)),
@@ -995,7 +1044,74 @@ mod tests {
                 .contains("Provider changed")
         );
         assert!(matches!(panel.handle_key(key(KeyCode::Enter)),
-            Effect::Provider(ProviderAction::Configure {expected_version: 2, api_key: Some(key), base_url: Some(url), ..})
+            Effect::Provider(ProviderAction::Configure {expected_version: 2, api_key: Some(key), base_url: Some(url), glued_prefix: None, ..})
             if key == "retry-key" && url == "http://draft.test/v1"));
+    }
+
+    /// A typed prefix is the patch's own statement about the ids this Provider
+    /// lists, and emptying the field clears the stored one. A field the user
+    /// did not touch is not part of the patch.
+    #[test]
+    fn a_typed_prefix_travels_with_the_patch_and_an_emptied_one_clears_it() {
+        let mut panel = ProvidersPanel::new();
+        let mut listed = entry("relay", "Relay", "connected", false);
+        listed.glued_prefix = Some("auto".into());
+        panel.set_providers(Ok(vec![listed]));
+        let key = |code| KeyEvent::new(code, Modifiers::NONE);
+        panel.handle_key(key(KeyCode::Enter));
+        let form = panel.form.as_mut().unwrap();
+        assert_eq!(
+            form.model_prefix.text().trim(),
+            "auto",
+            "the form starts from the stored statement"
+        );
+        assert_eq!(
+            form.rows(),
+            vec![
+                Field::BaseUrl,
+                Field::ApiKey,
+                Field::ModelPrefix,
+                Field::Disconnect,
+                Field::ToggleEnabled,
+                Field::EditModels,
+            ],
+            "an unchanged prefix offers no Apply"
+        );
+        assert_eq!(prefix_change(form), None, "an untouched field is no patch");
+        form.model_prefix.clear();
+        form.model_prefix.paste("grp");
+        assert_eq!(
+            form.rows(),
+            vec![
+                Field::BaseUrl,
+                Field::ApiKey,
+                Field::ModelPrefix,
+                Field::Apply,
+                Field::Disconnect,
+                Field::ToggleEnabled,
+            ],
+            "a changed prefix offers Apply"
+        );
+        assert_eq!(
+            prefix_change(form),
+            Some(Some("grp".into())),
+            "the typed value is the patch's statement"
+        );
+        // Arrow to the Apply row, which is where the write is asked for.
+        form.active = 3;
+        assert!(matches!(
+            panel.handle_key(key(KeyCode::Enter)),
+            Effect::Provider(ProviderAction::Configure {
+                glued_prefix: Some(Some(prefix)),
+                ..
+            }) if prefix == "grp"
+        ));
+        // An emptied field is the patch's "clear it".
+        panel.form.as_mut().unwrap().model_prefix.clear();
+        assert_eq!(
+            prefix_change(panel.form.as_ref().unwrap()),
+            Some(None),
+            "an emptied field clears the stored statement"
+        );
     }
 }

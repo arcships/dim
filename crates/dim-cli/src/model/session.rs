@@ -908,6 +908,9 @@ pub enum ProviderAction {
         api_key: Option<String>,
         base_url: Option<String>,
         enabled: Option<bool>,
+        /// The prefix the Provider's listed ids carry, when the form changed
+        /// it: `Some(None)` clears the statement.
+        glued_prefix: Option<Option<String>>,
     },
     Disconnect {
         provider_id: String,
@@ -998,6 +1001,8 @@ pub struct ProviderEntry {
     pub custom: bool,
     pub base_url: Option<String>,
     pub api_key_preview: Option<String>,
+    /// The prefix this Provider states its listed ids carry.
+    pub glued_prefix: Option<String>,
     /// Present when the daemon describes an account this provider signs in
     /// through.
     pub account: Option<AccountDescriptor>,
@@ -1019,6 +1024,24 @@ pub struct ModelItem {
     pub default_effort: Option<String>,
     /// Saved `reasoningEffort`, when it is one of `efforts`.
     pub saved_effort: Option<String>,
+    /// How the catalog identified this id, as the entry states it.
+    pub outcome: ModelOutcome,
+}
+
+/// What identification made of one model id, in the words the picker shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelOutcome {
+    /// One row named the model. `inferred` is the merge, whose numbers come
+    /// from several rows rather than from one declaration.
+    Identified {
+        provider_id: String,
+        model_id: String,
+        inferred: bool,
+    },
+    /// Several rows still disagree, so none supplied numbers.
+    Ambiguous { candidates: Vec<String> },
+    /// Nothing named the model.
+    Unidentified,
 }
 
 /// Why a usable provider contributes no selectable model.
@@ -1052,6 +1075,9 @@ pub struct NeedsLimitsProvider {
     pub provider_id: String,
     pub provider_name: String,
     pub count: usize,
+    /// The rows that named the undeclared ids and still disagree, so the row
+    /// that names the command also names what to choose between.
+    pub candidates: Vec<String>,
 }
 
 /// Which model new Collaboration members use (`collaboration.model_policy`).
