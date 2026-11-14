@@ -1,6 +1,7 @@
 //! The process owner: the `schedule` management namespace over the `schedule`
 //! settings document and the delivery history file ([design §1.3, A.3](../../../docs/design/plugins/Scheduler.md)).
 use crate::{
+    clock::Clock,
     document::{Job, MAX_TOOL_JOBS_PER_SESSION, Mode, Origin, Schedule, Target, canonical_instant},
     loops::Lookup,
     runs::{self, Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
@@ -48,8 +49,9 @@ pub struct SchedulerPlugin {
     sessions: Key<dyn HostDispatch>,
     parts: Key<PartRegistry>,
     texts: Arc<crate::SchedulerTexts>,
+    clock: Arc<dyn Clock>,
     #[cfg(feature = "testing")]
-    holds: Option<Arc<crate::testing::Holds>>,
+    testing: Option<crate::testing::TestingOptions>,
 }
 
 impl SchedulerPlugin {
@@ -63,21 +65,23 @@ impl SchedulerPlugin {
             sessions: host_key("sessions"),
             parts: names.key()?,
             texts,
+            clock: Arc::new(crate::clock::SystemClock),
             #[cfg(feature = "testing")]
-            holds: None,
+            testing: None,
         })
     }
 
-    /// [`SchedulerPlugin::new`] with the flow tests' holds (feature
+    /// [`SchedulerPlugin::new`] with the flow tests' seams and clock (feature
     /// `testing`).
     #[cfg(feature = "testing")]
     pub fn new_with_testing(
         names: &Names<'_>,
         texts: Arc<crate::SchedulerTexts>,
-        holds: Arc<crate::testing::Holds>,
+        testing: crate::testing::TestingOptions,
     ) -> rutis::Result<Self> {
         Ok(Self {
-            holds: Some(holds),
+            clock: testing.clock.clone(),
+            testing: Some(testing),
             ..Self::new(names, texts)?
         })
     }
@@ -113,6 +117,7 @@ impl DynPlugin for SchedulerPlugin {
             let shared = Arc::new(Shared {
                 ctx: ctx.clone(),
                 activity,
+                clock: self.clock.clone(),
                 deliveries: self.deliveries.clone(),
                 sessions,
                 settings,
@@ -128,7 +133,9 @@ impl DynPlugin for SchedulerPlugin {
                 retention: Default::default(),
                 watch: crate::watch::Watchers::default(),
                 #[cfg(feature = "testing")]
-                holds: self.holds.clone(),
+                holds: self.testing.as_ref().map(|testing| testing.holds.clone()),
+                #[cfg(feature = "testing")]
+                signals: self.testing.as_ref().map(|testing| testing.signals.clone()),
             });
             let cleanup = shared.clone();
             ctx.effect(move || async move {
@@ -272,7 +279,18 @@ impl DynPlugin for SchedulerPlugin {
             let timer = shared.clone();
             shared.spawn(async move {
                 let mut ticks = 0u32;
-                while timer.pause(std::time::Duration::from_secs(1)).await {
+                loop {
+                    let until = timer.now() + std::time::Duration::from_secs(1);
+                    // A flow test's `step` advances the clock to the instant the
+                    // timer is about to wait for, so the timer publishes that
+                    // instant before it waits. Feature `testing` only.
+                    #[cfg(feature = "testing")]
+                    if let Some(signals) = &timer.signals {
+                        signals.timer_wait(u64::from(ticks), until);
+                    }
+                    if !timer.pause_until(until).await {
+                        break;
+                    }
                     if let Err(error) = crate::engine::tick(&timer).await {
                         tracing::warn!(%error, "scheduler tick failed");
                     }
@@ -293,6 +311,13 @@ impl DynPlugin for SchedulerPlugin {
                     if minute && timer.retention_pending() {
                         crate::engine::prune(timer.clone()).await;
                     }
+                    // A flow test that crosses a tick waits on the whole
+                    // pass, not on the tick that started it. Feature
+                    // `testing` only.
+                    #[cfg(feature = "testing")]
+                    if let Some(signals) = &timer.signals {
+                        signals.tick();
+                    }
                 }
             });
             Ok(Effect::Done)
@@ -305,6 +330,8 @@ pub(crate) struct Shared {
     /// Session's channel (design §11).
     pub(crate) ctx: Ctx,
     pub(crate) activity: Arc<ProcessActivity>,
+    /// The instant this generation reads and the waits it crosses (#1536).
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) deliveries: DeliveryHolds,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
@@ -353,6 +380,9 @@ pub(crate) struct Shared {
     /// The flow tests' holds (feature `testing`).
     #[cfg(feature = "testing")]
     pub(crate) holds: Option<Arc<crate::testing::Holds>>,
+    /// The flow tests' pass signals (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub(crate) signals: Option<Arc<crate::testing::Signals>>,
 }
 
 impl Shared {
@@ -377,10 +407,18 @@ impl Shared {
     /// stops and leaves an unsettled delivery to the next generation's
     /// recovery.
     pub(crate) async fn pause(&self, delay: std::time::Duration) -> bool {
-        tokio::select! {
-            _ = self.stop.cancelled() => false,
-            _ = tokio::time::sleep(delay) => true,
-        }
+        self.pause_until(self.now() + Duration::from_std(delay).unwrap())
+            .await
+    }
+
+    /// Waits until `until`, so a caller that holds a deadline waits for that
+    /// deadline and no other; `false` once the owner is unloading.
+    pub(crate) async fn pause_until(&self, until: DateTime<Utc>) -> bool {
+        self.clock.wait_until(until, &self.stop).await
+    }
+
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.clock.now()
     }
 }
 
@@ -586,7 +624,7 @@ fn not_found(job_id: &str) -> SchedulerError {
 /// first window: the first window after it is the job's next window. An `at`
 /// job with no delivery has an open start, so a past instant is recorded
 /// `missed`.
-pub(crate) fn window_after(job: &Job, runs: &[Delivery]) -> DateTime<Utc> {
+pub(crate) fn window_after(shared: &Shared, job: &Job, runs: &[Delivery]) -> DateTime<Utc> {
     let last = runs
         .iter()
         .filter(|run| run.job_id == job.id)
@@ -601,7 +639,7 @@ pub(crate) fn window_after(job: &Job, runs: &[Delivery]) -> DateTime<Utc> {
             .and_then(canonical_instant)
             .map(|anchor| anchor - Duration::milliseconds(1))
     })
-    .unwrap_or_else(Utc::now)
+    .unwrap_or_else(|| shared.now())
 }
 
 async fn list(shared: &Shared, cancel: &CancellationToken) -> Result<Value, SchedulerError> {
@@ -617,7 +655,7 @@ async fn list(shared: &Shared, cancel: &CancellationToken) -> Result<Value, Sche
                     .cmp(&a.created_at)
                     .then(b.run_id.cmp(&a.run_id))
             });
-            let (next, issue) = match job.next_window(window_after(job, &runs)) {
+            let (next, issue) = match job.next_window(window_after(shared, job, &runs)) {
                 Ok(next) => (next.map(stamp), None),
                 Err(error) => (None, Some(error)),
             };
@@ -761,7 +799,7 @@ async fn save_job(
     }
     let previous = position.map(|index| document.jobs[index].clone());
     let input = make(previous.as_ref())?;
-    let job = build_job(input, previous.as_ref(), origin, Utc::now())?;
+    let job = build_job(input, previous.as_ref(), origin, shared.now())?;
     match position {
         Some(index) => document.jobs[index] = job.clone(),
         None => document.jobs.push(job.clone()),
@@ -891,7 +929,7 @@ async fn set_enabled(
         .iter()
         .position(|job| job.id == input.job_id)
         .ok_or_else(|| not_found(&input.job_id))?;
-    let now = Utc::now();
+    let now = shared.now();
     let job = &mut document.jobs[index];
     job.enabled_at = match (input.enabled, job.enabled) {
         (false, _) => None,

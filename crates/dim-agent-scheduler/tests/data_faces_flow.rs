@@ -70,7 +70,11 @@ impl Rig {
         dim_agent_scheduler::install_with_testing(
             &mut builder,
             dim_agent_scheduler::SchedulerTexts::default(),
-            holds.clone(),
+            dim_agent_scheduler::testing::TestingOptions {
+                holds: holds.clone(),
+                clock: dim_agent_scheduler::testing::clock(home.path()),
+                signals: dim_agent_scheduler::testing::signals(home.path()),
+            },
         )
         .unwrap();
         let observed = Arc::new(OnceLock::new());
