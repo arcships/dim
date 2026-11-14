@@ -131,6 +131,11 @@ export interface ToolHost {
    * Runs one call through the host's tools as `caller` names the branch's
    * execution. The driver is the implementation; this is the `toolHost`
    * face ([tool contributions §2.1](../../../docs/architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)).
+   *
+   * This is raw driver execution: it does not resolve write targets or run
+   * Permission or Approval. The caller owns admission; model-driven calls
+   * must use the branch ToolExecutor flow before reaching the driver.
+   * `caller` identifies execution context and does not grant authority.
    * @throws {HostErrorThrown}
    */
   execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>

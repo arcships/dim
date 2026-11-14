@@ -76,7 +76,7 @@ Provides branch-local wait state recording eligible arrivals during an open turn
 ### Data face
 
 `wait` is this part's service by name
-([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)):
+([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)):
 
 ```text
 wait.wait(taskId: string | null, timeoutMs: number, cancelled: () => void | Promise<void>)

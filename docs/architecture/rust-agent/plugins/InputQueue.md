@@ -85,7 +85,7 @@ observable input queue.
 ### Data face
 
 `inputQueue` is provided by this branch owner; Rust and wire calls use the same
-operations ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)).
+operations ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)).
 
 ```text
 inputQueue.submit(input: InputMessageData) -> {inputId, sequence}
@@ -94,7 +94,9 @@ inputQueue.withdraw(command: {input_id, reason?})
   -> error {code, message}
 ```
 
-`submit` uses the branch input entry and its submission-id admission. `withdraw`
+`submit` uses the branch input entry and its submission-id admission. Like
+`sessions.input`, it does not run operator SubmitChecks; operator input uses
+`session.input` above. `withdraw`
 only withdraws: it rejects any `steer` candidate before writing a command, including
 one carrying a submission id. Operator Steer uses `session.input.withdraw` above,
 which validates content, runs submit checks and admits the conditional replacement.

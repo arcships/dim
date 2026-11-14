@@ -332,7 +332,7 @@ re-evaluate every waiting call on that branch, without a new client response.
 ### Approval data face
 
 `approval` is this part's service by name
-([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加id)):
+([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)):
 
 ```text
 approval.pending() -> ApprovalRequestData[]

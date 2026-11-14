@@ -402,6 +402,24 @@ async fn wait_returns_the_typed_result() {
         ),
         "wire cancellation must release the single-wait slot"
     );
+    let mut pending = Box::pin(wait.wait(None, 300_000, never_cancelled()));
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(
+        wait.wait(None, 1, never_cancelled()).await.is_err(),
+        "the pending native call must own the slot"
+    );
+    drop(pending);
+    assert!(
+        matches!(
+            wait.wait(None, 1, never_cancelled()).await.unwrap(),
+            WaitResult::Timeout { .. }
+        ),
+        "dropping the native call must release the single-wait slot"
+    );
     host.close().await.unwrap();
 }
 
