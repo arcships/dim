@@ -5806,6 +5806,8 @@ async fn the_creating_turn_alone_does_not_tell_the_line() {
     let child = open_line(&session, "watch the tests").await;
     soon(session.idle("main")).await.unwrap();
     soon(session.idle(&child)).await.unwrap();
+    // Stands in for the parent-block writer handling the creating turn's end.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &child).await;
     assert!(
         parent_block_events(&events).is_empty(),
@@ -5879,6 +5881,8 @@ async fn a_line_message_answered_with_text_tells_the_line_nothing() {
     assert_eq!(result.is_error, None, "{:?}", result.content);
     soon(session.idle("main")).await.unwrap();
     soon(session.idle(&child)).await.unwrap();
+    // Stands in for the parent-block writer handling the creating turn's end.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &child).await;
     assert!(
         parent_block_events(&events).is_empty(),
@@ -6034,6 +6038,8 @@ async fn a_host_line_cut_at_the_start_is_not_told_what_happened_before_it() {
     let (agent, session, host, tool, _) = a_host_line_opened_after_main_moved(&probe, false).await;
     steer_main_from(&session, &tool).await;
     quiet(&session, &host).await;
+    // Stands in for the parent-block writer handling the parent's turn end.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &host).await;
     assert!(
         parent_block_events(&events).is_empty(),
@@ -6110,6 +6116,8 @@ async fn a_host_line_cut_before_it_was_opened_is_not_told_about_the_gap() {
     );
     steer_main_from(&session, &tool).await;
     quiet(&session, &host).await;
+    // Stands in for the parent-block writer handling the parent's turn end.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &host).await;
     assert!(
         parent_block_events(&events).is_empty(),
@@ -7181,6 +7189,10 @@ async fn an_ancestors_end_closes_a_pending_end_whose_delivery_was_held() {
                 .await
         })
     };
+    // Stands in for the ancestor's end reaching the child's held end: its own
+    // commit only proves `end()` was polled, and the cascade that waits for
+    // the child runs on a task spawned from that commit's delivery.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     gate.release.notify_one();
     tokio::time::timeout(Duration::from_secs(8), ender)
         .await
