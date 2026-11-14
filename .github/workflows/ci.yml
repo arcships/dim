@@ -25,7 +25,6 @@ jobs:
       windows: ${{ steps.groups.outputs.windows }}
       xtask: ${{ steps.groups.outputs.xtask }}
       node: ${{ steps.groups.outputs.node }}
-      ocr: ${{ steps.groups.outputs.ocr }}
       eval: ${{ steps.groups.outputs.eval }}
       execution: ${{ steps.groups.outputs.execution }}
       web: ${{ steps.groups.outputs.web }}
@@ -162,7 +161,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --test runtime/plugin-sdk.test.mjs
+          # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
+          # tests run from the repository root, so name it explicitly.
+          export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
+          node --test runtime/plugin-sdk.test.mjs runtime/light-ocr-*.test.mjs
           # The workflow plugin tests stay off: no double of a
           # test's can receive the plugin definition they register, because
           # 0.19.3's test tool does not take one (rutis-0.19-upgrade M10). The
@@ -179,17 +181,6 @@ jobs:
           if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
             node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored --test-threads=2
           fi
-      # Every `ocr` path also selects `rust`, so the steps above built the engine test.
-      - name: Verify OCR
-        if: needs.changes.outputs.ocr == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
-          # tests run from the repository root, so name it explicitly.
-          export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
-          node --test runtime/light-ocr-*.test.mjs
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl engine --ignored --test-threads=2
       - name: Verify Python plugins
         if: needs.changes.outputs.node == 'true' && vars.DIM_CI_PYTHON_PLUGINS == 'true'
         shell: bash

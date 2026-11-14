@@ -56,20 +56,6 @@ test('workspace, toolchain, workflow and unknown paths run everything',()=>{
     assert.deepEqual(classify([file]),only(...groups),file);
 });
 
-test('the OCR-only tests follow the paths that can change them',()=>{
-  assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'),'the event types still select node');
-  assert.deepEqual(classify(['crates/dim-ocr/src/vision.rs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['crates/dim-ocr/tests/engine.rs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['crates/dim-modality/src/engine.rs']),only('rust','node'),'no dim-modality target runs in the OCR step');
-  assert.deepEqual(classify(['runtime/plugins/light-ocr/helper.cjs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['runtime/fixtures/light-ocr/light-ocr/index.cjs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['runtime/light-ocr-helper.test.mjs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['runtime/light-ocr-row.test.mjs']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['runtime/package.json']),only('rust','node','ocr'),'the tree the helper runs from');
-  assert.deepEqual(classify(['runtime/package-lock.json']),only('rust','node','ocr'));
-  assert.deepEqual(classify(['runtime/plugin-sdk.test.mjs']),only('rust','node'),'the plugin SDK test stays on node');
-});
-
 /** A merge commit's first parent is the base; --no-renames keeps a moved file's old path in the diff. */
 test('a renamed file keeps the checks of its old path',{skip:!hasGit},(t)=>{
   const temporary=mkdtempSync(path.join(os.tmpdir(),'dim-ci-changes-'));
