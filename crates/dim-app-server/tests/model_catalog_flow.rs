@@ -859,6 +859,35 @@ fn a_qualified_house_model_keeps_its_own_identity() {
     }
 }
 
+/// The prefix states what a relay glued onto every id it lists, so it may not
+/// take a qualified id away from the step that reads it whole: `openrouter/auto`
+/// is OpenRouter's router even on a relay whose prefix is `auto`, and the same
+/// statement that names `auto-kimi-k3` leaves this id its own numbers.
+#[test]
+fn a_qualified_house_model_survives_the_relays_prefix() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = prefixed_relay(&catalog, "openrouter/auto", Some("auto"));
+    let identification = entry
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .expect("the qualified step reads the id the prefix would consume");
+    assert_eq!(
+        (
+            matched(&entry),
+            numbers(&entry),
+            identification.rule.as_str()
+        ),
+        (
+            ("openrouter", "openrouter/auto"),
+            (Some(8_192), Some(8_192)),
+            "qualified"
+        )
+    );
+}
+
 /// A namespace that names a known provider binds the id to that provider: when
 /// nothing under it names the model, another vendor may not claim the id by its
 /// final token, so the refusal names the rows that would have.

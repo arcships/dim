@@ -457,7 +457,9 @@ A provider's record states a prefix its listed ids carry, and that prefix is
 stripped once, at the head of the id and case-insensitively, before the id is
 broken into the tokens every token and name step compares. The first step and
 the qualified step read the whole id, so an exact row and a qualified id are
-untouched by the statement; a name step sees the stripped id, because the
+untouched by the statement, and the qualified step answers before the prefix
+is stripped: it is the whole id it reads, so a prefix that would leave it no
+tokens cannot take it away. A name step sees the stripped id, because the
 relay prefixed the id rather than the model. The prefix is a token head, so
 `auto` and `auto-` are one statement, and a prefix that consumes the whole id
 leaves no name, which identifies nothing rather than matching an empty one.

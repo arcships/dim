@@ -359,10 +359,16 @@ impl BundledCatalog {
             let strategy = Rule::ProviderExact.strategy(&provider_id, &entry.model_id, id);
             return self.one(provider_id, entry, strategy, Rule::ProviderExact);
         }
+        // The qualified step reads the whole id, so it answers before the
+        // prefix can leave no query behind: on a relay whose prefix consumes
+        // the id, the stripped query is empty while the id still names a row.
         let query = Query::parse(id, provider.glued_prefix.as_deref());
-        let found = match &query {
-            Some(query) => self.identify_rules(provider, query, id),
-            None => Outcome::None,
+        let found = match self.identify_qualified(id, namespace_of(id)) {
+            Outcome::None => match &query {
+                Some(query) => self.identify_after_qualified(provider, query, id),
+                None => Outcome::None,
+            },
+            found => found,
         };
         if let Outcome::One(_) = found {
             return found;
@@ -380,14 +386,15 @@ impl BundledCatalog {
         }
     }
 
-    /// Steps 2 to 6 over one id's tokens: the qualified id, the vendor rows by
-    /// token and by name, and the `custom-provider` rows by token and by name.
-    fn identify_rules(&self, provider: &ProviderProjection, query: &Query, id: &str) -> Outcome {
+    /// Steps 3 to 6 over one stripped id's tokens: the vendor rows by token
+    /// and by name, and the `custom-provider` rows by token and by name.
+    fn identify_after_qualified(
+        &self,
+        provider: &ProviderProjection,
+        query: &Query,
+        id: &str,
+    ) -> Outcome {
         let namespace = namespace_of(id);
-        match self.identify_qualified(id, namespace) {
-            Outcome::None => {}
-            found => return found,
-        }
         match self.identify_by_tokens(Index::Vendor, query, provider, namespace, Rule::Token, id) {
             Outcome::None => {}
             found => return found,
