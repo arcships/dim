@@ -2253,6 +2253,200 @@ async fn a_stale_saved_effort_falls_back_with_a_warning() {
     .unwrap();
 }
 
+/// A stale saved effort is dropped for its own field alone: the valid saved
+/// tier beside it still reaches the request, so the fallback is field-local
+/// and not a general drop of the saved pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_saved_effort_keeps_the_valid_saved_tier() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = completions_endpoint(capture.clone()).await;
+        let directory = directory("stale-effort-valid-tier");
+        let provider = "018ec73f-0000-7000-8000-000000000209";
+        let log = directory.join("second.log");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let mut tiered = model("defaulted", Some("high"), &["low", "high", "max"]);
+        tiered["metadata"]["serviceTier"] =
+            json!({"supported":true,"options":["priority","default"]});
+        create_provider(
+            &mut client,
+            provider,
+            "openai-compatible",
+            &endpoint,
+            vec![tiered],
+        )
+        .await;
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"max"},
+                "serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+        server.child.kill().await.unwrap();
+        drop(client);
+
+        // An edit drops `max` from the model's declared efforts, so the saved
+        // effort is stale while the saved tier stays valid.
+        let mut server = launch_logging(
+            &directory,
+            &["--product-home", directory.join("home").to_str().unwrap()],
+            Some(&log),
+        )
+        .await;
+        let mut client = connect(&server).await;
+        let managed = client
+            .rpc("provider.management", json!({"providerId":provider}))
+            .await;
+        assert_ok(&managed);
+        let version = managed["result"]["providers"][0]["version"].clone();
+        let edited = client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":"defaulted",
+                    "edit":{"reasoning":{"supported":true,"effortOptions":["low","high"]}}}),
+            )
+            .await;
+        assert_ok(&edited);
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high","serviceTier":"priority"}),
+            "the stale effort falls back to the declared default and the tier stays: {created}"
+        );
+        let written = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).to_string();
+        assert_eq!(
+            written
+                .matches("Saved model preference is not accepted")
+                .count(),
+            1,
+            "one warning, for the stale field alone: {written}"
+        );
+        assert!(
+            written.contains("reasoningEffort"),
+            "the warning names the effort field: {written}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        let wire = last_body(&capture);
+        assert_eq!(wire["reasoning_effort"], json!("high"), "{wire}");
+        assert_eq!(wire["service_tier"], json!("priority"), "{wire}");
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// The reverse: a saved tier the model's route no longer carries is dropped for
+/// its own field alone, so the valid saved effort beside it still reaches the
+/// request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_saved_tier_keeps_the_valid_saved_effort() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let capture = Arc::new(Capture::default());
+        let (endpoint, http) = messages_endpoint(capture.clone()).await;
+        let directory = directory("stale-tier-valid-effort");
+        let provider = "018ec73f-0000-7000-8000-00000000020a";
+        let log = directory.join("second.log");
+        let mut server = launch_product(&directory).await;
+        let mut client = connect(&server).await;
+        let root = endpoint.trim_end_matches('/');
+        let mut routed = model("defaulted", Some("high"), &["low", "high"]);
+        routed["metadata"] = json!({
+            "reasoning":{"supported":true,"effort":"high","effortOptions":["low","high"]},
+            "serviceTier":{"supported":true,"options":["priority","default"]},
+            "raw":{"endpointType":"openai"}
+        });
+        assert_ok(
+            &client
+                .rpc(
+                    "provider.create",
+                    json!({"providerId":provider,"displayName":"Routed",
+                        "connection":{"driverKind":"new-api-router","baseUrl":root,
+                            "auth":{"type":"anonymous"}},
+                        "models":[routed],"enabled":true}),
+                )
+                .await,
+        );
+        save_preferences(
+            &mut client,
+            provider,
+            "defaulted",
+            json!({"reasoningEffort":{"action":"set","value":"high"},
+                "serviceTier":{"action":"set","value":"priority"}}),
+        )
+        .await;
+        make_default(&mut client, provider, "defaulted").await;
+        server.child.kill().await.unwrap();
+        drop(client);
+
+        let mut server = launch_logging(
+            &directory,
+            &["--product-home", directory.join("home").to_str().unwrap()],
+            Some(&log),
+        )
+        .await;
+        let mut client = connect(&server).await;
+        // The model's route moves to Anthropic, which carries no service tier:
+        // the saved tier is stale while the saved effort stays valid.
+        let managed = client
+            .rpc("provider.management", json!({"providerId":provider}))
+            .await;
+        assert_ok(&managed);
+        let version = managed["result"]["providers"][0]["version"].clone();
+        let moved = client
+            .rpc(
+                "provider.models.edit",
+                json!({"providerId":provider,"expectedVersion":version,"modelId":"defaulted",
+                    "edit":{"endpoint":{"action":"set","value":"anthropic"}}}),
+            )
+            .await;
+        assert_ok(&moved);
+
+        let created = client
+            .rpc("session.create", json!({"cwd":directory,"tools":[]}))
+            .await;
+        assert_ok(&created);
+        assert_eq!(
+            created["result"]["modelPreferences"],
+            json!({"reasoningEffort":"high"}),
+            "the stale tier is dropped and the valid saved effort stays: {created}"
+        );
+        let written = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).to_string();
+        assert_eq!(
+            written
+                .matches("Saved model preference is not accepted")
+                .count(),
+            1,
+            "one warning, for the stale field alone: {written}"
+        );
+        assert!(
+            written.contains("serviceTier"),
+            "the warning names the tier field: {written}"
+        );
+        let session_id = created["result"]["sessionId"].clone();
+        turn(&mut client, &session_id, "hello").await;
+        assert_eq!(sent_effort(&capture).as_deref(), Some("high"));
+        assert!(last_body(&capture).get("service_tier").is_none());
+
+        server.child.kill().await.unwrap();
+        http.abort();
+        std::fs::remove_dir_all(directory).unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// A stated effort the model does not accept still fails, exactly as it did
 /// before a saved value became part of an adoption.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
