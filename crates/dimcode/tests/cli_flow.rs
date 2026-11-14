@@ -5843,8 +5843,8 @@ fn repicking_the_current_model_keeps_the_effort() {
         .unwrap_or_else(|| panic!("the model was re-picked: {calls:?}"));
     assert_eq!(
         update["params"],
-        json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model",
-            "modelPreferences":{"reasoningEffort":"high"}})
+        json!({"sessionId":"session","branchId":"main","providerId":"test","modelId":"model"}),
+        "Enter sends the target alone; the server applies the saved effort"
     );
 }
 
