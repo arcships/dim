@@ -107,7 +107,7 @@ async fn a_cancel_racing_the_pass_cannot_report_cancelled_with_the_input_written
 
         // Due in two seconds: the timer pass fires it, and the pause below is
         // registered well before its instant.
-        let at = (chrono::Utc::now() + chrono::Duration::seconds(2))
+        let at = (support::clock(home.path()).now() + chrono::Duration::seconds(2))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let created: Value = client
             .rpc(

@@ -124,6 +124,7 @@ async fn record(
         .effective_target()
         .ok_or_else(|| SchedulerError::invalid_data("job has no target"))?;
     let spawn_target = target.clone();
+    let clock = shared.clock.clone();
     let run = runs::update(&shared.files, move |history| {
         if window != MANUAL
             && history
@@ -132,7 +133,7 @@ async fn record(
         {
             return Ok((false, None));
         }
-        let now = Utc::now();
+        let now = clock.now();
         let (state, detail) = if missed {
             (DeliveryState::Missed, "missed")
         } else if history
@@ -248,7 +249,7 @@ pub async fn tick(shared: &Arc<Shared>) -> Result<(), SchedulerError> {
     let cancel = CancellationToken::new();
     let document = read_document(shared, &cancel).await?.document;
     let history = runs::read(&shared.files).await?;
-    let now = Utc::now();
+    let now = shared.now();
     for job in document.jobs.iter().filter(|job| job.enabled) {
         // A disable whose write did not land is still required state: read
         // the claim back from the job's newest terminal delivery (A.3).
@@ -264,7 +265,7 @@ pub async fn tick(shared: &Arc<Shared>) -> Result<(), SchedulerError> {
             disable_gone(shared, run, &run.detail, at).await;
             continue;
         }
-        let Ok(next) = job.next_window(window_after(job, &history)) else {
+        let Ok(next) = job.next_window(window_after(shared, job, &history)) else {
             continue;
         };
         if let Some(due) = next
@@ -469,6 +470,7 @@ async fn finish(
     detail: String,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
+    let clock = shared.clock.clone();
     let settled = runs::update(&shared.files, move |history| {
         let run = history
             .iter_mut()
@@ -478,7 +480,7 @@ async fn finish(
             return Ok((false, None));
         }
         run.state = state;
-        run.ended_at = Some(stamp(Utc::now()));
+        run.ended_at = Some(stamp(clock.now()));
         run.detail = detail;
         run.validate().map_err(SchedulerError::invalid_data)?;
         Ok((true, Some(run.clone())))
@@ -499,9 +501,9 @@ async fn finish(
 /// Whether a launch record's stop time has passed, so its stop timer has
 /// finished and its record is eligible for cleanup (§3.2, A.7). A `session`
 /// delivery has no stop time and nothing to wait for.
-fn stop_time_passed(run: &Delivery) -> bool {
+fn stop_time_passed(run: &Delivery, now: DateTime<Utc>) -> bool {
     match run.deadline_at.as_deref().and_then(canonical_instant) {
-        Some(deadline) => Utc::now() >= deadline,
+        Some(deadline) => now >= deadline,
         None => true,
     }
 }
@@ -529,6 +531,12 @@ pub async fn prune(shared: Arc<Shared>) {
     shared
         .retention
         .store(pending, std::sync::atomic::Ordering::Relaxed);
+    // A pass that took no write still signals: a flow test that asserts a
+    // release did not happen waits on "the pass ended", not on a change.
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.retention_done();
+    }
 }
 
 /// One retention pass (A.7). Returns whether expired records remain, so the
@@ -563,7 +571,7 @@ async fn prune_once(shared: &Arc<Shared>) -> Result<bool, SchedulerError> {
         .collect();
     let mut keep: HashSet<String> = runs
         .iter()
-        .filter(|run| !run.state.is_terminal() || !stop_time_passed(run))
+        .filter(|run| !run.state.is_terminal() || !stop_time_passed(run, shared.now()))
         .map(|run| run.run_id.clone())
         .collect();
     for job in &document.jobs {
@@ -695,10 +703,11 @@ pub fn recover(shared: &Arc<Shared>, launches: Vec<Delivery>) {
 /// delivery's state is not touched: a stop is a bound on the launched work,
 /// not a run outcome.
 async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadline: DateTime<Utc>) {
-    let wait = deadline.signed_duration_since(Utc::now()).to_std();
-    if let Ok(wait) = wait
-        && !shared.pause(wait).await
-    {
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.stop_parked(deadline);
+    }
+    if !shared.pause_until(deadline).await {
         return;
     }
     loop {
@@ -709,6 +718,7 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
             continue;
         };
         if !record_exists(&shared, &run_id).await {
+            ended(&shared);
             return;
         }
         match sessions(
@@ -719,8 +729,14 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
         )
         .await
         {
-            Ok(Ok(_)) => return,
-            Ok(Err(code)) if target_gone(&code) => return,
+            Ok(Ok(_)) => {
+                ended(&shared);
+                return;
+            }
+            Ok(Err(code)) if target_gone(&code) => {
+                ended(&shared);
+                return;
+            }
             _ => {
                 if !shared.pause(RETRY).await {
                     return;
@@ -728,6 +744,18 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
             }
         }
     }
+}
+
+/// Publishes that a stop timer ended, whichever check ended it. Feature
+/// `testing` only: a flow row that asserts the timer wrote nothing waits on
+/// "the timer ended" rather than on a bound.
+fn ended(shared: &Shared) {
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.stop_done();
+    }
+    #[cfg(not(feature = "testing"))]
+    let _ = shared;
 }
 
 /// Whether the delivery's record is still in the store, which bounds the stop
@@ -841,7 +869,7 @@ async fn settle_target_gone(
     code: &str,
 ) -> Result<(), SchedulerError> {
     finish(shared, &run.run_id, DeliveryState::Failed, code.into()).await?;
-    disable_gone(shared, run, code, stamp(Utc::now())).await;
+    disable_gone(shared, run, code, stamp(shared.now())).await;
     Ok(())
 }
 
@@ -889,6 +917,7 @@ enum LookupStep {
 /// and before the input, so the caller's own copy may predate it.
 async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), SchedulerError> {
     let found = run_id.to_owned();
+    let clock = shared.clock.clone();
     let step = runs::update(&shared.files, move |history| {
         let Some(run) = history.iter_mut().find(|run| run.run_id == found) else {
             return Ok((false, LookupStep::Settled));
@@ -899,7 +928,7 @@ async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), Scheduler
         let attempts = run.attempts.unwrap_or(0);
         if attempts >= LOOKUP_BOUND {
             run.state = DeliveryState::Lost;
-            run.ended_at = Some(stamp(Utc::now()));
+            run.ended_at = Some(stamp(clock.now()));
             run.detail = LOOKUP_BUDGET_EXHAUSTED.into();
             run.validate().map_err(SchedulerError::invalid_data)?;
             return Ok((true, LookupStep::Exhausted(Box::new(run.clone()))));
@@ -980,6 +1009,7 @@ async fn settle_delivered(
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
     let input_id = input_id.to_owned();
+    let clock = shared.clock.clone();
     let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observe = moved.clone();
     runs::update(&shared.files, move |history| {
@@ -992,7 +1022,7 @@ async fn settle_delivered(
         }
         run.state = DeliveryState::Delivered;
         run.input_event_id = Some(input_id);
-        run.ended_at = Some(stamp(Utc::now()));
+        run.ended_at = Some(stamp(clock.now()));
         run.validate().map_err(SchedulerError::invalid_data)?;
         *observe.lock().unwrap() = Some(run.clone());
         Ok((true, ()))
@@ -1018,6 +1048,7 @@ async fn settle_lost(
     answer: String,
 ) -> Result<(), SchedulerError> {
     let run_id = run_id.to_owned();
+    let clock = shared.clock.clone();
     let moved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observe = moved.clone();
     runs::update(&shared.files, move |history| {
@@ -1029,7 +1060,7 @@ async fn settle_lost(
             return Ok((false, ()));
         }
         run.state = DeliveryState::Lost;
-        run.ended_at = Some(stamp(Utc::now()));
+        run.ended_at = Some(stamp(clock.now()));
         run.detail = answer;
         run.validate().map_err(SchedulerError::invalid_data)?;
         *observe.lock().unwrap() = Some(run.clone());

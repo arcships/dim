@@ -3,6 +3,7 @@
 //! vocabulary, bounded lookup settling, overlap skips, legacy mapping and
 //! retention.
 mod support;
+use dim_agent_scheduler::testing::retention;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use support::*;
@@ -296,8 +297,12 @@ async fn a_past_window_is_missed_and_a_gone_target_fails_and_disables() {
     assert_eq!(job["disabled_reason"]["code"], "session_closed", "{job}");
     assert!(job["disabled_reason"]["at"].is_string(), "{job}");
 
-    // Later windows do not fire while the job is disabled.
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Later windows do not fire while the job is disabled. The job runs every
+    // minute, so an advance of 60 s reaches its next window and the pass that
+    // follows sees it due; the record count is the claim that the disabled
+    // job wrote nothing at that window.
+    clock(home.path()).advance(chrono::Duration::seconds(60));
+    step(home.path(), 1).await;
     let history: Value = client
         .typed("schedule.history", json!({"job_id": gone}))
         .await
@@ -958,11 +963,15 @@ async fn legacy_jobs_map_to_their_targets_and_keep_their_bytes() {
         .as_str()
         .unwrap()
         .to_owned();
+    // The delete spawns the retention pass; the count is read before the call
+    // that spawns it, so the wait is for that pass and no other. The pass
+    // deletes nothing here, which is the claim.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": reused_job}))
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    retention(home.path(), before).await;
     let catalog = client
         .rpc(
             "session.catalog",
@@ -989,27 +998,25 @@ async fn legacy_jobs_map_to_their_targets_and_keep_their_bytes() {
     });
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = support::connect(&server).await;
+    // The delete spawns the pass that deletes the launched Session; the count
+    // names that pass, and the catalog is read once after it.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": launch_id}))
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let catalog = client
-                .rpc(
-                    "session.catalog",
-                    json!({"withInternal": true, "limit": 100}),
-                )
-                .await
-                .unwrap();
-            if !catalog.to_string().contains(&launched) {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("a launched Session goes with its job");
+    retention(home.path(), before).await;
+    let catalog = client
+        .rpc(
+            "session.catalog",
+            json!({"withInternal": true, "limit": 100}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !catalog.to_string().contains(&launched),
+        "a launched Session goes with its job: {catalog}"
+    );
 
     drop(client);
     server.shutdown();
@@ -1483,11 +1490,14 @@ async fn a_save_that_replaces_a_legacy_reuse_target_releases_its_session() {
     assert_eq!(stored["session_id"], json!(launched), "{stored}");
     assert_eq!(stored["target"]["kind"], "session", "{stored}");
 
+    // The delete spawns the retention pass; the count is read before the call
+    // that spawns it, so the wait is for that pass and no other.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": "reuse"}))
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    retention(home.path(), before).await;
     let catalog = client
         .rpc(
             "session.catalog",
@@ -1557,24 +1567,30 @@ async fn a_failed_release_heals_at_the_next_retention_pass() {
     );
 
     // Deleting the dummy job runs a retention pass, which re-derives the
-    // release from the saved document.
+    // release from the saved document. The count is read before the call that
+    // spawns the pass and the store is read once after that pass's signal, so
+    // the claim is about what *that* pass wrote and no later one.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": dummy}))
         .await
         .unwrap();
-    wait_for("the retention pass releases the record", || {
-        stored_runs(home.path())
-            .iter()
-            .any(|run| run["run_id"] == "run-1" && run["released"] == true)
-    })
-    .await;
+    retention(home.path(), before).await;
+    let released = stored_runs(home.path())
+        .iter()
+        .any(|run| run["run_id"] == "run-1" && run["released"] == true);
+    assert!(
+        released,
+        "the retention pass re-derives the release the failed save could not write"
+    );
 
     // The released Session survives the job's deletion.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": "reuse"}))
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    retention(home.path(), before).await;
     let catalog = client
         .rpc(
             "session.catalog",
@@ -1723,7 +1739,9 @@ async fn a_failed_target_gone_disable_is_retried() {
         .unwrap();
     let run = settled(&mut client, &second, accepted["run_id"].as_str().unwrap()).await;
     assert_eq!(run["state"], "failed", "{run}");
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // The timer's next claim scan is the retry: it disables the job on the
+    // delivery's own claim.
+    step(home.path(), 1).await;
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let still = &listed["jobs"]
         .as_array()
@@ -1933,8 +1951,9 @@ async fn a_re_enable_does_not_replay_the_old_target_gone_claim() {
         )
         .await
         .unwrap();
-    // The timer pass must not read the old claim back once the enable landed.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // The timer pass must not read the old claim back once the enable landed:
+    // two passes are what the claim scan would need to run twice.
+    step(home.path(), 2).await;
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let job = listed_job(&listed, &re_enabled_job);
     assert_eq!(job["enabled"], true, "{listed}");
@@ -1958,7 +1977,7 @@ async fn a_re_enable_does_not_replay_the_old_target_gone_claim() {
         )
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    step(home.path(), 2).await;
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let job = listed_job(&listed, &saved_job);
     assert_eq!(job["enabled"], true, "{listed}");
@@ -2087,7 +2106,9 @@ async fn a_same_target_save_supersedes_the_target_gone_claim() {
         .await
         .unwrap();
     hold.release();
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // The released disable retries at once; one timer pass after it is the
+    // claim scan that must leave the superseded write alone.
+    step(home.path(), 1).await;
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let listed = listed_job_value(&listed, &job);
     assert_eq!(listed["enabled"], true, "{listed}");
@@ -2149,7 +2170,9 @@ async fn a_pause_and_resume_between_the_disable_read_and_write_supersedes_it() {
             .unwrap();
     }
     hold.release();
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // The released disable retries at once; one timer pass after it is the
+    // claim scan that must leave the superseded write alone.
+    step(home.path(), 1).await;
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let listed = listed_job_value(&listed, &job);
     assert_eq!(listed["enabled"], true, "{listed}");
@@ -2258,11 +2281,12 @@ async fn an_explicitly_sent_equivalent_target_does_not_release_the_binding() {
         "the equivalent target releases nothing: {run}"
     );
     // A retention pass re-derives no release either.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": dummy}))
         .await
         .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    retention(home.path(), before).await;
     let runs = stored_runs(home.path());
     let run = runs.iter().find(|run| run["run_id"] == "run-1").unwrap();
     assert_eq!(run["session_origin"], "launch", "{run}");
