@@ -17560,6 +17560,7 @@ mod tests {
         drawn.app.show_earlier();
         assert_eq!(sent.borrow().len(), 1, "an unread prefix is requested");
         assert!(matches!(sent.borrow()[0], Command::Earlier));
+        drawn.draw();
         assert_eq!(drawn.transcript(), before, "the request draws nothing");
         let mut rows = window_rows(HISTORY_WINDOW);
         let mut live = (*window_rows(1)[0]).clone();
@@ -17607,13 +17608,62 @@ mod tests {
         drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::Reading;
         drawn.app.show_earlier();
         assert!(sent.borrow().is_empty(), "a read in flight is not repeated");
-        sent.borrow_mut().clear();
-        drawn.app.snapshot.as_mut().unwrap().earlier = Earlier::AtStart;
-        let before = drawn.transcript();
-        drawn.draw();
-        drawn.app.show_earlier();
+
+        // At the start nothing earlier exists and no read is in flight: a
+        // window opened on a short Session whose page it has not drawn yet.
+        // The call's frame is the window's first, so a floor it moved still
+        // changes the page; the twin draws without the call.
+        let at_start = || {
+            let mut drawn = Drawn::new((80, 40), None, true);
+            drawn.app.fullscreen = true;
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            drawn.app.host = Box::new(Recorder(sent.clone()));
+            drawn.app.snapshot = Some(ViewSnapshot {
+                session_id: "s1".into(),
+                rows: window_rows(HISTORY_WINDOW),
+                focus: "main".into(),
+                history_complete: true,
+                earlier: Earlier::AtStart,
+                ..ViewSnapshot::default()
+            });
+            (drawn, sent)
+        };
+        let (mut untouched, _) = at_start();
+        untouched.draw();
+        let page = untouched.transcript();
+        assert!(page.contains("ask 0"), "the window draws its page: {page}");
+        let (mut no_op, sent) = at_start();
+        no_op.app.show_earlier();
         assert!(sent.borrow().is_empty(), "AtStart sends nothing");
-        assert_eq!(drawn.transcript(), before, "AtStart draws nothing");
+        no_op.draw();
+        assert_eq!(no_op.transcript(), page, "AtStart draws nothing");
+
+        // A page that lands afterwards draws what it draws without the call:
+        // the no-op armed no reveal.
+        let mut rows = older_rows(HISTORY_WINDOW);
+        rows.extend(window_rows(HISTORY_WINDOW));
+        let later = |drawn: &mut Drawn| {
+            drawn.app.apply(Update::Snapshot(Box::new(ViewSnapshot {
+                session_id: "s1".into(),
+                rows: rows.clone(),
+                focus: "main".into(),
+                history_complete: true,
+                earlier: Earlier::AtStart,
+                ..ViewSnapshot::default()
+            })));
+            drawn.draw();
+            drawn.transcript()
+        };
+        let text = later(&mut no_op);
+        assert!(
+            !text.contains("older ") && text.contains("ask 0"),
+            "the no-op armed no reveal: {text}"
+        );
+        assert_eq!(
+            text,
+            later(&mut untouched),
+            "a page landing after the no-op draws what it draws without it"
+        );
     }
 
     #[test]
