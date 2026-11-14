@@ -25,6 +25,7 @@ const accessKey = ref("")
 const sessionToken = ref("")
 const proxy = ref("")
 const timeout = ref("")
+const modelIdPrefix = ref("")
 const enabled = ref(true)
 const headers = ref<{ name: string; value: string; remove: boolean; existing: boolean }[]>([])
 const saving = ref(false)
@@ -41,7 +42,7 @@ const usesStoredKeyAtNewUrl = computed(() => {
   const saved = props.provider?.connection
   return saved?.credentialConfigured && baseUrl.value !== saved.baseUrl && !credential()
 })
-function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, headers.value]) }
+function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, headers.value, modelIdPrefix.value]) }
 function adopt(): void {
   const p = props.provider, c = p?.connection
   id.value = p?.providerId ?? crypto.randomUUID()
@@ -57,6 +58,7 @@ function adopt(): void {
   sessionToken.value = ""
   proxy.value = c?.proxyUrl ?? ""
   timeout.value = c?.timeoutMs?.toString() ?? ""
+  modelIdPrefix.value = c?.gluedPrefix ?? ""
   enabled.value = p?.enabled ?? true
   probed.value = undefined
   headers.value = (c?.headerNames ?? []).map((name) => ({ name, value: "", remove: false, existing: true }))
@@ -87,6 +89,9 @@ function patch(): Record<string, unknown> {
     const updates = headers.value.flatMap((h) => h.remove && h.existing ? [{ action: "remove", name: h.name }] : !h.remove && h.value ? [{ action: "set", name: h.name, value: h.value }] : [])
     if (updates.length) changes.headers = updates
   }
+  // An emptied prefix is the patch's "clear it"; an untouched field is not in
+  // the patch at all, so an omitted statement keeps the stored one.
+  if (modelIdPrefix.value !== (c?.gluedPrefix ?? "")) changes.gluedPrefix = modelIdPrefix.value ? modelIdPrefix.value : null
   if (enabled.value !== p.enabled) changes.enabled = enabled.value
   const network: Record<string, unknown> = {}
   if (proxy.value !== (c?.proxyUrl ?? "")) network.proxy = proxy.value ? { action: "set", value: proxy.value } : { action: "clear" }
@@ -199,6 +204,9 @@ onBeforeUnmount(() => { key.value = ""; accessKey.value = ""; sessionToken.value
             </UFormField>
             <UFormField :label="t('timeout')">
               <UInput v-model="timeout" type="number" min="1" step="1" :placeholder="t('default')" class="w-full" />
+            </UFormField>
+            <UFormField :label="t('modelIdPrefix')" :help="t('modelIdPrefixHint')">
+              <UInput v-model="modelIdPrefix" autocomplete="off" class="w-full" />
             </UFormField>
           </div>
         </template>
