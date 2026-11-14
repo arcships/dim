@@ -539,8 +539,10 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
     fs::create_dir(&project).unwrap();
     let exported = home.0.join("export.jsonl");
     let done = home.0.join("export.done");
+    let received = home.0.join("received-home");
     let command = format!(
-        "{} export \"$DIM_SESSION_ID\" --output {} && touch {}",
+        "printf '%s' \"$DIMCODE_HOME\" > {} && {} export \"$DIM_SESSION_ID\" --output {} && touch {}",
+        received.display(),
         env!("CARGO_BIN_EXE_dimcode"),
         exported.display(),
         done.display()
@@ -592,6 +594,11 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(done.exists(), "the Stop hook did not finish its export");
+        assert_eq!(
+            fs::read_to_string(&received).unwrap_or_default(),
+            home.0.to_str().unwrap(),
+            "the hook was given the daemon's own product home"
+        );
         let text = fs::read_to_string(&exported).unwrap_or_default();
         assert!(
             text.contains(session.id()),
@@ -1088,83 +1095,6 @@ fn tui_hooks_panel_lists_the_sources_and_toggles_the_project() {
     daemon.join().unwrap();
 }
 
-/// Enter toggles the project, and only the read after the toggle fails: the
-/// panel reports what it did and the read error, and keeps no view, in both
-/// terminal modes.
-#[test]
-fn tui_hooks_panel_settles_a_toggle_whose_read_fails() {
-    for fullscreen in [false, true] {
-        let home = Home::new();
-        let (shown, wait_shown) = std::sync::mpsc::channel();
-        let daemon = home.daemon(move |wire| {
-            hello(wire);
-            let attach = wire.read("session.attach");
-            wire.reply(&attach, attach_record(&attach));
-            let history = wire.read("session.history");
-            wire.reply(
-                &history,
-                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
-            );
-            for _ in 0..2 {
-                let request = wire.read_any();
-                match request["method"].as_str() {
-                    Some("account.providers") => wire.reply(&request, json!([])),
-                    Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                        "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
-                    method => panic!("unexpected request {method:?}"),
-                }
-            }
-            wait_shown.recv_timeout(PATIENCE).unwrap();
-            let request = wire.read("hooks.catalog");
-            wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
-            // The write reads the project revision immediately before it.
-            let request = wire.read("hooks.catalog");
-            wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
-            let request = wire.read("hooks.set_enabled");
-            assert_eq!(request["params"]["enabled"], true);
-            wire.reply(&request, json!({"revision": "projects:2"}));
-            // The toggle is committed; the report after it is what fails.
-            let request = wire.read("hooks.catalog");
-            wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
-                "code":-32000,
-                "message":"hooks catalog unavailable",
-                "data":{"appError":"hooks_failed"}}}));
-            drains(wire);
-        });
-        let mut command = home.command();
-        if fullscreen {
-            command.arg("--fullscreen");
-        }
-        let mut terminal = Terminal::resume_tui(command);
-        terminal.until("test / model");
-        shown.send(()).unwrap();
-        terminal.write(b"/hooks\r");
-        terminal.until("The user's own document; always in effect.");
-        terminal.raw(b"\x1b[B");
-        terminal.until("/work/.dimcode/hooks.json");
-        terminal.raw(b"\r");
-        terminal.until("Enabled project.");
-        terminal.until("hooks catalog unavailable");
-        let settled = terminal.transcript.clone();
-        assert!(!settled.contains("Disabled project."), "{settled}");
-        terminal.raw(b"\x1b");
-        thread::sleep(Duration::from_millis(200));
-        terminal.write(b"/exit\r");
-        terminal.until("Bye!");
-        assert!(terminal.wait().success());
-        daemon.join().unwrap();
-        assert_eq!(
-            terminal
-                .transcript
-                .matches("hooks catalog unavailable")
-                .count(),
-            1,
-            "the read error is drawn once: {}",
-            terminal.transcript
-        );
-    }
-}
-
 /// The catalog of a workspace with no hook file anywhere: every source
 /// carries the path its owner reports, and the owner reports `missing`.
 fn missing_catalog() -> Value {
@@ -1369,10 +1299,9 @@ fn tui_hooks_panel_offers_no_edit_without_a_user_document() {
     }
 }
 
-/// `hooks edit` refuses a daemon that reports no user document before the
-/// editor opens: no draft is made and nothing is written.
+/// Both verbs refuse before reading their input: no editor, no draft.
 #[test]
-fn hooks_edit_refuses_a_daemon_without_a_user_document() {
+fn hooks_edit_and_set_refuse_a_daemon_without_a_user_document() {
     let home = Home::new();
     let script = editor(
         &home,
@@ -1397,12 +1326,7 @@ fn hooks_edit_refuses_a_daemon_without_a_user_document() {
         terminal.transcript
     );
     assert!(drafts(&home).is_empty(), "the editor never opened");
-}
 
-/// `hooks set -` refuses a daemon that reports no user document: nothing is
-/// written and the text it read leaves no draft behind.
-#[test]
-fn hooks_set_refuses_a_daemon_without_a_user_document() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         hello(wire);
@@ -1540,12 +1464,77 @@ const ANSWERS_STORED: &str = "case \"$(cat \"$1\")\" in\n\
     *) printf '%s' '{\"hooks\":{\"Stop\":[\"old\"]}}' > \"$1\";;\n\
     esac";
 
-/// Ctrl+E saves, and only the read after the save fails: the panel reports
-/// the save and the read error, keeps no draft, and Ctrl+R reads the area
-/// again so the next edit opens the document that read returned, in both
-/// terminal modes.
+/// The failed read leaves no view and no draft.
 #[test]
-fn tui_hooks_panel_settles_a_save_whose_read_fails() {
+fn tui_hooks_panel_settles_a_write_whose_read_fails() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (shown, wait_shown) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            hello(wire);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            for _ in 0..2 {
+                let request = wire.read_any();
+                match request["method"].as_str() {
+                    Some("account.providers") => wire.reply(&request, json!([])),
+                    Some("session.context.usage") => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                        "code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
+                    method => panic!("unexpected request {method:?}"),
+                }
+            }
+            wait_shown.recv_timeout(PATIENCE).unwrap();
+            let request = wire.read("hooks.catalog");
+            wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
+            let request = wire.read("hooks.catalog");
+            wire.reply(&request, document_catalog("user:1", json!({"hooks": {}})));
+            let request = wire.read("hooks.set_enabled");
+            assert_eq!(request["params"]["enabled"], true);
+            wire.reply(&request, json!({"revision": "projects:2"}));
+            let request = wire.read("hooks.catalog");
+            wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                "code":-32000,
+                "message":"hooks catalog unavailable",
+                "data":{"appError":"hooks_failed"}}}));
+            drains(wire);
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("test / model");
+        shown.send(()).unwrap();
+        terminal.write(b"/hooks\r");
+        terminal.until("The user's own document; always in effect.");
+        terminal.raw(b"\x1b[B");
+        terminal.until("/work/.dimcode/hooks.json");
+        terminal.raw(b"\r");
+        terminal.until("Enabled project.");
+        terminal.until("hooks catalog unavailable");
+        let settled = terminal.transcript.clone();
+        assert!(!settled.contains("Disabled project."), "{settled}");
+        terminal.raw(b"\x1b");
+        thread::sleep(Duration::from_millis(200));
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        assert_eq!(
+            terminal
+                .transcript
+                .matches("hooks catalog unavailable")
+                .count(),
+            1,
+            "the read error is drawn once: {}",
+            terminal.transcript
+        );
+    }
     for fullscreen in [false, true] {
         let home = Home::new();
         let script = editor(&home, "editor.sh", ANSWERS_STORED);
