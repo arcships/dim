@@ -721,6 +721,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::hooks::testing",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::hooks",
+      "file": "crates/dim-agent-capabilities/src/hooks/mod.rs",
+      "unexpandedMacros": [
+        "format"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::host",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -12378,6 +12387,13 @@
     },
     {
       "from": "dim_agent_capabilities::hooks",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "mod testing"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path dim_agent_runtime::AgentBuilder"
@@ -12472,6 +12488,13 @@
         "use crate::hooks::HookSourceId",
         "use crate::hooks::HookSourcesHost",
         "use crate::hooks::HookSourcesSnapshot"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::runner",
+      "to": "dim_agent_capabilities::hooks::testing",
+      "references": [
+        "path super::testing::settle"
       ]
     },
     {
@@ -12836,6 +12859,25 @@
         "path HostFuture",
         "use crate::host::HostError",
         "use crate::host::HostFuture"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::runner",
+      "references": [
+        "path HookResult",
+        "path HookResult::Blocked",
+        "path HookResult::Failed",
+        "path HookResult::Success",
+        "use super::runner::HookResult"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::testing",
+      "to": "dim_agent_capabilities::hooks::sources",
+      "references": [
+        "path HookSourceId",
+        "use super::sources::HookSourceId"
       ]
     },
     {
