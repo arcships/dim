@@ -844,12 +844,14 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
         loops[0]["next_at"] = json!(due);
         loops[0]["delivering_round"] = Value::Null;
     });
-    clock.advance(chrono::Duration::seconds(3610));
 
+    // The connection is held before the clock moves, so the woken pass cannot
+    // finish its input write before the hold exists.
     let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    clock.advance(chrono::Duration::seconds(3610));
 
     // The pass marks the round delivering, then waits on the held connection
     // while it holds the loop lock.
@@ -964,12 +966,14 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
             }
         }
     });
-    clock.advance(chrono::Duration::seconds(3610));
 
+    // The connection is held before the clock moves, so the woken pass cannot
+    // finish its input write before the hold exists.
     let lock = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    clock.advance(chrono::Duration::seconds(3610));
 
     // The pass has read the snapshot with the loop lock taken, marked the
     // second loop's round delivering, and waits on the held connection with
