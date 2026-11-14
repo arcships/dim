@@ -72,9 +72,32 @@ pub struct Approval {
     policy: Arc<StateCell<PermissionState>>,
     inner: Mutex<Inner>,
 }
+#[rutis::service]
 impl Approval {
+    /// The committed requests no answer or cancellation ended, in request
+    /// order: what the `approval` face's `pending` reads.
+    pub fn pending(&self) -> Vec<ApprovalRequestData> {
+        self.inner
+            .lock()
+            .unwrap()
+            .pending
+            .iter()
+            .map(|item| item.request.clone())
+            .collect()
+    }
+    /// Answers request `request_id` with `decision`: what the `approval`
+    /// face's `decide` calls, and answered once the branch dispatched the
+    /// answer.
+    pub async fn decide(
+        &self,
+        request_id: String,
+        decision: ApprovalDecision,
+    ) -> std::result::Result<(), ApprovalRespondError> {
+        self.respond(&request_id, decision).await
+    }
     /// Calls `notify` with each pending request, in request order, under the
     /// Approval lock; see the module documentation for the ordering.
+    #[service(skip)]
     pub fn replay(&self, mut notify: impl FnMut(&ApprovalRequestData)) {
         for item in &self.inner.lock().unwrap().pending {
             notify(&item.request);
@@ -84,6 +107,7 @@ impl Approval {
     /// the last cancellation check before the start happens here. The
     /// admission decision asks Permission's advisors with the call's source
     /// (Hooks A.6.1); subsequent rechecks are plain decisions without advisors.
+    #[service(skip)]
     pub async fn admit(
         &self,
         call: AdmitCall,
@@ -291,6 +315,7 @@ impl Approval {
     }
     /// `Ok` means the decision was dispatched and accepted, not that the tool
     /// started.
+    #[service(skip)]
     pub async fn respond(
         &self,
         approval_id: &str,

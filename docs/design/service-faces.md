@@ -125,13 +125,26 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | 数据面 `store` 的 Session 行部分（§5）；`sqliteStorage` 是提供方内部的 SQL 引擎（#1298） |
 | `timelineStore` | 连接与批次 | 同一 `store` 面的 Timeline 部分：`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
-| `toolHost` | `ToolDriver` | `execute` 数据面 |
-| `approval`、`permission` | 决策状态 | `decide` 数据面 |
-| `inputQueue` | 队列状态 | `submit`/`withdraw` 数据面 |
-| `wait` | `WaitResult`、`CancellationToken` | `start`/`wait`/`result` 操作面 |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
+
+这些对象服务由所有者提供操作面，Rust 绑定与跨语言调用使用同一实现：
+
+| 名字 | 数据面 | 所有者保留的状态 |
+| --- | --- | --- |
+| `toolHost` | `execute(call, caller, cancelled)` | ToolDriver、工具声明 |
+| `approval` | `pending()`、`decide(requestId, decision)` | 待处理请求、批次准入 |
+| `permission` | `check(call, risk, cancelled)` | 预设、权限状态、advisor |
+| `inputQueue` | `submit(input)`、`withdraw(command)` | 排序、恢复、InputSnapshot |
+| `wait` | `wait(taskId, timeoutMs, cancelled)` | 到达记录、单次等待槽 |
+
+形状与错误见所有者：[Permission](../architecture/rust-agent/plugins/Permission.md#permission-data-face)、
+[Approval](../architecture/rust-agent/plugins/Permission.md#approval-data-face)、
+[InputQueue](../architecture/rust-agent/plugins/InputQueue.md#data-face)、
+[Wait](../architecture/rust-agent/plugins/Wait.md#data-face) 与
+[toolHost](../architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)。
+`inputQueue.withdraw` 只做普通撤回；Steer 必须走 `session.input.withdraw` 的校验与提交检查入口。
 
 `mcpSession` 与 `backgroundExec` 的数据面以 id 加操作暴露：
 

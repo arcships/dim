@@ -564,7 +564,7 @@ S1 合入后在 [#98](https://github.com/arcships/dim/pull/98) 上实现，`sess
 | # | 变更 | 原因 |
 | --- | --- | --- |
 | 1 | `withdraw` 等 `input/deleted` 发布后才回复 `deleted`，并可能回复 `publication_unknown` | S1 在删除提交后就回复，而不是 §14.1 要求的分发后。不等发布的话，回复后立即调用 `history {atLeast: sequence}` 可能失败 |
-| 2 | 绑定使用 S1 合入的名称：`Withdrawal` 与 `InputQueue::withdraw(InputWithdrawData, None)`，而不是 `WithdrawOutcome` 与 `withdraw(input_id, reason)` | S1 合入的形态（§14.1） |
+| 2 | 绑定使用 S1 合入的名称：`Withdrawal` 与 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`，而不是 `WithdrawOutcome` 与 `withdraw(input_id, reason)` | S1 合入的形态（§14.1） |
 | 3 | 每个类型化方法接收与其线上形态对应的请求类型（`LookupRequest`、`WithdrawRequest`、`StopRequest`），不再用位置参数 | 每种形态一个类型；具名服务只负责解码与编码 |
 | 4 | `history` 拒绝同时给出 `atLeast` 与 `through`，并返回不经过滤的全部事件 | 两者以相互冲突的方式决定 `through`。过滤后一页可能结束在批次中间，下一次的 `after` 会被拒绝 |
 | 5 | `stop` 或 `idle` 的等待失败，只要不是 Session 已关闭、分支不存在或重载，都回复 `failed` | 这些失败是分支的分发失败。把处理器的 `InvalidInput` 映射为 `rejected` 会归咎于调用方 |

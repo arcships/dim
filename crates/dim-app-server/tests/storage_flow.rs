@@ -2072,7 +2072,7 @@ async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_in
             let retry = session
                 .service::<InputQueue>("main")
                 .unwrap()
-                .withdraw(withdraw(id, Some(checked(text))))
+                .withdraw_checked(withdraw(id, Some(checked(text))))
                 .await
                 .unwrap();
             assert_eq!(retry, (Withdrawal::NotHeld, None));

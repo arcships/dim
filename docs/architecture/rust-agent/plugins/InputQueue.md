@@ -79,6 +79,35 @@ observable input queue.
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
 | `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
+| `S:TreeCommands` | Reach the validating branch input entry for `submit`. |
+| `B:TimelineIdentity` | Identify the branch for `submit`. |
+
+### Data face
+
+`inputQueue` is provided by this branch owner; Rust and wire calls use the same
+operations ([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)).
+
+```text
+inputQueue.submit(input: InputMessageData) -> {inputId, sequence}
+inputQueue.withdraw(command: {input_id, reason?})
+  -> {status: "deleted", sequence} | {status: "notHeld"}
+  -> error {code, message}
+```
+
+`submit` uses the branch input entry and its submission-id admission. Like
+`sessions.input`, it does not run operator SubmitChecks; operator input uses
+`session.input` above. `withdraw`
+only withdraws: it rejects any `steer` candidate before writing a command, including
+one carrying a submission id. Operator Steer uses `session.input.withdraw` above,
+which validates content, runs submit checks and admits the conditional replacement.
+A `notHeld` decision never creates a replacement. Plain withdrawal waits for its
+result's publication; an unconfirmed accepted outcome is `PublicationUnknown`.
+Malformed commands are `InvalidInput`; branch-input failures retain `AgentError` codes.
+
+The Rust-only `withdraw_checked` implementation accepts the checked command from
+InputMethods and returns the decision plus its optional committed event. It is
+not a data-face operation; checks, warnings and publication confirmation stay at
+the existing Session entry.
 
 ### Events and lifetime
 
@@ -144,7 +173,7 @@ are ignored; original facts and native member indexes remain authoritative.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline` |
-| 提供 | `B:InputQueue`、`B:StateCell<InputSnapshot>` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
+| 提供 | `B:InputQueue`、`B:StateCell<InputSnapshot>`、`B:dyn HostDispatch#inputQueue` |
 | 被注入于 | — |
 <!-- /generated -->

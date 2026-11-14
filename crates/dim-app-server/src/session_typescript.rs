@@ -31,7 +31,7 @@ use tokio::sync::watch;
 
 /// The Session and branch services marked `#[rutis::service]`: provided in
 /// their instance, each is served by name there.
-fn crossing_instance_names() -> [(String, &'static str); 11] {
+fn crossing_instance_names() -> [(String, &'static str); 16] {
     [
         (
             name_of::<crate::ui_extensions::UiResources>(),
@@ -63,6 +63,26 @@ fn crossing_instance_names() -> [(String, &'static str); 11] {
         ),
         (
             name_of::<dim_agent_capabilities::workspace_tools::background::BackgroundExec>(),
+            BRANCH_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::host::ToolHost>(),
+            SESSION_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::approval::Approval>(),
+            BRANCH_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::permission::Permission>(),
+            BRANCH_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::input_queue::InputQueue>(),
+            BRANCH_GROUP,
+        ),
+        (
+            name_of::<dim_agent_capabilities::wait::Wait>(),
             BRANCH_GROUP,
         ),
     ]

@@ -122,6 +122,8 @@ flowchart LR
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p71
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p71
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p71
+  p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p70
+  p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p70
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p70
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p70
   p63 -->|"dim_agent_capabilities::approval::Approval@main"| p69

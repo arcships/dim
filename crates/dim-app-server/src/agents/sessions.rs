@@ -677,7 +677,7 @@ impl AgentIndex {
         self.until_unloaded(async {
             let lease = self.acquire(&request.session_id).await?;
             let publication = lease.session.publication(&request.branch_id)?;
-            let (withdrawal, _) = lease
+            let answer = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
                 .withdraw(InputWithdrawData {
@@ -686,10 +686,10 @@ impl AgentIndex {
                     steer: None,
                 })
                 .await?;
-            if let Withdrawal::Deleted { sequence } = withdrawal {
+            if let Withdrawal::Deleted { sequence } = answer {
                 published(&publication, sequence).await?;
             }
-            Ok(withdrawal)
+            Ok(answer)
         })
         .await
     }

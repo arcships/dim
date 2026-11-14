@@ -836,7 +836,7 @@ Each change stays within S2 (roadmap §5.3); the contract's `sessions` part is u
 | # | Change | Why |
 | --- | --- | --- |
 | 1 | `withdraw` waits for the publication of `input/deleted` before replying `deleted`, and can reply `publication_unknown` | S1 replies once the deletion is committed, not once it is dispatched as §14.1 asked. Without the wait, `history {atLeast: sequence}` right after the reply could fail |
-| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData, None)`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
+| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
 | 3 | Each typed method takes the request type of its wire shape (`LookupRequest`, `WithdrawRequest`, `StopRequest`) instead of positional arguments | One type per shape; the named service only decodes and encodes |
 | 4 | `history` rejects `atLeast` together with `through`, and returns every event unfiltered | The two set `through` in conflicting ways. A filtered page could end inside a batch, and the next `after` would be rejected |
 | 5 | A failed `stop` or `idle` wait that is not a closed Session, a missing branch or a reload replies `failed` | Those failures are the branch's dispatch failures. Mapping a handler's `InvalidInput` to `rejected` would blame the caller |

@@ -254,7 +254,7 @@ async fn a_deleted_input_leaves_the_key_at_its_earlier_live_block_or_absent() {
         .unwrap();
     let queue = session.service::<InputQueue>("main").unwrap();
     let (answer, _) = queue
-        .withdraw(InputWithdrawData {
+        .withdraw_checked(InputWithdrawData {
             input_id: held.id.clone(),
             reason: Some("withdrawn while held".into()),
             steer: None,

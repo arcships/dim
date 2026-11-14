@@ -452,7 +452,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 | `input` | `Session::input(InputMessageData, branch)`（已有；对分支已持有的标识返回已提交的输入）；key 为 `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`，与 `session.input_lookup` 共用：读分支的提交标识索引，等待找到的输入发布 |
 | `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `Session::service::<InputQueue>(branch)`，然后 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer }) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>`：指令持久保存可选的已检查 `InputMessageData`；返回 `Withdrawal::Deleted { sequence }` 及其可选的已提交替代输入，或 `(Withdrawal::NotHeld, None)`。`InputMethods` 经分支的 `Publication` 确认被接受的 Steer 结果已发布，再返回 RPC 回执；无法确认发布时报告 `publication_unknown`。普通撤回保留 Agents 原有的发布等待 |
+| `withdraw` | `Session::service::<InputQueue>(branch)` 后调用 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`。数据面只允许普通撤回，返回 `Deleted { sequence }` 或 `NotHeld`。`InputMethods` 为已检查的 Steer 候选调用仅限 Rust 的 `withdraw_checked`，保留提交事件并确认发布后才返回回执（A.4）。 |
 | `pending` | `Session::service::<InputQueue>(branch)` 后 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |

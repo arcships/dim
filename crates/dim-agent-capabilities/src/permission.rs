@@ -13,7 +13,7 @@
 //! [`Permission::decide`] evaluates current policy without asking advisors.
 use crate::{
     file_access::FileAccessFacts,
-    host::{HostError, HostFuture},
+    host::{CancelledFn, HostError, HostFuture, call_until_cancelled},
     host_platform::HostPlatform,
     workspace_tools::files::{Access, canonical_prefix, resolve_path},
 };
@@ -38,7 +38,8 @@ use std::{
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "decision", rename_all = "lowercase")]
 pub enum Decision {
     Allow,
     Ask { reason: String },
@@ -149,10 +150,31 @@ pub struct Permission {
     inner: Mutex<Inner>,
     advisors: Arc<Registrations<Arc<dyn AdviseTool>>>,
 }
+#[rutis::service]
 impl Permission {
+    /// Decides `call` now, as the `permission` face's `check` does: the
+    /// dispatched policy, the file facts and the command rules of the moment,
+    /// with no advisor (Hooks A.6.1 asks advisors for admission only).
+    pub async fn check(
+        &self,
+        call: ApprovalCallData,
+        risk: Option<String>,
+        cancelled: CancelledFn,
+    ) -> Result<Decision, HostError> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.decide(&call, risk.as_deref(), &cancel),
+        )
+        .await
+    }
+
     /// Registers `advise` under `name` on behalf of the part that owns `ctx`,
     /// until that part unloads (Hooks A.6.1). A second advisor of the same
     /// name fails.
+    #[service(skip)]
     pub fn register_advice(
         &self,
         ctx: &Ctx,
@@ -168,6 +190,7 @@ impl Permission {
     /// a provider error counts as none, and an advisor withdrawn while its
     /// advice is pending has that advice dropped as none. A cancelled batch
     /// drops the advice and fails the admission as cancelled.
+    #[service(skip)]
     pub async fn admit_decision(
         &self,
         call: &ApprovalCallData,
@@ -233,6 +256,7 @@ impl Permission {
     /// Decides with the policy dispatched when the decision is made and, for a
     /// command call, the rules read now. A file call resolves its target before
     /// sampling that policy. Cancelled reads stop admission.
+    #[service(skip)]
     pub async fn decide(
         &self,
         call: &ApprovalCallData,
@@ -502,6 +526,7 @@ impl Permission {
 
     /// Writes `permission/changed` when `expected` is the last written
     /// version; returns the new version once it is dispatched.
+    #[service(skip)]
     pub async fn update(
         &self,
         expected: u64,

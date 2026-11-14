@@ -16,6 +16,22 @@ The facts service is owned by the Session part in
 Session facade and holds its Session lease; it adds no Permission dependency,
 cache or event.
 
+### Permission data face
+
+The branch service `permission` exposes the owner's plain policy decision:
+
+```text
+permission.check(call: {name, input}, risk: string | null, cancelled: () => void | Promise<void>)
+  -> {decision: "allow"} | {decision: "ask", reason: string} | {decision: "deny", reason: string}
+  -> error {code: "Failed" | "Cancelled", message}
+```
+
+The Rust binding is `Permission::check`. It uses the same dispatched policy,
+command rules and file facts as `decide`. It does not ask advisors or admit a
+tool: Approval owns admission and the caller's batch cancellation. Completing
+the cancellation function cancels the pending read; failures retain `HostError`
+codes. Hosts must signal cancellation before abandoning a wire call.
+
 ### Policy contract
 
 The policy is the preset and two tool-name lists:
@@ -293,7 +309,7 @@ and exits 3.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Timeline`、`S:CommandRulesHost`、`S:SessionConfig`、`S:SessionIdentity` |
-| 提供 | `B:Permission`、`B:StateCell<PermissionState>` |
+| 提供 | `B:Permission`、`B:StateCell<PermissionState>`、`B:dyn HostDispatch#permission` |
 | 被注入于 | `Approval`、`HooksBranch` |
 <!-- /generated -->
 
@@ -312,6 +328,25 @@ re-evaluate every waiting call on that branch, without a new client response.
 | `B:StateCell<PermissionState>` | Observe the policy after Permission dispatches a change. |
 | `B:Dispatcher` | Recover abandoned requests, then receive approval responses. |
 | `B:Timeline` | Commit requests/cancellations. |
+
+### Approval data face
+
+`approval` is this part's service by name
+([service faces §3.4](../../../design/service-faces.md#34-对象句柄拆成操作加-id)):
+
+```text
+approval.pending() -> ApprovalRequestData[]
+approval.decide(requestId: string, decision: "allow" | "deny") -> {}
+  -> error {code: "Unknown" | "Cancelled" | "Closed", message}
+```
+
+`pending` lists the committed requests no answer or cancellation ended, in
+request order, as their `approval/request` payloads. `decide` is
+[`Approval::respond`](../../../../crates/dim-agent-capabilities/src/approval.rs):
+it commits `approval/respond` and answers once the branch dispatched it, so an
+`Unknown` refusal means the request is absent or already resolved. `admit`
+stays typed: it carries the caller's batch token, and its request records the
+call's source.
 
 ### Events and lifetime
 
@@ -404,6 +439,6 @@ fails with `invalid_params`, which ends the prompt.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Dispatcher`、`B:Permission`、`B:StateCell<PermissionState>`、`B:Timeline` |
-| 提供 | `B:Approval` |
+| 提供 | `B:Approval`、`B:dyn HostDispatch#approval` |
 | 被注入于 | `HooksBranch`、`ToolExecutor` |
 <!-- /generated -->

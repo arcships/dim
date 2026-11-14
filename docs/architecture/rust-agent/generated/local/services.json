@@ -1162,6 +1162,16 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_agent_runtime::config::TimelineIdentity@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "scope": null,
             "status": "Ready"
@@ -1173,6 +1183,18 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "scope": null,
+            "provider": 52,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_runtime::config::TimelineIdentity@main",
+            "scope": null,
+            "provider": 60,
+            "generation": 1
+          },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "scope": null,
@@ -1187,6 +1209,18 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "provider": 52,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_runtime::config::TimelineIdentity@main",
+            "provider": 60,
+            "declared": true,
+            "external": false
+          },
           {
             "service": "dim_agent_runtime::core::dispatcher::Dispatcher@main",
             "provider": 60,
@@ -2149,6 +2183,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#approval@main",
+        "provider": 63,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#backgroundExec@main",
         "provider": 64,
         "generation": 1,
@@ -2167,6 +2207,18 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#inputQueue@main",
+        "provider": 70,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#permission@main",
+        "provider": 73,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#timeline@main",
         "provider": 60,
         "generation": 1,
@@ -2175,6 +2227,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#timelineIdentity@main",
         "provider": 60,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#wait@main",
+        "provider": 81,
         "generation": 1,
         "removing": false
       }
@@ -4093,6 +4151,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#skillsConfig@session",
         "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolHost@session",
+        "provider": 56,
         "generation": 1,
         "removing": false
       },

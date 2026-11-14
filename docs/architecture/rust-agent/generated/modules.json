@@ -726,7 +726,9 @@
       "parent": "dim_agent_capabilities",
       "file": "crates/dim-agent-capabilities/src/host.rs",
       "unexpandedMacros": [
-        "format"
+        "format",
+        "tokio::pin",
+        "tokio::select"
       ]
     },
     {
@@ -13260,6 +13262,14 @@
     },
     {
       "from": "dim_agent_capabilities::input_queue",
+      "to": "dim_agent_runtime::config",
+      "references": [
+        "path TimelineIdentity",
+        "use dim_agent_runtime::TimelineIdentity"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::input_queue",
       "to": "dim_agent_runtime::contracts",
       "references": [
         "path InputSnapshot",
@@ -14083,11 +14093,15 @@
       "from": "dim_agent_capabilities::permission",
       "to": "dim_agent_capabilities::host",
       "references": [
+        "path CancelledFn",
         "path HostError",
         "path HostError::Cancelled",
         "path HostFuture",
+        "path call_until_cancelled",
+        "use crate::host::CancelledFn",
         "use crate::host::HostError",
-        "use crate::host::HostFuture"
+        "use crate::host::HostFuture",
+        "use crate::host::call_until_cancelled"
       ]
     },
     {
@@ -17627,14 +17641,18 @@
       "from": "dim_agent_capabilities::wait",
       "to": "dim_agent_capabilities::host",
       "references": [
+        "path CancelledFn",
         "path HostError",
         "path HostError::Cancelled",
         "path HostError::failed",
         "path HostFuture",
         "path ToolExecutionContext",
+        "path call_until_cancelled",
+        "use crate::host::CancelledFn",
         "use crate::host::HostError",
         "use crate::host::HostFuture",
-        "use crate::host::ToolExecutionContext"
+        "use crate::host::ToolExecutionContext",
+        "use crate::host::call_until_cancelled"
       ]
     },
     {
@@ -30933,10 +30951,38 @@
     },
     {
       "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::approval",
+      "references": [
+        "path dim_agent_capabilities::approval::Approval"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::host",
+      "references": [
+        "path dim_agent_capabilities::host::ToolHost"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::input_queue",
+      "references": [
+        "path dim_agent_capabilities::input_queue::InputQueue"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path SessionMethods",
         "use dim_agent_capabilities::methods::SessionMethods"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::permission",
+      "references": [
+        "path dim_agent_capabilities::permission::Permission"
       ]
     },
     {
@@ -30960,6 +31006,13 @@
       "references": [
         "path ToolRegistry",
         "use dim_agent_capabilities::tool_registry::ToolRegistry"
+      ]
+    },
+    {
+      "from": "dim_app_server::session_typescript",
+      "to": "dim_agent_capabilities::wait",
+      "references": [
+        "path dim_agent_capabilities::wait::Wait"
       ]
     },
     {

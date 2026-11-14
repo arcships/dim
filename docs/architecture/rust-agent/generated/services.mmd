@@ -81,6 +81,8 @@ flowchart LR
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p43
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p43
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p43
+  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p42
+  p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p42
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p42
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p42
   p21 -->|"dim_agent_capabilities::host::ContextModelHost@session"| p41
