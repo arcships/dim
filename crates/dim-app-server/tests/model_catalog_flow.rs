@@ -827,7 +827,10 @@ fn a_qualified_house_model_keeps_its_own_identity() {
             entry.capabilities.modalities.clone(),
             entry.capabilities.audio,
             entry.capabilities.tool_calling,
-            metadata.identification.as_ref().map(|found| found.rule.as_str()),
+            metadata
+                .identification
+                .as_ref()
+                .map(|found| found.rule.as_str()),
             metadata.match_strategy.as_deref(),
         );
         let expected = (
@@ -842,7 +845,10 @@ fn a_qualified_house_model_keeps_its_own_identity() {
             Some("qualified"),
             Some("openrouter-exact"),
         );
-        assert_eq!(answered, expected, "{id}: the relay answers with the row itself");
+        assert_eq!(
+            answered, expected,
+            "{id}: the relay answers with the row itself"
+        );
     }
 }
 
@@ -918,13 +924,7 @@ fn a_merged_limit_names_the_seller_it_came_from() {
         (
             (Some(128_000), Some(4_096)),
             vec![
-                (
-                    "contextWindow",
-                    128_000,
-                    "aihubmix",
-                    "gpt-oss-20b",
-                    "merge"
-                ),
+                ("contextWindow", 128_000, "aihubmix", "gpt-oss-20b", "merge"),
                 ("maxOutputTokens", 4_096, "qiniu", "gpt-oss-20b", "merge"),
             ],
             Some("openrouter"),
@@ -969,7 +969,13 @@ fn a_merge_carries_the_sellers_through_the_effective_models() {
     let filled: Vec<_> = identification
         .filled
         .iter()
-        .map(|limit| (limit.field.as_str(), limit.value, limit.provider_id.as_str()))
+        .map(|limit| {
+            (
+                limit.field.as_str(),
+                limit.value,
+                limit.provider_id.as_str(),
+            )
+        })
         .collect();
     assert_eq!(
         (

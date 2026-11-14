@@ -388,11 +388,7 @@ impl BundledCatalog {
     /// only when the namespace names the provider whose row carries the whole
     /// id. Without that, the id is a plain name for a model several providers
     /// sell, and the steps after this one read it.
-    fn identify_qualified(
-        &self,
-        id: &str,
-        namespace: Option<&str>,
-    ) -> Outcome {
+    fn identify_qualified(&self, id: &str, namespace: Option<&str>) -> Outcome {
         // The identity this step reads is the id's own namespace, so an id
         // without one has nothing here.
         let Some(namespace) = namespace else {
