@@ -66,7 +66,7 @@ fn document(artifacts: &Path) -> Document {
 }
 
 #[test]
-#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
+#[ignore = "manual check: asks the Apple Vision and PDFium frameworks; no CI job runs it"]
 fn an_image_is_recognized_with_its_regions() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("latin.png"), &artifacts, "text");
@@ -106,7 +106,7 @@ fn an_image_is_recognized_with_its_regions() {
 }
 
 #[test]
-#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
+#[ignore = "manual check: asks the Apple Vision and PDFium frameworks; no CI job runs it"]
 fn a_pdf_keeps_its_native_text_and_reads_the_page_without_one() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("mixed.pdf"), &artifacts, "text");
@@ -126,7 +126,7 @@ fn a_pdf_keeps_its_native_text_and_reads_the_page_without_one() {
 }
 
 #[test]
-#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
+#[ignore = "manual check: asks the Apple Vision and PDFium frameworks; no CI job runs it"]
 fn layout_writes_the_rasterized_pages() {
     let artifacts = artifacts();
     let (code, stdout) = run(&fixture("mixed.pdf"), &artifacts, "layout");
@@ -176,7 +176,7 @@ fn an_unsupported_input_is_a_typed_failure() {
 }
 
 #[test]
-#[ignore = "asks the Apple Vision and PDFium frameworks; runs with the ocr CI group"]
+#[ignore = "manual check: asks the Apple Vision and PDFium frameworks; no CI job runs it"]
 fn a_layout_run_stops_at_the_page_image_that_would_cross_the_bound() {
     // The size of the first page image decides the bound the second run uses:
     // page one fits exactly, page two would cross it.
