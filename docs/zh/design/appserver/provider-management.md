@@ -434,23 +434,11 @@ leader 的模型，同样不自留规则（[Collaboration](../plugins/Collaborat
 Dispatcher、before 回调、Session 与分支部件；driver、路由和非 chat 规则。读取不增加状态、
 缓存、通知、crate 或模块。
 
-**Rust 绑定。** 端口定义在 `crates/dim-agent-capabilities/src/host.rs`，`ModelSelectionHost`
-旁。Provider 在 `ProviderPlugin::apply` 中提供该端口，App Server 的 catalog 以 Rust-only 名字
-`selectableModelsHost` 注册它（[#4](https://github.com/arcships/dim/issues/4) 之前没有跨语言绑定）：
-
-```rust
-pub trait SelectableModels: Send + Sync + 'static {
-    fn selectable(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
-    fn selectable_for_modality(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
-}
-pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
-```
+**Rust 绑定。** 端口是 `crates/dim-agent-capabilities/src/host.rs` 中的
+`SelectableModelsHost`，位于 `ModelSelectionHost` 旁。它的两个读取就是 §3.6 列出的操作：
+端口类型持有 owner 的闭包，dispatcher 写出 wire 形状，Rust 读取方通过绑定调用同样的操作。
+Provider 在 `ProviderPlugin::apply` 中用 `provide_selectable_models` 提供该端口；catalog 以
+shared 名注册它（[服务面 §4.8](../../../design/service-faces.md#48-宿主端口executionsettingshost-等六个)）。
 
 owner 实现是 `ProviderService::selectable_models` 与
 `ProviderService::selectable_modality_models`，`ProductResolver` 转调两者；配置式模型配置
@@ -459,21 +447,25 @@ owner 实现是 `ProviderService::selectable_models` 与
 （[aimux](../../../crates/dim-agent-aimux/README.md)）。需要这次读取的消费方在 `Deps` 中声明
 `Keyed<SelectableModelsHost>` 并以它作为加载门槛（Modality）；必须在没有该读取时也能加载的消费方
 在提供时按名读取、不设门槛（Collaboration 的 `models` 动作），并在加载时取得快照，因此提供方
-重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方在
-运行时按名暴露服务的要求（[#4](https://github.com/arcships/dim/issues/4)）交付后按名访问；
-该要求已在 [Modality §9](../plugins/Modality.md#9-向机制所有者提出的需求) 提出，这里不重复提出。
+重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方按名调用
+`selectableModelsHost`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
+消费方得到执行会选的同一批模型。
 
-**连接合同：`resolveModalityConnection`。** 同一个 owner 解析一次非对话调用所用的连接，
-适配器因此不持有 Provider 凭据，也不读取 Provider 记录。它是 `ProviderConnectionResolver`
-旁边的第二个进程 host 端口，不是管理方法：操作 `resolveModalityConnection`，异步，请求
-`{target: {providerId, modelId}, operation: string}`，回复 `{connection, protocol,
-model, realtime}`。
+**连接合同：`resolveModalityConnection` 与 `modalityRequest`。** 同一个 owner 解析非对话调用，
+作为 `ProviderConnectionResolver` 旁边的进程数据面；调用方无需读取 Provider 记录。
 
-`connection` 是同一模型的对话调用会取得的既有 `ResolvedModelConnection`——连接事实、失败
-策略，以及托管账号上的凭据恢复——因此适配器执行与执行时相同的一次恢复规则。`protocol` 是
-目录为该模型携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的
-读取、目录构建、选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的
-临时启动连接与已采用能力快照不适用；调用者传入目录标识与操作。
+- `resolveModalityConnection` 异步接受 `{target: {providerId, modelId}, operation}`，
+  回复 `{protocol, model, baseUrl?, realtime?}`，不包含任何 header、bearer、API key 或 Bedrock 凭据。
+- `modalityRequest` 异步接受 `{target, operation, method, url, headers?, body?}`，
+  `body` 为 base64，回复 `{status, headers, body?}`。owner 为目标重新解析连接，使用其代理与超时。
+  只有解析后的 scheme、host、有效端口相同才附加 owner 头与凭据；拒绝 URL userinfo 与非 HTTP(S) URL。
+  调用方不得设置 Host、认证、Cookie 或与 owner 头同名（忽略大小写）的头，其他内容头可以使用。
+  跨来源下载不携带 owner 头；重定向及 HTTP 拒绝作为数据返回，不跟随或重试。
+  取消覆盖发送与响应体读取，传输错误不包含 URL 或凭据。
+
+两个操作共用连接解析：静态或托管记录的读取、目录构建、选择与凭据租约都由 owner 完成。
+对话路径的临时启动连接与已采用能力快照不适用。现有可信的进程内 Rust 媒体适配器使用解析后的连接，
+包括自行完成实时 WebSocket 握手；这些适配器不使用 `modalityRequest`，该连接不经过数据面，也不序列化。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
 凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
@@ -495,18 +487,16 @@ base URL 之后。
 **凭据规则与生命周期。** 连接只活在那一次调用中。Provider 从不持久化它，从不把它返回给
 客户端，也从不写进任务记录、结果、诊断或错误。它的 `Debug` 打印模型、路由、base URL、头名
 以及是否存在凭据，从不打印头的值、bearer 或 key；`ModelConnection` 当前未实现 `Debug`，
-因此没有其他连接会格式化凭据。托管账号的连接携带与对话调用相同的
-`RecoverModelConnection`。`recovery::invoke` 是基于 `ModelHost`、`ModelRequest` 与
-`ModelStream` 的对话执行路径，适配器不能原样复用；它自行执行该规则：把 provider 的拒绝
-映射为恢复逻辑可解释的 `HostError`，以当前阶段询问 `rejection`，可恢复时 `recover` 一次并
-重试，终止时 `finish_rejected`。
+因此没有其他连接会格式化凭据。托管连接保留供可信进程内调用方使用的恢复 handle，但 `modalityRequest` 与现有媒体适配器
+都不调用托管凭据恢复；媒体拒绝会返回调用方，该端口不提供自动刷新与重试。
+对话恢复路径独立，不构成非对话调用的重试保证。
 
-**Rust binding。** 端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与
-`ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作。Provider 在
-`ProviderPlugin::apply` 提供它，配置式模型配置从模型文件提供它，其条目未声明任何操作，
-因此对每个 target 都以声明拒绝作答。App Server catalog 以 Rust-only 名
-`modalityConnectionHost` 注册它。回复复用 `ResolvedModelConnection` 与 `ModelProtocol`，并新增
-`RealtimeDeclaration`（条目声明的传输）；不新增凭据类型。
+**Rust binding。** 面是 `dim-agent-capabilities` 中的 `modalityConnectionHost`：端口类型
+持有 owner 的 `ModalityRequests`（endpoint、request，以及同进程的解析后连接），其 dispatcher
+服务 `resolveModalityConnection` 与 `modalityRequest`，Rust 适配器通过绑定调用同样的操作。
+Provider 在 `ProviderPlugin::apply` 用 `provide_modality_connections` 提供它，配置式模型配置
+从模型文件提供它，其条目未声明任何操作，因此对每个 target 都以声明拒绝作答。catalog 以
+shared 名注册它（[服务面 §4.8](../../../design/service-faces.md#48-宿主端口executionsettingshost-等六个)）。
 
 ### 3.7 已存选择的离线校验
 
@@ -813,7 +803,7 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
 | §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，Migration 使用 §3.7 由 Provider 拥有的判断，不跨写其他 owner 引用 |
-| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6、§3.7 不增加需求，非 Rust 消费方使用 Modality 已提出的 [#4](https://github.com/arcships/dim/issues/4) |
+| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.8](../../../design/service-faces.md#48-宿主端口executionsettingshost-等六个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |

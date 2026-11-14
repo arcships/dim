@@ -3605,6 +3605,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#executionSettingsHost",
+        "provider": 25,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#listenAddresses",
         "provider": 45,
         "generation": 1,
@@ -3629,6 +3635,18 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#modalityConnectionHost",
+        "provider": 18,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#modelSelectionHost",
+        "provider": 18,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#partRegistry",
         "provider": 46,
         "generation": 1,
@@ -3647,6 +3665,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#promptSuggestionSettingsHost",
+        "provider": 27,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#reservedMethods",
         "provider": 1,
         "generation": 0,
@@ -3661,6 +3685,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
         "provider": 71,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#selectableModelsHost",
+        "provider": 18,
         "generation": 1,
         "removing": false
       },
@@ -3691,6 +3721,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#settings",
         "provider": 19,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolchainSourceHost",
+        "provider": 26,
         "generation": 1,
         "removing": false
       },

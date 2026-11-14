@@ -9,8 +9,8 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
         AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryRequest, AwsCredentials, BedrockAuth,
-        HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk,
-        ModelConnection, ModelHost, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
+        ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelHost,
+        ModelPortError, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
         SelectableModelsHost,
     },
 };
@@ -29,6 +29,7 @@ use dim_app_server::{
 use futures_util::{StreamExt, stream};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, Key, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{HostDispatch, Value as RpcValue, host_key};
 use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{
@@ -163,6 +164,20 @@ impl DynPlugin for Capture {
         })
     }
 }
+/// One call of a host port's face under its own name, as a caller of another
+/// language makes it.
+async fn face_call(root: &Ctx, port: &str, method: &str, args: Vec<RpcValue>) -> Value {
+    let dispatch = root
+        .get_at::<dyn HostDispatch>(&host_key(port))
+        .unwrap_or_else(|| panic!("{port} is a data face"));
+    match dispatch.invoke(method, RpcValue::List(args)).unwrap() {
+        RpcValue::Reference(reply) if reply.is_future() => {
+            reply.wait_async().await.unwrap().json().unwrap()
+        }
+        value => value.json().unwrap(),
+    }
+}
+
 /// Process-level names from the App Server's catalog, for parts mounted on a
 /// test root.
 fn names() -> Names<'static> {
@@ -1375,7 +1390,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     route.models = vec![no_route];
     provider.create(route, &cancel).await.unwrap();
 
-    let first = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let first = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let mine: Vec<_> = first
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1564,7 +1583,11 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
     // entries it omits keep the enablement they have, so naming `text` alone
     // disables the served model and nothing else.
     assert_eq!(enabled_text.disabled_model_ids, ["served"]);
-    let second = selectable.0.selectable(cancel.clone()).await.unwrap();
+    let second = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
     let second_ids: Vec<&str> = second
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1572,27 +1595,14 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
         .collect();
     assert_eq!(second_ids, ["text"]);
     assert_eq!(ids, ["served"], "the earlier reply must not change");
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        selectable.0.selectable(cancelled).await,
-        Err(HostError::Cancelled(_))
-    ));
     root.shutdown().await.unwrap();
     let error = selectable
-        .0
-        .selectable(CancellationToken::new())
+        .selectable_models(cancel.clone())
         .await
         .err()
         .unwrap();
     assert!(
-        matches!(
-            error,
-            HostError::Failed {
-                kind: HostErrorKind::OwnerClosed,
-                ..
-            }
-        ),
+        matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
     );
     server.abort();
@@ -1699,10 +1709,10 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         .unwrap();
 
     let modality = selectable
-        .0
         .selectable_for_modality(cancel.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .models;
     let listed: Vec<(String, Vec<String>)> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1750,7 +1760,49 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
             .any(|model| model.target.provider_id == "openai-codex"),
         "an unauthenticated managed account is not selectable"
     );
-    let chat = selectable.0.selectable(cancel.clone()).await.unwrap();
+    // The same two reads through the faces other languages call: the models
+    // the Rust consumer sees, in its order.
+    let listed = face_call(
+        &root,
+        "selectableModelsHost",
+        "selectableModels",
+        vec![json!({}).into()],
+    )
+    .await;
+    let chat_face: Vec<dim_agent_types::ModelCapabilitySnapshot> =
+        serde_json::from_value(listed["models"].clone()).unwrap();
+    let listed = face_call(
+        &root,
+        "selectableModelsHost",
+        "selectableForModality",
+        vec![json!({}).into()],
+    )
+    .await;
+    let modality_face: Vec<dim_agent_types::ModalityModelSnapshot> =
+        serde_json::from_value(listed["models"].clone()).unwrap();
+    let chat = selectable
+        .selectable_models(cancel.clone())
+        .await
+        .unwrap()
+        .models;
+    assert_eq!(chat_face, chat, "the face lists what the port lists");
+    assert_eq!(
+        modality_face,
+        selectable
+            .selectable_for_modality(cancel.clone())
+            .await
+            .unwrap()
+            .models
+    );
+    let resolved = face_call(
+        &root,
+        "modelSelectionHost",
+        "resolve",
+        vec![json!({"explicit": {"providerId": MINE, "modelId": "modality-text"}}).into()],
+    )
+    .await;
+    assert_eq!(resolved["providerId"], MINE);
+    assert_eq!(resolved["modelId"], "modality-text");
     let chat_ids: Vec<&str> = chat
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1783,10 +1835,10 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
     );
     assert!(
         selectable
-            .0
-            .selectable_for_modality(cancel.clone())
+            .selectable_for_modality(CancellationToken::new())
             .await
             .unwrap()
+            .models
             .iter()
             .any(|model| model.target.model_id == "modality-media"),
         "its conversational reason does not exclude the model from modality"
@@ -1802,10 +1854,10 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         .await
         .unwrap();
     let modality = selectable
-        .0
         .selectable_for_modality(cancel.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .models;
     let listed: Vec<&str> = modality
         .iter()
         .filter(|model| model.target.provider_id == MINE)
@@ -1816,27 +1868,14 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         ["modality-media"],
         "a disabled model leaves the modality options"
     );
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        selectable.0.selectable_for_modality(cancelled).await,
-        Err(HostError::Cancelled(_))
-    ));
     root.shutdown().await.unwrap();
     let error = selectable
-        .0
-        .selectable_for_modality(CancellationToken::new())
+        .selectable_for_modality(cancel.clone())
         .await
         .err()
         .unwrap();
     assert!(
-        matches!(
-            error,
-            HostError::Failed {
-                kind: HostErrorKind::OwnerClosed,
-                ..
-            }
-        ),
+        matches!(error, ModelPortError::OwnerClosed { .. }),
         "{error:?}"
     );
     std::fs::remove_dir_all(home).unwrap();
@@ -1973,10 +2012,10 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         operation: operation.into(),
     };
     let listed = selectable
-        .0
         .selectable_for_modality(cancel.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .models;
     assert!(
         listed.iter().any(|model| model.target.provider_id == MINE
             && model.target.model_id == "media"
@@ -1986,13 +2025,11 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     assert!(seen.lock().unwrap().is_empty(), "the read made a request");
 
     let connection = modality
-        .0
-        .resolve_for_modality(modality_target("media", "image.generate"), cancel.clone())
+        .connection(modality_target("media", "image.generate"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(connection.model, "media");
     assert_eq!(connection.protocol, ModelProtocol::OpenaiCompatible);
-    assert!(connection.resolved.recovery.is_none());
     let debug = format!("{connection:?}");
     assert!(!debug.contains(KEY), "{debug}");
     let (base_url, headers, bearer) = match &connection.resolved.connection {
@@ -2029,8 +2066,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     // operation of the same model carries none, and a declaration that does
     // not parse is refused rather than silently absent.
     let voice = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "realtime.voice"), cancel.clone())
+        .connection(modality_target("voice", "realtime.voice"), cancel.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -2042,16 +2078,14 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
     );
     assert!(!format!("{voice:?}").contains(KEY));
     let image = modality
-        .0
-        .resolve_for_modality(modality_target("voice", "image.generate"), cancel.clone())
+        .connection(modality_target("voice", "image.generate"), cancel.clone())
         .await;
     assert_eq!(
         image.err().unwrap().to_string(),
         "Model does not declare the image.generate operation"
     );
     let broken = modality
-        .0
-        .resolve_for_modality(modality_target("broken", "realtime.voice"), cancel.clone())
+        .connection(modality_target("broken", "realtime.voice"), cancel.clone())
         .await
         .err()
         .unwrap();
@@ -2089,8 +2123,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         ),
     ] {
         let error = modality
-            .0
-            .resolve_for_modality(target, cancel.clone())
+            .connection(target, cancel.clone())
             .await
             .err()
             .unwrap();
@@ -2103,14 +2136,302 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         1,
         "a refused resolution reached the stub"
     );
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
+    modality
+        .request(
+            dim_agent_capabilities::host::ModalityHttpRequest {
+                target: modality_target("media", "image.generate").target,
+                operation: "image.generate".into(),
+                method: "GET".into(),
+                url: format!("{base}/download"),
+                headers: Vec::new(),
+                body: None,
+            },
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .1
+            .get("authorization")
+            .unwrap(),
+        format!("Bearer {KEY}").as_str(),
+        "credentials are scoped to the origin, not the base path"
+    );
+    root.shutdown().await.unwrap();
+    server.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test]
+async fn modality_requests_keep_credentials_on_the_route_origin_and_use_its_network() {
+    use axum::{
+        body::Body,
+        http::{StatusCode, Uri},
+        response::{IntoResponse, Response},
+    };
+    use dim_agent_capabilities::host::{
+        HostError, HostErrorKind, ModalityHttpRequest, ModalityHttpResponse, ModelNetwork,
+    };
+    use std::time::Duration;
+
+    const PROVIDER: &str = "00000000-0000-4000-8000-000000000059";
+    let seen: Arc<Mutex<Vec<(Uri, HeaderMap)>>> = Arc::default();
+    let recorder = seen.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let received = started.clone();
+    let app = Router::new().fallback(move |uri: Uri, headers: HeaderMap| {
+        let recorder = recorder.clone();
+        let received = received.clone();
+        async move {
+            recorder.lock().unwrap().push((uri.clone(), headers));
+            if uri.path() == "/slow" {
+                received.notify_one();
+                return Response::new(Body::from_stream(stream::pending::<
+                    Result<String, std::io::Error>,
+                >()));
+            }
+            if uri.path() == "/redirect" {
+                return (
+                    StatusCode::TEMPORARY_REDIRECT,
+                    [("location", "http://evil.invalid/stolen")],
+                )
+                    .into_response();
+            }
+            if uri.path() == "/rejected" {
+                return (StatusCode::UNAUTHORIZED, "rejected").into_response();
+            }
+            (StatusCode::OK, "media").into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!(
+        "http://user:proxy-secret@{}",
+        listener.local_addr().unwrap()
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!(
+        "provider-modality-boundary-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin);
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    active(&root.plugin(dim_agent_aimux::AimuxPlugin)).await;
+    let provider_view = root.plugin(provider_part(ProviderPlugin::new));
+    active(&provider_view).await;
+    let provider = root.get::<ProviderService>().unwrap();
+    let modality = root.get::<ModalityConnectionHost>().unwrap();
+    let cancel = CancellationToken::new();
+    let mut config = input(
+        PROVIDER,
+        "http://provider.invalid",
+        StaticAuth::Bearer,
+        Some("owner-secret"),
+        "owner-marker",
+        1000,
+    );
+    config.connection.network = Some(ModelNetwork {
+        proxy: Some(proxy),
+        timeout_ms: Some(500),
+    });
+    config.models =
+        vec![serde_json::from_value(json!({
+        "modelId":"media", "displayName":"media", "status":"active",
+        "capabilities":{"modalities":["image"],"toolCalling":false,"streaming":true,
+            "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+        "metadata":{"raw":{"type":"image-generation","modalityCapabilities":["image.generate"]}}
+    })).unwrap()];
+    provider.create(config, &cancel).await.unwrap();
+    let request = |url: &str| ModalityHttpRequest {
+        target: ModelId {
+            provider_id: PROVIDER.into(),
+            model_id: "media".into(),
+        },
+        operation: "image.generate".into(),
+        method: "GET".into(),
+        url: url.into(),
+        headers: vec![("accept".into(), "image/png".into())],
+        body: None,
+    };
+    for (url, credentialed) in [
+        ("http://provider.invalid/v1/images", true),
+        ("http://PROVIDER.invalid:80/download", true),
+        ("http://provider.invalid.evil.test/v1/images", false),
+        ("http://provider.invalid:81/download", false),
+        ("http://cdn.invalid/download?signature=temporary", false),
+    ] {
+        let typed = request(url);
+        let binding = modality
+            .request(typed.clone(), cancel.clone())
+            .await
+            .unwrap();
+        let wire = face_call(
+            &root,
+            "modalityConnectionHost",
+            "modalityRequest",
+            vec![serde_json::to_value(typed).unwrap().into()],
+        )
+        .await;
+        let wire: ModalityHttpResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(binding.status, wire.status);
+        assert_eq!(binding.body, wire.body);
+        assert_eq!(wire.status, 200);
+        let seen = seen.lock().unwrap();
+        for (_, headers) in seen.iter().rev().take(2) {
+            assert_eq!(
+                headers.get("authorization").map(|v| v.to_str().unwrap()),
+                credentialed.then_some("Bearer owner-secret"),
+                "{url}"
+            );
+            assert_eq!(
+                headers.get("x-marker").map(|v| v.to_str().unwrap()),
+                credentialed.then_some("owner-marker"),
+                "{url}"
+            );
+            assert_eq!(headers.get("accept").unwrap(), "image/png");
+        }
+    }
+    let count = seen.lock().unwrap().len();
+    let mut invalid = vec![
+        request("http://provider.invalid@evil.test/stolen"),
+        request("http://provider.invalid:secret@evil.test/stolen"),
+        request("file:///tmp/media"),
+        request("not a URL"),
+    ];
+    for header in [
+        "Host",
+        "AUTHORIZATION",
+        "proxy-authorization",
+        "Cookie",
+        "X-API-Key",
+        "api-key",
+        "X-MARKER",
+        "bad header",
+    ] {
+        let mut attempt = request("http://provider.invalid/v1/images");
+        attempt.headers.push((header.into(), "attacker".into()));
+        invalid.push(attempt);
+    }
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("modalityConnectionHost"))
+        .unwrap();
+    for attempt in invalid {
+        let error = modality
+            .request(attempt.clone(), cancel.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            HostError::Failed {
+                kind: HostErrorKind::InvalidRequest,
+                ..
+            }
+        ));
+        let reply = face
+            .invoke(
+                "modalityRequest",
+                RpcValue::List(vec![serde_json::to_value(attempt).unwrap().into()]),
+            )
+            .unwrap();
+        let RpcValue::Reference(reply) = reply else {
+            panic!("expected async response")
+        };
+        assert_eq!(
+            reply.wait_async().await.unwrap_err().code(),
+            Some("invalid_request")
+        );
+    }
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        count,
+        "invalid requests never reach the network"
+    );
+    for (path, status) in [("redirect", 307), ("rejected", 401)] {
+        let count = seen.lock().unwrap().len();
+        assert_eq!(
+            modality
+                .request(
+                    request(&format!("http://provider.invalid/{path}")),
+                    cancel.clone()
+                )
+                .await
+                .unwrap()
+                .status,
+            status
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            count + 1,
+            "responses are neither redirected nor replayed"
+        );
+    }
+    let slow = request("http://provider.invalid/slow?signature=private");
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        modality.request(slow.clone(), cancel.clone()),
+    )
+    .await
+    .expect("the configured timeout applies to the body")
+    .unwrap_err();
     assert!(matches!(
-        modality
-            .0
-            .resolve_for_modality(modality_target("media", "image.generate"), cancelled)
-            .await,
+        error,
+        HostError::Failed {
+            kind: HostErrorKind::Transport,
+            ..
+        }
+    ));
+    let diagnostic = format!("{error:?} {error}");
+    for secret in ["owner-secret", "proxy-secret", "signature", "private"] {
+        assert!(
+            !diagnostic.contains(secret),
+            "transport errors reveal no URL or credential"
+        );
+    }
+    started.notified().await;
+    let stopped = CancellationToken::new();
+    let pending = tokio::spawn({
+        let modality = modality.clone();
+        let stopped = stopped.clone();
+        async move { modality.request(slow, stopped).await }
+    });
+    started.notified().await;
+    stopped.cancel();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(3), pending)
+            .await
+            .unwrap()
+            .unwrap(),
         Err(HostError::Cancelled(_))
+    ));
+    let pending = tokio::spawn({
+        let modality = modality.clone();
+        let request = request("http://provider.invalid/slow");
+        async move { modality.request(request, CancellationToken::new()).await }
+    });
+    started.notified().await;
+    tokio::time::timeout(Duration::from_secs(3), provider_view.dispose())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        pending.await.unwrap(),
+        Err(HostError::Failed {
+            kind: HostErrorKind::OwnerClosed,
+            ..
+        })
     ));
     root.shutdown().await.unwrap();
     server.abort();

@@ -34,6 +34,7 @@ use dim_agent_types::{
 use futures_util::StreamExt;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, Reply as BridgeReply, Value as BridgeValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -56,7 +57,7 @@ const REQUEST_ID: &str = "requestId";
 /// defaults and the range before the part reads it, so both members are
 /// present in every document either of them reads; a missing one is an error,
 /// never an invented value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptSuggestionSettings {
     pub enabled: bool,
@@ -74,20 +75,89 @@ impl Default for PromptSuggestionSettings {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+/// What `promptSuggestionSettingsHost` fails with: `{code, message}`.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
 pub enum PromptSuggestionSettingsError {
-    #[error("prompt-suggestion settings: {0}")]
-    Failed(String),
+    #[error("{message}")]
+    Failed { message: String },
 }
 
-pub trait PromptSuggestionSettingsSource: Send + Sync + 'static {
-    fn read(
+/// An owner's read of the document, bound as the face's one operation. The
+/// owner bounds it by its own lifetime; a caller ends it by dropping the call.
+pub type PromptSuggestionSettingsRead = Arc<
+    dyn Fn(
+            CancellationToken,
+        )
+            -> BoxFuture<'static, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>>
+        + Send
+        + Sync,
+>;
+
+/// The `promptSuggestionSettingsHost` face: `read` is the one operation,
+/// served under the name for any language and called directly by the Session
+/// part through the binding that holds it.
+#[derive(Clone)]
+pub struct PromptSuggestionSettingsHost(Arc<dyn HostDispatch>);
+
+impl PromptSuggestionSettingsHost {
+    /// Binds an owner's read as the face's operation.
+    pub fn new(read: PromptSuggestionSettingsRead) -> Self {
+        Self(Arc::new(SettingsFace(read)))
+    }
+
+    /// The `prompt-suggestion` document as its source holds it now.
+    pub async fn read(
         &self,
         cancel: CancellationToken,
-    ) -> BoxFuture<'_, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>>;
+    ) -> std::result::Result<PromptSuggestionSettings, PromptSuggestionSettingsError> {
+        crate::port_faces::call(
+            SETTINGS,
+            &self.0,
+            "read",
+            &crate::port_faces::Empty {},
+            &cancel,
+        )
+        .await
+        .map_err(|error| PromptSuggestionSettingsError::Failed {
+            message: error.to_string(),
+        })
+    }
 }
 
-pub struct PromptSuggestionSettingsHost(pub Arc<dyn PromptSuggestionSettingsSource>);
+/// Provides one owner's [`PromptSuggestionSettingsHost`]: the binding its Rust
+/// readers hold and the face any other language calls by name.
+pub fn provide_settings(ctx: &Ctx, host: &PromptSuggestionSettingsHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<PromptSuggestionSettingsHost>::of(),
+        Arc::new(PromptSuggestionSettingsHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        crate::port_faces::face_key::<PromptSuggestionSettingsHost>(),
+        host.0.clone(),
+    )?;
+    Ok(())
+}
+
+const SETTINGS: &str = "promptSuggestionSettingsHost";
+
+struct SettingsFace(PromptSuggestionSettingsRead);
+
+impl HostDispatch for SettingsFace {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({"read": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> BridgeReply {
+        if method != "read" {
+            return Err(crate::port_faces::unknown_method(SETTINGS, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(SETTINGS, args)?;
+        let cancel = CancellationToken::new();
+        let read = (self.0)(cancel.clone());
+        crate::port_faces::serving(SETTINGS, cancel, read)
+    }
+}
 
 /// Installs PromptSuggestion in every Session, resolving each request's
 /// connection through the process [`ProviderConnectionResolver`].
@@ -662,8 +732,8 @@ impl Part {
     /// switch on ends the pause the unused count caused, so a user who
     /// stopped seeing offers can resume without ending the Session.
     async fn settings_changed(self: Arc<Self>) {
-        // The read ends with the part, not with a Session that closes while
-        // it runs; the change it reports no longer matters then.
+        // A Session that closes while the read runs no longer makes the
+        // change it reports matter.
         let Ok(settings) = self.read_settings(self.stopping.child_token()).await else {
             return;
         };
@@ -691,14 +761,14 @@ impl Part {
     }
 
     /// The `prompt-suggestion` document as the source holds it now; the
-    /// default document when the assembly binds no source.
+    /// default document when the assembly binds no source. Dropping this read
+    /// ends the owner's read with it.
     async fn read_settings(
         &self,
         cancel: CancellationToken,
     ) -> Result<PromptSuggestionSettings, RpcError> {
         match &self.hosts.settings {
             Some(host) => host
-                .0
                 .read(cancel)
                 .await
                 .map_err(|error| RpcError::service("failed", error.to_string())),
@@ -868,9 +938,8 @@ impl Part {
         }
         // The preflight awaited: the start is decided again against the
         // settings and the state as they are now, never the snapshot above.
-        // The read is bounded by the part, not by the request: a cancelled
-        // request still reads and answers a reason rather than a service
-        // error, and only the part's unload cuts the read short.
+        // The read does not depend on the request: a cancelled request still
+        // reads and answers a reason rather than a service error.
         let settings = match self.read_settings(self.stopping.child_token()).await {
             Ok(settings) => settings,
             Err(error) => {

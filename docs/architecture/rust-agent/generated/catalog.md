@@ -23,7 +23,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
 | `eventSubscriptions` | process | eventhub | data | `list` sync, `sources` sync, `subscribe` async, `unsubscribe` async |
-| `executionSettingsHost` | process | ExecutionSettings | internal(legacy-no-consumer) | — |
+| `executionSettingsHost` | process | ExecutionSettings | data | `read` async |
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
 | `hooksService` | process | HooksSettings | internal(host-resource) | — |
@@ -39,23 +39,23 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `mcpAuth` | process | Mcp | internal(secret) | — |
 | `mcpService` | process | Mcp | internal(host-resource) | — |
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
-| `modalityConnectionHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `modalityConnectionHost` | process | Provider | data | `modalityRequest` async, `resolveModalityConnection` async |
 | `modelHost` | process | Aimux | internal(owner-api) | — |
-| `modelSelectionHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `modelSelectionHost` | process | Provider | data | `resolve` async |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
 | `partRegistry` | process | PartRegistry | data | `registerDefinition` async |
 | `pluginFileTransactions` | process | PluginFiles | internal(host-resource) | — |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `pluginMounter` | process | rutis-loader | shared-no-dispatcher | — |
 | `processActivity` | process | ServerControl | data | `hold` async, `release` async |
-| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | internal(legacy-no-consumer) | — |
+| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
 | `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | internal(secret) | — |
 | `publication` | process | McpPublication | internal(host-resource) | — |
 | `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
 | `scheduleJobs` | process | Scheduler | data | `call` async |
-| `selectableModelsHost` | process | Provider | internal(legacy-no-consumer) | — |
+| `selectableModelsHost` | process | Provider | data | `selectableForModality` async, `selectableModels` async |
 | `serverControl` | process | ServerControl | internal(control) | — |
 | `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFilesHost` | process | SessionStore | internal(owner-api) | — |
@@ -69,7 +69,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `skillsInstructionsSettingsHost` | process | PromptSettings | internal(owner-api) | — |
 | `sqliteStorage` | process | SqliteStorage | internal(object) | — |
 | `summaryPromptSettingsHost` | process | PromptSettings | internal(owner-api) | — |
-| `toolchainSourceHost` | process | ToolchainSource | internal(legacy-no-consumer) | — |
+| `toolchainSourceHost` | process | ToolchainSource | data | `list` sync |
 | `uiExtensions` | process | UiExtensions | internal(control) | — |
 | `uiHost` | process | UiHost | internal(control) | — |
 | `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |

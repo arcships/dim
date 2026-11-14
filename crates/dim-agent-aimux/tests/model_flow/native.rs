@@ -3235,16 +3235,18 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
             let provider_id = provider_id.to_owned();
             let host = agent.root().get::<ModelSelectionHost>().unwrap();
             async move {
-                host.0
-                    .resolve(
+                host.resolve(
+                    ModelSelectionRequest::at(
                         Some(ModelId {
                             provider_id,
                             model_id: "test-model".into(),
                         }),
                         None,
-                        CancellationToken::new(),
                     )
-                    .await
+                    .unwrap(),
+                    CancellationToken::new(),
+                )
+                .await
                     .unwrap()
             }
         };

@@ -91,11 +91,13 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFilesHost` 是进程内绑定。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
-| `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
-| `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
-| `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
-| `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
-| `worktreeAssociations` | `worktreeAssociations.associate` | 形状见 §4.8。 |
+| `agentConfig` | `agentConfig.get()` | 形状见 §4.9。 |
+| `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.9。 |
+| `skillsConfig` | `skillsConfig.get()` | 形状见 §4.9。 |
+| `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.9。 |
+| `worktreeAssociations` | `worktreeAssociations.associate` | 形状见 §4.9。 |
+
+同一批还包括宿主端口改成数据面（§4.8）：`executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`、`selectableModelsHost`、`modelSelectionHost`、`modalityConnectionHost` 从 `legacy-no-consumer` 变成 `data`。这六项不改名字、不新增 catalog 行。`modalityConnectionHost` 的凭据仍留在 owner：面只给路由事实，请求由 owner 发（§4.8）。
 
 ### 3.3 所有者 API，已有数据兄弟
 
@@ -210,12 +212,6 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `executionSettingsHost` | process | ExecutionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
-| `toolchainSourceHost` | process | ToolchainSource | legacy-no-consumer | 按 #1292 定义操作面 |
-| `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | legacy-no-consumer | 按 #1292 定义操作面 |
-| `selectableModelsHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
-| `modelSelectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
-| `modalityConnectionHost` | process | Provider | legacy-no-consumer | 按 #1292 定义操作面 |
 | `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 批次契约（#1292）
@@ -315,7 +311,36 @@ loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: fa
 
 `branchId` 默认 `main`；`delaySeconds` 缺省取工具的默认值。校验与 `session.loop.*` 共用同一个解析函数，所以两端对同一请求给出同一个错误码。投递 pass、恢复与 `settle_delivering` 是内部实现，不在此面。
 
-### 4.8 旧主机端口：`agentConfig` 等五个
+### 4.8 宿主端口：`executionSettingsHost` 等六个
+
+这六个名字的内容本来就是数据（§3.7），没有 leaf 消费者时留在宿主；这一批把它们做成数据面，名字不变。每个名字只有一份定义：五个读取端口持有 owner 的闭包，Rust 绑定调用同模块的 dispatcher；modality 端口的 Rust 绑定和 dispatcher 都直接调用同一个 `ModalityRequests` owner 方法，不写第二份业务逻辑。异步操作的回复是 `cancellable_future`：丢弃等待就取消这次调用，owner 看到的 token 随之取消（`drop_guard`），所以一次被放弃的读不会在宿主里跑下去。
+
+```text
+executionSettingsHost.read({}) -> {sandbox, network}
+  -> error {code: failed, message}
+toolchainSourceHost.list({}) -> {toolchains: [{bin, root}]}          # sync
+  -> error {code: failed, message}
+promptSuggestionSettingsHost.read({}) -> {enabled, maxChars}
+  -> error {code: failed, message}
+selectableModelsHost.selectableModels({}) -> {models: [ModelCapabilitySnapshot]}
+selectableModelsHost.selectableForModality({}) -> {models: [ModalityModelSnapshot]}
+modelSelectionHost.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
+  -> error {code: cancelled | owner_closed | invalid_request | model_unavailable | failed, message}
+modalityConnectionHost.resolveModalityConnection({target, operation})
+  -> {protocol, model, baseUrl?, realtime?}
+modalityConnectionHost.modalityRequest({target, operation, method, url, headers?, body?})
+  -> {status, headers, body?}
+  -> error {code: cancelled | owner_closed | invalid_request | model_unavailable | failed, message}
+```
+
+- 每个 operation 只收一个请求对象；没有输入的写 `{}`（`provider-management.md` §3.6 的形状），多一个参数或未知字段都是 `invalid_request`。
+- 取消是协议动作：调用方丢弃等待，或被取消的绑定调用不再进入 owner；owner 自己的生命周期仍然约束它启动的 worker。
+- 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用；`cwd` 的请求方向同理，`ModelSelectionRequest::at` 是 Rust 调用方换字段的唯一一处。
+- `modalityConnectionHost` 是操作面，不是 `internal`：`resolveModalityConnection` 只给路由事实（protocol、model、baseUrl、realtime），**没有** header、bearer、api key 或 Bedrock 凭据；`modalityRequest` 由 owner 把这次请求连同连接的 header 与凭据发出去，回报 `{status, headers, body}`。凭据因此只在 owner 里，调用方无论哪种语言都拿不到，也不需要“按名字把 secret 交出去”的授权模型。`body` 是 base64（跨界的字节）。Rust 适配器另有同进程的 `connection`（含解析后的连接），供现有可信媒体适配器（包括 realtime 的 WS 握手）使用；它不经过 face，也不序列化。
+- 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。
+- 测试：`host_port_faces.rs` 逐个比对“Rust binding 的结果 == wire 的结果”，钉住 `{}` 请求、字段拼写和错误码，用持有 token 的 owner worker 证明丢弃等待会取消 owner 的读，并用一个持有连接的 modality owner 证明 `resolveModalityConnection` 的回复没有凭据字段、`modalityRequest` 能把调用方的请求送到 owner 并拿到 data 回复；`provider_flow.rs`、`managed_oauth_flow.rs`、`dim-modality` 与 aimux 的 flow 用真实 Provider 装配跑同样的读。
+
+### 4.9 旧主机端口：`agentConfig` 等五个
 
 这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 不在这五个操作面的范围内，按 §2.6 处理其公共操作或私有实现职责。
 

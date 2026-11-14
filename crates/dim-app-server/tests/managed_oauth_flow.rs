@@ -1050,10 +1050,10 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             let listed = root.get::<SelectableModelsHost>().unwrap();
             assert!(
                 listed
-                    .0
                     .selectable_for_modality(cancel.clone())
                     .await
                     .unwrap()
+                    .models
                     .iter()
                     .any(|model| model.target.provider_id == id
                         && model.target.model_id == "gpt-image-2"
@@ -1063,8 +1063,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             let image = root
                 .get::<ModalityConnectionHost>()
                 .unwrap()
-                .0
-                .resolve_for_modality(
+                .connection(
                     ModalityTarget {
                         target: ModelId {
                             provider_id: id.into(),

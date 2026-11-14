@@ -1,7 +1,11 @@
 use crate::history::HistoryEntry;
 use dim_agent_runtime::PromptSourceTarget;
 use dim_agent_types::*;
-use futures_util::Stream;
+use futures_util::{FutureExt, Stream};
+use rutis::Ctx;
+use rutis::host::{CtxHost, Key};
+use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue};
+use serde_json::json;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -463,7 +467,7 @@ fn reasoning_off(options: Option<&ProviderOptions>, protocol: ModelProtocol) -> 
 }
 /// Request-local transport facts. Providers validate these at their input
 /// boundary; the model host owns clients, not persisted provider records.
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelNetwork {
     #[serde(
@@ -479,17 +483,33 @@ pub struct ModelNetwork {
     )]
     pub timeout_ms: Option<u64>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HttpModelConnection {
     pub protocol: ModelProtocol,
     pub base_url: String,
     pub network: ModelNetwork,
     pub headers: std::collections::HashMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
     pub bearer: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
     pub api_key: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
     pub preset: Option<String>,
 }
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AwsCredentials {
     pub access_key_id: String,
@@ -501,7 +521,8 @@ pub struct AwsCredentials {
     )]
     pub session_token: Option<String>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum BedrockAuth {
     Bearer(String),
     SigV4 {
@@ -509,14 +530,15 @@ pub enum BedrockAuth {
         region: String,
     },
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BedrockModelConnection {
     pub base_url: String,
     pub network: ModelNetwork,
     pub headers: HashMap<String, String>,
     pub auth: BedrockAuth,
 }
-fn optional_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn optional_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::Deserialize<'de>,
@@ -573,7 +595,8 @@ pub struct ProviderConnectionResolver(pub Arc<dyn ResolveModelConnection>);
 
 /// One non-conversational call of a model: the catalogued model a process
 /// adapter routes work to, and the `<category>.<operation>` it serves.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModalityTarget {
     pub target: ModelId,
     pub operation: String,
@@ -590,21 +613,81 @@ pub struct RealtimeDeclaration {
     pub path: String,
 }
 
-/// A model's connection for one non-conversational call. The adapter holds it
-/// for that call only: its owner never persists it, never returns it to a
-/// client and never formats its credential material.
+/// What `resolveModalityConnection` replies: the route and the realtime
+/// transport of one non-conversational call — and no credential material.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModalityEndpoint {
+    /// The route the catalog carries for this model.
+    pub protocol: ModelProtocol,
+    /// The model id a request sends to the provider.
+    pub model: String,
+    /// The route's base URL, when the catalog carries one.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub base_url: Option<String>,
+    /// The realtime transport the model's catalog entry declares, for a
+    /// `realtime.*` operation. `None` on every other use, and on a model that
+    /// declares no transport.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub realtime: Option<RealtimeDeclaration>,
+}
+
+/// One request the owner performs on a non-conversational call's connection:
+/// the caller names the route and content, never an owner credential. A
+/// `body` is base64, as every byte payload that crosses is.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModalityHttpRequest {
+    pub target: ModelId,
+    pub operation: String,
+    pub method: String,
+    pub url: String,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub body: Option<String>,
+}
+
+/// What `modalityRequest` replies: the provider's answer as data.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModalityHttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub body: Option<String>,
+}
+
+/// A trusted native adapter's connection for one non-conversational call:
+/// the route facts and resolved connection, whose [`Debug`] prints no
+/// credential material. This type is never served by the data face.
 pub struct ModalityConnection {
-    /// The connection a chat call to the same model would use, with its
-    /// failure policy and a managed account's credential recovery.
-    pub resolved: ResolvedModelConnection,
     /// The route the catalog carries for this model.
     pub protocol: ModelProtocol,
     /// The model id a request sends to the provider.
     pub model: String,
     /// The realtime transport the model's catalog entry declares, for a
-    /// `realtime.*` operation. `None` on every other use, and on a model that
-    /// declares no transport.
+    /// `realtime.*` operation.
     pub realtime: Option<RealtimeDeclaration>,
+    /// The resolved connection for trusted native media adapters, including
+    /// realtime handshakes. Its `Debug` is redacted.
+    pub resolved: ResolvedModelConnection,
 }
 impl std::fmt::Debug for ModalityConnection {
     /// Redacted: only the identifying facts and whether a credential is
@@ -614,10 +697,10 @@ impl std::fmt::Debug for ModalityConnection {
             .debug_struct("ModalityConnection")
             .field("model", &self.model)
             .field("protocol", &self.protocol)
+            .field("realtime", &self.realtime)
             .field("connection", &RedactedConnection(&self.resolved.connection))
             .field("recovery", &self.resolved.recovery.is_some())
             .field("failure_policy", &self.resolved.failure_policy.is_some())
-            .field("realtime", &self.realtime)
             .finish()
     }
 }
@@ -648,18 +731,220 @@ impl std::fmt::Debug for RedactedConnection<'_> {
     }
 }
 
-/// Resolves a model's connection for one non-conversational call. The owner
-/// applies the rules of its [`SelectableModels::selectable_for_modality`] read
-/// and additionally requires the model to declare [`ModalityTarget::operation`],
-/// refusing every model it would not serve before any network call.
-pub trait ResolveModalityConnection: Send + Sync + 'static {
-    fn resolve_for_modality(
+/// An owner's non-conversational calls: the route facts, and performing one
+/// request with the connection's headers and credential applied, so the
+/// credential itself never leaves the owner.
+pub trait ModalityRequests: Send + Sync + 'static {
+    fn endpoint(
         &self,
         target: ModalityTarget,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, ModalityConnection>;
+    ) -> HostFuture<'_, ModalityEndpoint>;
+    fn request(
+        &self,
+        request: ModalityHttpRequest,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModalityHttpResponse>;
+    /// The resolved connection for trusted native media adapters. It stays
+    /// in this process and is never served by name.
+    fn resolved(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ResolvedModelConnection>;
 }
-pub struct ModalityConnectionHost(pub Arc<dyn ResolveModalityConnection>);
+
+/// The `modalityConnectionHost` face and the binding its Rust adapters hold:
+/// `resolveModalityConnection` and `modalityRequest`, served under the name for
+/// any language. Served beside `modalityRequest`: the endpoint reveals the
+/// route and the realtime declaration, and every request is performed by the
+/// owner, which is what keeps a credential out of the reply
+/// ([service faces §4.8](../../../docs/design/service-faces.md#48-宿主端口executionsettingshost-等六个)).
+#[derive(Clone)]
+pub struct ModalityConnectionHost(pub Arc<dyn ModalityRequests>);
+
+impl ModalityConnectionHost {
+    /// The route of one non-conversational call: protocol, model, base URL and
+    /// realtime declaration, and no credential.
+    pub async fn endpoint(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> Result<ModalityEndpoint, HostError> {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled("Modality request cancelled".into()));
+        }
+        let cancel = cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::select! {
+            result = self.0.endpoint(target, cancel.clone()) => result,
+            _ = cancel.cancelled() => Err(HostError::Cancelled("Modality request cancelled".into())),
+        }
+    }
+
+    /// Performs one request on the call's connection with the owner's headers
+    /// and credential applied.
+    pub async fn request(
+        &self,
+        request: ModalityHttpRequest,
+        cancel: CancellationToken,
+    ) -> Result<ModalityHttpResponse, HostError> {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled("Modality request cancelled".into()));
+        }
+        let cancel = cancel.child_token();
+        let _guard = cancel.clone().drop_guard();
+        tokio::select! {
+            result = self.0.request(request, cancel.clone()) => result,
+            _ = cancel.cancelled() => Err(HostError::Cancelled("Modality request cancelled".into())),
+        }
+    }
+
+    /// The route facts and resolved connection for a trusted native adapter.
+    /// This operation is not part of the data face.
+    pub async fn connection(
+        &self,
+        target: ModalityTarget,
+        cancel: CancellationToken,
+    ) -> Result<ModalityConnection, HostError> {
+        let endpoint = self.0.endpoint(target.clone(), cancel.clone()).await?;
+        let resolved = self.0.resolved(target, cancel).await?;
+        Ok(ModalityConnection {
+            protocol: endpoint.protocol,
+            model: endpoint.model,
+            realtime: endpoint.realtime,
+            resolved,
+        })
+    }
+
+    /// The language-neutral form of the same two operations.
+    pub fn face(&self) -> Arc<dyn HostDispatch> {
+        Arc::new(ModalityFace(self.0.clone()))
+    }
+}
+
+const MODALITY: &str = "modalityConnectionHost";
+
+struct ModalityFace(Arc<dyn ModalityRequests>);
+
+impl HostDispatch for ModalityFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({
+            "resolveModalityConnection": "async",
+            "modalityRequest": "async",
+        }))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        match method {
+            "resolveModalityConnection" => {
+                let target: ModalityTarget = crate::port_faces::request(MODALITY, args)?;
+                let cancel = CancellationToken::new();
+                let owner = self.0.clone();
+                let reading = cancel.clone();
+                crate::port_faces::serving(
+                    MODALITY,
+                    cancel,
+                    async move {
+                        owner
+                            .endpoint(target, reading)
+                            .await
+                            .map_err(ModelPortError::from)
+                    }
+                    .boxed(),
+                )
+            }
+            "modalityRequest" => {
+                let request: ModalityHttpRequest = crate::port_faces::request(MODALITY, args)?;
+                let cancel = CancellationToken::new();
+                let owner = self.0.clone();
+                let reading = cancel.clone();
+                crate::port_faces::serving(
+                    MODALITY,
+                    cancel,
+                    async move {
+                        owner
+                            .request(request, reading)
+                            .await
+                            .map_err(ModelPortError::from)
+                    }
+                    .boxed(),
+                )
+            }
+            _ => Err(crate::port_faces::unknown_method(MODALITY, method)),
+        }
+    }
+}
+
+/// Provides one owner's [`ModalityConnectionHost`]: the binding its Rust
+/// adapters hold and the face any other language calls by name.
+pub fn provide_modality_connections(ctx: &Ctx, host: &ModalityConnectionHost) -> rutis::Result<()> {
+    ctx.provide_at(Key::<ModalityConnectionHost>::of(), Arc::new(host.clone()))?;
+    ctx.provide_at(
+        crate::port_faces::face_key::<ModalityConnectionHost>(),
+        host.face(),
+    )?;
+    Ok(())
+}
+
+/// The face's error, decoded as the typed failure its caller matches on: the
+/// codes are the port's own, and anything else is a failed call.
+fn port_failure(error: rutis_bridge::session::Error) -> ModelPortError {
+    let message = error.to_string();
+    match error.code() {
+        Some("cancelled") => ModelPortError::Cancelled { message },
+        Some("owner_closed") => ModelPortError::OwnerClosed { message },
+        Some("invalid_request") => ModelPortError::InvalidRequest { message },
+        Some("model_unavailable") => ModelPortError::ModelUnavailable { message },
+        _ => ModelPortError::Failed { message },
+    }
+}
+
+/// What a process model port fails with: `{code, message}`. The owner's
+/// [`HostError`] becomes one of these codes where the face is served, so a
+/// caller of any language reads the same vocabulary.
+#[derive(Debug, Clone, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ModelPortError {
+    /// The caller's request is not one the owner admits.
+    #[error("{message}")]
+    InvalidRequest { message: String },
+    /// The model named is not one the owner serves for this use.
+    #[error("{message}")]
+    ModelUnavailable { message: String },
+    /// The caller ended the call.
+    #[error("{message}")]
+    Cancelled { message: String },
+    /// The owner is unloading; the call can succeed once it reloads.
+    #[error("{message}")]
+    OwnerClosed { message: String },
+    /// The owner's read failed.
+    #[error("{message}")]
+    Failed { message: String },
+}
+impl From<HostError> for ModelPortError {
+    /// The failure as the face reports it: the kind a caller acts on becomes
+    /// its own code, and every other failure is `failed`.
+    fn from(error: HostError) -> Self {
+        let message = error.to_string();
+        match error {
+            HostError::Cancelled(_) => Self::Cancelled { message },
+            HostError::Failed {
+                kind: HostErrorKind::OwnerClosed,
+                ..
+            } => Self::OwnerClosed { message },
+            HostError::Failed {
+                kind: HostErrorKind::InvalidRequest,
+                ..
+            } => Self::InvalidRequest { message },
+            HostError::Failed {
+                kind: HostErrorKind::Unsupported,
+                ..
+            } => Self::ModelUnavailable { message },
+            HostError::Failed { .. } => Self::Failed { message },
+        }
+    }
+}
 
 /// The refusal for a model whose catalog entry does not declare `operation`.
 pub fn undeclared_modality_operation(operation: &str) -> HostError {
@@ -669,17 +954,123 @@ pub fn undeclared_modality_operation(operation: &str) -> HostError {
     )
 }
 
-/// Resolves a configuration once. Executing an adopted request must not call
-/// this port again to replace its capabilities with the latest catalog.
-pub trait ResolveModelSelection: Send + Sync + 'static {
-    fn resolve(
-        &self,
-        explicit: Option<ModelId>,
-        cwd: Option<std::path::PathBuf>,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, ModelSelection>;
+/// The `resolve` request of `modelSelectionHost`: the model the caller names,
+/// if any, and the directory a project's configuration is read from.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSelectionRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub explicit: Option<ModelId>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub cwd: Option<String>,
 }
-pub struct ModelSelectionHost(pub Arc<dyn ResolveModelSelection>);
+
+impl ModelSelectionRequest {
+    /// The request of a Rust caller: `cwd` crosses as its UTF-8 path, as every
+    /// path that crosses does.
+    pub fn at(
+        explicit: Option<ModelId>,
+        cwd: Option<&std::path::Path>,
+    ) -> std::result::Result<Self, ModelPortError> {
+        let cwd = cwd
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| ModelPortError::InvalidRequest {
+                        message: format!("the working directory is not UTF-8: {}", path.display()),
+                    })
+            })
+            .transpose()?;
+        Ok(Self { explicit, cwd })
+    }
+}
+
+/// An owner's resolution of one configuration, as the face's one operation.
+/// Resolved once: executing an adopted request must not call the owner again
+/// to replace its capabilities with the latest catalog.
+pub type ResolveModelSelection = Arc<
+    dyn Fn(
+            Option<ModelId>,
+            Option<std::path::PathBuf>,
+            CancellationToken,
+        ) -> HostFuture<'static, ModelSelection>
+        + Send
+        + Sync,
+>;
+
+/// The `modelSelectionHost` face: `resolve` is the one operation, served under
+/// the name for any language and called directly by a Rust reader through the
+/// binding that holds it.
+#[derive(Clone)]
+pub struct ModelSelectionHost(Arc<dyn HostDispatch>);
+
+impl ModelSelectionHost {
+    /// Binds an owner's resolution as the face's operation.
+    pub fn new(resolve: ResolveModelSelection) -> Self {
+        Self(Arc::new(SelectionFace(resolve)))
+    }
+
+    /// The model one request resolves to.
+    pub async fn resolve(
+        &self,
+        request: ModelSelectionRequest,
+        cancel: CancellationToken,
+    ) -> std::result::Result<ModelSelection, ModelPortError> {
+        crate::port_faces::call(MODEL_SELECTION, &self.0, "resolve", &request, &cancel)
+            .await
+            .map_err(port_failure)
+    }
+}
+
+/// Provides one owner's [`ModelSelectionHost`]: the binding its Rust readers
+/// hold and the face any other language calls by name.
+pub fn provide_model_selection(ctx: &Ctx, host: &ModelSelectionHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<ModelSelectionHost>::of(),
+        Arc::new(ModelSelectionHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        crate::port_faces::face_key::<ModelSelectionHost>(),
+        host.0.clone(),
+    )?;
+    Ok(())
+}
+
+const MODEL_SELECTION: &str = "modelSelectionHost";
+
+struct SelectionFace(ResolveModelSelection);
+
+impl HostDispatch for SelectionFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"resolve": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "resolve" {
+            return Err(crate::port_faces::unknown_method(MODEL_SELECTION, method));
+        }
+        let request: ModelSelectionRequest = crate::port_faces::request(MODEL_SELECTION, args)?;
+        let cancel = CancellationToken::new();
+        let resolve = (self.0)(
+            request.explicit,
+            request.cwd.map(std::path::PathBuf::from),
+            cancel.clone(),
+        );
+        crate::port_faces::serving(
+            MODEL_SELECTION,
+            cancel,
+            async move { resolve.await.map_err(ModelPortError::from) }.boxed(),
+        )
+    }
+}
 
 /// The environment variable names the owner reads credentials from, bound as
 /// the face's one operation. It answers from the owner's current state on
@@ -717,23 +1108,137 @@ impl CredentialVariablesHost {
     }
 }
 
-/// Enumerates the models the owner would serve: the same selectability rules as
-/// execution, one read, no live request. The caller passes its cancellation
-/// token; cancelling it cancels the read.
-pub trait SelectableModels: Send + Sync + 'static {
-    fn selectable(&self, cancel: CancellationToken)
-    -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
-    /// The models the owner would select for a non-conversational use, with
-    /// the modality operation ids each declares: the same provider, account,
-    /// model, route, credential and status rules as [`Self::selectable`],
-    /// without its text-modality, chat-kind and declared-text-limit
-    /// requirements. A model that declares no modality operation is omitted.
-    fn selectable_for_modality(
+/// The `selectableModels` reply: the models the owner would serve, with the
+/// rules execution applies.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectableModelsReply {
+    pub models: Vec<ModelCapabilitySnapshot>,
+}
+
+/// The `selectableForModality` reply: the models the owner would serve for a
+/// non-conversational use.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModalityModelsReply {
+    pub models: Vec<ModalityModelSnapshot>,
+}
+
+/// An owner's enumeration of the models it would serve: the same
+/// selectability rules as execution, one read, no live request.
+pub type SelectableModelsRead = Arc<
+    dyn Fn(CancellationToken) -> HostFuture<'static, Vec<ModelCapabilitySnapshot>> + Send + Sync,
+>;
+
+/// An owner's enumeration of the models it would serve for a
+/// non-conversational use, with the modality operation ids each declares.
+pub type ModalityModelsRead =
+    Arc<dyn Fn(CancellationToken) -> HostFuture<'static, Vec<ModalityModelSnapshot>> + Send + Sync>;
+
+/// The `selectableModelsHost` face: its two reads are its operations, served
+/// under the name for any language and called directly by a Rust reader
+/// through the binding that holds them.
+#[derive(Clone)]
+pub struct SelectableModelsHost(Arc<dyn HostDispatch>);
+
+impl SelectableModelsHost {
+    /// Binds an owner's two enumerations as the face's operations.
+    pub fn new(selectable: SelectableModelsRead, modality: ModalityModelsRead) -> Self {
+        Self(Arc::new(SelectableFace {
+            selectable,
+            modality,
+        }))
+    }
+
+    /// The models the owner would serve, as execution would select them.
+    pub async fn selectable_models(
         &self,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
+    ) -> std::result::Result<SelectableModelsReply, ModelPortError> {
+        crate::port_faces::call(
+            SELECTABLE_MODELS,
+            &self.0,
+            "selectableModels",
+            &crate::port_faces::Empty {},
+            &cancel,
+        )
+        .await
+        .map_err(port_failure)
+    }
+
+    /// The models the owner would select for a non-conversational use, with
+    /// the modality operation ids each declares: the same provider, account,
+    /// model, route, credential and status rules as [`Self::selectable_models`],
+    /// without its text-modality, chat-kind and declared-text-limit
+    /// requirements. A model that declares no modality operation is omitted.
+    pub async fn selectable_for_modality(
+        &self,
+        cancel: CancellationToken,
+    ) -> std::result::Result<ModalityModelsReply, ModelPortError> {
+        crate::port_faces::call(
+            SELECTABLE_MODELS,
+            &self.0,
+            "selectableForModality",
+            &crate::port_faces::Empty {},
+            &cancel,
+        )
+        .await
+        .map_err(port_failure)
+    }
 }
-pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
+
+/// Provides one owner's [`SelectableModelsHost`]: the binding its Rust readers
+/// hold and the face any other language calls by name.
+pub fn provide_selectable_models(ctx: &Ctx, host: &SelectableModelsHost) -> rutis::Result<()> {
+    ctx.provide_at(
+        Key::<SelectableModelsHost>::of(),
+        Arc::new(SelectableModelsHost(host.0.clone())),
+    )?;
+    ctx.provide_at(
+        crate::port_faces::face_key::<SelectableModelsHost>(),
+        host.0.clone(),
+    )?;
+    Ok(())
+}
+
+const SELECTABLE_MODELS: &str = "selectableModelsHost";
+
+struct SelectableFace {
+    selectable: SelectableModelsRead,
+    modality: ModalityModelsRead,
+}
+
+impl HostDispatch for SelectableFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"selectableModels": "async", "selectableForModality": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if !matches!(method, "selectableModels" | "selectableForModality") {
+            return Err(crate::port_faces::unknown_method(SELECTABLE_MODELS, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(SELECTABLE_MODELS, args)?;
+        let cancel = CancellationToken::new();
+        let encode = |error: rutis_bridge::session::Error| ModelPortError::Failed {
+            message: error.to_string(),
+        };
+        let read: Pin<Box<dyn Future<Output = Result<BridgeValue, ModelPortError>> + Send>> =
+            if method == "selectableModels" {
+                let read = (self.selectable)(cancel.clone());
+                Box::pin(async move {
+                    let models = read.await.map_err(ModelPortError::from)?;
+                    rutis_bridge::session::arg(&SelectableModelsReply { models }).map_err(encode)
+                })
+            } else {
+                let read = (self.modality)(cancel.clone());
+                Box::pin(async move {
+                    let models = read.await.map_err(ModelPortError::from)?;
+                    rutis_bridge::session::arg(&ModalityModelsReply { models }).map_err(encode)
+                })
+            };
+        crate::port_faces::serving_encoded(SELECTABLE_MODELS, cancel, read)
+    }
+}
 
 /// One non-streaming request outside any Session: no tools, no Timeline.
 #[derive(Debug, Clone, serde::Deserialize)]

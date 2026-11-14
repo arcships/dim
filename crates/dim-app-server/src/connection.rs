@@ -7,6 +7,7 @@ use crate::{
     skills_management::skills_error,
 };
 use dim_agent_capabilities::{
+    host::{ModelPortError, ModelSelectionRequest},
     methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},
     permission::{Permission, PermissionState, PermissionUpdateError},
     skills::SkillsBranch,
@@ -1973,6 +1974,17 @@ pub(crate) fn provider_error(error: dim_agent_capabilities::host::HostError) -> 
     RpcError::app(-32000, kind, error.to_string())
 }
 
+/// A model port's failure as the client reads it: only a cancelled call is
+/// told apart from a failed one, as the owner's errors were before the port
+/// became data.
+pub(crate) fn port_error(error: ModelPortError) -> RpcError {
+    let kind = match &error {
+        ModelPortError::Cancelled { .. } => "provider_cancelled",
+        _ => "provider_failed",
+    };
+    RpcError::app(-32000, kind, error.to_string())
+}
+
 /// Connection index, admission permits and connection tasks of the process.
 pub(crate) struct ConnectionHub {
     config: Arc<ServerConfig>,
@@ -2456,13 +2468,13 @@ impl RpcService {
                 ),
             ));
         }
+        let request = ModelSelectionRequest::at(explicit, cwd.as_deref()).map_err(port_error)?;
         self.index
             .model_selection()
             .ok_or_else(RpcError::reloading)?
-            .0
-            .resolve(explicit, cwd, self.unloading.clone())
+            .resolve(request, self.unloading.clone())
             .await
-            .map_err(provider_error)
+            .map_err(port_error)
     }
 }
 

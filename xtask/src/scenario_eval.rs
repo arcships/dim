@@ -284,8 +284,8 @@ use crate::summary_eval::{
 use dim_agent_capabilities::{
     context_model::{output_allowance, window_facts},
     host::{
-        HostFuture, ModelHost, ModelSelectionHost, ModelStopReason, ProviderConnectionResolver,
-        ResolveContextModel, ToolExecutionContext,
+        HostFuture, ModelHost, ModelSelectionHost, ModelSelectionRequest, ModelStopReason,
+        ProviderConnectionResolver, ResolveContextModel, ToolExecutionContext,
     },
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::FileToolBoundary,
@@ -4447,14 +4447,13 @@ pub(crate) async fn selection(
     let host = server
         .service::<ModelSelectionHost>()
         .ok_or("the served profile resolves no model selection")?;
-    host.0
-        .resolve(
-            Some(target.clone()),
-            Some(cwd.to_path_buf()),
-            cancel.clone(),
-        )
-        .await
-        .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id).into())
+    host.resolve(
+        ModelSelectionRequest::at(Some(target.clone()), Some(cwd))
+            .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id))?,
+        cancel.clone(),
+    )
+    .await
+    .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id).into())
 }
 
 /// Waits until the default plugin rows leave `pending`: they start after

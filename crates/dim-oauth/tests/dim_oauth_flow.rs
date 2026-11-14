@@ -1257,10 +1257,10 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
     let operations = root
         .get::<SelectableModelsHost>()
         .unwrap()
-        .0
         .selectable_for_modality(cancel())
         .await
         .unwrap()
+        .models
         .into_iter()
         .find(|model| {
             model.target.provider_id == PROVIDER && model.target.model_id == "fixture-image"
@@ -1270,8 +1270,7 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
     let connection = root
         .get::<ModalityConnectionHost>()
         .unwrap()
-        .0
-        .resolve_for_modality(
+        .connection(
             ModalityTarget {
                 target: ModelId {
                     provider_id: PROVIDER.into(),
@@ -1359,10 +1358,10 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     let listed = root
         .get::<SelectableModelsHost>()
         .unwrap()
-        .0
         .selectable_for_modality(cancel())
         .await
-        .unwrap();
+        .unwrap()
+        .models;
     assert!(
         listed
             .iter()
@@ -1373,8 +1372,7 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     let refused = root
         .get::<ModalityConnectionHost>()
         .unwrap()
-        .0
-        .resolve_for_modality(
+        .connection(
             ModalityTarget {
                 target: ModelId {
                     provider_id: PROVIDER.into(),

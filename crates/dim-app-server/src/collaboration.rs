@@ -17,7 +17,10 @@ use crate::protocol::SessionOrigin;
 use crate::settings::{SettingsScope, SettingsService};
 use dim_agent_capabilities::{
     context_block,
-    host::{HostError, HostFuture, SelectableModelsHost, ToolExecutionContext},
+    host::{
+        HostError, HostFuture, ModelPortError, ModelSelectionRequest, SelectableModelsHost,
+        ToolExecutionContext,
+    },
     methods::RpcError,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::PromptSnapshot,
@@ -330,8 +333,17 @@ impl Collaboration {
             };
             let selected = match self.index.model_selection() {
                 Some(selection) => selection
-                    .0
-                    .resolve(explicit, Some(config.cwd.clone().into()), self.stop.clone())
+                    .resolve(
+                        ModelSelectionRequest::at(
+                            explicit,
+                            Some(std::path::Path::new(&config.cwd)),
+                        )
+                        .map_err(|error| Failure {
+                            code: Refusal::MemberCreateFailed,
+                            detail: Some(error.to_string()),
+                        })?,
+                        self.stop.clone(),
+                    )
                     .await
                     .map_err(|error| error.to_string()),
                 None => Err("model selection is unavailable while its provider reloads".into()),
@@ -1244,9 +1256,11 @@ impl CollaborationSession {
                 "this deployment does not describe selectable models",
             ));
         };
-        let models = match selectable.0.selectable(cancel.clone()).await {
-            Ok(models) => models,
-            Err(error @ HostError::Cancelled(_)) => return Err(error),
+        let models = match selectable.selectable_models(cancel.clone()).await {
+            Ok(reply) => reply.models,
+            Err(ModelPortError::Cancelled { message }) => {
+                return Err(HostError::Cancelled(message));
+            }
             Err(error) => {
                 return Ok(ToolResult::error(format!(
                     "Models are unavailable: {error}"

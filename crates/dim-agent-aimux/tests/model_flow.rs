@@ -298,16 +298,15 @@ async fn the_configured_profile_resolves_no_modality_connection() {
     let selectable = host.root().get::<SelectableModelsHost>().unwrap();
     assert!(
         selectable
-            .0
             .selectable_for_modality(CancellationToken::new())
             .await
             .unwrap()
+            .models
             .is_empty()
     );
     let modality = host.root().get::<ModalityConnectionHost>().unwrap();
     let refused = modality
-        .0
-        .resolve_for_modality(
+        .connection(
             ModalityTarget {
                 target: ModelId {
                     provider_id: "local".into(),
@@ -332,8 +331,7 @@ async fn the_configured_profile_resolves_no_modality_connection() {
         "Model does not declare the image.generate operation"
     );
     let unknown = modality
-        .0
-        .resolve_for_modality(
+        .connection(
             ModalityTarget {
                 target: ModelId {
                     provider_id: "local".into(),

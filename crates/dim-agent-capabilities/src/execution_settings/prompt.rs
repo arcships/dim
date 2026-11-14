@@ -113,7 +113,7 @@ impl SettingsHandler {
             Ok(arguments) => arguments,
             Err(error) => return ToolResult::error(format!("invalid settings arguments: {error}")),
         };
-        let settings = match self.host.0.read(cancel).await {
+        let settings = match self.host.read(cancel).await {
             Ok(settings) => settings,
             Err(error) => return ToolResult::error(format!("execution settings: {error}")),
         };
@@ -258,7 +258,7 @@ impl DynPlugin for SettingsSnapshotBranch {
                     if pending {
                         let read = tokio::select! {
                             _ = phase.closing() => return,
-                            result = host.0.read(lifecycle.child_token()) => result,
+                            result = host.read(lifecycle.child_token()) => result,
                         };
                         match read {
                             Ok(settings) => {

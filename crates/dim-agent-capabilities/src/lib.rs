@@ -25,6 +25,7 @@ pub mod methods;
 pub mod model_provider;
 mod output;
 pub mod permission;
+mod port_faces;
 pub mod prompt;
 pub mod prompt_guide;
 pub mod prompt_registry;
@@ -125,14 +126,14 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<file_storage::FileStorage>(catalog, None);
     register::<host::ModelHost>(catalog, None);
     register::<host::ProviderConnectionResolver>(catalog, None);
-    register::<host::ModelSelectionHost>(catalog, None);
+    catalog.register_shared(name_of::<host::ModelSelectionHost>());
     catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     register::<host::SessionFilesHost>(catalog, None);
     register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
     catalog.register_shared(name_of::<environment_clients::SessionClientsHost>());
-    register::<execution_settings::ExecutionSettingsHost>(catalog, None);
-    register::<toolchain::ToolchainSourceHost>(catalog, None);
+    catalog.register_shared(name_of::<execution_settings::ExecutionSettingsHost>());
+    catalog.register_shared(name_of::<toolchain::ToolchainSourceHost>());
     register::<skills::SkillsCatalog>(catalog, None);
 }
 impl PublicService for approval::Approval {}

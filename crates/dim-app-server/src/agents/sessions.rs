@@ -6,6 +6,7 @@
 use super::AgentIndex;
 use crate::protocol::{Empty, PROTOCOL_VERSION, SessionId, SessionOrigin, session_cwd};
 use dim_agent_capabilities::{
+    host::ModelSelectionRequest,
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
 };
@@ -424,10 +425,16 @@ impl AgentIndex {
                         .model_selection()
                         .ok_or_else(|| SessionsError::reloading("model selection"))?;
                     config.model = selection
-                        .0
                         .resolve(
-                            request.model.or_else(|| host.profile.model.clone()),
-                            Some(config.cwd.clone().into()),
+                            ModelSelectionRequest::at(
+                                request.model.or_else(|| host.profile.model.clone()),
+                                Some(std::path::Path::new(&config.cwd)),
+                            )
+                            .map_err(|error| {
+                                SessionsError::Failed {
+                                    message: format!("model resolution: {error}"),
+                                }
+                            })?,
                             self.stopping.clone(),
                         )
                         .await
