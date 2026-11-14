@@ -409,7 +409,7 @@ impl FullScreen {
     }
 
     /// Forgets what is on screen: the next frame paints every row.
-    fn invalidate(&mut self) {
+    pub fn invalidate(&mut self) {
         self.painted.clear();
         self.cursor_at = None;
         self.cursor_visible = true;

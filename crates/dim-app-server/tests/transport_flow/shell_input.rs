@@ -454,6 +454,7 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
         serde_json::from_value(pending["result"]["tasks"][0].clone()).unwrap();
     assert_eq!(inventory_task.title, None);
     assert!(pending["result"]["tasks"][0].get("title").is_none());
+    let running_cutoff = pending["result"]["through"].clone();
     // Before any output the registered file is empty: an empty page, no next
     // cursor.
     let empty = exec_output_page(&mut shell, &params, 0, 64).await;
@@ -568,6 +569,35 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     // After `exec/ended` the file pages the same way; the read appends no
     // event.
     let sequence = session.sequence("main").unwrap();
+    let before_end = shell
+        .client
+        .rpc(
+            "session.exec.finished",
+            json!({"sessionId":shell.sid,"branchId":"main","through":running_cutoff}),
+        )
+        .await;
+    assert_ok(&before_end);
+    assert_eq!(before_end["result"]["through"], running_cutoff);
+    assert_eq!(before_end["result"]["tasks"], json!([]));
+    let inventory = shell
+        .client
+        .rpc(
+            "session.exec.finished",
+            json!({"sessionId":shell.sid,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&inventory);
+    let settled: Vec<dim_agent_types::FinishedExec> =
+        serde_json::from_value(inventory["result"]["tasks"].clone()).unwrap();
+    assert_eq!(inventory["result"]["through"], sequence);
+    assert_eq!(settled.len(), 1);
+    let settled = &settled[0];
+    assert_eq!(
+        serde_json::to_value(&settled.start).unwrap(),
+        serde_json::to_value(&inventory_task).unwrap()
+    );
+    assert_eq!(serde_json::to_value(&settled.end).unwrap(), end);
+    assert!(settled.ended_at >= settled.start.started_at);
     let finished = exec_output_page(&mut shell, &params, 0, 64).await;
     assert_ok(&finished);
     assert_eq!(
@@ -605,6 +635,15 @@ async fn background_exec_output_pages_running_finished_and_restored_tasks() {
     // The reads leave no hold behind: the ended Session unloads idle, and a
     // task rebuilt after the restore pages from the retained file.
     assert!(shell.unload().await);
+    let restored_inventory = shell
+        .client
+        .rpc(
+            "session.exec.finished",
+            json!({"sessionId":shell.sid,"branchId":"main","through":sequence}),
+        )
+        .await;
+    assert_ok(&restored_inventory);
+    assert_eq!(restored_inventory["result"], inventory["result"]);
     let restored = exec_output_page(&mut shell, &params, 0, 64).await;
     assert_ok(&restored);
     assert_eq!(

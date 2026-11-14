@@ -19,9 +19,10 @@ use serde_json::Value;
 use crate::model::shell::ShellRun;
 use crate::model::view::{
     ApprovalView, CompactionDetail, CompactionDetailState, CompactionPart, CompactionPartSize,
-    CompactionState, CompactionView, FailureDetail, LineCut, LineState, LineView, MemberCard,
-    MemberConversationState, MemberTarget, QueuedInput, RetryView, RowKind, RowTone, TaskFinish,
-    TaskKind, TaskOutcome, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot, WorkflowView,
+    CompactionState, CompactionView, Dispatch, FailureDetail, LineCut, LineState, LineView,
+    MemberCard, MemberConversationState, MemberTarget, QueuedInput, RetryView, RowKind, RowTone,
+    TaskFinish, TaskKind, TaskOutcome, TaskTarget, TaskView, TurnEnd, ViewRow, ViewSnapshot,
+    WorkflowView,
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
@@ -66,8 +67,11 @@ pub struct Projection {
     /// The row each written user message draws in, by input id, until its
     /// `input/consumed` settles that row.
     input_rows: HashMap<String, usize>,
-    /// Unfinished tasks and the latest 50 terminal results.
+    /// Unfinished tasks and the latest 50 terminal results, in dispatch order.
     tasks: Vec<TaskView>,
+    /// Each call's index in a model response that made several, by request
+    /// and call id: the order of a parallel batch's tasks.
+    call_positions: HashMap<(String, String), u32>,
     /// The `exec` call each background task came from, until it ends.
     background: HashMap<TaskTarget, (String, String)>,
     /// The newest turn end: its sequence and how the turn ended.
@@ -199,6 +203,12 @@ impl Projection {
             EventContent::ToolCall(data) => {
                 self.questions
                     .asked(branch_id, &event.id, &data.request_id, &data.calls);
+                if data.calls.len() > 1 {
+                    for (position, call) in data.calls.iter().enumerate() {
+                        self.call_positions
+                            .insert((data.request_id.clone(), call.id.clone()), position as u32);
+                    }
+                }
                 if self.owns(branch_id) {
                     if let Some(parent) = &event.parent_call_id {
                         if !self
@@ -348,116 +358,55 @@ impl Projection {
                 );
             }
             EventContent::ExecStarted(data) => {
-                self.exec_started(branch_id, data, &event.id, event.create_at)
+                self.exec_started(branch_id, data, &event.id, event.sequence, event.create_at)
             }
             EventContent::ExecEnded(data) => {
-                let target = TaskTarget {
-                    branch_id: branch_id.to_owned(),
-                    task_id: data.task_id.clone(),
-                };
-                if let Some(task) = self
-                    .tasks
-                    .iter_mut()
-                    .find(|task| matches!(&task.kind, TaskKind::Command(at) if at == &target))
-                {
-                    task.finished = Some(TaskFinish {
-                        at: event.create_at,
-                        status: match data.status {
-                            ExecStatus::Completed => "Completed",
-                            ExecStatus::Failed => "Failed",
-                            ExecStatus::Cancelled => "Cancelled",
-                        },
-                        outcome: match data.status {
-                            ExecStatus::Completed => TaskOutcome::Completed,
-                            ExecStatus::Failed => TaskOutcome::Failed,
-                            ExecStatus::Cancelled => TaskOutcome::Stopped,
-                        },
-                        replayed,
-                        text: result_text(&data.result),
-                        exit_code: data
-                            .result
-                            .structured_content
-                            .as_ref()
-                            .and_then(|value| value.get("exitCode"))
-                            .and_then(Value::as_i64),
-                    });
-                }
-                if let Some((request_id, call_id)) = self.background.remove(&target)
-                    && self.owns(branch_id)
-                    && let Some(index) = self.rows.iter().position(|row| {
-                        row.call_id.as_deref() == Some(call_id.as_str())
-                            && row.batch.as_deref() == Some(request_id.as_str())
-                    })
-                {
-                    let row = self.row(index);
-                    row.result_is_error =
-                        data.status != ExecStatus::Completed || data.result.is_error == Some(true);
-                    row.result_text = Some(result_text(&data.result));
-                    row.exit_code = data
-                        .result
-                        .structured_content
-                        .as_ref()
-                        .and_then(|value| value.get("exitCode"))
-                        .and_then(Value::as_i64);
-                }
+                self.exec_ended(branch_id, data, event.create_at, replayed)
             }
-            EventContent::CollaborationRequest(data) => {
-                self.delegation_started(branch_id, data, &event.id, event.create_at)
-            }
+            EventContent::CollaborationRequest(data) => self.delegation_started(
+                branch_id,
+                data,
+                &event.id,
+                event.sequence,
+                event.create_at,
+                None,
+            ),
             EventContent::CollaborationDelivered(data) => {
                 self.delegation_delivered(branch_id, data, event.create_at, replayed)
             }
             EventContent::CollaborationResult(data) => {
-                let (status, outcome, text) = match &data.outcome {
-                    CollaborationOutcome::Completed => {
-                        ("Completed", TaskOutcome::Completed, data.text.clone())
-                    }
-                    CollaborationOutcome::Failed { reason } => (
-                        "Failed",
-                        TaskOutcome::Failed,
-                        format!("{reason}\n{}", data.text),
-                    ),
-                    CollaborationOutcome::Cancelled { reason } => (
-                        "Cancelled",
-                        TaskOutcome::Stopped,
-                        format!("{reason}\n{}", data.text),
-                    ),
-                };
-                let finish = TaskFinish {
-                    at: event.create_at,
-                    status,
-                    outcome,
-                    replayed,
-                    text,
-                    exit_code: None,
-                };
-                if let Some(task) = self.tasks.iter_mut().find(|task| {
-                    task.branch_id == branch_id
-                        && task.id == data.request_event_id
-                        && matches!(task.kind, TaskKind::Member(_))
-                }) {
-                    task.finished = Some(finish.clone());
-                }
-                if let Some(card) = self.card(branch_id, &data.request_event_id) {
-                    card.task.finished = Some(finish);
-                }
+                self.delegation_result(branch_id, data, event.create_at, replayed);
                 if !self.owns(branch_id) {
                     self.retain_tasks();
                     return;
                 }
-                let (text, tone) = match &data.outcome {
+                let (kind, text, tone) = match &data.outcome {
                     CollaborationOutcome::Completed => {
-                        (format!("agent result: {}", data.text), None)
+                        (RowKind::MemberResult, data.text.clone(), None)
                     }
-                    CollaborationOutcome::Failed { reason } => {
-                        (format!("agent failed: {reason}"), Some(RowTone::Danger))
-                    }
+                    CollaborationOutcome::Failed { reason } => (
+                        RowKind::Status,
+                        format!("agent failed: {reason}"),
+                        Some(RowTone::Danger),
+                    ),
                     CollaborationOutcome::Cancelled { reason } => {
-                        (format!("agent cancelled: {reason}"), None)
+                        (RowKind::Status, format!("agent cancelled: {reason}"), None)
                     }
                 };
-                let index = self.push(format!("agent-{sequence}"), RowKind::Status, text);
-                self.row(index).tone = tone;
+                let label = self
+                    .tasks
+                    .iter()
+                    .find(|task| task.branch_id == branch_id && task.id == data.request_event_id)
+                    .map(|task| match &task.agent {
+                        Some(agent) => format!("{} · {agent}", task.label),
+                        None => task.label.clone(),
+                    });
+                let index = self.push(format!("agent-{}", data.request_event_id), kind, text);
+                let row = self.row(index);
+                row.tone = tone;
+                if kind == RowKind::MemberResult {
+                    row.display = label;
+                }
             }
             EventContent::ModelStart(_) => {}
             EventContent::Thinking(data) => {
@@ -819,6 +768,7 @@ impl Projection {
         branch_id: &str,
         data: &dim_agent_types::ExecStartedData,
         event_id: &str,
+        sequence: u64,
         started_at: u64,
     ) {
         if self
@@ -853,23 +803,29 @@ impl Projection {
             agent: None,
             agent_id: None,
             started_at,
+            dispatch: Some(Dispatch {
+                position: self.call_position(&data.request_id, &data.call_id),
+                request_id: data.request_id.clone(),
+                call_id: data.call_id.clone(),
+                sequence,
+            }),
             finished: None,
         });
         self.background
             .insert(target, (data.request_id.clone(), data.call_id.clone()));
     }
+    /// Starts a delegation's task row; `position` is the call's place in its
+    /// model response when an owner read reports it.
     pub fn delegation_started(
         &mut self,
         branch_id: &str,
         data: &dim_agent_types::CollaborationRequestData,
         event_id: &str,
+        sequence: u64,
         started_at: u64,
+        position: Option<u32>,
     ) {
-        if self
-            .tasks
-            .iter()
-            .any(|task| task.branch_id == branch_id && task.id == event_id)
-        {
+        if self.adopt_position(branch_id, event_id, position) {
             return;
         }
 
@@ -893,6 +849,12 @@ impl Projection {
             agent: Some(agent),
             agent_id,
             started_at,
+            dispatch: Some(Dispatch {
+                position: position.or_else(|| self.call_position(&data.request_id, &data.call_id)),
+                request_id: data.request_id.clone(),
+                call_id: data.call_id.clone(),
+                sequence,
+            }),
             finished: None,
         };
         if self.owns(branch_id)
@@ -913,7 +875,164 @@ impl Projection {
             self.cards.insert(event_id.to_owned(), index);
         }
         self.tasks.push(task);
+        self.retain_tasks();
     }
+    fn exec_ended(
+        &mut self,
+        branch_id: &str,
+        data: &dim_agent_types::ExecEndedData,
+        at: u64,
+        replayed: bool,
+    ) {
+        let target = TaskTarget {
+            branch_id: branch_id.to_owned(),
+            task_id: data.task_id.clone(),
+        };
+        if let Some(task) = self
+            .tasks
+            .iter_mut()
+            .find(|task| matches!(&task.kind, TaskKind::Command(at) if at == &target))
+        {
+            task.finished = Some(TaskFinish {
+                at,
+                status: match data.status {
+                    ExecStatus::Completed => "Completed",
+                    ExecStatus::Failed => "Failed",
+                    ExecStatus::Cancelled => "Cancelled",
+                },
+                outcome: match data.status {
+                    ExecStatus::Completed => TaskOutcome::Completed,
+                    ExecStatus::Failed => TaskOutcome::Failed,
+                    ExecStatus::Cancelled => TaskOutcome::Stopped,
+                },
+                replayed,
+                text: result_text(&data.result),
+                exit_code: data
+                    .result
+                    .structured_content
+                    .as_ref()
+                    .and_then(|value| value.get("exitCode"))
+                    .and_then(Value::as_i64),
+            });
+        }
+        if let Some((request_id, call_id)) = self.background.remove(&target)
+            && self.owns(branch_id)
+            && let Some(index) = self.rows.iter().position(|row| {
+                row.call_id.as_deref() == Some(call_id.as_str())
+                    && row.batch.as_deref() == Some(request_id.as_str())
+            })
+        {
+            let row = self.row(index);
+            row.result_is_error =
+                data.status != ExecStatus::Completed || data.result.is_error == Some(true);
+            row.result_text = Some(result_text(&data.result));
+            row.exit_code = data
+                .result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("exitCode"))
+                .and_then(Value::as_i64);
+        }
+    }
+
+    fn delegation_result(
+        &mut self,
+        branch_id: &str,
+        data: &dim_agent_types::CollaborationResultData,
+        at: u64,
+        replayed: bool,
+    ) {
+        let (status, outcome, text) = match &data.outcome {
+            CollaborationOutcome::Completed => {
+                ("Completed", TaskOutcome::Completed, data.text.clone())
+            }
+            CollaborationOutcome::Failed { reason } => (
+                "Failed",
+                TaskOutcome::Failed,
+                format!("{reason}\n{}", data.text),
+            ),
+            CollaborationOutcome::Cancelled { reason } => (
+                "Cancelled",
+                TaskOutcome::Stopped,
+                format!("{reason}\n{}", data.text),
+            ),
+        };
+        let finish = TaskFinish {
+            at,
+            status,
+            outcome,
+            replayed,
+            text,
+            exit_code: None,
+        };
+        if let Some(task) = self.tasks.iter_mut().find(|task| {
+            task.branch_id == branch_id
+                && task.id == data.request_event_id
+                && matches!(task.kind, TaskKind::Member(_))
+        }) {
+            task.finished = Some(finish.clone());
+        }
+        if let Some(card) = self.card(branch_id, &data.request_event_id) {
+            card.task.finished = Some(finish);
+        }
+    }
+
+    /// Adopts a background command the owner reports ended at the inventory
+    /// cutoff, whether or not the transcript window held its start.
+    pub fn finished_exec(&mut self, branch: &str, task: &dim_agent_types::FinishedExec) {
+        self.pending_exec(branch, &task.start);
+        if self.tasks.iter().any(|known| {
+            known.branch_id == branch && known.id == task.start.event_id && known.finished.is_some()
+        }) {
+            return;
+        }
+        self.exec_ended(branch, &task.end, task.ended_at, true);
+        self.retain_tasks();
+    }
+
+    /// Adopts a delegation the owner reports settled at the inventory cutoff,
+    /// whether or not the transcript window held its request.
+    pub fn finished_delegation(
+        &mut self,
+        branch: &str,
+        request: &dim_agent_types::FinishedDelegation,
+    ) {
+        let start = &request.start;
+        self.delegation_started(
+            branch,
+            &start.request,
+            &start.event_id,
+            start.sequence,
+            start.started_at,
+            start.position,
+        );
+        self.refresh_result_labels();
+        if self.tasks.iter().any(|known| {
+            known.branch_id == branch && known.id == start.event_id && known.finished.is_some()
+        }) {
+            return;
+        }
+        if let Some(delivery) = &start.delivery {
+            self.delegation_delivered(
+                branch,
+                &dim_agent_types::CollaborationDeliveredData {
+                    op_event_id: start.event_id.clone(),
+                    delivery: delivery.clone(),
+                },
+                if request.result.is_some() {
+                    start.started_at
+                } else {
+                    request.ended_at
+                },
+                true,
+            );
+        }
+        if let Some(result) = &request.result {
+            self.delegation_result(branch, result, request.ended_at, true);
+        }
+        self.retain_tasks();
+    }
+
     pub fn delegation_delivered(
         &mut self,
         branch_id: &str,
@@ -976,11 +1095,7 @@ impl Projection {
     }
 
     pub fn pending_exec(&mut self, branch: &str, task: &dim_agent_types::PendingExec) {
-        if self
-            .tasks
-            .iter()
-            .any(|known| known.branch_id == branch && known.id == task.event_id)
-        {
+        if self.adopt_position(branch, &task.event_id, task.position) {
             return;
         }
         let target = TaskTarget {
@@ -996,10 +1111,19 @@ impl Projection {
             agent: None,
             agent_id: None,
             started_at: task.started_at,
+            dispatch: Some(Dispatch {
+                position: task
+                    .position
+                    .or_else(|| self.call_position(&task.request_id, &task.call_id)),
+                request_id: task.request_id.clone(),
+                call_id: task.call_id.clone(),
+                sequence: task.sequence,
+            }),
             finished: None,
         });
         self.background
             .insert(target, (task.request_id.clone(), task.call_id.clone()));
+        self.retain_tasks();
     }
 
     pub fn clear_inventory(&mut self, branch: &str) {
@@ -1279,6 +1403,7 @@ impl Projection {
             agent: None,
             agent_id: None,
             started_at: run.created_at,
+            dispatch: None,
             finished,
             kind: TaskKind::Workflow(Box::new(WorkflowView {
                 stop_pending: self
@@ -1322,27 +1447,84 @@ impl Projection {
         }
     }
 
+    /// Whether the task `event_id` started on `branch` is known; an owner
+    /// read's `position` fills in a call place its window did not show.
+    fn adopt_position(&mut self, branch: &str, event_id: &str, position: Option<u32>) -> bool {
+        let Some(task) = self
+            .tasks
+            .iter_mut()
+            .find(|task| task.branch_id == branch && task.id == event_id)
+        else {
+            return false;
+        };
+        if let (Some(dispatch), Some(position)) = (&mut task.dispatch, position)
+            && dispatch.position.is_none()
+        {
+            dispatch.position = Some(position);
+            self.retain_tasks();
+        }
+        true
+    }
+
+    fn call_position(&self, request_id: &str, call_id: &str) -> Option<u32> {
+        self.call_positions
+            .get(&(request_id.to_owned(), call_id.to_owned()))
+            .copied()
+    }
+
+    /// Keeps every unfinished task and the 50 most recently finished, then
+    /// orders them by dispatch: a model request by the time its first task
+    /// started, a request's tasks by their call's place in the response,
+    /// and Workflow runs after them by creation. Finishing never reorders.
     fn retain_tasks(&mut self) {
-        self.tasks.sort_by(|a, b| match (&a.finished, &b.finished) {
-            (None, None) => a
-                .started_at
-                .cmp(&b.started_at)
-                .then_with(|| a.branch_id.cmp(&b.branch_id))
-                .then_with(|| a.id.cmp(&b.id)),
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (Some(a_end), Some(b_end)) => b_end
-                .at
-                .cmp(&a_end.at)
-                .then_with(|| a.branch_id.cmp(&b.branch_id))
-                .then_with(|| a.id.cmp(&b.id)),
-        });
-        let unfinished = self
+        let mut finished: Vec<_> = self
             .tasks
             .iter()
-            .take_while(|task| task.finished.is_none())
-            .count();
-        self.tasks.truncate(unfinished + 50);
+            .filter_map(|task| task.finished.as_ref().map(|finish| (finish.at, task)))
+            .collect();
+        if finished.len() > 50 {
+            finished.sort_by(|(a_at, a), (b_at, b)| {
+                b_at.cmp(a_at)
+                    .then_with(|| a.branch_id.cmp(&b.branch_id))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            let kept: HashSet<(String, String)> = finished[..50]
+                .iter()
+                .map(|(_, task)| (task.branch_id.clone(), task.id.clone()))
+                .collect();
+            self.tasks.retain(|task| {
+                task.finished.is_none() || kept.contains(&(task.branch_id.clone(), task.id.clone()))
+            });
+        }
+        let mut first: HashMap<(String, String), u64> = HashMap::new();
+        for task in &self.tasks {
+            if let Some(dispatch) = &task.dispatch {
+                let at = first
+                    .entry((task.branch_id.clone(), dispatch.request_id.clone()))
+                    .or_insert(task.started_at);
+                *at = (*at).min(task.started_at);
+            }
+        }
+        self.tasks.sort_by_cached_key(|task| match &task.dispatch {
+            Some(dispatch) => (
+                0,
+                first[&(task.branch_id.clone(), dispatch.request_id.clone())],
+                task.branch_id.clone(),
+                dispatch.request_id.clone(),
+                dispatch.position.unwrap_or(u32::MAX),
+                dispatch.sequence,
+                task.id.clone(),
+            ),
+            None => (
+                1,
+                task.started_at,
+                task.branch_id.clone(),
+                String::new(),
+                0,
+                0,
+                task.id.clone(),
+            ),
+        });
     }
 
     /// A main-branch delegation's card.
@@ -1418,6 +1600,24 @@ impl Projection {
             );
         }
         self.agent_names = names;
+        self.refresh_result_labels();
+    }
+
+    fn refresh_result_labels(&mut self) {
+        let owner = if self.owner.is_empty() {
+            "main"
+        } else {
+            &self.owner
+        };
+        for task in self.tasks.iter().filter(|task| task.branch_id == owner) {
+            let row_id = format!("agent-{}", task.id);
+            if let Some(row) = self.rows.iter_mut().find(|row| row.row_id == row_id) {
+                Arc::make_mut(row).display = Some(match &task.agent {
+                    Some(agent) => format!("{} · {agent}", task.label),
+                    None => task.label.clone(),
+                });
+            }
+        }
     }
 
     /// Native Agents the tasks or cards name that no `agent.list` read covered yet.

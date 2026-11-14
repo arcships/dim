@@ -10432,7 +10432,8 @@ fn tui_tasks_panel_stops_the_selected_command_or_member() {
     terminal.write(b"x");
     terminal.until("agent cancelled: stopped by the user");
     terminal.write(b"\x1b[27ucontinue the leader\r");
-    terminal.until("agent result: Other agent completed normally.");
+    terminal.until("agent result · Check the docs · writer");
+    terminal.until("Other agent completed normally.");
     terminal.write(b"/tasks\r");
     terminal.until("Check the docs");
     home.kill(&terminal);

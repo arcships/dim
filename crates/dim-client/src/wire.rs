@@ -447,6 +447,20 @@ pub struct PendingDelegations {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FinishedTasks {
+    pub branch_id: String,
+    pub through: u64,
+    pub tasks: Vec<dim_agent_types::FinishedExec>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedDelegations {
+    pub branch_id: String,
+    pub through: u64,
+    pub requests: Vec<dim_agent_types::FinishedDelegation>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnRead {
     pub branch_id: String,
     pub through: u64,

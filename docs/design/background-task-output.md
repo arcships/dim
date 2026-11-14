@@ -298,3 +298,11 @@ These fields come from `exec/started` with no matching `exec/ended` at that cuto
 The query does not read captured output, output paths, tool arguments or results.
 Later `exec/ended` settles the inventory by `taskId`. Read failure leaves controls unavailable;
 it does not prove that no tasks exist. This adds no task table and does not change stop admission.
+
+The same part registers nonmutating `session.exec.finished` for the
+[task list's settled rows](background-task-list.md#2-discover-and-fold-tasks).
+Parameters are `sessionId`, `branchId` and optional published `through`. Reply: `branchId`,
+fixed `through` and `tasks`: the 50 newest `exec/ended` facts at that cutoff, newest first,
+each `{start, endedAt, end}`, where `start` is the task item above, `endedAt` the end
+fact's `create_at` and `end` its data. An end whose `exec/started` is not on the branch
+is omitted. The reply is not paged; it reads no captured output.

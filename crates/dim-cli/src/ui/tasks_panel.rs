@@ -302,7 +302,8 @@ impl TasksPanel {
                         state: MemberConversationState::Closed,
                         ..
                     }
-                ) {
+                ) || detail.task.finished.is_some()
+                {
                     return Effect::None;
                 }
                 return self.stop(&detail.task);
@@ -716,6 +717,87 @@ impl TasksPanel {
             Some(&title_plain(&title, inner, p)),
             Some(&key_hints(t(hint), p)),
         )
+    }
+}
+
+impl TasksPanel {
+    /// Whether the panel shows a member's conversation.
+    pub fn shows_member(&self) -> bool {
+        matches!(
+            self.detail.as_deref(),
+            Some(Detail {
+                body: DetailBody::Member { .. },
+                ..
+            })
+        )
+    }
+
+    pub fn member_snapshot(&self) -> Option<&ViewSnapshot> {
+        match &self.detail.as_deref()?.body {
+            DetailBody::Member { snapshot, .. } => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    /// The boundary above the transcript and the read-only composer bar.
+    pub fn member_chrome(&self, width: usize, p: &Palette) -> (String, Vec<String>) {
+        let Some(Detail {
+            task,
+            body:
+                DetailBody::Member {
+                    snapshot,
+                    state,
+                    model,
+                },
+            ..
+        }) = self.detail.as_deref()
+        else {
+            unreachable!("shows_member")
+        };
+        let content = width.saturating_sub(2).max(1);
+        let stoppable =
+            task.finished.is_none() && !matches!(state, MemberConversationState::Closed);
+        let status = match (state, &task.finished) {
+            (MemberConversationState::ReadError(error), _) => {
+                format!("{}: {}", t("Conversation unavailable"), safe(error))
+            }
+            (MemberConversationState::Closed, _) => t("Session closed").to_owned(),
+            (_, Some(finish)) => t(finish.status).to_owned(),
+            (MemberConversationState::Loading, None) => t("Loading conversation...").to_owned(),
+            (MemberConversationState::Live, None) if snapshot.running => t("Running").to_owned(),
+            (MemberConversationState::Live, None) => t("Observing conversation").to_owned(),
+        };
+        let agent = task.agent.as_deref().map_or_else(String::new, safe);
+        let model = model
+            .as_deref()
+            .map_or_else(|| t("No model observed").to_owned(), safe);
+        let note = if stoppable {
+            t("Read-only: you can watch this agent or stop it.")
+        } else {
+            t("Read-only: this agent has finished.")
+        };
+        let keys = if stoppable {
+            t("Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump")
+        } else {
+            t("Esc back · ↑↓ PgUp PgDn scroll · Home/End jump")
+        };
+        let bar = bordered(
+            &[
+                fg(&truncate_cells(note, content), &p.muted),
+                key_hints(&truncate_cells(keys, content), p),
+            ],
+            width,
+            None,
+            &p.border,
+            Some(&title_plain(&format!("{agent} · {model}"), content, p)),
+            Some(&fg(&truncate_cells(&status, content), &p.muted)),
+        );
+        let mut title = safe(&task.label);
+        if !agent.is_empty() {
+            title.push_str(&format!(" · {agent}"));
+        }
+        title.push_str(&format!(" · {}", t("read-only")));
+        (title, bar)
     }
 }
 

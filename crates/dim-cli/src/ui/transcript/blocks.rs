@@ -275,6 +275,69 @@ fn hook_row(row: HookRow, body: &str, expanded: bool, width: usize, p: &Palette)
     rows
 }
 
+/// Nonblank rendered rows of a member result shown before the rest folds
+/// away.
+pub(crate) const MEMBER_RESULT_LINES: usize = 6;
+
+/// A member's completed result: a muted header, then the Markdown body under
+/// the gutter. Collapsed, the body stops after [`MEMBER_RESULT_LINES`] nonblank
+/// rendered rows and says how many follow; `interactive` (fullscreen) marks the header
+/// with its disclosure.
+fn member_result(
+    label: Option<&str>,
+    body: &str,
+    expanded: bool,
+    interactive: bool,
+    width: usize,
+    p: &Palette,
+    markdown: &MarkdownRenderer,
+) -> Vec<String> {
+    let gutter = gutter_width(width);
+    let content = width.saturating_sub(gutter).max(1);
+    let lines = markdown.render(&crate::sanitize::safe(body), content, 0);
+    let mut filled = 0;
+    let preview = lines
+        .iter()
+        .position(|line| {
+            if !crate::ui::render::panel::strip_escapes(line)
+                .trim()
+                .is_empty()
+            {
+                filled += 1;
+            }
+            filled > MEMBER_RESULT_LINES
+        })
+        .unwrap_or(lines.len());
+    let folds = preview < lines.len();
+    let mut header = match label {
+        Some(label) => format!("{} · {}", t("agent result"), crate::sanitize::safe(label)),
+        None => t("agent result").to_owned(),
+    };
+    if interactive && folds {
+        header.push_str(if expanded { " ▾" } else { " ▸" });
+    }
+    let mut rows = gutter_text(STATUS_MARK, &header, width, &p.muted);
+    let shown = if expanded { lines.len() } else { preview };
+    let indent = " ".repeat(gutter);
+    rows.extend(lines[..shown].iter().map(|line| format!("{indent}{line}")));
+    if shown < lines.len() {
+        rows.push(format!(
+            "{indent}{}",
+            fg(
+                &truncate_cells(
+                    &tf(
+                        "… {count} more lines",
+                        &[("count", &(lines.len() - shown).to_string())]
+                    ),
+                    content
+                ),
+                &p.muted
+            )
+        ));
+    }
+    rows
+}
+
 /// Reasoning text as plain prose wrapped to the content width, its
 /// paragraphs kept: runs of blank lines fold into one, the edges are trimmed
 /// and bold markers dropped.
@@ -579,6 +642,19 @@ pub(crate) fn render_block(
             },
         ),
         Block::Assistant(text) => markdown.render(&crate::sanitize::safe(text), width, 0),
+        Block::MemberResult {
+            label,
+            body,
+            expanded,
+        } => member_result(
+            label.as_deref(),
+            body,
+            *expanded,
+            interactive,
+            width,
+            p,
+            markdown,
+        ),
         Block::Hook {
             row,
             body,

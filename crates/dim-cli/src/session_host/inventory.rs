@@ -1,13 +1,18 @@
 use super::*;
 use dim_client::wire::{
-    PendingDelegations as Delegations, PendingInputs as Inputs, PendingQuestions as Questions,
-    PendingTasks as Tasks,
+    FinishedDelegations, FinishedTasks, PendingDelegations as Delegations, PendingInputs as Inputs,
+    PendingQuestions as Questions, PendingTasks as Tasks,
 };
 
-pub(super) const METHODS: [&str; 6] = [
+/// The current-state reads after a branch's transcript window. The two
+/// `finished` reads restore settled tasks whose start the window left out;
+/// a daemon without them is skipped like any other unlisted method.
+pub(super) const METHODS: [&str; 8] = [
     "session.question.pending",
     "session.input.pending",
+    "session.exec.finished",
     "session.exec.pending",
+    "session.collaboration.finished",
     "session.collaboration.pending",
     "session.turn.get",
     "session.goal.get",
@@ -53,6 +58,26 @@ impl Worker {
                 }
                 (page.branch_id, page.through, page.next)
             }
+            "session.exec.finished" => {
+                let page: FinishedTasks = serde_json::from_value(value)?;
+                for task in &page.tasks {
+                    self.projection.finished_exec(branch, task);
+                    if let Some(line) = self.lines.get_mut(branch) {
+                        line.projection.finished_exec(branch, task);
+                    }
+                }
+                (page.branch_id, page.through, None)
+            }
+            "session.collaboration.finished" => {
+                let page: FinishedDelegations = serde_json::from_value(value)?;
+                for request in &page.requests {
+                    self.projection.finished_delegation(branch, request);
+                    if let Some(line) = self.lines.get_mut(branch) {
+                        line.projection.finished_delegation(branch, request);
+                    }
+                }
+                (page.branch_id, page.through, None)
+            }
             "session.exec.pending" => {
                 let page: Tasks = serde_json::from_value(value)?;
                 for task in page.tasks {
@@ -70,7 +95,9 @@ impl Worker {
                         branch,
                         &request.request,
                         &request.event_id,
+                        request.sequence,
                         request.started_at,
+                        request.position,
                     );
                     if let Some(delivery) = &request.delivery {
                         self.projection.delegation_delivered(
@@ -88,7 +115,9 @@ impl Worker {
                             branch,
                             &request.request,
                             &request.event_id,
+                            request.sequence,
                             request.started_at,
+                            request.position,
                         );
                         if let Some(delivery) = request.delivery {
                             line.projection.delegation_delivered(

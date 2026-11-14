@@ -2482,6 +2482,112 @@ async fn members_cancel_close_and_leave_the_team() {
     server.join().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finished_delegations_exclude_failed_non_request_deliveries_before_the_limit() {
+    let (server, agent) = launch_team().await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let default_agent = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": default_agent, "prompt": "done"})),
+        "queue",
+    )
+    .await;
+    returned(&mut client, &lead, &lead_session, 1).await;
+    for index in 0..49 {
+        say(
+            &mut client,
+            &lead,
+            tool(json!({"action": "request", "agentId": "no-such-agent",
+                "prompt": format!("failed delegation {index}")})),
+            "queue",
+        )
+        .await;
+        idle(&mut client, &lead).await;
+    }
+    let before = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&before);
+    let expected = before["result"]["requests"].as_array().unwrap();
+    assert_eq!(expected.len(), 50);
+    assert!(
+        expected[..49]
+            .iter()
+            .all(|item| item["result"].is_null() && item["start"]["delivery"]["status"] == "error")
+    );
+    assert_eq!(expected[49]["result"]["status"], "completed");
+    for index in 0..51 {
+        let action = ["message", "cancel", "close"][index % 3];
+        let mut input = json!({"action": action, "agentId": default_agent,
+            "sessionId": "no-such-member"});
+        if action == "message" {
+            input["content"] = json!("not a delegation");
+        }
+        say(&mut client, &lead, tool(input), "queue").await;
+        idle(&mut client, &lead).await;
+        assert!(last_error(&events(&lead_session).await).starts_with("team_member_not_found"));
+    }
+    let timeline = events(&lead_session).await;
+    assert_eq!(
+        timeline
+            .iter()
+            .filter(
+                |event| matches!(&event.kind, EventKind::CollaborationDelivered(data)
+                if matches!(&data.delivery, CollaborationDelivery::Error { .. }))
+            )
+            .count(),
+        100,
+        "49 refused delegations and 51 refused message/cancel/close operations were delivered"
+    );
+    let after = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&after);
+    assert_eq!(after["result"]["requests"], before["result"]["requests"]);
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": "no-such-agent", "prompt": "newest failure"})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    let newest = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&newest);
+    let newest = newest["result"]["requests"].as_array().unwrap();
+    assert_eq!(newest.len(), 50);
+    assert_eq!(newest[0]["start"]["request"]["prompt"], "newest failure");
+    assert_eq!(&newest[1..], &expected[..49]);
+    let cutoff = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main", "through": before["result"]["through"]}),
+        )
+        .await;
+    assert_ok(&cutoff);
+    assert_eq!(cutoff["result"], before["result"]);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A leader stop covers only requests of its active turn and returns no
 /// result input for them; closing the leader settles its requests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

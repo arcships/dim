@@ -28,6 +28,9 @@ pub enum RowKind {
     /// One muted status row where the input was written, with the same detail
     /// setting as a hook's context, and never a message either.
     HookFollowUp,
+    /// A member's completed delegation result: a header naming the task and
+    /// its Markdown body, folded to a preview unless expanded.
+    MemberResult,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -302,7 +305,21 @@ pub struct TaskView {
     /// An existing native Agent that `agent.list` can name.
     pub agent_id: Option<String>,
     pub started_at: u64,
+    /// The model request and call that dispatched it, with its start event's
+    /// sequence; a Workflow run has none.
+    pub dispatch: Option<Dispatch>,
     pub finished: Option<TaskFinish>,
+}
+
+/// Where a command or delegation was dispatched: the list orders tasks by
+/// it, so finishing never moves a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub request_id: String,
+    pub call_id: String,
+    /// The call's index in its model response, when that response was read.
+    pub position: Option<u32>,
+    pub sequence: u64,
 }
 
 /// How a task ended, as the owner that ended it classified it: a stop is not
