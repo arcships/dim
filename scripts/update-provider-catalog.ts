@@ -759,6 +759,19 @@ function validateRole(id, metadata, models) {
   }
 }
 
+/// A provider states whether its declarations are a subscription or coding
+/// plan rather than the vendor's API entry. The flag is read by the model-id
+/// matcher, which prefers the API entry when both sell one model, so it only
+/// takes the one value and only on a provider that has declarations.
+function validatePlan(id, metadata, models) {
+  if (metadata.plan !== undefined && metadata.plan !== true) {
+    throw new Error(`Provider ${id}: plan is either absent or true`)
+  }
+  if (metadata.plan === true && models.length === 0) {
+    throw new Error(`Provider ${id}: only a provider with bundled models states a plan`)
+  }
+}
+
 function validateCatalog(catalog) {
   if (!Array.isArray(catalog?.providers) || typeof catalog.updatedAt !== "string" || !Number.isFinite(Date.parse(catalog.updatedAt))) {
     throw new Error("Catalog requires an updatedAt timestamp and a providers array")
@@ -772,6 +785,7 @@ function validateCatalog(catalog) {
     if (!isRecord(metadata?.raw) || !Array.isArray(models)) throw new Error(`Provider ${id} requires raw metadata and a models array`)
     if (metadata.lookupOnly && metadata.customModels) throw new Error(`Provider ${id}: model ownership is ambiguous`)
     validateRole(id, metadata, models)
+    validatePlan(id, metadata, models)
     assertUniqueModelIds(models, id, "modelId")
     for (const { modelId, capabilities } of models) {
       for (const key of ["contextWindow", "maxOutputTokens"]) {

@@ -690,3 +690,29 @@ test("an override for a local or unknown provider fails the offline run", async 
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /Model override provider not-a-provider is not a bundled provider/);
 });
+
+test("a plan provider states it and an API entry beside it does not", async (t) => {
+  const { cwd, env } = await checkout(t);
+  const path = join(cwd, bundled);
+  const declared = JSON.parse(await readFile(path, "utf8"));
+  const write = () => writeFile(path, JSON.stringify(declared, null, 2));
+  const provider = (id) => declared.providers.find((entry) => entry.providerId === id);
+
+  assert.equal(provider("openai-codex").metadata.plan, true);
+  assert.equal(provider("openai").metadata.plan, undefined);
+
+  const codex = provider("openai-codex");
+  codex.metadata.plan = "yes";
+  await write();
+  const invalid = spawnSync(process.execPath, [script], { cwd, env, encoding: "utf8" });
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Provider openai-codex: plan is either absent or true/);
+
+  codex.metadata.plan = true;
+  const ollama = provider("ollama");
+  ollama.metadata.plan = true;
+  await write();
+  const empty = spawnSync(process.execPath, [script], { cwd, env, encoding: "utf8" });
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /Provider ollama: only a provider with bundled models states a plan/);
+});

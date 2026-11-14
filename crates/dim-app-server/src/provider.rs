@@ -195,11 +195,35 @@ pub struct ProviderModel {
     pub metadata: Option<ModelMetadata>,
 }
 
-/// The error text for a model no source declares limits for.
-fn undeclared_limits(capabilities: &CatalogCapabilities) -> String {
+/// The error text for a model no source declares limits for: the entry, the
+/// limits it lacks and, when a step refused it, the rows that still disagree.
+/// Every provider kind declares a limit through `provider.models.edit`, which
+/// `ProviderService::update_model_config` serves by calling
+/// `BundledCatalog::merge_visible_edit` and storing the result in the record's
+/// `model_config_overrides`.
+fn undeclared_limits(provider_id: &str, model: &ProviderModel) -> String {
+    let missing = model.capabilities.missing_limits().join(" or ");
+    let candidates = model
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.identification.as_ref())
+        .filter(|identification| identification.rule == "ambiguous")
+        .map(|identification| {
+            identification
+                .candidates
+                .iter()
+                .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|candidates| !candidates.is_empty());
+    let disagreement = match candidates {
+        Some(candidates) => format!(", and the rows that name it disagree ({candidates})"),
+        None => String::new(),
+    };
     format!(
-        "Model has no declared {}",
-        capabilities.missing_limits().join(" or ")
+        "Model {provider_id}/{} declares no {missing}{disagreement}; declare the missing limits with provider.models.edit",
+        model.id
     )
 }
 
@@ -210,10 +234,9 @@ fn capability_snapshot(
     model: &ProviderModel,
     target: ModelId,
 ) -> Result<ModelCapabilitySnapshot, ProviderError> {
-    let capabilities = model
-        .capabilities
-        .declared()
-        .ok_or_else(|| ProviderError::InvalidConfig(undeclared_limits(&model.capabilities)))?;
+    let capabilities = model.capabilities.declared().ok_or_else(|| {
+        ProviderError::InvalidConfig(undeclared_limits(&target.provider_id, model))
+    })?;
     Ok(ModelCapabilitySnapshot {
         target,
         capabilities,
@@ -2138,7 +2161,7 @@ impl ProviderService {
                 if model.missing_limits.is_empty() {
                     "Model is unavailable".into()
                 } else {
-                    undeclared_limits(&model.capabilities)
+                    undeclared_limits(&target.provider_id, model)
                 },
             ));
         }
@@ -2418,6 +2441,7 @@ impl ConnectionUse<'_> {
     fn select<'a>(
         &self,
         catalog: &'a ProviderCatalog,
+        provider_id: &str,
         model_id: &str,
     ) -> Result<&'a ProviderModel, HostError> {
         match self {
@@ -2427,7 +2451,7 @@ impl ConnectionUse<'_> {
                     .iter()
                     .find(|model| model.id == model_id)
                     .filter(|model| !model.missing_limits.is_empty())
-                    .map(|model| undeclared_limits(&model.capabilities))
+                    .map(|model| undeclared_limits(provider_id, model))
                     .unwrap_or_else(|| "Model is unavailable".into());
                 failure(message)
             }),
@@ -2539,7 +2563,7 @@ impl ProviderService {
             if let Some((window, output)) = use_.startup_limits() {
                 catalog.apply_startup_limits(Some(window), Some(output));
             }
-            let model = use_.select(&catalog, model_id)?;
+            let model = use_.select(&catalog, provider_id, model_id)?;
             let protocol = model
                 .endpoint
                 .ok_or_else(|| failure("Model is unavailable"))?;
@@ -2677,7 +2701,7 @@ impl ProviderService {
         if let Some((window, output)) = use_.startup_limits() {
             catalog.apply_startup_limits(Some(window), Some(output));
         }
-        let model = use_.select(&catalog, model_id)?;
+        let model = use_.select(&catalog, provider_id, model_id)?;
         let realtime = use_.realtime(model)?;
         let lease = self
             .oauth
