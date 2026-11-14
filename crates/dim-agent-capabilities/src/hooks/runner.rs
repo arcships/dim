@@ -473,6 +473,14 @@ impl HooksRuntime {
             }
         };
         self.report(handler, &result, started.elapsed());
+        // The run's result is taken here, in the same poll that hands it to
+        // `run_ordered`: the select there is biased to a finished run over
+        // the unload, and nothing awaits between this settle and the return.
+        // The early returns above (gate cancelled, spawn failed, wait failed)
+        // settle nothing: they leave the test's watch waiting, which is the
+        // conservative direction.
+        #[cfg(feature = "testing")]
+        super::testing::settle(Path::new(&self.config.cwd), &handler.source, &result);
         result
     }
 
