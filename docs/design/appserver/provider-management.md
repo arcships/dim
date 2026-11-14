@@ -460,10 +460,18 @@ The projection records the outcome in `metadata.identification`: `rule` is one
 of `provider-exact`, `qualified`, `token`, `canonical`, `custom-provider`,
 `merge` or `ambiguous`; `narrowedByDisplayName` says the display name settled
 several canonical hits; `candidates` names the rows an ambiguity refused; and
-`filled` names the entry and rule that supplied each limit the row did not
-declare. A refusal names the provider and
+`filled` names the entry, rule and value of each limit the row did not declare.
+A merge adopts one minimum per limit from one joining row each, so its `filled`
+names the row that declared each adopted value, with that merge's own `rule`. A
+limit the row declares itself has no `filled` record, and `provider.models.edit`
+drops the record of each limit it declares. A refusal names the provider and
 the model id, the limits that are missing, the candidates that still disagree,
 and `provider.models.edit` as the write that declares them.
+
+`metadataSource` and `matchedProviderId` name the row the projected entry is
+copied from, which for a merge is the first joining row: the entry's display
+name, pricing, capabilities and any limit that row declares come from it. They
+do not name the supplier of a merged limit; `filled` does, one limit at a time.
 
 Absence is a value of the type, not a number. The catalog carries
 `CatalogCapabilities`, whose two limits are optional and absent when no source

@@ -8230,7 +8230,9 @@ async fn an_unreadable_recorded_protocol_rejects_a_preference_update() {
 
 /// A merged row is editable: the merge supplies numbers the row declares
 /// nowhere, and an edit declares one of them, so the edited value answers the
-/// catalog and a selection while the other limit keeps the merged value.
+/// catalog and a selection while the other limit keeps the merged value. The
+/// edit drops the record of the limit it declares, and the other limit still
+/// names the seller the merge adopted it from.
 #[tokio::test]
 async fn an_edited_merged_limit_stays_edited() {
     const ID: &str = "openai/gpt-oss-20b";
@@ -8316,6 +8318,16 @@ async fn an_edited_merged_limit_stays_edited() {
         .clone()
         .unwrap();
     assert_eq!(identification.rule, "merge", "{ID}");
+    let suppliers: Vec<_> = identification
+        .filled
+        .iter()
+        .map(|limit| (limit.field.as_str(), limit.provider_id.as_str()))
+        .collect();
+    assert_eq!(
+        suppliers,
+        [("contextWindow", "aihubmix"), ("maxOutputTokens", "qiniu")],
+        "{ID}: the merge names the seller of each limit"
+    );
 
     // A window the merge never supplied, so the assertion separates an edit
     // from the merged value.
@@ -8334,6 +8346,22 @@ async fn an_edited_merged_limit_stays_edited() {
     let model = catalog.models.iter().find(|model| model.id == ID).unwrap();
     assert!(model.missing_limits.is_empty(), "{ID}");
     assert_eq!(model.unavailable_reason, None, "{ID}");
+    let suppliers: Vec<_> = model
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap()
+        .filled
+        .iter()
+        .map(|limit| (limit.field.as_str(), limit.provider_id.as_str()))
+        .collect();
+    assert_eq!(
+        suppliers,
+        [("maxOutputTokens", "qiniu")],
+        "{ID}: the edit dropped the window's record and kept the other's"
+    );
 
     let selection = provider
         .configuration(

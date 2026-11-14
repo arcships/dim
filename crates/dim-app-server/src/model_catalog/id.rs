@@ -155,6 +155,9 @@ pub(super) struct Lookup {
     pub(super) rule: &'static str,
     /// Step 3's display name settled several canonical hits.
     pub(super) narrowed: bool,
+    /// For a merge, the row each adopted limit came from. Empty for every step
+    /// that named one row, whose own declaration supplies both limits.
+    pub(super) suppliers: Vec<FilledLimit>,
 }
 
 impl Lookup {
@@ -173,6 +176,7 @@ impl Lookup {
             score,
             rule,
             narrowed,
+            suppliers: Vec::new(),
         }
     }
 }
@@ -877,30 +881,54 @@ impl BundledCatalog {
         // does today, so the id is not left unselectable for want of a
         // declaration that no seller ever made.
         let fallback = declaring.is_empty().then_some(&first.entry.capabilities);
-        let window = declaring
-            .iter()
-            .filter_map(|row| row.entry.capabilities.context_window)
-            .min()
-            .or_else(|| fallback.and_then(|capabilities| capabilities.context_window));
-        let output = declaring
-            .iter()
-            .filter_map(|row| row.entry.capabilities.max_output_tokens)
-            .min()
-            .or_else(|| fallback.and_then(|capabilities| capabilities.max_output_tokens));
+        let window = minimum(&declaring, |capabilities| capabilities.context_window)
+            .or_else(|| Some((first, fallback?.context_window?)));
+        let output = minimum(&declaring, |capabilities| capabilities.max_output_tokens)
+            .or_else(|| Some((first, fallback?.max_output_tokens?)));
         let efforts = intersection(declaring.iter());
-        entry.capabilities.context_window = window;
-        entry.capabilities.max_output_tokens = output;
+        entry.capabilities.context_window = window.map(|(_, value)| value);
+        entry.capabilities.max_output_tokens = output.map(|(_, value)| value);
+        // The intersection is the merged entry's own statement, so it is
+        // written even when the row the entry is copied from declares none.
         if let Some(efforts) = efforts {
             let metadata = entry.metadata.get_or_insert_default();
             metadata.reasoning.get_or_insert_default().effort_options = Some(efforts);
         }
-        self.one(
-            first.provider_id.to_owned(),
+        let suppliers = [("contextWindow", window), ("maxOutputTokens", output)]
+            .into_iter()
+            .filter_map(|(field, adopted)| {
+                let (row, value) = adopted?;
+                Some(FilledLimit {
+                    field: field.into(),
+                    value,
+                    provider_id: row.provider_id.to_owned(),
+                    model_id: row.entry.model_id.clone(),
+                    rule: Rule::Merge.word().into(),
+                })
+            })
+            .collect();
+        Outcome::One(Box::new(Lookup {
+            provider_id: first.provider_id.to_owned(),
             entry,
-            Rule::Merge.strategy(first.provider_id, &first.entry.model_id, id),
-            Rule::Merge,
-        )
+            strategy: Rule::Merge.strategy(first.provider_id, &first.entry.model_id, id),
+            score: Rule::Merge.score(),
+            rule: Rule::Merge.word(),
+            narrowed: false,
+            suppliers,
+        }))
     }
+}
+
+/// The smallest value of one limit over the rows that declare it, with the row
+/// that declared that value: the first joining row carrying it, so the record
+/// names one seller rather than a set.
+fn minimum<'a>(
+    rows: &[Row<'a>],
+    limit: impl Fn(&CatalogCapabilities) -> Option<u64>,
+) -> Option<(Row<'a>, u64)> {
+    rows.iter()
+        .filter_map(|row| Some((*row, limit(&row.entry.capabilities)?)))
+        .min_by_key(|(_, value)| *value)
 }
 
 /// Whether an aggregator row's tokens name the same model as the input, with

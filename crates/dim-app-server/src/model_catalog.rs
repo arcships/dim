@@ -448,7 +448,7 @@ impl BundledCatalog {
                 rule: found.rule.into(),
                 narrowed_by_display_name: found.narrowed,
                 candidates: Vec::new(),
-                filled: Vec::new(),
+                filled: found.suppliers,
             }),
             Err(candidates) => Some(ModelIdentification {
                 rule: "ambiguous".into(),
@@ -502,12 +502,21 @@ impl BundledCatalog {
                 continue;
             };
             *own = Some(value);
-            filled.push(FilledLimit {
-                field: field.into(),
-                value,
-                provider_id: found.provider_id.clone(),
-                model_id: found.entry.model_id.clone(),
-                rule: found.rule.to_owned(),
+            // A merge adopted the value from one of the joining rows, and that
+            // row is the supplier; a step that named one row is its own.
+            let supplier = found
+                .suppliers
+                .iter()
+                .find(|limit| limit.field == field && limit.value == value);
+            filled.push(match supplier {
+                Some(limit) => limit.clone(),
+                None => FilledLimit {
+                    field: field.into(),
+                    value,
+                    provider_id: found.provider_id.clone(),
+                    model_id: found.entry.model_id.clone(),
+                    rule: found.rule.to_owned(),
+                },
             });
         }
         if filled.is_empty() {
@@ -614,20 +623,26 @@ impl BundledCatalog {
                 &mut model.capabilities.max_output_tokens,
             ),
         ] {
-            let fields = &mut model
-                .metadata
-                .get_or_insert_default()
-                .capability_override_fields;
+            let metadata = model.metadata.get_or_insert_default();
+            let marked = metadata
+                .capability_override_fields
+                .iter()
+                .any(|name| name == field);
             match value {
                 Some(value) => {
                     *target = Some(value.get());
-                    if !fields.iter().any(|name| name == field) {
-                        fields.push(field.into());
+                    if !marked {
+                        metadata.capability_override_fields.push(field.into());
+                    }
+                    // The edit declares this limit, so a record of an entry
+                    // that supplied it is stale and must not survive the edit.
+                    if let Some(identification) = metadata.identification.as_mut() {
+                        identification.filled.retain(|limit| limit.field != field);
                     }
                 }
                 // A limit this entry does not declare is dropped, so an
                 // override never captures a value inherited from a bundle.
-                None if !fields.iter().any(|name| name == field) => *target = None,
+                None if !marked => *target = None,
                 None => {}
             }
         }

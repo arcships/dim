@@ -305,8 +305,14 @@ Provider 默认值不是声明，携带其 Provider 在大量行上写出的那�
 投影把结果记入 `metadata.identification`：`rule` 取 `provider-exact`、`qualified`、`token`、
 `canonical`、`custom-provider`、`merge`、`ambiguous` 之一；`narrowedByDisplayName` 表示显示名
 收窄了多个规范命中；`candidates` 指出歧义拒绝的各行；`filled` 指出为该行未声明的每项上限提供
-取值的条目与规则。拒绝时消息指出 Provider 与模型 id、缺失的上限、仍然分歧的候选行，以及声明
-它们的写入 `provider.models.edit`。
+取值的条目、规则与数值。合并对每项上限各取一个最小值，各自来自一行，因此其 `filled` 指出声明
+该值的行，并带该合并自己的 `rule`。行自身声明的上限没有 `filled` 记录，`provider.models.edit`
+为其声明的每项上限删除对应记录。拒绝时消息指出 Provider 与模型 id、缺失的上限、仍然分歧的
+候选行，以及声明它们的写入 `provider.models.edit`。
+
+`metadataSource` 与 `matchedProviderId` 指出投影条目复制自哪一行，对合并即第一行加入的行：
+条目的显示名、价格、能力，以及该行自身声明的上限都来自它。它们不指出合并后某项上限的卖方；
+`filled` 逐项指出。
 
 缺失是类型上的值，不是数字。目录侧使用 `CatalogCapabilities`：两项上限都是可选的，没有来源
 声明时缺省；存储描述、其覆盖、用户模型、投影结果和托管目录的模型都用它。面向 Session 的

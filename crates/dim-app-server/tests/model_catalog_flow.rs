@@ -885,6 +885,112 @@ fn a_namespaced_id_the_namespace_provider_does_not_name_is_refused() {
     assert_eq!(named, [("openai-codex", "gpt-image-2.5-flare")]);
 }
 
+/// A merge answers for several sellers at once, so each adopted limit keeps the
+/// row it came from: `openai/gpt-oss-20b` takes its window from aihubmix and its
+/// output cap from qiniu, while `metadataSource` still names the row the entry
+/// is copied from.
+#[test]
+fn a_merged_limit_names_the_seller_it_came_from() {
+    let catalog = BundledCatalog::load().unwrap();
+    let entry = relay(&catalog, "openai/gpt-oss-20b");
+    let metadata = entry.metadata.as_ref().unwrap();
+    let identification = metadata.identification.as_ref().unwrap();
+    let filled: Vec<_> = identification
+        .filled
+        .iter()
+        .map(|limit| {
+            (
+                limit.field.as_str(),
+                limit.value,
+                limit.provider_id.as_str(),
+                limit.model_id.as_str(),
+                limit.rule.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        (
+            numbers(&entry),
+            filled,
+            metadata.metadata_source.as_deref(),
+            metadata.matched_model_id.as_deref()
+        ),
+        (
+            (Some(128_000), Some(4_096)),
+            vec![
+                (
+                    "contextWindow",
+                    128_000,
+                    "aihubmix",
+                    "gpt-oss-20b",
+                    "merge"
+                ),
+                ("maxOutputTokens", 4_096, "qiniu", "gpt-oss-20b", "merge"),
+            ],
+            Some("openrouter"),
+            Some("openai/gpt-oss-20b"),
+        ),
+        "each adopted minimum names the row that declared it"
+    );
+    assert_eq!(identification.rule, "merge");
+}
+
+/// The same provenance on the list a relay serves: `effective_models` projects
+/// every row of a custom provider, and a row that declares neither limit takes
+/// both from the merge with the seller of each.
+#[test]
+fn a_merge_carries_the_sellers_through_the_effective_models() {
+    let catalog = BundledCatalog::load().unwrap();
+    let row: ModelEntry = serde_json::from_value(json!({
+        "modelId": "openai/gpt-oss-20b",
+        "displayName": "openai/gpt-oss-20b",
+        "status": "active",
+        "capabilities": {
+            "modalities": ["text"], "toolCalling": true, "streaming": true,
+            "structuredOutput": true, "vision": false, "audio": false,
+            "reasoning": false
+        }
+    }))
+    .unwrap();
+    let provider = ProviderProjection {
+        provider_id: "my-gateway".into(),
+        source: Some(ModelSource::Custom),
+        models: vec![row.clone()],
+        ..Default::default()
+    };
+    let effective = catalog.effective_models(&provider, std::slice::from_ref(&row), &[]);
+    let identification = effective[0]
+        .metadata
+        .as_ref()
+        .unwrap()
+        .identification
+        .as_ref()
+        .unwrap();
+    let filled: Vec<_> = identification
+        .filled
+        .iter()
+        .map(|limit| (limit.field.as_str(), limit.value, limit.provider_id.as_str()))
+        .collect();
+    assert_eq!(
+        (
+            (
+                effective[0].capabilities.context_window,
+                effective[0].capabilities.max_output_tokens
+            ),
+            identification.rule.as_str(),
+            filled,
+        ),
+        (
+            (Some(128_000), Some(4_096)),
+            "merge",
+            vec![
+                ("contextWindow", 128_000, "aihubmix"),
+                ("maxOutputTokens", 4_096, "qiniu"),
+            ],
+        )
+    );
+}
+
 /// Every aggregator row that names the same model with the same tag joins, and
 /// the merge takes the safe direction: the smallest window and the smallest
 /// output cap any joining row declares.
