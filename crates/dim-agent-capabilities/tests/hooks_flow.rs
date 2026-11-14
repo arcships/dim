@@ -2289,11 +2289,31 @@ async fn hook_output_is_dropped_after_an_interrupt() {
     .await;
     session.interrupt("main", "stop".into()).unwrap();
     let _ = session.idle("main").await;
-    turn(
-        &session,
-        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
-    )
-    .await;
+    // A source input drives the second turn, so the only reason the first
+    // output can be dropped is the interrupt: `HooksBranch::write` also drops
+    // an output for a newer *operator* input it consumed, and an input whose
+    // first block is a `<dim-…>` marker is not the operator's (§3.4).
+    session
+        .input(
+            InputMessageData {
+                blocks: vec![InputBlock::Raw {
+                    text: "<dim-scheduler kind=\"wake\">\nsecond turn\n</dim-scheduler>".into(),
+                    key: None,
+                    retire: false,
+                }],
+                user: Some(UserInput {
+                    content: vec![ContentBlock::Text {
+                        text: format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
+                    }],
+                }),
+                mode: Some(InputMode::Queue),
+                ..InputMessageData::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
     let mut blocks = Vec::new();
     for _ in 0..500 {
         blocks = hook_blocks(&session, "post-tool").await;
