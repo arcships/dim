@@ -10,9 +10,15 @@ use std::{
         Arc, LazyLock, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 use tokio_util::sync::CancellationToken;
+
+/// How long a helper waits for the Scheduler before it reports that it never
+/// got there. A pass takes well under a second, so this bound only fires when
+/// an advance did not reach what the pass was waiting for.
+const BOUND: Duration = Duration::from_secs(30);
 
 /// The hooks of one Scheduler instance.
 #[derive(Default)]
@@ -163,6 +169,16 @@ impl ManualClock {
         *self.offset.lock().unwrap() += by;
         self.moved.send_modify(|generation| *generation += 1);
     }
+
+    /// Moves this clock to `at` and wakes every waiter the instant reaches. An
+    /// instant real time has already passed moves nothing, so racing a real
+    /// second can never rewind the clock.
+    pub fn advance_to(&self, at: DateTime<Utc>) {
+        let by = at.signed_duration_since(self.now());
+        if by > chrono::Duration::zero() {
+            self.advance(by);
+        }
+    }
 }
 
 impl Clock for ManualClock {
@@ -193,25 +209,67 @@ impl Clock for ManualClock {
     }
 }
 
+/// A waiter's park: the ticks finished when it parked, and the instant it waits
+/// for. One value, because a reader that took the count and the instant apart
+/// could advance a wait the timer had already left.
+pub type TimerWait = (u64, DateTime<Utc>);
+
 /// The signals a Scheduler pass emits for the flow tests.
 #[derive(Default)]
 pub struct Signals {
-    retention: Mutex<Option<Arc<Notify>>>,
+    /// `(stop timers that parked, the instant the newest one waits for)`.
+    stop_parks: watch::Sender<(u64, Option<DateTime<Utc>>)>,
+    stopped: watch::Sender<u64>,
+    retained: watch::Sender<u64>,
+    ticked: watch::Sender<u64>,
+    timer: watch::Sender<Option<TimerWait>>,
 }
 
 impl Signals {
-    /// Arms the next retention pass and returns the handle that resolves once
-    /// it has finished its writes.
-    pub fn watch_next_retention(&self) -> Arc<Notify> {
-        let mut armed = self.retention.lock().unwrap();
-        armed.get_or_insert_with(|| Arc::new(Notify::new())).clone()
+    /// Publishes the ticks finished and the instant the timer will wait for,
+    /// before that wait.
+    pub(crate) fn timer_wait(&self, done: u64, until: DateTime<Utc>) {
+        self.timer.send_replace(Some((done, until)));
     }
 
+    /// The timer's published waits.
+    pub fn timer(&self) -> watch::Receiver<Option<TimerWait>> {
+        self.timer.subscribe()
+    }
+
+    /// Publishes one finished timer tick.
+    pub(crate) fn tick(&self) {
+        self.ticked.send_modify(|ticks| *ticks += 1);
+    }
+
+    /// The timer ticks this generation has finished.
+    pub fn ticks(&self) -> u64 {
+        *self.ticked.borrow()
+    }
+
+    /// Publishes the instant a stop timer is about to wait for.
+    pub(crate) fn stop_parked(&self, until: DateTime<Utc>) {
+        self.stop_parks.send_modify(|(parks, wait)| {
+            *parks += 1;
+            *wait = Some(until);
+        });
+    }
+
+    /// Publishes one stop timer that ended, after the record check it ended on:
+    /// one that refused a record which is gone ends here as well as one that
+    /// stopped its Session.
+    pub(crate) fn stop_done(&self) {
+        self.stopped.send_modify(|ended| *ended += 1);
+    }
+
+    /// Publishes one finished retention pass, after its last write.
     pub(crate) fn retention_done(&self) {
-        let done = self.retention.lock().unwrap().take();
-        if let Some(done) = done {
-            done.notify_waiters();
-        }
+        self.retained.send_modify(|passes| *passes += 1);
+    }
+
+    /// The retention passes this generation has finished.
+    pub fn retention(&self) -> u64 {
+        *self.retained.borrow()
     }
 }
 
@@ -245,4 +303,100 @@ pub struct TestingOptions {
     pub holds: Arc<Holds>,
     pub clock: Arc<ManualClock>,
     pub signals: Arc<Signals>,
+}
+
+/// Reads the timer's published wait that the clock has not reached yet, so a
+/// step moves to an instant the timer is provably parked on.
+async fn parked(timer: &mut watch::Receiver<Option<TimerWait>>, clock: &ManualClock) -> TimerWait {
+    tokio::time::timeout(BOUND, async {
+        loop {
+            if let Some((done, until)) = *timer.borrow_and_update()
+                && until > clock.now()
+            {
+                return (done, until);
+            }
+            timer
+                .changed()
+                .await
+                .expect("the timer keeps publishing its waits");
+        }
+    })
+    .await
+    .expect("the timer publishes the instant it parks on")
+}
+
+/// Crosses `ticks` ticks of the timer, and no real second of any of them.
+///
+/// The timer publishes the ticks it has finished with the instant it will wait
+/// for, and only then waits. Each round here moves the clock to exactly that
+/// instant, so the wait the timer holds is the wait that ends, and then waits
+/// for the tick the pass behind it publishes. An advance of one interval taken
+/// at any other moment would leave the next wait a whole interval of real time
+/// away, which is the wait this removes.
+pub async fn step(home: &Path, ticks: u64) {
+    let clock = clock(home);
+    let signals = signals(home);
+    let mut timer = signals.timer();
+    let mut ticked = signals.ticked.subscribe();
+    let mut done = signals.ticks();
+    for _ in 0..ticks {
+        let (parked_at, until) = parked(&mut timer, &clock).await;
+        done = done.max(parked_at);
+        clock.advance_to(until);
+        tokio::time::timeout(BOUND, ticked.wait_for(|ticks| *ticks > done))
+            .await
+            .expect("the timer finishes the tick a test crossed")
+            .expect("the timer keeps ticking while a test crosses its ticks");
+        done = signals.ticks();
+    }
+}
+
+/// Crosses the stop timer of `home` to its stop time. `parks` is the count read
+/// before the restart that resumes the timer, so the wait crossed is that
+/// timer's own.
+pub async fn stop_time(home: &Path, parks: u64) {
+    let clock = clock(home);
+    let mut waits = signals(home).stop_parks.subscribe();
+    let until = tokio::time::timeout(BOUND, async {
+        let seen = waits.wait_for(|(seen, _)| *seen > parks).await?;
+        Ok::<_, tokio::sync::watch::error::RecvError>(seen.1)
+    })
+    .await
+    .expect("the stop timer parks at its stop time")
+    .expect("the stop timer keeps publishing its waits")
+    .expect("a published stop park carries its instant");
+    clock.advance_to(until);
+}
+
+/// The stop timers that have parked.
+pub fn stop_parks(home: &Path) -> u64 {
+    signals(home).stop_parks.borrow().0
+}
+
+/// The stop timers that have ended.
+pub fn stop_timers(home: &Path) -> u64 {
+    *signals(home).stopped.borrow()
+}
+
+/// Waits for one more stop timer to end, with the count read before the restart
+/// that resumes it. A timer that refused a record which is gone ends here too,
+/// so a negative claim still waits on a positive fact.
+pub async fn stop_ended(home: &Path, ended: u64) {
+    let mut stopped = signals(home).stopped.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = stopped.wait_for(|count| *count > ended).await;
+    })
+    .await
+    .expect("the stop timer ends");
+}
+
+/// Waits for one more retention pass of this home, with the count taken before
+/// the call that spawns it.
+pub async fn retention(home: &Path, before: u64) {
+    let mut passes = signals(home).retained.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = passes.wait_for(|passes| *passes > before).await;
+    })
+    .await
+    .expect("the retention pass ends");
 }

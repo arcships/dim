@@ -702,10 +702,11 @@ pub fn recover(shared: &Arc<Shared>, launches: Vec<Delivery>) {
 /// delivery's state is not touched: a stop is a bound on the launched work,
 /// not a run outcome.
 async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadline: DateTime<Utc>) {
-    let wait = deadline.signed_duration_since(shared.now()).to_std();
-    if let Ok(wait) = wait
-        && !shared.pause(wait).await
-    {
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.stop_parked(deadline);
+    }
+    if !shared.pause_until(deadline).await {
         return;
     }
     loop {
@@ -716,6 +717,7 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
             continue;
         };
         if !record_exists(&shared, &run_id).await {
+            ended(&shared);
             return;
         }
         match sessions(
@@ -726,8 +728,14 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
         )
         .await
         {
-            Ok(Ok(_)) => return,
-            Ok(Err(code)) if target_gone(&code) => return,
+            Ok(Ok(_)) => {
+                ended(&shared);
+                return;
+            }
+            Ok(Err(code)) if target_gone(&code) => {
+                ended(&shared);
+                return;
+            }
             _ => {
                 if !shared.pause(RETRY).await {
                     return;
@@ -735,6 +743,18 @@ async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadli
             }
         }
     }
+}
+
+/// Publishes that a stop timer ended, whichever check ended it. Feature
+/// `testing` only: a flow row that asserts the timer wrote nothing waits on
+/// "the timer ended" rather than on a bound.
+fn ended(shared: &Shared) {
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.stop_done();
+    }
+    #[cfg(not(feature = "testing"))]
+    let _ = shared;
 }
 
 /// Whether the delivery's record is still in the store, which bounds the stop

@@ -21994,9 +21994,7 @@
         "path dim_agent_scheduler::testing::Holds",
         "path dim_agent_scheduler::testing::Holds::default",
         "path dim_agent_scheduler::testing::TestingOptions",
-        "path signals",
-        "use dim_agent_scheduler::testing::clock",
-        "use dim_agent_scheduler::testing::signals"
+        "path signals"
       ]
     },
     {

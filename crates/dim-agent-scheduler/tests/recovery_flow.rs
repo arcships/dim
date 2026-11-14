@@ -493,9 +493,10 @@ async fn a_restart_resumes_the_stop_timer_of_a_terminal_launch() {
         server.join().await.unwrap();
 
         // The delivery settled `lost`/`failed` after the launch persisted its
-        // Session, and the stop time is now, as time would make it.
+        // Session, and the stop time is an hour out, as a restart that comes
+        // back long before it would find it. Only an advance reaches it.
         let soon = (dim_agent_scheduler::testing::clock(home.path()).now()
-            + chrono::Duration::seconds(2))
+            + chrono::Duration::seconds(3600))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         edit_runs(home.path(), |runs| {
             let run = runs
@@ -512,8 +513,12 @@ async fn a_restart_resumes_the_stop_timer_of_a_terminal_launch() {
             run.as_object_mut().unwrap().remove("input_event_id");
         });
 
+        let parks = dim_agent_scheduler::testing::stop_parks(home.path());
         let server = start(home.path(), Arc::new(Script::default())).await;
         let mut client = connect(&server).await;
+        // The timer parks on the hour and only the advance crosses it: no real
+        // wait inside the row's bound can reach the stop time.
+        dim_agent_scheduler::testing::stop_time(home.path(), parks).await;
         tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let history = branch_events(&mut client, &session_id).await;
@@ -577,8 +582,9 @@ async fn a_restarts_stop_timer_ends_when_its_record_is_gone() {
     server.shutdown();
     server.join().await.unwrap();
 
+    // An hour out, so only the advance after the record leaves reaches it.
     let soon = (dim_agent_scheduler::testing::clock(home.path()).now()
-        + chrono::Duration::seconds(4))
+        + chrono::Duration::seconds(3600))
     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_runs(home.path(), |runs| {
         let run = runs
@@ -588,6 +594,8 @@ async fn a_restarts_stop_timer_ends_when_its_record_is_gone() {
         run["deadline_at"] = json!(soon);
     });
 
+    let parks = dim_agent_scheduler::testing::stop_parks(home.path());
+    let ended = dim_agent_scheduler::testing::stop_timers(home.path());
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
     // The record leaves the store before its stop time, as a store a later
@@ -608,7 +616,12 @@ async fn a_restarts_stop_timer_ends_when_its_record_is_gone() {
     })
     .await
     .expect("the record leaves the store");
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // Only the advance crosses the hour; the timer then ends on its record
+    // check, and the signal it publishes there is what this row waits on. The
+    // check, not a bound, is what makes the negative claim fail when the check
+    // is removed.
+    dim_agent_scheduler::testing::stop_time(home.path(), parks).await;
+    dim_agent_scheduler::testing::stop_ended(home.path(), ended).await;
     let history = branch_events(&mut client, &session_id).await;
     assert!(
         !stopped_at_its_stop_time(&history),

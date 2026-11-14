@@ -438,17 +438,12 @@ async fn an_at_job_saved_after_its_instant_records_missed_and_disables() {
         .unwrap();
     let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
 
-    let disabled = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
-            if listed["jobs"][0]["enabled"] == false {
-                return listed;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("the past at job disables itself");
+    // The first timer pass records the past window `missed`; the one after it
+    // finds the delivery terminal and disables the job. Two crossed ticks are
+    // those two passes, rather than a poll for a real second.
+    step(home.path(), 2).await;
+    let disabled: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    assert_eq!(disabled["jobs"][0]["enabled"], false, "{disabled}");
     let history: Value = client
         .typed("schedule.history", json!({"job_id": job_id}))
         .await
@@ -537,25 +532,23 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     assert!(listed.to_string().contains(&launched), "{listed}");
 
+    // The delete spawns the retention pass that deletes the launched Session
+    // and then its record; the count names that pass, and both facts are read
+    // once after it.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": job_id}))
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let listed = client.rpc("session.summaries", json!({})).await.unwrap();
-            if !listed.to_string().contains(&launched)
-                && !stored_runs(home.path())
-                    .iter()
-                    .any(|run| run["job_id"] == job_id.as_str())
-            {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("the launched Session is deleted before its last record is removed");
+    retention(home.path(), before).await;
+    let listed = client.rpc("session.summaries", json!({})).await.unwrap();
+    assert!(!listed.to_string().contains(&launched), "{listed}");
+    assert!(
+        !stored_runs(home.path())
+            .iter()
+            .any(|run| run["job_id"] == job_id.as_str()),
+        "the launched Session is deleted before its last record is removed"
+    );
 
     drop(client);
     server.shutdown();
@@ -595,12 +588,12 @@ async fn a_launch_session_is_stopped_at_its_stop_time() {
         "a launch records its stop time: {delivered}"
     );
 
-    // Move the stop time forward to now, as time would, so the resumed timer
-    // fires at once instead of after the job's five minutes.
+    // Move the stop time an hour out, as a restart that resumes the timer long
+    // before it would meet it; the advance below is what reaches it.
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
-    let soon = (clock(home.path()).now() + chrono::Duration::seconds(2))
+    let soon = (clock(home.path()).now() + chrono::Duration::seconds(3600))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_runs(home.path(), |runs| {
         let run = runs
@@ -609,8 +602,10 @@ async fn a_launch_session_is_stopped_at_its_stop_time() {
             .unwrap();
         run["deadline_at"] = json!(soon);
     });
+    let parks = stop_parks(home.path());
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
+    stop_time(home.path(), parks).await;
 
     // The held turn ends at the stop time; the held model reply is what the
     // launched Session was waiting on.

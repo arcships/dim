@@ -1,8 +1,9 @@
 //! Session-scoped wakeups through a real App Server (design §10): create,
 //! list, cancel and fire; restart and expiry; an unloaded target and a
 //! deleted one; the change notices an attached client receives (design §11.1).
-//! Timing follows `timer_flow.rs`: a real clock, an instant two or three
-//! seconds ahead, and a short poll with a hard timeout.
+//! A row that waits for an instant names one an hour out and crosses it with
+//! the clock (#1536); the rows that wait for a turn or a notice poll with a
+//! hard timeout, because neither is a Scheduler instant.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{Agent, AgentBuilder, AgentConfig};
 use dim_agent_types::*;
@@ -19,7 +20,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod support;
-use support::clock;
+use support::*;
 
 /// Replies with queued tool batches, then with text; keeps every request.
 #[derive(Default)]
@@ -312,7 +313,9 @@ async fn a_wakeup_fires_one_turn_on_the_same_session() {
     let session = create_session(&mut client, home.path(), &[], true).await;
     let before = history(&mut client, &session).await;
 
-    let at = instant_after(home.path(), 2);
+    // An hour out: the fire below is the clock's doing, reached after the
+    // create has returned, so no wait in the row can reach the instant itself.
+    let at = instant_after(home.path(), 3600);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -342,6 +345,14 @@ async fn a_wakeup_fires_one_turn_on_the_same_session() {
     let jobs: Value = client.typed("schedule.list", json!({})).await.unwrap();
     assert!(jobs["jobs"].as_array().unwrap().is_empty(), "{jobs}");
 
+    // The instant is an hour out, so the advance crosses it and one tick runs
+    // the pass that fires it.
+    clock(home.path()).advance_to(
+        chrono::DateTime::parse_from_rfc3339(&at)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
 
     // The turn ran on the same Session, with its earlier history intact and
@@ -398,7 +409,7 @@ async fn a_cancelled_wakeup_never_fires() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 30),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "Should never arrive."}),
         )
         .await
@@ -433,7 +444,10 @@ async fn a_cancelled_wakeup_never_fires() {
         .unwrap();
     assert_eq!(again["state"], json!("cancelled"), "{again}");
 
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // The instant is an hour out and the passes below cross a whole tick each,
+    // so "never fires" is a claim about passes that ran at a controlled instant:
+    // real time cannot reach an hour inside a 30-s bound.
+    step(home.path(), 2).await;
     assert_eq!(model.count(), 0, "a cancelled wakeup starts no turn");
     assert!(wakeup_inputs(&history(&mut client, &session).await).is_empty());
 
@@ -441,7 +455,6 @@ async fn a_cancelled_wakeup_never_fires() {
     server.shutdown();
     server.join().await.unwrap();
 }
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_instant_past_the_grace_is_expired_at_create() {
     let home = home();
@@ -466,7 +479,8 @@ async fn an_instant_past_the_grace_is_expired_at_create() {
         .unwrap();
     assert_eq!(listed["wakeups"][0]["state"], json!("expired"), "{listed}");
 
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // Two ticks leave `expired` and `settled_at` as the create wrote them.
+    step(home.path(), 2).await;
     assert_eq!(model.count(), 0, "an expired wakeup starts no turn");
     assert!(wakeup_inputs(&history(&mut client, &session).await).is_empty());
     assert_eq!(
@@ -488,11 +502,11 @@ async fn a_restart_fires_a_window_still_inside_the_grace() {
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
     let session = create_session(&mut client, home.path(), &[], true).await;
-    // Ten seconds ahead: far enough that stopping the first daemon always
-    // wins the race, and the restart below lands inside the window's 60 s
-    // grace. The first daemon must not fire it; the fresh model of the
-    // second daemon is the evidence that the restart did.
-    let at = instant_after(home.path(), 10);
+    // An hour ahead: no real wait in this row can reach it, so only the advance
+    // below can start the restart inside the window's 60 s grace. The first
+    // daemon must not fire it; the fresh model of the second daemon is the
+    // evidence that the restart did.
+    let at = instant_after(home.path(), 3600);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -506,9 +520,10 @@ async fn a_restart_fires_a_window_still_inside_the_grace() {
     server.shutdown();
     server.join().await.unwrap();
 
-    // The daemon stays down past the window; the restart at ~12 s after the
-    // instant is still inside the 60 s grace, so the wakeup fires once.
-    tokio::time::sleep(Duration::from_secs(12)).await;
+    // The downtime is an advance of 3612 s: past the instant by 12 s, which is
+    // still inside the 60 s grace, so the restart fires the wakeup once. Real
+    // time cannot cross an hour, so the row cannot pass without the clock.
+    clock(home.path()).advance(chrono::Duration::seconds(3612));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
@@ -532,7 +547,7 @@ async fn a_restart_expires_a_window_past_the_grace_and_never_replays() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "Lost to the downtime."}),
         )
         .await
@@ -542,19 +557,16 @@ async fn a_restart_expires_a_window_past_the_grace_and_never_replays() {
     server.shutdown();
     server.join().await.unwrap();
 
-    // The 60 s grace makes a real-clock version sleep a minute before the
-    // restart; the edit stands in for the elapsed time. The classifier at
-    // the restart sees exactly what it would after downtime of that length:
-    // a `scheduled` record whose instant is past the grace. The within-grace
-    // restart above exercises the real clock.
-    edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
-    });
+    // An advance of 3670 s moves this Scheduler's instant past the hour and the
+    // 60 s grace -- 3600 s to the instant and 70 s of grace -- so the restart
+    // sees a `scheduled` record the real path expired, not an edited one. No
+    // real wait in this row can cross an hour.
+    let clock = clock(home.path());
+    clock.advance(chrono::Duration::seconds(3670));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
     wait_state(home.path(), &wakeup_id, "expired").await;
-    tokio::time::sleep(Duration::from_millis(2500)).await;
     assert_eq!(model.count(), 0, "an expired wakeup is never replayed");
     assert!(wakeup_inputs(&history(&mut client, &session).await).is_empty());
 
@@ -573,12 +585,19 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 2),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "Delivered before the crash."}),
         )
         .await
         .unwrap();
     let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
+    // The instant is an hour out, so the fire below is the clock's doing: the
+    // advance reaches it and one tick runs the pass that delivers it.
+    let at = chrono::DateTime::parse_from_rfc3339(&instant_after(home.path(), 3600))
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    clock(home.path()).advance_to(at);
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
     wait_turn_end(&mut client, &session).await;
     let events = history(&mut client, &session).await;
@@ -589,16 +608,17 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
     server.join().await.unwrap();
 
     // The crash the settle write did not survive: the input was published but
-    // the record is still `scheduled`, and the restart happens long after the
-    // instant left the grace. The submission id the input carries is the only
-    // evidence that the prompt was delivered, so the pass must look it up
-    // before it expires the record.
+    // the record is still `scheduled`. The submission id the input carries is
+    // the only evidence that the prompt was delivered, so the pass must look
+    // it up before it expires the record. The advance puts the restart well
+    // past the instant and its 60 s grace, so the record is genuinely stale
+    // rather than edited to look stale.
     edit_wakeups(home.path(), |wakeups| {
         let record = wakeups[0].as_object_mut().unwrap();
         record.insert("state".into(), json!("scheduled"));
         record.remove("settled_at");
-        record.insert("at".into(), json!(instant_after(home.path(), -120)));
     });
+    clock(home.path()).advance(chrono::Duration::seconds(240));
 
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -614,7 +634,8 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
         json!("fired"),
         "a delivered record is not expired"
     );
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // One more pass settles nothing again and writes no input.
+    step(home.path(), 1).await;
     assert_eq!(model.count(), 0, "the settle writes no input");
 
     drop(client);
@@ -634,7 +655,7 @@ async fn a_failed_lookup_leaves_a_record_past_the_grace_scheduled() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "Delivery unknown."}),
         )
         .await
@@ -650,15 +671,17 @@ async fn a_failed_lookup_leaves_a_record_past_the_grace_scheduled() {
     // `failed`. The lookup is the real service call; no test double is
     // involved.
     std::fs::remove_dir_all(&project).unwrap();
-    edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
-    });
+    // The window's instant was an hour ahead of the creating generation, so the
+    // advance must clear the instant *and* the 60 s grace: 3670 s leaves the
+    // record 70 s past its instant, which is the stale band the pass classifies.
+    let clock = clock(home.path());
+    clock.advance(chrono::Duration::seconds(3670));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
-    // Several passes see the failed lookup: the record must stay scheduled
+    // Three passes see the failed lookup: the record must stay scheduled
     // rather than be expired on a guess.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    step(home.path(), 3).await;
     assert_eq!(
         stored_wakeups(home.path())[0]["state"],
         json!("scheduled"),
@@ -699,7 +722,7 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "Nobody to wake."}),
         )
         .await
@@ -710,12 +733,12 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
         .await
         .unwrap();
 
-    // The target is gone for good and the record is past the grace, so the
-    // pass's lookup answers `session_closed`: a definite answer, settled
-    // `cancelled` instead of repeating a lookup that can never succeed.
-    edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
-    });
+    // The target is gone for good and the record is a minute past the hour its
+    // instant named, so the pass's lookup answers `session_closed`: a definite
+    // answer, settled `cancelled` instead of repeating a lookup that can never
+    // succeed. Only the advance reaches an hour; real time cannot.
+    clock(home.path()).advance(chrono::Duration::seconds(3670));
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     assert_eq!(model.count(), 0, "a gone target starts no turn");
 
@@ -747,7 +770,7 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3600),
                 "prompt": "On the boundary."}),
         )
         .await
@@ -757,11 +780,12 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     server.shutdown();
     server.join().await.unwrap();
 
-    let at = (clock(home.path()).now() - chrono::Duration::seconds(60))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(at);
-    });
+    // The window's instant is an hour ahead of the creating generation. A
+    // restart after an advance of 3670 s meets a `scheduled` record 70 s past
+    // its instant, beyond the 60 s grace: the same verdict the real path
+    // reaches after that much downtime, with the record untouched.
+    let clock = clock(home.path());
+    clock.advance(chrono::Duration::seconds(3670));
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
     wait_state(home.path(), &wakeup_id, "expired").await;
@@ -773,7 +797,7 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     assert!(wakeup_inputs(&history(&mut client, &session).await).is_empty());
 
     // Exactly one terminal state: a later pass does not re-settle or fire it.
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    step(home.path(), 2).await;
     let stored = stored_wakeups(home.path());
     assert_eq!(stored[0]["state"], json!("expired"), "{stored:?}");
     assert_eq!(
@@ -817,7 +841,7 @@ async fn an_ended_branch_cancels_its_record_and_never_retries() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": child, "at": instant_after(home.path(), 6),
+            json!({"sessionId": session, "branchId": child, "at": instant_after(home.path(), 3600),
                 "prompt": "Into the ended line."}),
         )
         .await
@@ -833,6 +857,10 @@ async fn an_ended_branch_cancels_its_record_and_never_retries() {
 
     // An ended line accepts no new input, so the record settles cancelled like
     // one whose Session is gone instead of retrying until the grace expires.
+    // The advance reaches the hour the record names, so the pass really
+    // classifies it rather than the row waiting for time.
+    clock(home.path()).advance(chrono::Duration::seconds(3610));
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     let events = history(&mut client, &session).await;
     assert!(
@@ -869,13 +897,15 @@ async fn overdue_wakeups_fire_in_at_order_with_a_stable_tie_breaker() {
     server.join().await.unwrap();
 
     // The downtime leaves every record past its instant but inside the grace,
-    // and the file's order is not the due order: last, tied, tied, third.
+    // and the file's order is not the due order: last, tied, tied, third. The
+    // instants are an hour out, so only the advance below reaches them.
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(home.path(), -20));
-        wakeups[1]["at"] = json!(instant_after(home.path(), -40));
-        wakeups[2]["at"] = json!(instant_after(home.path(), -40));
-        wakeups[3]["at"] = json!(instant_after(home.path(), -30));
+        wakeups[0]["at"] = json!(instant_after(home.path(), 3600));
+        wakeups[1]["at"] = json!(instant_after(home.path(), 3560));
+        wakeups[2]["at"] = json!(instant_after(home.path(), 3560));
+        wakeups[3]["at"] = json!(instant_after(home.path(), 3580));
     });
+    clock(home.path()).advance(chrono::Duration::seconds(3610));
 
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -940,6 +970,9 @@ async fn terminal_records_are_pruned_after_their_retention_age() {
         wakeups[1]["created_at"] = json!(days(8));
         wakeups[1]["settled_at"] = json!(days(1));
     });
+    // The pass that prunes runs on a timer tick, so the row crosses the tick
+    // rather than waiting a real second for it.
+    step(home.path(), 1).await;
     wait_for("the old terminal record to be pruned", || {
         stored_wakeups(home.path()).len() == 1
     })
@@ -976,7 +1009,10 @@ async fn an_unloaded_target_is_restored_before_the_input() {
         .await
         .unwrap();
     wait_for("the first turn", || model.count() >= 1).await;
-    let at = instant_after(home.path(), 6);
+    // An hour out, crossed only after the unload has returned: the fire below
+    // is the clock's doing, so the row's claim is that the pass restores the
+    // unloaded Session before it writes the input, not that six seconds pass.
+    let at = instant_after(home.path(), 3600);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -1002,6 +1038,12 @@ async fn an_unloaded_target_is_restored_before_the_input() {
     .await
     .expect("the idle Session unloads");
 
+    clock(home.path()).advance_to(
+        chrono::DateTime::parse_from_rfc3339(&at)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
     wait_for("the restored Session's turn", || model.count() >= 2).await;
     let events = history(&mut client, &session).await;
@@ -1019,10 +1061,14 @@ async fn a_deleted_target_cancels_its_record_and_never_relaunches() {
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
     let session = create_session(&mut client, home.path(), &[], true).await;
+    // An hour out: the cancel below is reached by the advance, after the
+    // delete returned, so the pass sees a target that is gone before its
+    // instant rather than one deleted long after it.
+    let at = instant_after(home.path(), 3600);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 4),
+            json!({"sessionId": session, "branchId": "main", "at": at,
                 "prompt": "Nobody is left."}),
         )
         .await
@@ -1033,6 +1079,12 @@ async fn a_deleted_target_cancels_its_record_and_never_relaunches() {
         .await
         .unwrap();
 
+    clock(home.path()).advance_to(
+        chrono::DateTime::parse_from_rfc3339(&at)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     assert_eq!(model.count(), 0, "a deleted target starts no turn");
     let error = client
@@ -1260,7 +1312,9 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
     let mut client = connect(&server).await;
     let session = create_session(&mut client, home.path(), &["wakeup"], true).await;
 
-    let at = instant_after(home.path(), 2);
+    // An hour out, crossed after the tool's create returned: the fire below is
+    // the clock's doing, not a wait the row could take.
+    let at = instant_after(home.path(), 3600);
     model.push(vec![ToolCall {
         id: "w1".into(),
         name: "wakeup".into(),
@@ -1285,6 +1339,12 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
     assert_eq!(stored[0]["session_id"], json!(session), "{stored:?}");
     assert_eq!(stored[0]["prompt"], json!("Tool wake."), "{stored:?}");
     let wakeup_id = stored[0]["wakeup_id"].as_str().unwrap().to_owned();
+    clock(home.path()).advance_to(
+        chrono::DateTime::parse_from_rfc3339(&at)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
     wait_for("the wakeup turn", || model.count() >= 2).await;
 
@@ -1379,10 +1439,13 @@ async fn wakeup_changes_reach_an_attached_client_as_session_notices() {
         .await
         .unwrap();
 
+    // An hour out: the scheduled notice arrives on the create, the fired one
+    // only after the advance below crosses the instant.
+    let at = instant_after(home.path(), 3600);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3),
+            json!({"sessionId": session, "branchId": "main", "at": at,
                 "prompt": "Announce me."}),
         )
         .await
@@ -1400,7 +1463,15 @@ async fn wakeup_changes_reach_an_attached_client_as_session_notices() {
     assert_eq!(scheduled["data"]["branchId"], json!("main"), "{scheduled}");
 
     // The notice is not ordered against the input's event: collect both
-    // without assuming which arrives first.
+    // without assuming which arrives first. The advance crosses the hour and
+    // the step crosses the pass it wakes, so the fire is over before the
+    // notices are read.
+    clock(home.path()).advance_to(
+        chrono::DateTime::parse_from_rfc3339(&at)
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    );
+    step(home.path(), 1).await;
     let mut input_event = None;
     let fired = wait_notice(
         &mut client,

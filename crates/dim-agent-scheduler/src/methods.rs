@@ -279,7 +279,18 @@ impl DynPlugin for SchedulerPlugin {
             let timer = shared.clone();
             shared.spawn(async move {
                 let mut ticks = 0u32;
-                while timer.pause(std::time::Duration::from_secs(1)).await {
+                loop {
+                    let until = timer.now() + std::time::Duration::from_secs(1);
+                    // A flow test's `step` advances the clock to the instant the
+                    // timer is about to wait for, so the timer publishes that
+                    // instant before it waits. Feature `testing` only.
+                    #[cfg(feature = "testing")]
+                    if let Some(signals) = &timer.signals {
+                        signals.timer_wait(u64::from(ticks), until);
+                    }
+                    if !timer.pause_until(until).await {
+                        break;
+                    }
                     if let Err(error) = crate::engine::tick(&timer).await {
                         tracing::warn!(%error, "scheduler tick failed");
                     }
@@ -299,6 +310,13 @@ impl DynPlugin for SchedulerPlugin {
                     }
                     if minute && timer.retention_pending() {
                         crate::engine::prune(timer.clone()).await;
+                    }
+                    // A flow test that crosses a tick waits on the whole
+                    // pass, not on the tick that started it. Feature
+                    // `testing` only.
+                    #[cfg(feature = "testing")]
+                    if let Some(signals) = &timer.signals {
+                        signals.tick();
                     }
                 }
             });
@@ -389,9 +407,14 @@ impl Shared {
     /// stops and leaves an unsettled delivery to the next generation's
     /// recovery.
     pub(crate) async fn pause(&self, delay: std::time::Duration) -> bool {
-        self.clock
-            .wait_until(self.now() + Duration::from_std(delay).unwrap(), &self.stop)
+        self.pause_until(self.now() + Duration::from_std(delay).unwrap())
             .await
+    }
+
+    /// Waits until `until`, so a caller that holds a deadline waits for that
+    /// deadline and no other; `false` once the owner is unloading.
+    pub(crate) async fn pause_until(&self, until: DateTime<Utc>) -> bool {
+        self.clock.wait_until(until, &self.stop).await
     }
 
     pub(crate) fn now(&self) -> DateTime<Utc> {

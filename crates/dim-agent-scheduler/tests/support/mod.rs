@@ -113,7 +113,7 @@ pub fn home() -> tempfile::TempDir {
     home
 }
 
-pub use dim_agent_scheduler::testing::{clock, signals};
+pub use dim_agent_scheduler::testing::*;
 
 pub async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
     start_with(home, model, SessionConfig::default()).await
