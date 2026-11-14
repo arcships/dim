@@ -970,6 +970,151 @@ async fn occupying_task_settles_after_large_output() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn occupying_task_settles_when_the_output_bursts_past_the_retained_window() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": "seq 1 400000; sleep 1.2; seq 400001 400100",
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec wake", |events| {
+        !notifications(events).is_empty()
+    })
+    .await;
+    assert_eq!(ended(&events).len(), 1, "exactly one exec/ended");
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert!(
+        output.ends_with("400100\n"),
+        "{}",
+        &output[output.len() - 100..]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A POSIX background job's completion marker is looked for on every chunk,
+/// so a burst must still leave the consumer able to settle the job and the
+/// occupying task that follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_occupying_burst_settles_while_a_background_job_runs() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 3; echo done", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "job start", |events| tool_results(events) == 1).await;
+    let job = task_of(&results(&events)[0]);
+
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": "seq 1 400000; sleep 1.2; seq 400001 400100",
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "burst start", |events| tool_results(events) == 2).await;
+    let occupying = task_of(&results(&events)[1]);
+    assert!(
+        text(&results(&events)[1]).contains("occupies the shell"),
+        "{}",
+        text(&results(&events)[1])
+    );
+
+    let events = until(&session, "both ends", |events| ended(events).len() == 2).await;
+    let ends = ended(&events);
+    for (task, expected) in [(&job, "done"), (&occupying, "400100\n")] {
+        let (_, end) = ends
+            .iter()
+            .find(|(_, data)| &data.task_id == task)
+            .unwrap_or_else(|| panic!("task {task} never ended: {:#?}", ended(&events)));
+        assert_eq!(end.status, ExecStatus::Completed, "{}", end.task_id);
+        assert!(
+            text(&end.result).contains(expected),
+            "{}",
+            text(&end.result)
+        );
+    }
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_foreground_result_past_the_limit_keeps_the_earliest_bytes() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(&session, &[("execute", json!({"command": "seq 1 30000"}))])
+        .await;
+    let events = until(&session, "tool result", |events| tool_results(events) == 1).await;
+    let result = &results(&events)[0];
+    let text = text(result);
+    assert!(
+        text.starts_with("1\n2\n3\n"),
+        "{}",
+        &text[..100.min(text.len())]
+    );
+    assert!(
+        text.contains("[Output truncated: ") && text.contains(" bytes omitted]"),
+        "{}",
+        &text[text.len() - 200..]
+    );
+    assert!(!text.contains("__DIM_"), "{}", &text[..100]);
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_that_converts_before_its_output_writes_only_the_command_output() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "echo first; echo second", "timeoutMs": 0}),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert_eq!(output, "first\nsecond\n");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shell_exit_kills_background_jobs() {
     let harness = Harness::new(platform(&[]).await).await;
     let session = harness.session().await;

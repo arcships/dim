@@ -7097,7 +7097,14 @@ impl App {
             if rows
                 .iter()
                 .filter_map(|row| row.member.as_ref())
-                .any(|card| card.task.finished.is_none())
+                .any(|card| {
+                    card.task.finished.is_none()
+                        || card
+                            .task
+                            .agent_id
+                            .as_ref()
+                            .is_some_and(|id| snapshot.pending_agent_names.contains(id))
+                })
             {
                 open.push(*id);
             }
