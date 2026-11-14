@@ -130,7 +130,11 @@ async fn start_armed(
     dim_agent_scheduler::install_with_testing(
         &mut builder,
         dim_agent_scheduler::SchedulerTexts::default(),
-        holds,
+        dim_agent_scheduler::testing::TestingOptions {
+            holds,
+            clock: dim_agent_scheduler::testing::clock(home),
+            signals: dim_agent_scheduler::testing::signals(home),
+        },
     )
     .expect("the built-in texts are valid");
     serve(
@@ -420,7 +424,7 @@ async fn next_clamps_its_delay_to_the_ceiling() {
             .cloned()
             .unwrap(),
     }]);
-    let before = chrono::Utc::now();
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
     client
         .rpc(
             "session.submit",
@@ -465,8 +469,9 @@ async fn an_expired_loop_settles_expired() {
         .unwrap();
     wait_for("the loop file", || !stored_loops(home.path()).is_empty()).await;
 
-    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let past = (dim_agent_scheduler::testing::clock(home.path()).now()
+        - chrono::Duration::seconds(5))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["expires_at"] = json!(past);
     });
@@ -502,8 +507,9 @@ async fn a_gone_branch_settles_stopped() {
 
     // A branch that does not exist answers `branch_missing`, as a deleted
     // target would.
-    let at = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let at = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::milliseconds(200))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["branch_id"] = json!("gone-branch");
         loops[0]["state"] = json!("running");
@@ -733,8 +739,9 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
 
     // Bring the next window forward while that round is still pending: the
     // pass must skip it rather than queue a second round.
-    let due = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::milliseconds(200))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["next_at"] = json!(due);
     });
@@ -755,8 +762,9 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
     // Releasing the branch consumes the held round, so the window after it
     // delivers round 2.
     model.release();
-    let next = (chrono::Utc::now() + chrono::Duration::milliseconds(200))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let next = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::milliseconds(200))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["next_at"] = json!(next);
     });
@@ -816,7 +824,9 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
 
     // The next window is due at once, so the pass reaches its input write while
     // the store's write connection is held below.
-    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = dim_agent_scheduler::testing::clock(home.path())
+        .now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         loops[0]["state"] = json!("running");
         loops[0]["next_at"] = json!(due);
@@ -843,7 +853,7 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     let loops = server
         .service::<dim_agent_scheduler::Loops>()
         .expect("the Scheduler process part provides its loop service");
-    let before = chrono::Utc::now();
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
     let mut arming = Box::pin(loops.next(&session, &loop_id, 600));
     assert!(
         tokio::time::timeout(Duration::from_secs(1), &mut arming)
@@ -922,9 +932,12 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
 
     // The first loop is past its expiry, and the second is due again, so one
     // pass both expires the first and reaches an input write for the second.
-    let past = (chrono::Utc::now() - chrono::Duration::seconds(5))
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    let past = (clock.now() - chrono::Duration::seconds(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let due = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = clock
+        .now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_loops(home.path(), |loops| {
         for record in loops.iter_mut() {
             if record["loop_id"] == json!(old) {

@@ -65,15 +65,15 @@ pub fn install_with(builder: &mut AgentBuilder, texts: SchedulerTexts) -> Result
     install_inner(builder, texts, SchedulerPlugin::new)
 }
 
-/// [`install_with`] with the flow tests' holds in force (feature `testing`).
+/// [`install_with`] with the flow tests' seams in force (feature `testing`).
 #[cfg(feature = "testing")]
 pub fn install_with_testing(
     builder: &mut AgentBuilder,
     texts: SchedulerTexts,
-    holds: std::sync::Arc<testing::Holds>,
+    options: testing::TestingOptions,
 ) -> Result<(), String> {
     install_inner(builder, texts, move |names, texts| {
-        SchedulerPlugin::new_with_testing(names, texts, holds.clone())
+        SchedulerPlugin::new_with_testing(names, texts, options.clone())
     })
 }
 

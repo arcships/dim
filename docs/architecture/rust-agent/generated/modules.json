@@ -2060,7 +2060,9 @@
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
       "file": "crates/dim-agent-scheduler/src/testing.rs",
-      "unexpandedMacros": []
+      "unexpandedMacros": [
+        "tokio::select"
+      ]
     },
     {
       "id": "dim_agent_scheduler::wakeup_pass",
@@ -21250,7 +21252,7 @@
       "to": "dim_agent_scheduler::testing",
       "references": [
         "mod testing",
-        "path testing::Holds"
+        "path testing::TestingOptions"
       ]
     },
     {
@@ -21665,7 +21667,9 @@
       "from": "dim_agent_scheduler::methods",
       "to": "dim_agent_scheduler::testing",
       "references": [
-        "path crate::testing::Holds"
+        "path crate::testing::Holds",
+        "path crate::testing::Signals",
+        "path crate::testing::TestingOptions"
       ]
     },
     {
@@ -21986,8 +21990,13 @@
       "from": "dim_agent_scheduler::support",
       "to": "dim_agent_scheduler::testing",
       "references": [
+        "path clock",
         "path dim_agent_scheduler::testing::Holds",
-        "path dim_agent_scheduler::testing::Holds::default"
+        "path dim_agent_scheduler::testing::Holds::default",
+        "path dim_agent_scheduler::testing::TestingOptions",
+        "path signals",
+        "use dim_agent_scheduler::testing::clock",
+        "use dim_agent_scheduler::testing::signals"
       ]
     },
     {
@@ -22038,6 +22047,15 @@
       ]
     },
     {
+      "from": "dim_agent_scheduler::testing",
+      "to": "dim_agent_scheduler::clock",
+      "references": [
+        "path Clock",
+        "path Clock::now",
+        "use crate::clock::Clock"
+      ]
+    },
+    {
       "from": "dim_agent_scheduler::wakeup_pass",
       "to": "dim_agent_scheduler::support",
       "references": [
@@ -22047,6 +22065,13 @@
         "path support::home",
         "path support::start",
         "use crate::support"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::wakeup_pass",
+      "to": "dim_agent_scheduler::testing",
+      "references": [
+        "path support::clock"
       ]
     },
     {
@@ -52702,6 +52727,10 @@
     {
       "module": "dim_agent_runtime::testing",
       "path": "Bound::Unbounded"
+    },
+    {
+      "module": "dim_agent_scheduler::testing",
+      "path": "T::default"
     },
     {
       "module": "dim_agent_types",

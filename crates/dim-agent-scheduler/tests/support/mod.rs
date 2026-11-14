@@ -113,6 +113,8 @@ pub fn home() -> tempfile::TempDir {
     home
 }
 
+pub use dim_agent_scheduler::testing::{clock, signals};
+
 pub async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
     start_with(home, model, SessionConfig::default()).await
 }
@@ -144,7 +146,11 @@ pub async fn start_with(home: &Path, model: Arc<Script>, defaults: SessionConfig
     dim_agent_scheduler::install_with_testing(
         &mut builder,
         dim_agent_scheduler::SchedulerTexts::default(),
-        holds,
+        dim_agent_scheduler::testing::TestingOptions {
+            holds,
+            clock: clock(home),
+            signals: signals(home),
+        },
     )
     .expect("the built-in texts are valid");
     serve(

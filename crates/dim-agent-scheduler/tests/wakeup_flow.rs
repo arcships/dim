@@ -5,7 +5,6 @@
 //! seconds ahead, and a short poll with a hard timeout.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{Agent, AgentBuilder, AgentConfig};
-use dim_agent_scheduler::install;
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Message, Server};
@@ -18,6 +17,9 @@ use std::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
+
+mod support;
+use support::clock;
 
 /// Replies with queued tool batches, then with text; keeps every request.
 #[derive(Default)]
@@ -93,7 +95,16 @@ async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
-    install(&mut builder);
+    dim_agent_scheduler::install_with_testing(
+        &mut builder,
+        dim_agent_scheduler::SchedulerTexts::default(),
+        dim_agent_scheduler::testing::TestingOptions {
+            holds: Arc::new(dim_agent_scheduler::testing::Holds::default()),
+            clock: dim_agent_scheduler::testing::clock(home),
+            signals: dim_agent_scheduler::testing::signals(home),
+        },
+    )
+    .unwrap();
     serve(
         builder,
         ServerConfig {
@@ -180,8 +191,8 @@ async fn create_session(
     created["sessionId"].as_str().unwrap().to_owned()
 }
 
-fn instant_after(seconds: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::seconds(seconds))
+fn instant_after(home: &Path, seconds: i64) -> String {
+    (clock(home).now() + chrono::Duration::seconds(seconds))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
@@ -301,7 +312,7 @@ async fn a_wakeup_fires_one_turn_on_the_same_session() {
     let session = create_session(&mut client, home.path(), &[], true).await;
     let before = history(&mut client, &session).await;
 
-    let at = instant_after(2);
+    let at = instant_after(home.path(), 2);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -387,7 +398,7 @@ async fn a_cancelled_wakeup_never_fires() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(30),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 30),
                 "prompt": "Should never arrive."}),
         )
         .await
@@ -442,7 +453,7 @@ async fn an_instant_past_the_grace_is_expired_at_create() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(-120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), -120),
                 "prompt": "Too late."}),
         )
         .await
@@ -481,7 +492,7 @@ async fn a_restart_fires_a_window_still_inside_the_grace() {
     // wins the race, and the restart below lands inside the window's 60 s
     // grace. The first daemon must not fire it; the fresh model of the
     // second daemon is the evidence that the restart did.
-    let at = instant_after(10);
+    let at = instant_after(home.path(), 10);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -521,7 +532,7 @@ async fn a_restart_expires_a_window_past_the_grace_and_never_replays() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "Lost to the downtime."}),
         )
         .await
@@ -537,7 +548,7 @@ async fn a_restart_expires_a_window_past_the_grace_and_never_replays() {
     // a `scheduled` record whose instant is past the grace. The within-grace
     // restart above exercises the real clock.
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(-120));
+        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
     });
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -562,7 +573,7 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(2),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 2),
                 "prompt": "Delivered before the crash."}),
         )
         .await
@@ -586,7 +597,7 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
         let record = wakeups[0].as_object_mut().unwrap();
         record.insert("state".into(), json!("scheduled"));
         record.remove("settled_at");
-        record.insert("at".into(), json!(instant_after(-120)));
+        record.insert("at".into(), json!(instant_after(home.path(), -120)));
     });
 
     let model = Arc::new(Script::default());
@@ -623,7 +634,7 @@ async fn a_failed_lookup_leaves_a_record_past_the_grace_scheduled() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "Delivery unknown."}),
         )
         .await
@@ -640,7 +651,7 @@ async fn a_failed_lookup_leaves_a_record_past_the_grace_scheduled() {
     // involved.
     std::fs::remove_dir_all(&project).unwrap();
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(-120));
+        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
     });
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -688,7 +699,7 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "Nobody to wake."}),
         )
         .await
@@ -703,7 +714,7 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     // pass's lookup answers `session_closed`: a definite answer, settled
     // `cancelled` instead of repeating a lookup that can never succeed.
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(-120));
+        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
     });
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     assert_eq!(model.count(), 0, "a gone target starts no turn");
@@ -712,7 +723,7 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     // removes it by its settle time.
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["settled_at"] = json!(
-            (chrono::Utc::now() - chrono::Duration::days(8))
+            (clock(home.path()).now() - chrono::Duration::days(8))
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         );
     });
@@ -736,7 +747,7 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "On the boundary."}),
         )
         .await
@@ -746,7 +757,7 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     server.shutdown();
     server.join().await.unwrap();
 
-    let at = (chrono::Utc::now() - chrono::Duration::seconds(60))
+    let at = (clock(home.path()).now() - chrono::Duration::seconds(60))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["at"] = json!(at);
@@ -806,7 +817,7 @@ async fn an_ended_branch_cancels_its_record_and_never_retries() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": child, "at": instant_after(6),
+            json!({"sessionId": session, "branchId": child, "at": instant_after(home.path(), 6),
                 "prompt": "Into the ended line."}),
         )
         .await
@@ -846,7 +857,7 @@ async fn overdue_wakeups_fire_in_at_order_with_a_stable_tie_breaker() {
         let created: Value = client
             .rpc(
                 "session.wakeup.create",
-                json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+                json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                     "prompt": prompt}),
             )
             .await
@@ -860,10 +871,10 @@ async fn overdue_wakeups_fire_in_at_order_with_a_stable_tie_breaker() {
     // The downtime leaves every record past its instant but inside the grace,
     // and the file's order is not the due order: last, tied, tied, third.
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(-20));
-        wakeups[1]["at"] = json!(instant_after(-40));
-        wakeups[2]["at"] = json!(instant_after(-40));
-        wakeups[3]["at"] = json!(instant_after(-30));
+        wakeups[0]["at"] = json!(instant_after(home.path(), -20));
+        wakeups[1]["at"] = json!(instant_after(home.path(), -40));
+        wakeups[2]["at"] = json!(instant_after(home.path(), -40));
+        wakeups[3]["at"] = json!(instant_after(home.path(), -30));
     });
 
     let model = Arc::new(Script::default());
@@ -907,7 +918,7 @@ async fn terminal_records_are_pruned_after_their_retention_age() {
         client
             .rpc(
                 "session.wakeup.create",
-                json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+                json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                     "prompt": prompt}),
             )
             .await
@@ -918,7 +929,7 @@ async fn terminal_records_are_pruned_after_their_retention_age() {
     // second was created eight days ago and has been terminal for one. Both
     // contrasts make `settled_at`, not `created_at`, the cutoff.
     let days = |days: i64| {
-        (chrono::Utc::now() - chrono::Duration::days(days))
+        (clock(home.path()).now() - chrono::Duration::days(days))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     };
     edit_wakeups(home.path(), |wakeups| {
@@ -965,7 +976,7 @@ async fn an_unloaded_target_is_restored_before_the_input() {
         .await
         .unwrap();
     wait_for("the first turn", || model.count() >= 1).await;
-    let at = instant_after(6);
+    let at = instant_after(home.path(), 6);
     let created: Value = client
         .rpc(
             "session.wakeup.create",
@@ -1011,7 +1022,7 @@ async fn a_deleted_target_cancels_its_record_and_never_relaunches() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(4),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 4),
                 "prompt": "Nobody is left."}),
         )
         .await
@@ -1049,7 +1060,7 @@ async fn scope_and_param_errors() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": first, "branchId": "main", "at": instant_after(30),
+            json!({"sessionId": first, "branchId": "main", "at": instant_after(home.path(), 30),
                 "prompt": "Mine."}),
         )
         .await
@@ -1085,20 +1096,20 @@ async fn scope_and_param_errors() {
         ),
         (
             "an unknown field",
-            json!({"sessionId": first, "branchId": "main", "at": instant_after(30),
+            json!({"sessionId": first, "branchId": "main", "at": instant_after(home.path(), 30),
                 "prompt": "x", "extra": 1}),
         ),
         (
             "a missing branchId",
-            json!({"sessionId": first, "at": instant_after(30), "prompt": "x"}),
+            json!({"sessionId": first, "at": instant_after(home.path(), 30), "prompt": "x"}),
         ),
         (
             "a missing prompt",
-            json!({"sessionId": first, "branchId": "main", "at": instant_after(30)}),
+            json!({"sessionId": first, "branchId": "main", "at": instant_after(home.path(), 30)}),
         ),
         (
             "an empty prompt",
-            json!({"sessionId": first, "branchId": "main", "at": instant_after(30), "prompt": ""}),
+            json!({"sessionId": first, "branchId": "main", "at": instant_after(home.path(), 30), "prompt": ""}),
         ),
     ] {
         let error = client
@@ -1144,7 +1155,7 @@ async fn an_oversized_prompt_is_invalid_params_at_both_entry_points() {
     let error = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(30),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 30),
                 "prompt": oversized}),
         )
         .await
@@ -1159,7 +1170,7 @@ async fn an_oversized_prompt_is_invalid_params_at_both_entry_points() {
     model.push(vec![ToolCall {
         id: "w1".into(),
         name: "wakeup".into(),
-        input: json!({"at": instant_after(30), "prompt": oversized})
+        input: json!({"at": instant_after(home.path(), 30), "prompt": oversized})
             .as_object()
             .unwrap()
             .clone(),
@@ -1184,7 +1195,7 @@ async fn an_oversized_prompt_is_invalid_params_at_both_entry_points() {
     client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "x".repeat(32 * 1024)}),
         )
         .await
@@ -1215,7 +1226,7 @@ async fn a_multi_byte_prompt_over_the_byte_bound_is_invalid_params() {
     model.push(vec![ToolCall {
         id: "w1".into(),
         name: "wakeup".into(),
-        input: json!({"at": instant_after(30), "prompt": prompt})
+        input: json!({"at": instant_after(home.path(), 30), "prompt": prompt})
             .as_object()
             .unwrap()
             .clone(),
@@ -1249,7 +1260,7 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
     let mut client = connect(&server).await;
     let session = create_session(&mut client, home.path(), &["wakeup"], true).await;
 
-    let at = instant_after(2);
+    let at = instant_after(home.path(), 2);
     model.push(vec![ToolCall {
         id: "w1".into(),
         name: "wakeup".into(),
@@ -1283,7 +1294,7 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
     model.push(vec![ToolCall {
         id: "w2".into(),
         name: "wakeup".into(),
-        input: json!({"at": instant_after(30), "prompt": "Nope."})
+        input: json!({"at": instant_after(home.path(), 30), "prompt": "Nope."})
             .as_object()
             .unwrap()
             .clone(),
@@ -1371,7 +1382,7 @@ async fn wakeup_changes_reach_an_attached_client_as_session_notices() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(3),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 3),
                 "prompt": "Announce me."}),
         )
         .await
@@ -1450,7 +1461,7 @@ async fn a_settling_cancel_announces_and_a_terminal_cancel_does_not() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "Cancel me."}),
         )
         .await
@@ -1527,7 +1538,7 @@ async fn an_expiry_announces_expired_to_an_attached_client() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": "main", "at": instant_after(120),
+            json!({"sessionId": session, "branchId": "main", "at": instant_after(home.path(), 120),
                 "prompt": "Too late."}),
         )
         .await
@@ -1544,7 +1555,7 @@ async fn an_expiry_announces_expired_to_an_attached_client() {
     // The same edit the restart expiry test uses stands in for the elapsed
     // grace: the pass classifies a `scheduled` record past the window.
     edit_wakeups(home.path(), |wakeups| {
-        wakeups[0]["at"] = json!(instant_after(-120));
+        wakeups[0]["at"] = json!(instant_after(home.path(), -120));
     });
     let expired = wait_notice(
         &mut client,
@@ -1600,7 +1611,7 @@ async fn wakeup_notices_reach_a_client_attached_to_the_whole_session() {
     let created: Value = client
         .rpc(
             "session.wakeup.create",
-            json!({"sessionId": session, "branchId": child, "at": instant_after(120),
+            json!({"sessionId": session, "branchId": child, "at": instant_after(home.path(), 120),
                 "prompt": "Into the child."}),
         )
         .await
@@ -1637,7 +1648,7 @@ async fn the_wakeup_tool_reports_the_owners_expired_state() {
     model.push(vec![ToolCall {
         id: "expired-wakeup".into(),
         name: "wakeup".into(),
-        input: json!({"at": instant_after(-120), "prompt": "Expired request."})
+        input: json!({"at": instant_after(home.path(), -120), "prompt": "Expired request."})
             .as_object()
             .unwrap()
             .clone(),

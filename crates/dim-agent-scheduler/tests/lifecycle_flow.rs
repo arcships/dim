@@ -600,7 +600,7 @@ async fn a_launch_session_is_stopped_at_its_stop_time() {
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
-    let soon = (chrono::Utc::now() + chrono::Duration::seconds(2))
+    let soon = (clock(home.path()).now() + chrono::Duration::seconds(2))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_runs(home.path(), |runs| {
         let run = runs

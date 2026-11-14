@@ -530,6 +530,12 @@ pub async fn prune(shared: Arc<Shared>) {
     shared
         .retention
         .store(pending, std::sync::atomic::Ordering::Relaxed);
+    // A pass that took no write still signals: a flow test that asserts a
+    // release did not happen waits on "the pass ended", not on a change.
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.retention_done();
+    }
 }
 
 /// One retention pass (A.7). Returns whether expired records remain, so the

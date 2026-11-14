@@ -3,7 +3,6 @@
 //! stop timer resumes from `deadline_at` without launching or writing again.
 use dim_agent_capabilities::{defaults, history::HistoryRenderer, host::*};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
-use dim_agent_scheduler::install;
 use dim_agent_types::*;
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Server};
@@ -61,7 +60,16 @@ async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
-    install(&mut builder);
+    dim_agent_scheduler::install_with_testing(
+        &mut builder,
+        dim_agent_scheduler::SchedulerTexts::default(),
+        dim_agent_scheduler::testing::TestingOptions {
+            holds: Arc::new(dim_agent_scheduler::testing::Holds::default()),
+            clock: dim_agent_scheduler::testing::clock(home),
+            signals: dim_agent_scheduler::testing::signals(home),
+        },
+    )
+    .unwrap();
     serve(
         builder,
         ServerConfig {
@@ -486,8 +494,9 @@ async fn a_restart_resumes_the_stop_timer_of_a_terminal_launch() {
 
         // The delivery settled `lost`/`failed` after the launch persisted its
         // Session, and the stop time is now, as time would make it.
-        let soon = (chrono::Utc::now() + chrono::Duration::seconds(2))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let soon = (dim_agent_scheduler::testing::clock(home.path()).now()
+            + chrono::Duration::seconds(2))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         edit_runs(home.path(), |runs| {
             let run = runs
                 .iter_mut()
@@ -568,8 +577,9 @@ async fn a_restarts_stop_timer_ends_when_its_record_is_gone() {
     server.shutdown();
     server.join().await.unwrap();
 
-    let soon = (chrono::Utc::now() + chrono::Duration::seconds(4))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let soon = (dim_agent_scheduler::testing::clock(home.path()).now()
+        + chrono::Duration::seconds(4))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     edit_runs(home.path(), |runs| {
         let run = runs
             .iter_mut()

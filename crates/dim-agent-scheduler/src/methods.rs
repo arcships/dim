@@ -51,7 +51,7 @@ pub struct SchedulerPlugin {
     texts: Arc<crate::SchedulerTexts>,
     clock: Arc<dyn Clock>,
     #[cfg(feature = "testing")]
-    holds: Option<Arc<crate::testing::Holds>>,
+    testing: Option<crate::testing::TestingOptions>,
 }
 
 impl SchedulerPlugin {
@@ -67,20 +67,21 @@ impl SchedulerPlugin {
             texts,
             clock: Arc::new(crate::clock::SystemClock),
             #[cfg(feature = "testing")]
-            holds: None,
+            testing: None,
         })
     }
 
-    /// [`SchedulerPlugin::new`] with the flow tests' holds (feature
+    /// [`SchedulerPlugin::new`] with the flow tests' seams and clock (feature
     /// `testing`).
     #[cfg(feature = "testing")]
     pub fn new_with_testing(
         names: &Names<'_>,
         texts: Arc<crate::SchedulerTexts>,
-        holds: Arc<crate::testing::Holds>,
+        testing: crate::testing::TestingOptions,
     ) -> rutis::Result<Self> {
         Ok(Self {
-            holds: Some(holds),
+            clock: testing.clock.clone(),
+            testing: Some(testing),
             ..Self::new(names, texts)?
         })
     }
@@ -132,7 +133,9 @@ impl DynPlugin for SchedulerPlugin {
                 retention: Default::default(),
                 watch: crate::watch::Watchers::default(),
                 #[cfg(feature = "testing")]
-                holds: self.holds.clone(),
+                holds: self.testing.as_ref().map(|testing| testing.holds.clone()),
+                #[cfg(feature = "testing")]
+                signals: self.testing.as_ref().map(|testing| testing.signals.clone()),
             });
             let cleanup = shared.clone();
             ctx.effect(move || async move {
@@ -359,6 +362,9 @@ pub(crate) struct Shared {
     /// The flow tests' holds (feature `testing`).
     #[cfg(feature = "testing")]
     pub(crate) holds: Option<Arc<crate::testing::Holds>>,
+    /// The flow tests' pass signals (feature `testing`).
+    #[cfg(feature = "testing")]
+    pub(crate) signals: Option<Arc<crate::testing::Signals>>,
 }
 
 impl Shared {

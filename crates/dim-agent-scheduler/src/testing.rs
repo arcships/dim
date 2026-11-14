@@ -1,10 +1,18 @@
-//! Hooks flow tests hold an operation open at a known point, or fail one
-//! write once (feature `testing`).
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+//! The flow tests' seams (feature `testing`): holds that keep an operation at
+//! a known point, a clock a test can move, and the signals a pass emits.
+use crate::clock::Clock;
+use chrono::{DateTime, Utc};
+use rutis::host::BoxFuture;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 /// The hooks of one Scheduler instance.
 #[derive(Default)]
@@ -120,4 +128,121 @@ impl Holds {
     pub fn release_failure_armed(&self) -> bool {
         self.fail_release.load(Ordering::SeqCst)
     }
+}
+
+/// The flow tests' clock: real time plus an offset a test adds (#1536).
+///
+/// A test that never advances it sees the real clock, so the flows that rely
+/// on a real tick and a real wait keep today's timing; a test that advances
+/// moves only this Scheduler's deadline, never another timer of the runtime.
+pub struct ManualClock {
+    offset: Mutex<chrono::Duration>,
+    /// Bumped by every advance, so a parked waiter re-reads `now`.
+    moved: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for ManualClock {
+    fn default() -> Self {
+        Self {
+            offset: Mutex::new(chrono::Duration::zero()),
+            moved: tokio::sync::watch::channel(0).0,
+        }
+    }
+}
+
+impl ManualClock {
+    /// The instant this clock reads. Concrete, so a test never names the
+    /// crate's private `Clock` trait.
+    pub fn now(&self) -> DateTime<Utc> {
+        Clock::now(self)
+    }
+
+    /// Moves this clock `by` forward (or back, for a negative span) and wakes
+    /// every waiter the new instant has reached.
+    pub fn advance(&self, by: chrono::Duration) {
+        *self.offset.lock().unwrap() += by;
+        self.moved.send_modify(|generation| *generation += 1);
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now() + *self.offset.lock().unwrap()
+    }
+
+    fn wait_until<'a>(
+        &'a self,
+        until: DateTime<Utc>,
+        stop: &'a CancellationToken,
+    ) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let mut moved = self.moved.subscribe();
+            loop {
+                let now = self.now();
+                if now >= until {
+                    return true;
+                }
+                let sleep = (until - now).to_std().unwrap_or_default();
+                tokio::select! {
+                    _ = stop.cancelled() => return false,
+                    _ = tokio::time::sleep(sleep) => return true,
+                    _ = moved.changed() => {}
+                }
+            }
+        })
+    }
+}
+
+/// The signals a Scheduler pass emits for the flow tests.
+#[derive(Default)]
+pub struct Signals {
+    retention: Mutex<Option<Arc<Notify>>>,
+}
+
+impl Signals {
+    /// Arms the next retention pass and returns the handle that resolves once
+    /// it has finished its writes.
+    pub fn watch_next_retention(&self) -> Arc<Notify> {
+        let mut armed = self.retention.lock().unwrap();
+        armed.get_or_insert_with(|| Arc::new(Notify::new())).clone()
+    }
+
+    pub(crate) fn retention_done(&self) {
+        let done = self.retention.lock().unwrap().take();
+        if let Some(done) = done {
+            done.notify_waiters();
+        }
+    }
+}
+
+/// One clock per home, so a restart judges the record against the clock the
+/// previous generation left.
+pub fn clock(home: &Path) -> Arc<ManualClock> {
+    registry_entry(&CLOCKS, home)
+}
+
+/// One signal handle per home, as the clock is one per home.
+pub fn signals(home: &Path) -> Arc<Signals> {
+    registry_entry(&SIGNALS, home)
+}
+
+static CLOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<ManualClock>>>> =
+    LazyLock::new(Default::default);
+static SIGNALS: LazyLock<Mutex<HashMap<PathBuf, Arc<Signals>>>> = LazyLock::new(Default::default);
+
+fn registry_entry<T: Default>(registry: &Mutex<HashMap<PathBuf, Arc<T>>>, home: &Path) -> Arc<T> {
+    registry
+        .lock()
+        .unwrap()
+        .entry(home.to_owned())
+        .or_insert_with(|| Arc::new(T::default()))
+        .clone()
+}
+
+/// What a flow test hands to [`install_with_testing`](crate::install_with_testing).
+#[derive(Clone, Default)]
+pub struct TestingOptions {
+    pub holds: Arc<Holds>,
+    pub clock: Arc<ManualClock>,
+    pub signals: Arc<Signals>,
 }
