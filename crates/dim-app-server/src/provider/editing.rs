@@ -24,6 +24,10 @@ pub struct CreateProvider {
     pub connection: ConnectionInput,
     pub models: Vec<ModelEntry>,
     pub enabled: bool,
+    /// The prefix this Provider's listed ids carry, to the same rule as the
+    /// patch: trimmed, and an empty one is the same statement as none.
+    #[serde(default)]
+    pub glued_prefix: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,16 @@ pub struct ProviderPatch {
     /// omitted field leaves the stored statement alone.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub glued_prefix: Option<Option<String>>,
+}
+
+/// A prefix as a record stores it. It is stated so that it is stripped, so a
+/// blank statement and a cleared one say the same thing; creation and the
+/// partial update read the field the same way, since both state what a
+/// provider's ids carry.
+fn stated_prefix(glued_prefix: Option<String>) -> Option<String> {
+    glued_prefix
+        .map(|prefix| prefix.trim().to_owned())
+        .filter(|prefix| !prefix.is_empty())
 }
 
 #[derive(Clone, Deserialize)]
@@ -149,6 +163,7 @@ impl ConnectionInput {
         display_name: String,
         models: Vec<ModelEntry>,
         enabled: bool,
+        glued_prefix: Option<String>,
     ) -> Result<StaticProviderRecord, ProviderError> {
         if !drivers::custom_drivers().any(|driver| driver == self.driver_kind) {
             return Err(ProviderError::Unsupported(
@@ -180,7 +195,7 @@ impl ConnectionInput {
             endpoint_overrides: BTreeMap::new(),
             disabled_model_ids: Vec::new(),
             enabled,
-            glued_prefix: None,
+            glued_prefix: stated_prefix(glued_prefix),
             model_aliases: BTreeMap::new(),
             definition_fingerprint: None,
             version: 1,
@@ -253,10 +268,7 @@ impl ProviderPatch {
             }
         }
         if let Some(glued_prefix) = self.glued_prefix {
-            // A prefix is stated so that it is stripped, so an empty one and a
-            // blank one are the same statement as clearing it.
-            let glued_prefix = glued_prefix.filter(|prefix| !prefix.trim().is_empty());
-            record.glued_prefix = glued_prefix;
+            record.glued_prefix = stated_prefix(glued_prefix);
         }
         if let Some(network) = self.network {
             if let Some(proxy) = network.proxy {
@@ -299,7 +311,12 @@ impl ProviderService {
                         }
                         (
                             provider_id,
-                            connection.record("Unsaved Provider".into(), Vec::new(), false)?,
+                            connection.record(
+                                "Unsaved Provider".into(),
+                                Vec::new(),
+                                false,
+                                None,
+                            )?,
                         )
                     }
                     ProbeProvider::Existing {
@@ -357,9 +374,12 @@ impl ProviderService {
                 declare(model, "maxOutputTokens");
             }
         }
-        let mut record = input
-            .connection
-            .record(input.display_name, models, input.enabled)?;
+        let mut record = input.connection.record(
+            input.display_name,
+            models,
+            input.enabled,
+            input.glued_prefix,
+        )?;
         validate_static_record(&input.provider_id, &mut record)
             .map_err(|error| ProviderError::InvalidConfig(error.to_string()))?;
         let provider_id = input.provider_id;

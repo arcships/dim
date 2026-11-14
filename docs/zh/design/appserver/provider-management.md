@@ -115,7 +115,7 @@ actions 只说明当前可用性，
 
 | 方法 | 请求 | 回复与语义 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突 | true | `Drain` |
+| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled,gluedPrefix?}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突；`gluedPrefix` 按 patch 的规则：去空白，空值即未声明 | true | `Drain` |
 | `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
 | `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry}` | 既有 catalog；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
@@ -307,7 +307,8 @@ Provider 记录声明其列出 id 携带的前缀。该前缀在 id 头部、不
 它。名称步骤看到的是去前缀后的 id，因为中转方给 id 加了前缀，而不是给模型加了前缀。前缀是
 token 头部，因此 `auto` 与 `auto-` 是同一份声明；把整个 id 消耗掉的前缀不留下任何名称，于是识别
 不出任何模型，而不是匹配一个空名称。发现流程写入 Provider 上报的 id，并在不带前缀的情况下读取
-捆绑目录：前缀是用户对其所见 id 的声明，不是列举可以推断的东西。
+捆绑目录：前缀是用户对其所见 id 的声明，不是列举可以推断的东西。`provider.create` 按与
+`provider.update` 相同的规则声明前缀：去空白，空值与未声明是同一份声明。
 
 Provider 记录还把列出的 id 映射到它所指的模型 id。该别名是规则读不出的 id 的退路，因此在所有
 规则之后、合并之前读取：它从不覆盖规则能读出的 id。它的目标按同一套步骤解析，只是排除别名步骤

@@ -108,13 +108,23 @@ function newConnection(): Record<string, unknown> {
     ...(proxy.value || timeout.value ? { network: { ...(proxy.value ? { proxy: proxy.value } : {}), ...(timeout.value ? { timeoutMs: Number(timeout.value) } : {}) } } : {}),
   }
 }
+// The create request states the prefix beside the connection, on the patch's
+// own rule: an empty field states none, so the request omits it.
+function createRequest(): Record<string, unknown> {
+  const prefix = modelIdPrefix.value.trim()
+  return {
+    providerId: id.value, displayName: name.value, enabled: enabled.value,
+    connection: newConnection(), models: probed.value ?? [],
+    ...(prefix ? { gluedPrefix: prefix } : {}),
+  }
+}
 async function save(): Promise<void> {
   if (saving.value || connection.phase !== "connected" || conflict.value) return
   saving.value = true
   error.value = ""
   try {
     const p = props.provider
-    const result = await connection.client.call(p ? "provider.update" : "provider.create", p ? { providerId: p.providerId, expectedVersion: version.value, patch: patch() } : { providerId: id.value, displayName: name.value, enabled: enabled.value, connection: newConnection(), models: probed.value ?? [] }, readManagementProvider)
+    const result = await connection.client.call(p ? "provider.update" : "provider.create", p ? { providerId: p.providerId, expectedVersion: version.value, patch: patch() } : createRequest(), readManagementProvider)
     key.value = ""
     accessKey.value = ""
     sessionToken.value = ""

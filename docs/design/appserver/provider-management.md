@@ -182,7 +182,7 @@ typed errors in §3.4. Existing writes retain `mutating:true`, `interruption:Dra
 
 | Method | Request | Reply / behavior | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.create`  | `{providerId, displayName, connection, models: ModelEntry[], enabled}` | `ManagementProvider`; create-only, caller-generated fresh UUID, existing ID conflicts | true | `Drain` |
+| `provider.create`  | `{providerId, displayName, connection, models: ModelEntry[], enabled, gluedPrefix?}` | `ManagementProvider`; create-only, caller-generated fresh UUID, existing ID conflicts; `gluedPrefix` takes the patch's rule: trimmed, and an empty one states none | true | `Drain` |
 | `provider.update`  | `{providerId, expectedVersion, patch}` | `ManagementProvider`; validate and commit one partial update transaction; a patch that changes `baseUrl`, `credential` or `headers` also replaces the record's own models with the new endpoint's listing in that same compare-and-set write, and `modelsListed` says what it did; a `network`-only change saves alone | true | `Drain` |
 | `provider.probe`  | `{providerId, connection}` | `{models: ModelEntry[]}`; §3.3, no record writes or version check | false | `Drain` |
 | `provider.models.create`  | `{providerId, expectedVersion, model: ModelEntry}` | Existing catalog; separate user-added list; duplicate default or user ID rejected; add enabled and remove any stale `modelConfigOverrides`, `disabledModelIds`, `modelPreferences` and `endpointOverrides` entries for that ID in the same transaction | true | `Drain` |
@@ -465,7 +465,8 @@ relay prefixed the id rather than the model. The prefix is a token head, so
 leaves no name, which identifies nothing rather than matching an empty one.
 Discovery writes the ids the provider reports and reads the bundle without the
 prefix: a prefix is the user's statement about the ids they see, not something
-a listing may infer.
+a listing may infer. `provider.create` states the prefix on the same terms as
+`provider.update`: trimmed, and an empty one is the same statement as none.
 
 A provider's record also maps a listed id to the id of the model it stands for.
 That alias is the escape hatch for an id the rules cannot read, so it is

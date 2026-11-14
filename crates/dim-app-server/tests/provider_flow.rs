@@ -237,6 +237,7 @@ fn input(
         },
         models: vec![model("same", max)],
         enabled: true,
+        glued_prefix: None,
     }
 }
 fn target(provider: &str) -> ModelId {
@@ -8161,6 +8162,154 @@ async fn a_provider_states_the_prefix_its_ids_carry_and_that_statement_resolves_
         None
     );
     assert_eq!(stored_prefix(&home, PREFIXED), None);
+    root.shutdown().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// The prefix is one statement about a provider's ids, so creation accepts it
+/// on the same terms as the partial update: the created record stores it,
+/// `provider.list` and `provider.management` read it back, and the id it
+/// prefixes is identified from the first read rather than after a second
+/// write.
+#[tokio::test]
+async fn a_created_provider_states_the_prefix_its_ids_carry() {
+    let home = std::env::temp_dir().join(format!("provider-created-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    let plugins = [
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
+        root.plugin(ManagedProvidersPlugin),
+        root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap()),
+        root.plugin(provider_part(ProviderPlugin::new)),
+        root.plugin(dim_agent_aimux::AimuxPlugin),
+    ];
+    for plugin in &plugins {
+        active(plugin).await;
+    }
+    let provider = root.get::<ProviderService>().unwrap();
+    let cancel = CancellationToken::new();
+    const CREATED: &str = "00000000-0000-4000-8000-000000000052";
+    const CREATED_ID: &str = "auto-kimi-k3";
+    let mut relay = input(
+        CREATED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    relay.models = vec![
+        serde_json::from_value(json!({
+            "modelId":CREATED_ID, "displayName":CREATED_ID, "status":"active",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+                "structuredOutput":true,"vision":false,"audio":false,"reasoning":false}
+        }))
+        .unwrap(),
+    ];
+    relay.glued_prefix = Some("auto".into());
+    let created = provider.create(relay, &cancel).await.unwrap();
+    assert_eq!(
+        created
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto"),
+        "the reply carries the statement the creation made"
+    );
+    assert_eq!(stored_prefix(&home, CREATED).as_deref(), Some("auto"));
+    let listed = provider
+        .list(&cancel)
+        .await
+        .unwrap()
+        .providers
+        .into_iter()
+        .find(|provider| provider.provider_id == CREATED)
+        .expect("the created provider is in the list");
+    assert_eq!(listed.glued_prefix.as_deref(), Some("auto"));
+    let managed = provider
+        .management(Some(CREATED.into()), &cancel)
+        .await
+        .unwrap()
+        .providers
+        .remove(0);
+    assert_eq!(
+        managed
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto")
+    );
+    // The statement is in force from the creation: the model the id names
+    // answers with that row's numbers without a second write.
+    let catalog = provider
+        .catalog_for(CREATED.into(), &cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == CREATED_ID)
+        .expect("the provider lists the id it prefixed");
+    assert!(model.missing_limits.is_empty(), "{model:?}");
+    assert_eq!(
+        model.metadata.as_ref().unwrap().matched_model_id.as_deref(),
+        Some("kimi-k3")
+    );
+    // A blank statement is no statement, the same as the patch's empty one.
+    let mut blank = input(
+        "00000000-0000-4000-8000-000000000053",
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    blank.glued_prefix = Some("   ".into());
+    let blank = provider.create(blank, &cancel).await.unwrap();
+    assert_eq!(
+        blank
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix,
+        None
+    );
+    // A padded statement is the statement it surrounds, as the alias edit
+    // stores it: the record keeps `auto`, not the padding it arrived in.
+    const PADDED: &str = "00000000-0000-4000-8000-000000000054";
+    let mut padded = input(
+        PADDED,
+        "http://127.0.0.1:1/v1",
+        StaticAuth::Bearer,
+        Some("relay-key"),
+        "created",
+        1,
+    );
+    padded.glued_prefix = Some("  auto  ".into());
+    let padded = provider.create(padded, &cancel).await.unwrap();
+    assert_eq!(
+        padded
+            .connection
+            .as_ref()
+            .expect("the record is static")
+            .glued_prefix
+            .as_deref(),
+        Some("auto"),
+        "the stored and returned statement is the trimmed prefix"
+    );
+    assert_eq!(stored_prefix(&home, PADDED).as_deref(), Some("auto"));
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
