@@ -104,7 +104,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `timelineTreeControl` | session | TimelineTree | internal(owner-api) | — |
 | `toolHost` | session | WorkspaceTools | data | `execute` async |
 | `toolRegistry` | session | ToolRegistry | data | `register` async |
-| `toolSourcesView` | session | ToolRegistry | internal(owner-api) | — |
+| `toolSourcesView` | session | ToolRegistry | data | `get` sync, `observe` async |
 | `treeCommands` | session | TimelineTree | data | `create` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async |
 | `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
 | `agentLoop` | branch | Loop | internal(hot-path) | — |

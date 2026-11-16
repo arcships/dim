@@ -18112,6 +18112,16 @@
     },
     {
       "from": "dim_agent_capabilities::tool_registry",
+      "to": "dim_agent_capabilities::port_faces",
+      "references": [
+        "path crate::port_faces::Empty",
+        "path crate::port_faces::invalid",
+        "path crate::port_faces::request",
+        "path crate::port_faces::unknown_method"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::tool_registry",
       "to": "dim_agent_capabilities::tool_registry::tests",
       "references": [
         "mod tests"

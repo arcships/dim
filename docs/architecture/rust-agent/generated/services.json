@@ -2384,6 +2384,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolSourcesView@session",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#treeCommands@session",
         "provider": 31,
         "generation": 1,

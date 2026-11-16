@@ -237,6 +237,19 @@ ToolBinding 先取得注册表的来源状态 watch 再初读注册表，状态�
 
 ### 7.5 服务接口
 
+Session 数据面 `toolSourcesView` 是同一 ToolRegistry owner 的只读观察面；
+`toolRegistry` 负责贡献注册，观察面不暴露 handler 或注册操作。
+`get({})` 返回当前来源状态：按 source key 映射到
+`{adopted: string|null, rejected: {version, reason}|null}`。
+`observe({}, onState)` 返回持续观察的异步操作，先发送当前快照，再发送变化后的最新快照。
+它沿用 watch 语义，连续变化可以合并；不是持久事件日志，不保证每次变更都单独回调。
+回调在所有状态借用及提交锁之外运行。调用方取消、放弃等待或 owner 卸载结束观察，
+即使回调仍未返回也释放其等待；来源关闭正常结束，回调错误结束该观察并传播给调用方。
+这些操作不刷新来源或改变采用/拒绝规则，也不影响其他观察者。
+Rust 绑定的 `ToolSourcesView::get/subscribe` 直接读取同一个状态和 watch receiver，
+没有额外回调任务、通道或快照复制循环。
+
+
 **`ToolRegistry`（Session）**
 
 | 方法 | 输入 → 输出 | 错误 |

@@ -140,25 +140,87 @@ pub struct ToolSourceSet {
 
 /// Read-only view of the source statuses for hosts; unlike `ToolRegistry`
 /// it exposes no handler, so a Session handle may obtain it.
-pub struct ToolSourcesView(watch::Receiver<ToolSourcesState>);
+pub struct ToolSourcesView {
+    state: watch::Receiver<ToolSourcesState>,
+    generation: CancellationToken,
+}
 impl ToolSourcesView {
     pub fn get(&self) -> ToolSourcesState {
-        self.0.borrow().clone()
+        self.state.borrow().clone()
     }
     pub fn subscribe(&self) -> watch::Receiver<ToolSourcesState> {
-        self.0.clone()
+        self.state.clone()
+    }
+}
+
+impl HostDispatch for ToolSourcesView {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"get": "sync", "observe": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        match method {
+            "get" => {
+                let _: crate::port_faces::Empty =
+                    crate::port_faces::request("toolSourcesView", args)?;
+                rutis_bridge::session::arg(&self.get())
+            }
+            "observe" => {
+                let args = args.list()?;
+                let [request, Value::Reference(callback)] = args.as_slice() else {
+                    return Err(crate::port_faces::invalid(
+                        "toolSourcesView",
+                        "expected a request and callback",
+                    ));
+                };
+                let _: crate::port_faces::Empty = crate::port_faces::request(
+                    "toolSourcesView",
+                    Value::List(vec![request.clone()]),
+                )?;
+                if !callback.is_function() {
+                    return Err(crate::port_faces::invalid(
+                        "toolSourcesView",
+                        "expected a callback function",
+                    ));
+                }
+                let callback = callback.clone();
+                let mut state = self.subscribe();
+                let generation = self.generation.clone();
+                let caller = rutis_bridge::session::caller_row()
+                    .map(|row| row.ctx().cancellation_token())
+                    .unwrap_or_default();
+                Ok(Value::cancellable_future(async move {
+                    tokio::select! {
+                        biased;
+                        _ = generation.cancelled() => Ok(Value::Undefined),
+                        _ = caller.cancelled() => Ok(Value::Undefined),
+                        result = async move {
+                            loop {
+                                let snapshot = state.borrow_and_update().clone();
+                                let args = Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
+                                settle(callback.call_async(args).await?).await?;
+                                if state.changed().await.is_err() {
+                                    return Ok(Value::Undefined);
+                                }
+                            }
+                        } => result,
+                    }
+                }))
+            }
+            _ => Err(crate::port_faces::unknown_method("toolSourcesView", method)),
+        }
     }
 }
 
 /// What the registry did with each source key, for management views.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourcesState(pub BTreeMap<String, ToolSourceStatus>);
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourceStatus {
     pub adopted: Option<String>,
     pub rejected: Option<ToolSourceRejection>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourceRejection {
     pub version: String,
     pub reason: String,
@@ -911,9 +973,17 @@ impl DynPlugin for ToolRegistryPlugin {
                 Ok(())
             })?;
             registry.refresh();
-            ctx.provide_at(
-                self.view.clone(),
-                Arc::new(ToolSourcesView(registry.sources_state())),
+            let view = Arc::new(ToolSourcesView {
+                state: registry.sources_state(),
+                generation: ctx.cancellation_token(),
+            });
+            ctx.provide_at(self.view.clone(), view.clone())?;
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key_in(
+                    &dim_agent_runtime::names::name_of::<ToolSourcesView>(),
+                    self.session,
+                ),
+                view,
             )?;
             ctx.provide_at::<dyn HostDispatch>(
                 host_key_in(

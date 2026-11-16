@@ -96,6 +96,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `skillsConfig` | `skillsConfig.get()` | 形状见 §4.8。 |
 | `collaborationConfig` | `collaborationConfig.get()` | 形状见 §4.8。 |
 | `worktreeAssociations` | `worktreeAssociations.associate` | 形状见 §4.8。 |
+| `toolSourcesView` | `toolSourcesView.get/observe` | 同一 ToolRegistry owner 的独立只读观察面；贡献注册仍由 `toolRegistry` 负责，见 [工具贡献 §7.5](../architecture/rust-agent/tool-contributions.md#75-服务接口)。 |
 
 宿主读取端口的数据面（§4.10）包括 `executionSettingsHost`、`toolchainSourceHost`、`promptSuggestionSettingsHost`、`selectableModelsHost` 和 `modelSelectionHost`。名字不变，不新增 catalog 行。
 
@@ -114,7 +115,6 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `summaryPromptSettingsHost` | — | 宿主 summary settings 端口；`owner-api` |
 | `sessionStore` | `sessionMetadata`、`sessionFiles` | 行与文件分开 |
 | `timelineTree`、`timelineTreeControl` | `treeCommands` | 建/读分支走 `treeCommands` |
-| `toolSourcesView` | `toolRegistry` | 工具贡献走注册表 |
 | `callers` | `callChannel` | 调用通道走数据面 |
 
 ### 3.4 对象/句柄：拆成操作加 id

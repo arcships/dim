@@ -52,6 +52,16 @@ field of a model request's declaration nor a key of a persisted configuration.
 A host tool names its class per call through `ToolDriver::concurrency`, because
 one driver serves every host tool of a Session.
 
+## Read-only source observation
+
+The same owner publishes the `toolSourcesView` data face for status snapshots and
+watch observation. Contribution registration remains on `toolRegistry`; the view
+exposes neither handlers nor registration operations. Its contract is
+[tool contributions §7.5](../tool-contributions.md#75-服务接口).
+The native `get/subscribe` binding retains the existing watch receiver directly.
+Foreign observations use the owner's existing fiber cancellation token so unload
+ends a pending callback without keeping the registry alive.
+
 ## Events and lifetime
 
 No Timeline events. The fixed table holds every host tool in the host's order.
@@ -184,6 +194,6 @@ owned by Dim and built on existing rutis effects and the bridge's calling row.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:ToolHost` |
-| 提供 | `S:ToolRegistry`、`S:ToolSourcesView`、`S:dyn HostDispatch#toolRegistry` |
+| 提供 | `S:ToolRegistry`、`S:ToolSourcesView`、`S:dyn HostDispatch#toolRegistry`、`S:dyn HostDispatch#toolSourcesView` |
 | 被注入于 | `BranchTool`、`ContextUsage`、`HooksBranch`、`Questions`、`Recall`、`Skills`、`ToolBinding`、`Wait` |
 <!-- /generated -->
