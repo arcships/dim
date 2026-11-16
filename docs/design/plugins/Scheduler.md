@@ -661,13 +661,13 @@ Specified `scheduleJobs`, process scope: `call(JobRequest): async -> JobReply`, 
 | --- | --- | --- |
 | `action` | `list` \| `get` \| `create` \| `update` \| `delete` \| `set_enabled` \| `run_now` \| `history` | Required |
 | `job_id` | string | All but `list`, `create` |
-| `job` | object: `name`, `schedule`, `prompt`, `input_mode?` | `create`, `update` (partial) |
+| `job` | object: `name`, `schedule`, `prompt`, `input_mode?` | `create`, `update` (partial); `schedule` uses exactly one A.4 form |
 | `enabled` | bool | `set_enabled` |
 | `limit` | integer ≤ 50 | `history` |
 
 A `create` saves a `session` target at the calling Session and branch: the tool cannot name a target, set a `launch` target, or choose a model, an Agent or a policy. A Session may create at most 16 jobs through the tool (A13); a later create is `schedule_invalid`. The bound counts jobs and there is no minimum interval. A save is persistent configuration, so under every preset except FullAccess the user approves the job, its schedule and its prompt; each window then delivers that saved prompt, which the model cannot change without another approved save; a window is skipped while the job has an unsettled delivery (§3.1), so one job never has two writes outstanding; and a per-minute job is a request users make on purpose, which a minimum interval would refuse while only moving the number. Under FullAccess the user has waived approvals for every tool, this one included (E1). An `update` changes only the fields in `job` and keeps the stored target, so it can edit a job a client saved but cannot retarget it. `input_mode` defaults to `queue`. Save-time authority is not captured: the delivered input runs under the target branch's own Permission state (§3.3).
 
-Put job and delivery ids and all records needed for subsequent model actions in `ToolResult.content`. `structuredContent` is only persistence/UI data. Validation failures return `isError`, without disguising service/protocol failures as successful results. Tool lists omit prompt bodies. Other job results use a UTF-8 prompt preview of at most 4 KiB and an explicit `prompt_truncated` flag; job names use at most 256 bytes and run reasons at most 512 bytes. Job and delivery identities stay in `content`, while management and structured records retain the full data. These are per-field limits; list output still scales with job count.
+Put job and delivery ids and all records needed for subsequent model actions in `ToolResult.content`. `structuredContent` is only persistence/UI data. Validation failures return `isError`, without disguising service/protocol failures as successful results. The declaration exposes A.4's three schedule shapes, required fields and examples. A malformed schedule returns `schedule: schedule_invalid` with the expected shapes and examples in `content`; invalid cron, time zone and interval values identify the relevant requirements. Rejected creates and updates write nothing. Tool lists omit prompt bodies. Other job results use a UTF-8 prompt preview of at most 4 KiB and an explicit `prompt_truncated` flag; job names use at most 256 bytes and run reasons at most 512 bytes. Job and delivery identities stay in `content`, while management and structured records retain the full data. These are per-field limits; list output still scales with job count.
 
 The `scheduleJobs`, `wakeups` and `loops` data faces take a positional request and an optional cancellation signal or promise. Malformed requests return their documented data errors. Cancelling or dropping a read stops its wait. An accepted mutation settles in the process owner's task tracker, including its required notices, even when its caller leaves. An already committed write remains committed. Cancellation before handover returns `cancelled` and writes nothing. Native bindings share the owner operations and retain their typed results without a JSON round-trip.
 
@@ -698,6 +698,16 @@ The process row's `schedule` namespace (§1.3) uses existing method admission: `
 | `cron` | `{cron: "m h dom mon dow", tz?: IANA}` | Five fields with lists, ranges, steps; `tz` defaults to the control node's zone; DST-gap times skipped, repeated times fire once |
 | `every` | `{every_minutes: n}` | `n` ≥ 1; windows at `anchor + k·n`, anchor = `Job.enabled_at` (A.1) |
 | `at` | `{at: RFC 3339 instant}` | One window; after it fires or is missed the job is disabled |
+
+A schedule is exactly one of these objects; mixed forms and unknown fields are rejected. For example:
+
+```json
+{"cron": "*/30 * * * *", "tz": "Asia/Shanghai"}
+{"every_minutes": 30}
+{"at": "2030-01-01T00:00:00Z"}
+```
+
+`every_minutes` is a positive integer. Omitting `tz` from the cron form uses the host's local time zone, not UTC. An `at` value includes its UTC offset (`Z` or an explicit offset).
 
 Granularity one minute (A1). After a gap, only the latest due window is considered: it fires if observed within 60 s of its instant (A2); otherwise one `missed` record collapses the stretch. Older windows are never replayed. The timer evaluates wall clock on every tick and on wake, so suspended time is never caught up.
 

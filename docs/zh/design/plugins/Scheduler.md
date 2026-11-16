@@ -623,13 +623,13 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | --- | --- | --- |
 | `action` | `list` \| `get` \| `create` \| `update` \| `delete` \| `set_enabled` \| `run_now` \| `history` | 必需 |
 | `job_id` | string | 除 `list`、`create` 外都需要 |
-| `job` | 对象：`name`、`schedule`、`prompt`、`input_mode?` | `create`、`update`(部分) |
+| `job` | 对象：`name`、`schedule`、`prompt`、`input_mode?` | `create`、`update`(部分)；`schedule` 必须是 A.4 的一种形式 |
 | `enabled` | bool | `set_enabled` |
 | `limit` | integer ≤ 50 | `history` |
 
 `create` 在调用方 Session 与分支保存一个 `session` 目标：工具不能命名目标、不能设置 `launch` 目标，也不能选择模型、Agent 或策略。一个 Session 通过工具创建的任务至多 16 条(A13)；之后的 create 为 `schedule_invalid`。上限计的是任务条数，且没有最小间隔。保存是持久配置，因此在除 FullAccess 外的每种预设下，用户都批准了该任务、它的调度与提示词；此后每个窗口投递的正是这份已保存的提示词，模型不经另一次获批的保存无法改变它；该任务有未结算的投递时窗口被跳过(§3.1)，因此一个任务永远不会同时有两次未结写入；而每分钟一次的任务是用户有意提出的请求，最小间隔会拒绝它，只是把数字挪个位置。在 FullAccess 下，用户已对所有工具放弃审批，这个工具也不例外(E1)。`update` 只改动 `job` 中的字段并保留存储的目标，因此它可以编辑客户端保存的任务，但不能重定向它。`input_mode` 默认 `queue`。保存时不捕获权限：投递的输入在目标分支自己的 Permission 状态下端运行(§3.3)。
 
-把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
+把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。声明展示 A.4 的三种调度形状、必需字段及示例。调度形状错误时返回 `schedule: schedule_invalid`，并在 `content` 中给出期望形状及示例；cron、时区和间隔值非法时说明相应要求。被拒绝的创建和更新不写入任何内容。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
 
 `scheduleJobs`、`wakeups`、`loops` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
 
@@ -660,6 +660,16 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | `cron` | `{cron: "m h dom mon dow", tz?: IANA}` | 五字段，支持列表、区间、步长；`tz` 缺省为控制节点时区；DST 空档时刻跳过，重复时刻只触发一次 |
 | `every` | `{every_minutes: n}` | `n` ≥ 1；窗口在 `anchor + k·n`，锚点为 `Job.enabled_at`(A.1) |
 | `at` | `{at: RFC 3339 时刻}` | 一个窗口；触发或错过之后任务被禁用 |
+
+调度必须恰为上述对象中的一种；拒绝混合形式和未知字段。例如：
+
+```json
+{"cron": "*/30 * * * *", "tz": "Asia/Shanghai"}
+{"every_minutes": 30}
+{"at": "2030-01-01T00:00:00Z"}
+```
+
+`every_minutes` 是正整数。cron 形式省略 `tz` 时使用宿主本地时区，而非 UTC。`at` 值包含 UTC 偏移量（`Z` 或显式偏移量）。
 
 粒度一分钟(A1)。间隔之后只考虑最近的到期窗口：在其实刻 60 s 内被观察到就触发(A2)；否则一条 `missed` 记录概括这一段。更早的窗口永不重放。定时器在每次节拍与唤醒时求值墙钟，因此挂起的时间永不补做。
 
