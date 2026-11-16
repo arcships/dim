@@ -1855,6 +1855,16 @@ note a client reads prints, once on stderr in every mode,
 `Upgrading the local store from format v<from> to v<to>; this can take a while on a large store.`;
 stdout and JSON output stay unchanged. A client that only knows the failure kind
 ignores the progress kind and falls back to the generic messages above.
+
+A note that names a `stage` keeps the upgrade visible instead of leaving the
+first line alone for as long as the upgrade runs: each later report prints
+`Upgrading the local store · <n> s · <stage>` in the interface language, naming
+the stage in its own words (`images`, `index`, `verify`). On a terminal that
+line is rewritten in place, so the elapsed time and the stage update without
+scrolling; where stderr is not a terminal every report is a line of its own, and
+the line is cleared before the client prints anything else. A note without a
+`stage`, which a daemon from before stages writes, leaves the one line as before.
+Doing so needs no new protocol: both readers ignore a field they do not know.
 Development documentation continues to use `./dev` and its isolated home; the
 terminal note itself names a compatible build or `--home PATH`.
 

@@ -11,7 +11,7 @@ use dim_modality::{
     AdapterError, AdapterFuture, AdapterOperation, AdapterOutput, AdapterProgress, ArtifactHook,
     Clock, InstallOptions, Job, JobFile, ModalityAdapter, ModalityAdapterService, ProgressSink,
     RealtimeConnection, RealtimeEnd, RealtimeEvent, RealtimeFrame, RealtimeLimits, RealtimeOpened,
-    RealtimeTransport, RemoteCancel, Submitted,
+    RealtimeTransport, RemoteCancel, Submitted, adapter_key,
 };
 use futures_util::{SinkExt, StreamExt};
 use rutis::Disposer;
@@ -652,6 +652,22 @@ impl ModalityAdapter for FixtureAdapter {
     }
 }
 
+struct ProviderFixturePlugin(Arc<FixtureAdapter>);
+impl Plugin for ProviderFixturePlugin {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "ModalityProviderFixture"
+    }
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        let disposer = ctx.provide_at(
+            adapter_key(PROVIDER),
+            Arc::new(ModalityAdapterService(self.0.clone())),
+        )?;
+        *self.0.disposer.lock().unwrap() = Some(disposer);
+        Ok(())
+    }
+}
+
 struct FixturePlugin(Arc<FixtureAdapter>);
 impl Plugin for FixturePlugin {
     type Deps = ();
@@ -795,6 +811,27 @@ async fn start_in(home: std::path::PathBuf, fixture: Option<Arc<FixtureAdapter>>
         if let Some(fixture) = fixture.clone() {
             builder.plugin(move |_| Ok(Box::new(FixturePlugin(fixture.clone()))));
         }
+    })
+    .await
+}
+
+/// [`start_in`] with a family adapter and one provider adapter, so the two
+/// levels of copy are installed by the same process.
+async fn start_with_copies(
+    home: std::path::PathBuf,
+    family: Arc<FixtureAdapter>,
+    provider: Arc<FixtureAdapter>,
+) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    launch_with(Arc::new(MockTools), config, None, move |builder| {
+        let family = family.clone();
+        let provider = provider.clone();
+        builder.plugin(move |_| Ok(Box::new(FixturePlugin(family.clone()))));
+        builder.plugin(move |_| Ok(Box::new(ProviderFixturePlugin(provider.clone()))));
     })
     .await
 }
@@ -1900,6 +1937,181 @@ async fn wait_terminal(client: &mut Client, task_id: &str) -> Value {
 
 fn inline_file(name: &str, media_type: &str, bytes: &[u8]) -> Value {
     json!({"name": name, "media_type": media_type, "data_base64": STANDARD.encode(bytes)})
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provider_copy_serves_its_provider_and_the_family_copy_takes_over() {
+    let family = Arc::new(FixtureAdapter::default());
+    family.serve(&[("alpha", &["generate"])]);
+    let provider = Arc::new(FixtureAdapter::default());
+    let home = home("dm-copies");
+    let server = start_with_copies(home.clone(), family.clone(), provider.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_task_provider(&mut client).await;
+
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    assert_eq!(operation(&capabilities, "edit")["available"], true);
+
+    let submitted = submit_task(
+        &mut client,
+        json!({
+            "category": "image", "operation": "generate",
+            "params": {"prompt": "a cat"},
+            "files": [inline_file("in.png", "image/png", b"inline image")]
+        }),
+    )
+    .await;
+    let task_id = submitted["task_id"].as_str().unwrap().to_owned();
+    let finished = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&finished), "succeeded", "{finished}");
+    assert_eq!(
+        provider.submits(),
+        1,
+        "the copy for this provider serves the model"
+    );
+    assert_eq!(family.submits(), 0, "the family copy is not asked");
+
+    provider.remove().await;
+    let capabilities = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&capabilities);
+    assert_eq!(operation(&capabilities, "edit")["available"], false);
+    assert_eq!(
+        operation(&capabilities, "generate")["options"],
+        json!([{"providerId": PROVIDER, "modelId": "alpha", "available": true}]),
+        "the next snapshot uses the family copy's narrower operation support"
+    );
+    let submitted = submit_task(
+        &mut client,
+        json!({
+            "category": "image", "operation": "generate",
+            "params": {"prompt": "a dog"},
+            "files": [inline_file("in.png", "image/png", b"inline image")]
+        }),
+    )
+    .await;
+    let task_id = submitted["task_id"].as_str().unwrap().to_owned();
+    let finished = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(state_of(&finished), "succeeded", "{finished}");
+    assert_eq!(
+        family.submits(),
+        1,
+        "removing the provider copy leaves the family copy serving the provider"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_asks_the_adapter_the_task_recorded() {
+    let home = home("dm-recovery");
+    let family = Arc::new(FixtureAdapter::default());
+    let gate = CancellationToken::new();
+    family.set_behavior(Behavior {
+        gate: Some(gate.clone()),
+        ..Behavior::default()
+    });
+    let server = start_in(home.clone(), Some(family.clone())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_task_provider(&mut client).await;
+
+    let submitted = submit_task(
+        &mut client,
+        json!({
+            "category": "image", "operation": "generate",
+            "params": {"prompt": "a cat"},
+            "files": [inline_file("in.png", "image/png", b"inline image")]
+        }),
+    )
+    .await;
+    let task_id = submitted["task_id"].as_str().unwrap().to_owned();
+    for _ in 0..200 {
+        if family.waits() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(family.waits(), 1, "the task is running with its handle");
+    let running = client
+        .rpc("modality.task.status", json!({"task_id": task_id}))
+        .await;
+    assert_eq!(running["result"]["task"]["state"], "running", "{running}");
+    assert_eq!(
+        running["result"]["task"]["executor"]["adapter"], "modalityAdapter",
+        "the record names the family copy that issued the handle"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let provider = Arc::new(FixtureAdapter::default());
+    provider.serve(&[]);
+    let server = start_with_copies(home.clone(), family, provider).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    gate.cancel();
+    let finished = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(
+        state_of(&finished),
+        "succeeded",
+        "recovery asked the recorded copy, not the newly installed one: {finished}"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_waits_through_the_adapter_copy_that_issued_its_handle() {
+    let family = Arc::new(FixtureAdapter::default());
+    let provider = Arc::new(FixtureAdapter::default());
+    let gate = CancellationToken::new();
+    provider.set_behavior(Behavior {
+        submit_gate: Some(gate.clone()),
+        ..Behavior::default()
+    });
+    let home = home("dm-pinned");
+    let server = start_with_copies(home.clone(), family.clone(), provider.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_task_provider(&mut client).await;
+
+    let submitted = submit_task(
+        &mut client,
+        json!({
+            "category": "image", "operation": "generate",
+            "params": {"prompt": "a cat"},
+            "files": [inline_file("in.png", "image/png", b"inline image")]
+        }),
+    )
+    .await;
+    let task_id = submitted["task_id"].as_str().unwrap().to_owned();
+    for _ in 0..200 {
+        if provider.submits() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(provider.submits(), 1, "the provider copy accepted the job");
+
+    provider.remove().await;
+    gate.cancel();
+    let finished = wait_terminal(&mut client, &task_id).await;
+    assert_eq!(
+        state_of(&finished),
+        "succeeded",
+        "the copy that issued the handle settles the task: {finished}"
+    );
+    assert_eq!(provider.waits(), 1);
+    assert_eq!(
+        family.waits(),
+        0,
+        "the family copy is never handed another adapter's handle"
+    );
+
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

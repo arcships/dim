@@ -2794,6 +2794,8 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/managed_provider.rs",
       "unexpandedMacros": [
+        "format",
+        "json",
         "matches",
         "vec"
       ]
@@ -3983,6 +3985,7 @@
       "parent": null,
       "file": "crates/dim-cli/src/lib.rs",
       "unexpandedMacros": [
+        "crossterm::execute",
         "env",
         "eprintln",
         "format",
@@ -3992,7 +3995,8 @@
         "serde_json::json",
         "tokio::select",
         "unreachable",
-        "vec"
+        "vec",
+        "writeln"
       ]
     },
     {
@@ -4101,13 +4105,23 @@
       "unexpandedMacros": [
         "cfg",
         "env",
-        "eprintln",
         "format",
         "json",
         "matches",
         "println",
         "tokio::pin",
         "tokio::select"
+      ]
+    },
+    {
+      "id": "dim_cli::client::progress_note_tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli::client",
+      "file": "crates/dim-cli/src/client.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq",
+        "format"
       ]
     },
     {
@@ -6878,6 +6892,15 @@
       "unexpandedMacros": [
         "assert",
         "assert_eq"
+      ]
+    },
+    {
+      "id": "dim_cli::upgrade_line_tests",
+      "crate": "dim_cli",
+      "parent": "dim_cli",
+      "file": "crates/dim-cli/src/lib.rs",
+      "unexpandedMacros": [
+        "assert"
       ]
     },
     {
@@ -23604,11 +23627,11 @@
       "references": [
         "mod managed_provider",
         "path managed_provider::ManagedProvider",
-        "path managed_provider::ManagedProviderBinding::new",
-        "path managed_provider::ManagedProviderMethodsPlugin::new",
+        "path managed_provider::ManagedProviderBinding",
         "path managed_provider::ManagedProviderRow",
-        "path managed_provider::ManagedProviders",
-        "path managed_provider::ManagedProvidersPlugin"
+        "path managed_provider::ManagedProvidersPlugin::new",
+        "path managed_provider::ManagedSearch",
+        "path managed_provider::owner_key"
       ]
     },
     {
@@ -27728,14 +27751,6 @@
     },
     {
       "from": "dim_app_server::managed_provider",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path Names",
-        "use dim_agent_runtime::Names"
-      ]
-    },
-    {
-      "from": "dim_app_server::managed_provider",
       "to": "dim_agent_types::model",
       "references": [
         "path ModelProtocol",
@@ -30559,6 +30574,7 @@
         "path ManagedModel",
         "path ManagedProviders",
         "path crate::managed_provider::ManagedProviderError",
+        "path crate::managed_provider::owner_key",
         "path reason_excludes_modality",
         "use crate::managed_provider::AccountSnapshot",
         "use crate::managed_provider::CredentialLease",
@@ -32653,6 +32669,13 @@
     },
     {
       "from": "dim_app_server::storage",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path dim_agent_runtime::Result"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage",
       "to": "dim_app_server::storage::arrays",
       "references": [
         "mod arrays"
@@ -32769,6 +32792,7 @@
       "to": "dim_app_server::storage::text",
       "references": [
         "mod text",
+        "path text::backfill",
         "use text::initialize_session_text_index"
       ]
     },
@@ -33456,6 +33480,8 @@
       "to": "dim_app_server::storage::sqlite",
       "references": [
         "path error",
+        "path super::sqlite::UpgradeProgress",
+        "path super::sqlite::UpgradeStage::Index",
         "use super::sqlite::error"
       ]
     },
@@ -33463,7 +33489,8 @@
       "from": "dim_app_server::storage::image_upgrade",
       "to": "dim_app_server::storage::text",
       "references": [
-        "path super::text::backfill"
+        "path super::text::backfill",
+        "path super::text::rewrite_event"
       ]
     },
     {
@@ -33472,6 +33499,8 @@
       "references": [
         "path Row",
         "path Row::Event",
+        "path super::timeline::output_row",
+        "path super::timeline::read_sequence",
         "use super::timeline::Row"
       ]
     },
@@ -33860,6 +33889,7 @@
       "from": "dim_app_server::storage::sqlite",
       "to": "dim_app_server::storage::image_upgrade",
       "references": [
+        "path super::image_upgrade::Converted",
         "path super::image_upgrade::upgrade"
       ]
     },
@@ -34833,11 +34863,11 @@
       "from": "dim_app_server::web",
       "to": "dim_app_server::managed_provider",
       "references": [
-        "path ManagedProviders",
+        "path ManagedSearch",
         "path ManagedSearchError::SearchFailed",
         "path ManagedSearchError::Unavailable",
         "path WebSearchRequest",
-        "use crate::managed_provider::ManagedProviders",
+        "use crate::managed_provider::ManagedSearch",
         "use crate::managed_provider::ManagedSearchError",
         "use crate::managed_provider::WebSearchRequest"
       ]
@@ -35308,6 +35338,10 @@
         "path client::DaemonNotice",
         "path client::NewerStore",
         "path client::StoreUpgrade",
+        "path client::UpgradeStage",
+        "path client::UpgradeStage::Images",
+        "path client::UpgradeStage::Index",
+        "path client::UpgradeStage::Verify",
         "path client::connect_inner",
         "path client::stop",
         "path client::web_assets"
@@ -35659,8 +35693,16 @@
         "path crate::ui::i18n::interface_locale",
         "path crate::ui::i18n::set",
         "path crate::ui::i18n::t",
+        "path crate::ui::i18n::t_in",
         "path crate::ui::i18n::tf",
         "path crate::ui::i18n::tf_in"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::ui::text",
+      "references": [
+        "path ui::text::truncate_cells"
       ]
     },
     {
@@ -35679,6 +35721,13 @@
         "path update::recover_startup",
         "path update::registry",
         "path update::run"
+      ]
+    },
+    {
+      "from": "dim_cli",
+      "to": "dim_cli::upgrade_line_tests",
+      "references": [
+        "mod upgrade_line_tests"
       ]
     },
     {
@@ -35952,7 +36001,11 @@
       "references": [
         "path Result",
         "path crate::Error",
+        "path crate::UpgradeLine",
+        "path crate::UpgradeLine::default",
         "path crate::daemon_too_old",
+        "path crate::store_upgrade_line",
+        "path crate::store_upgrade_progress_line",
         "use crate::Result"
       ]
     },
@@ -35964,6 +36017,13 @@
         "path crate::args::Action::DaemonStop",
         "use crate::args::Options",
         "use crate::args::SERVER_REQUIREMENT"
+      ]
+    },
+    {
+      "from": "dim_cli::client",
+      "to": "dim_cli::client::progress_note_tests",
+      "references": [
+        "mod progress_note_tests"
       ]
     },
     {
@@ -36014,6 +36074,17 @@
         "use dim_client::RpcError",
         "use dim_client::Server",
         "use dim_client::app_error"
+      ]
+    },
+    {
+      "from": "dim_cli::client::progress_note_tests",
+      "to": "dim_cli::client",
+      "references": [
+        "path ProgressNote",
+        "path read_progress_note",
+        "use super::ProgressNote",
+        "use super::UpgradeStage",
+        "use super::read_progress_note"
       ]
     },
     {
@@ -43123,7 +43194,9 @@
         "path crate::DAEMON_BUSY_COUNTS",
         "path crate::DAEMON_TOO_OLD",
         "path crate::DAEMON_TOO_OLD_COUNTS",
-        "path crate::DAEMON_UPGRADING"
+        "path crate::DAEMON_UPGRADING",
+        "path crate::DAEMON_UPGRADING_PROGRESS",
+        "path crate::UPGRADE_STAGE_LINES"
       ]
     },
     {
@@ -50150,6 +50223,35 @@
       ]
     },
     {
+      "from": "dim_cli::upgrade_line_tests",
+      "to": "dim_cli",
+      "references": [
+        "path UpgradeLine::default",
+        "path store_upgrade_progress_line",
+        "use super::UpgradeLine",
+        "use super::store_upgrade_progress_line"
+      ]
+    },
+    {
+      "from": "dim_cli::upgrade_line_tests",
+      "to": "dim_cli::client",
+      "references": [
+        "path UpgradeStage::Images",
+        "path UpgradeStage::Index",
+        "path UpgradeStage::Verify",
+        "use crate::client::UpgradeStage"
+      ]
+    },
+    {
+      "from": "dim_cli::upgrade_line_tests",
+      "to": "dim_cli::locale",
+      "references": [
+        "path Locale::En",
+        "path Locale::ZhCn",
+        "use crate::locale::Locale"
+      ]
+    },
+    {
       "from": "dim_cli::web_install",
       "to": "dim_cli",
       "references": [
@@ -52810,6 +52912,7 @@
         "path crate::PluginTargetState::Outdated",
         "path crate::PluginTargetState::Ready",
         "path crate::Reason",
+        "path crate::adapter_key",
         "path crate::evaluate",
         "path crate::host_target_for",
         "path crate::is_realtime",

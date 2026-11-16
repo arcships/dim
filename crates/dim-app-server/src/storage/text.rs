@@ -217,6 +217,49 @@ pub(super) fn row_through(
     }
 }
 
+/// Rebuilds the candidates of one stored row after its body changed: removes
+/// what the row derived before and derives it again from the stored body.
+/// Returns whether the row has a candidate now, which is what the work an
+/// upgrade does is counted by.
+///
+/// The caller guarantees the row is an `event` row, never an output row
+/// (`step/text`, `step/thinking`): an output row's delta carries the tail of
+/// the deltas before it, which only [`backfill`] rebuilds in order.
+pub(super) fn rewrite_event(
+    connection: &Connection,
+    session: &str,
+    branch: &str,
+    physical: u64,
+) -> Result<bool> {
+    let body: Option<String> = connection
+        .prepare_cached(
+            "SELECT body FROM timeline_events WHERE session_id=?1 AND branch_id=?2 AND sequence=?3",
+        )
+        .map_err(error)?
+        .query_row(params![session, branch, physical as i64], |row| row.get(0))
+        .optional()
+        .map_err(error)?;
+    let body = body.ok_or_else(|| error("text index rewrite names no stored event"))?;
+    connection
+        .prepare_cached(
+            "DELETE FROM timeline_text WHERE session_id=?1 AND branch_id=?2 AND physical_sequence=?3",
+        )
+        .map_err(error)?
+        .execute(params![session, branch, physical as i64])
+        .map_err(error)?;
+    row(connection, session, branch, physical, &body)?;
+    connection
+        .prepare_cached(
+            "SELECT count(*) FROM timeline_text WHERE session_id=?1 AND branch_id=?2 AND physical_sequence=?3",
+        )
+        .map_err(error)?
+        .query_row(params![session, branch, physical as i64], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|count| count > 0)
+        .map_err(error)
+}
+
 pub(super) fn backfill(connection: &Connection) -> Result<()> {
     let mut statement=connection.prepare("SELECT session_id,branch_id,sequence,body FROM timeline_events ORDER BY session_id,branch_id,sequence").map_err(error)?;
     let mut rows = statement.query([]).map_err(error)?;

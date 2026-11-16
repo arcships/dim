@@ -10,8 +10,10 @@ text placeholder at their original position.
 
 File publication precedes the single SQLite upgrade commit. A failed upgrade rolls
 back facts, ownership and the format marker; unowned files are reclaimed by the
-Session file sweep. The conversion rebuilds request content addresses and the text
-index and invalidates derived recovery snapshots. The accepted image bytes are
+Session file sweep. The conversion rebuilds request content addresses, derives the
+text candidates of the rewritten rows again, and invalidates the derived recovery
+snapshots of the Sessions those rows belong to. No other row's candidates change
+and no other Session's snapshot is dropped. The accepted image bytes are
 preserved. Older daemons reject v50 at admission.
 
 ## v49: durable image references
@@ -200,11 +202,14 @@ home 目录继承的 ACL；正常打开不写）。说明只描述本次启动�
 
 **升级进度。** 格式升级可能远长于启动等待。升级事务运行期间，存储 owner 在同一位置
 原子改写进度说明，首行是 `dimcode-startup-progress v1 pid=<pid>`，正文是
-`store-upgrade from=<from> to=<to> progress=<n>`：`n` 每次重写递增。SQLite 的进度回调
-最多每秒报告一次，每个升级步骤完成时再报告一次；库新建或已是最新格式时不写。进度
-说明让 CLI 区分“仍在升级”和“卡住”，不含业务内容或凭据，成功打开时与遗留说明一起
-删除。只认失败首行的旧版 CLI 读到进度说明时按“没有说明”处理，退回通用错误文本；
-CLI 等待规则见 [CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
+`store-upgrade from=<from> to=<to> progress=<n> stage=<stage>`：`n` 每次重写递增，
+`stage` 是升级当前所处的阶段（`images` 图片搬运、`index` 文本索引、`verify` 校验与
+提交）。SQLite 的进度回调最多每秒报告一次，每个升级步骤完成时再报告一次，进入新阶段时
+立即报告一次；库新建或已是最新格式时不写。读取方忽略自己不认识的字段：只认 `progress`
+的旧版 CLI 照旧跟随计数，只认失败首行的更旧 CLI 读到进度说明时按“没有说明”处理，
+退回通用错误文本。进度说明让 CLI 区分“仍在升级”和“卡住”，不含业务内容或凭据，成功
+打开时与遗留说明一起删除。CLI 等待规则与显示见
+[CLI 命令 §守护进程启动失败](../cli-commands.md#daemon-startup-failure)。
 
 **库被其他进程占用。** 存储的准入租约 `<database>.lock` 已被另一个进程持有：它正在服务
 这个库，或正在启动。本次启动拿不到库，返回的错误文本不变；拒绝时同样写一份启动说明，

@@ -11,7 +11,7 @@ cargo build --workspace --locked
 
 A normal Cargo installation is sufficient; compiler caching is optional. Each worktree keeps its own target directory. Existing source caches can be reused without sharing build outputs.
 
-The macOS `verify` job allows four concurrent Cargo build jobs. It builds all workspace targets once, checks the architecture, then runs up to two recorded test executables at a time with up to three test threads per executable. The separate CLI profile and Node- and Python-backed Rust suites use two test threads each. The `dependencies` job allows two Cargo build jobs when installing `cargo-deny`.
+The macOS `verify` job allows four concurrent Cargo build jobs. It builds all workspace targets once, checks the architecture, then runs up to two recorded test executables at a time with up to three test threads per executable. The workspace run starts `transport_flow` and `cli_flow` first. The separate CLI profile and Node- and Python-backed Rust suites use two test threads each. The `dependencies` job allows two Cargo build jobs when installing `cargo-deny`.
 
 CI sets `CARGO_TARGET_DIR` to the checkout's `target` directory so a compiler cache's managed-target collection cannot remove binaries between the build and their later execution. Each executable keeps its Cargo package working directory and streams output immediately, with target start/end markers and exit status. A target has a ten-minute deadline (`DIM_TEST_TIMEOUT_MS` overrides it), and timeout and cancellation terminate its process tree. Failures still allow the other targets to finish and fail the step. Cargo runs documentation tests separately with the same feature selection. Local `cargo test --workspace --locked` remains available without Node.
 

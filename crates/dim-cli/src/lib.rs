@@ -257,12 +257,98 @@ pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server}
 /// it starts; both waits then follow the daemon's progress instead of a fixed
 /// startup budget.
 pub(crate) const DAEMON_UPGRADING: &str = "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store.";
+/// The line that replaces [`DAEMON_UPGRADING`] as the upgrade reports again:
+/// how long it has run and what it is doing now, so a long upgrade reads as
+/// moving rather than as stuck.
+pub(crate) const DAEMON_UPGRADING_PROGRESS: &str =
+    "Upgrading the local store · {seconds} s · {stage}";
+/// What an upgrade's `images` stage does.
+const UPGRADE_STAGE_IMAGES: &str = "moving retained images into Session files";
+/// What an upgrade's `index` stage does.
+const UPGRADE_STAGE_INDEX: &str = "updating the text index of the rows that changed";
+/// What an upgrade's `verify` stage does.
+const UPGRADE_STAGE_VERIFY: &str = "checking and committing the upgraded store";
+/// The sentences that name the stages an upgrade reports, in the order
+/// [`client::UpgradeStage`] lists them.
+#[cfg(test)]
+pub(crate) const UPGRADE_STAGE_LINES: [&str; 3] = [
+    UPGRADE_STAGE_IMAGES,
+    UPGRADE_STAGE_INDEX,
+    UPGRADE_STAGE_VERIFY,
+];
 
 /// [`DAEMON_UPGRADING`] with the formats the progress note named.
 pub(crate) fn store_upgrade_line(locale: locale::Locale, upgrade: &client::StoreUpgrade) -> String {
     let from = upgrade.from.to_string();
     let to = upgrade.to.to_string();
     crate::ui::i18n::tf_in(locale, DAEMON_UPGRADING, &[("from", &from), ("to", &to)])
+}
+
+/// [`DAEMON_UPGRADING_PROGRESS`] with the elapsed time and the stage the
+/// upgrade reported.
+pub(crate) fn store_upgrade_progress_line(
+    locale: locale::Locale,
+    stage: client::UpgradeStage,
+    elapsed: std::time::Duration,
+) -> String {
+    let seconds = elapsed.as_secs().to_string();
+    let stage = crate::ui::i18n::t_in(locale, upgrade_stage_line(stage));
+    crate::ui::i18n::tf_in(
+        locale,
+        DAEMON_UPGRADING_PROGRESS,
+        &[("seconds", &seconds), ("stage", stage)],
+    )
+}
+
+/// The sentence that names the stage an upgrade is in.
+fn upgrade_stage_line(stage: client::UpgradeStage) -> &'static str {
+    match stage {
+        client::UpgradeStage::Images => UPGRADE_STAGE_IMAGES,
+        client::UpgradeStage::Index => UPGRADE_STAGE_INDEX,
+        client::UpgradeStage::Verify => UPGRADE_STAGE_VERIFY,
+    }
+}
+
+/// A store upgrade's report on stderr. A terminal gets one line rewritten in
+/// place, so a long upgrade shows that it is moving; a pipe gets one line per
+/// report, because nothing on the other end can overwrite it.
+#[derive(Default)]
+pub(crate) struct UpgradeLine {
+    /// Something is on the last line and can be rewritten.
+    drawn: bool,
+}
+impl UpgradeLine {
+    pub(crate) fn write(&mut self, text: &str) {
+        let mut stderr = std::io::stderr();
+        if !std::io::IsTerminal::is_terminal(&stderr) {
+            use std::io::Write;
+            let _ = writeln!(stderr, "{text}");
+            return;
+        }
+        let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+        let text = ui::text::truncate_cells(text, width.saturating_sub(1).into());
+        // A failure to draw is not a failure of the wait: the next report
+        // rewrites the line, and the wait's own outcome is unchanged.
+        let _ = crossterm::execute!(
+            stderr,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            crossterm::style::Print(text),
+        );
+        self.drawn = true;
+    }
+    /// Erases the redrawn line, so whatever follows does not share it.
+    pub(crate) fn finish(&mut self) {
+        if self.drawn {
+            let mut stderr = std::io::stderr();
+            let _ = crossterm::execute!(
+                stderr,
+                crossterm::cursor::MoveToColumn(0),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            );
+            self.drawn = false;
+        }
+    }
 }
 
 /// The notice for a kept daemon of another build, with the refusal's counts
@@ -979,4 +1065,55 @@ async fn runtime_list(client: &mut client::Client) -> Result<()> {
         println!("{}", runtime_line(status));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod upgrade_line_tests {
+    use super::{UpgradeLine, store_upgrade_progress_line};
+    use crate::{client::UpgradeStage, locale::Locale};
+
+    /// `UpgradeLine` redraws only where a line can be rewritten. A test's own
+    /// stderr is a pipe, which is the case a reporter of startup progress must
+    /// not fill with control characters: every report is a line of its own,
+    /// and nothing is left to erase afterwards.
+    #[test]
+    fn a_progress_line_is_one_line_when_nothing_can_be_rewritten() {
+        let mut line = UpgradeLine::default();
+        line.write("first");
+        line.write("second");
+        assert!(
+            !line.drawn,
+            "a stream that cannot be rewritten keeps no line to redraw"
+        );
+        line.finish();
+        assert!(!line.drawn);
+    }
+
+    /// A redrawn line names the elapsed time and the stage in the client's
+    /// language, and an unknown locale still says both.
+    #[test]
+    fn the_progress_line_names_the_time_and_the_stage() {
+        let english = store_upgrade_progress_line(
+            Locale::En,
+            UpgradeStage::Index,
+            std::time::Duration::from_secs(72),
+        );
+        assert!(english.contains("72"), "{english}");
+        assert!(english.contains("text index"), "{english}");
+        let chinese = store_upgrade_progress_line(
+            Locale::ZhCn,
+            UpgradeStage::Index,
+            std::time::Duration::from_secs(72),
+        );
+        assert!(chinese.contains("72"), "{chinese}");
+        assert!(chinese.contains("文本索引"), "{chinese}");
+        for stage in [
+            UpgradeStage::Images,
+            UpgradeStage::Index,
+            UpgradeStage::Verify,
+        ] {
+            let line = store_upgrade_progress_line(Locale::En, stage, Default::default());
+            assert!(!line.contains('{'), "{line}");
+        }
+    }
 }

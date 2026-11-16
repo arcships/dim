@@ -646,6 +646,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "正在把本地库从格式 v{from} 升级到 v{to}；大库可能需要一段时间。"
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "正在升级本地库 · 已用 {seconds} 秒 · {stage}"
+        }
+        "moving retained images into Session files" => "把保留下来的图片写入会话文件",
+        "updating the text index of the rows that changed" => "更新已改动行的文本索引",
+        "checking and committing the upgraded store" => "校验并提交升级后的库",
         _ => return None,
     })
 }

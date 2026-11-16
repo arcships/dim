@@ -7,7 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Main check jobs join their shared groups only after path classification.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
   cancel-in-progress: true
 env:
   # CI only needs pass/fail; skipping debug info shortens compiling and linking.
@@ -42,6 +43,8 @@ jobs:
           package-manager-cache: false
       - name: Select check groups
         id: groups
+        env:
+          DIM_CI_PUSH_BEFORE: ${{ github.event.before }}
         run: node scripts/ci-changes.mjs
       - name: Check accepted ADRs
         if: github.event_name == 'pull_request'
@@ -51,6 +54,9 @@ jobs:
   dependencies:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
+    concurrency:
+      group: ci-main-dependencies-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      cancel-in-progress: true
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     env:
@@ -67,6 +73,9 @@ jobs:
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
+    concurrency:
+      group: ci-main-windows-cli-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -78,11 +87,55 @@ jobs:
           persist-credentials: false
       - name: Verify native Windows CLI boundaries
         run: cargo test --locked -p dim-cli --lib
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    concurrency:
+      group: ci-main-web-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      cancel-in-progress: true
+    runs-on: [self-hosted, windows, x64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Build and test the Web workspace
+        run: |
+          $declarations = 'web/src/auto-imports.d.ts', 'web/src/components.d.ts'
+          $original = @{}
+          foreach ($file in $declarations) {
+            $original[$file] = (Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n")
+          }
+          $version = node -p "require('./npm/package.json').version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:Path = "$env:WINDIR\System32;$env:Path"
+          node scripts/stage-web.mjs staging/release-web $version $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $notices = tar.exe -xOzf "staging/release-web/dimcode-web-$version.tar.gz" dimcode-web/web/THIRD-PARTY-NOTICES.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($package in 'vue', 'vue-router', 'pinia') {
+            $entry = $notices -cmatch "^${package}@"
+            if (-not $entry) { throw "Missing third-party notice for $package" }
+            Write-Output $entry
+          }
+          foreach ($file in $declarations) {
+            if ((Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n") -cne $original[$file]) {
+              throw "Generated declaration changed: $file"
+            }
+          }
+          npm.cmd test --prefix web
   verify:
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
-      needs.changes.outputs.web == 'true' || needs.changes.outputs.scripts == 'true'
+      needs.changes.outputs.scripts == 'true'
+    concurrency:
+      group: ci-main-verify-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      cancel-in-progress: true
     # PR runners must be isolated from release credentials and private networks.
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
@@ -133,15 +186,6 @@ jobs:
         run: |
           node --check scripts/check-acp-registry.mjs
           node --test scripts/*.test.mjs
-      - name: Build the Web workspace
-        if: needs.changes.outputs.web == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The frontend is a separate artifact; building it here type-checks web/.
-          node scripts/stage-web.mjs staging/release-web "$(node -p "require('./npm/package.json').version")" "$GITHUB_SHA"
-          git diff --exit-code -- web/src/auto-imports.d.ts web/src/components.d.ts
-          npm test --prefix web
       - name: Verify actual CLI profiles and terminal launcher
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -212,6 +256,9 @@ jobs:
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
+    concurrency:
+      group: ci-main-acp-registry-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      cancel-in-progress: true
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
     env:
@@ -264,7 +311,7 @@ jobs:
           retention-days: 1
   ci-ok:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, windows-cli, verify, acp-registry]
+    needs: [changes, dependencies, windows-cli, web, verify, acp-registry]
     if: always()
     runs-on: self-hosted
     timeout-minutes: 5

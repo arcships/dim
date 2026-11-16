@@ -31,6 +31,7 @@ use dim_agent_types::ModelId;
 use dim_app_server::plugin_files::PluginFileTransactions;
 use dim_app_server::settings::SettingsService;
 use rutis::Ctx;
+use rutis::host::{CtxHost, Key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -69,8 +70,7 @@ pub const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 /// `fiber.rs:1193`), leaving room for the cancel's own write and the rest of
 /// an unload; past it a stuck adapter holds up neither.
 pub const SUBMIT_CANCEL_GRACE: Duration = Duration::from_secs(3);
-/// The name this build records for its single process adapter; the per-task
-/// lookup (#861) will record the resolved adapter's name instead.
+/// The persisted executor name for the family adapter copy (A.4).
 pub const ADAPTER_NAME: &str = "modalityAdapter";
 /// The time one OCR helper call may take (decision 7): a 500-page PDF at
 /// 200 dpi is the slowest input the contract accepts.
@@ -684,6 +684,27 @@ impl Shared {
             .await;
     }
 
+    /// Settles a task this generation cannot continue observing: the adapter
+    /// copy that issued its handle is gone, so no one can report the outcome.
+    async fn interrupt(&self, slot: &Arc<Slot>, message: impl Into<String>) {
+        let current = self.record(slot);
+        if current.state.is_terminal() {
+            return;
+        }
+        let error = TaskError {
+            code: "interrupted".into(),
+            message: message.into(),
+        };
+        let finished = self.now_text();
+        let _ = self
+            .finish(slot, current.revision, |record| {
+                record.state = TaskState::Interrupted;
+                record.error = Some(error.clone());
+                record.finished_at = Some(finished.clone());
+            })
+            .await;
+    }
+
     /// Records whether the helper ran confined, on the task's host executor
     /// (A.4, A14), before the terminal write.
     async fn record_confined(&self, slot: &Arc<Slot>, confined: bool) {
@@ -766,6 +787,10 @@ struct Slot {
     /// is written (or `submit` ended without one), so a cancel can wait for
     /// the handle an accepted job produces (A.6).
     submit_ended: watch::Sender<bool>,
+    /// The adapter copy this drive submitted through, fixed at submit: a
+    /// provider copy may be removed or reloading while its job still runs, and
+    /// a handle is only meaningful to the copy that issued it (A.2).
+    adapter: Mutex<Option<Arc<ModalityAdapterService>>>,
 }
 
 impl Slot {
@@ -782,6 +807,7 @@ impl Slot {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             submit_ended: watch::channel(true).0,
+            adapter: Mutex::new(None),
         })
     }
 
@@ -793,6 +819,12 @@ impl Slot {
     }
     fn end_submit(&self) {
         self.submit_ended.send_replace(true);
+    }
+    fn pin_adapter(&self, adapter: &Arc<ModalityAdapterService>) {
+        *self.adapter.lock().unwrap() = Some(adapter.clone());
+    }
+    fn pinned_adapter(&self) -> Option<Arc<ModalityAdapterService>> {
+        self.adapter.lock().unwrap().clone()
     }
 }
 
@@ -1075,8 +1107,12 @@ impl ModalityTasks {
                     confined: None,
                 },
                 None => Executor::Provider {
+                    adapter: self
+                        .shared
+                        .adapter_choice(&model.provider_id)
+                        .map(|(name, _)| name)
+                        .unwrap_or_else(|| ADAPTER_NAME.to_owned()),
                     provider: model,
-                    adapter: ADAPTER_NAME.to_owned(),
                 },
             },
             params: record_params,
@@ -1308,7 +1344,9 @@ impl ModalityTasks {
         let mut remote = None;
         if let Some(handle) = &record.remote_handle
             && let Ok(connection) = self.shared.connection(&record, cancel).await
-            && let Some(adapter) = self.shared.ctx.get::<ModalityAdapterService>()
+            && let Some(adapter) = slot
+                .pinned_adapter()
+                .or_else(|| self.shared.adapter_for(&record))
         {
             // A hung provider must not keep the client or an unload waiting.
             remote = tokio::select! {
@@ -1648,10 +1686,7 @@ impl Shared {
             return record;
         }
         if record.state == TaskState::Running {
-            if let Executor::Provider { provider, .. } = &record.executor
-                && record.remote_handle.is_some()
-                && self.adapter_serves(provider, &record.category, &record.operation)
-            {
+            if record.remote_handle.is_some() && self.record_serves(&record) {
                 return record;
             }
             return self
@@ -1661,17 +1696,49 @@ impl Shared {
         self.write_interrupted(record, None).await
     }
 
-    /// Whether the process adapter is available and serves the operation.
-    fn adapter_serves(&self, provider: &ModelId, category: &str, operation: &str) -> bool {
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
+    /// The adapter that serves one provider: its own copy, else the family
+    /// copy (A.2), with the name the task record keeps.
+    fn adapter_choice(&self, provider_id: &str) -> Option<(String, Arc<ModalityAdapterService>)> {
+        if let Some(adapter) = self.ctx.get_at(&crate::adapter_key(provider_id)) {
+            return Some((provider_id.to_owned(), adapter));
+        }
+        self.ctx
+            .get_at(&Key::<ModalityAdapterService>::of())
+            .map(|adapter| (ADAPTER_NAME.to_owned(), adapter))
+    }
+
+    /// The copy a task recorded, without falling back to another one: a
+    /// handle is only meaningful to the copy that issued it.
+    fn adapter_named(&self, name: &str) -> Option<Arc<ModalityAdapterService>> {
+        if name == ADAPTER_NAME {
+            self.ctx.get_at(&Key::<ModalityAdapterService>::of())
+        } else {
+            self.ctx.get_at(&crate::adapter_key(name))
+        }
+    }
+
+    /// The adapter that runs `record`.
+    fn adapter_for(&self, record: &TaskRecord) -> Option<Arc<ModalityAdapterService>> {
+        let Executor::Provider { adapter, .. } = &record.executor else {
+            return None;
+        };
+        self.adapter_named(adapter)
+    }
+
+    /// Whether the adapter this task recorded is available and serves its
+    /// operation. Recovery asks the recorded copy, never a newly preferred
+    /// one: a handle is only meaningful to the copy that issued it (A.2).
+    fn record_serves(&self, record: &TaskRecord) -> bool {
+        let Executor::Provider { provider, .. } = &record.executor else {
+            return false;
+        };
+        let Some(adapter) = self.adapter_for(record) else {
             return false;
         };
         adapter.0.available()
-            && adapter
-                .0
-                .operations(provider)
-                .iter()
-                .any(|served| served.category == category && served.operation == operation)
+            && adapter.0.operations(provider).iter().any(|served| {
+                served.category == record.category && served.operation == record.operation
+            })
     }
 
     /// Writes `interrupted` over a record loaded at startup.
@@ -1874,13 +1941,14 @@ impl Shared {
             self.run_host(slot, record).await;
             return None;
         }
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
+        let Some(adapter) = self.adapter_for(record) else {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "No adapter in this build")
                     .await;
             }
             return None;
         };
+        slot.pin_adapter(&adapter);
         if !adapter.0.available() {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "The adapter is unavailable")
@@ -1998,12 +2066,22 @@ impl Shared {
         record: TaskRecord,
         handle: Option<String>,
     ) {
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
-            if !slot.cancel_requested() {
-                self.fail(slot, "unavailable", "No adapter in this build")
-                    .await;
+        let adapter = match slot.pinned_adapter().or_else(|| self.adapter_for(&record)) {
+            Some(adapter) => adapter,
+            None if handle.is_some() => {
+                if !slot.cancel_requested() {
+                    self.interrupt(slot, "The adapter that issued this task's handle is gone")
+                        .await;
+                }
+                return;
             }
-            return;
+            None => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "unavailable", "No adapter in this build")
+                        .await;
+                }
+                return;
+            }
         };
         if !adapter.0.available() {
             if !slot.cancel_requested() {

@@ -763,15 +763,44 @@ fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
     write_note(&startup_note_path(path), &failure.note(path));
 }
 
+/// The stage of a store format upgrade a progress note reports, so a waiting
+/// client shows what is running and not only that something is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum UpgradeStage {
+    /// Converting retained inline images into Session files.
+    Images,
+    /// Deriving the text index of the rows the conversion rewrote.
+    Index,
+    /// Checking the upgraded store's references and committing.
+    Verify,
+}
+impl UpgradeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Images => "images",
+            Self::Index => "index",
+            Self::Verify => "verify",
+        }
+    }
+}
+
 /// The note a running store upgrade leaves for the CLI waiting on its daemon:
-/// the phase, the formats, and a counter that rises with each rewrite. The
-/// first line binds it to the process that wrote it, like the failure note.
-fn write_startup_progress(path: &std::path::Path, from: u32, to: u32, counter: u64) {
+/// the phase, the formats, a counter that rises with each rewrite, and the
+/// stage the upgrade is in. The first line binds it to the process that wrote
+/// it, like the failure note.
+fn write_startup_progress(
+    path: &std::path::Path,
+    from: u32,
+    to: u32,
+    counter: u64,
+    stage: UpgradeStage,
+) {
     write_note(
         &startup_note_path(path),
         &format!(
-            "dimcode-startup-progress v1 pid={}\nstore-upgrade from={from} to={to} progress={counter}\n",
-            std::process::id()
+            "dimcode-startup-progress v1 pid={}\nstore-upgrade from={from} to={to} progress={counter} stage={}\n",
+            std::process::id(),
+            stage.as_str()
         ),
     );
 }
@@ -837,7 +866,7 @@ const UPGRADE_PROGRESS_OPS: std::ffi::c_int = 1000;
 /// Reports one store format upgrade while its transaction runs. Only an
 /// upgrade registers it: a fresh store and a store at the current format run
 /// no progress callback at all.
-struct UpgradeProgress {
+pub(super) struct UpgradeProgress {
     ctx: Ctx,
     database: PathBuf,
     /// The format this upgrade started from.
@@ -847,6 +876,7 @@ struct UpgradeProgress {
 struct UpgradeState {
     counter: u64,
     last: Option<std::time::Instant>,
+    stage: UpgradeStage,
 }
 impl UpgradeProgress {
     fn new(ctx: &Ctx, database: &Path, from: u32) -> Self {
@@ -857,7 +887,21 @@ impl UpgradeProgress {
             state: Mutex::new(UpgradeState {
                 counter: 0,
                 last: None,
+                stage: UpgradeStage::Images,
             }),
+        }
+    }
+    /// Reports the stage this upgrade entered, at once: a stage boundary is
+    /// news even when the last report was a moment ago.
+    pub(super) fn enter(&self, stage: UpgradeStage) {
+        let changed = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = state.stage != stage;
+            state.stage = stage;
+            changed
+        };
+        if changed {
+            self.report(true);
         }
     }
     /// Reports real progress when a second passed since the last report or
@@ -875,14 +919,14 @@ impl UpgradeProgress {
             }
             state.counter += 1;
             state.last = Some(now);
-            state.counter
+            (state.counter, state.stage)
         };
         #[cfg(feature = "testing")]
         slow_upgrade_report();
         // Reporting is best effort; the opening's own outcome does not
         // depend on it.
         dim_agent_runtime::opening_advanced(&self.ctx);
-        write_startup_progress(&self.database, self.from, FORMAT, counter);
+        write_startup_progress(&self.database, self.from, FORMAT, counter.0, counter.1);
     }
 }
 
@@ -919,6 +963,10 @@ pub struct SqliteStorage {
     idle: tokio::sync::Notify,
     pub(super) path: PathBuf,
     upgraded_from: Option<u32>,
+    /// What the v50 image conversion measured about its own work, kept for a
+    /// flow test that bounds it; feature `testing` only.
+    #[cfg(feature = "testing")]
+    converted: Option<super::image_upgrade::Converted>,
 }
 /// The read-only connections that serve reads while the writer keeps its own
 /// (#599). Four let the catalog scan, a history page and the settings,
@@ -1082,6 +1130,10 @@ impl SqliteStorage {
             ))
         };
         let mut upgraded_from = None;
+        // What the v50 image conversion measured about its own work, which a
+        // flow test bounds; feature `testing` only.
+        #[cfg(feature = "testing")]
+        let mut converted = None;
         // What the store left dangling before any upgrade step ran, by
         // `(table, parent)`; read only on the upgrade path.
         let mut violations_before: BTreeMap<(String, String), i64> = BTreeMap::new();
@@ -1154,7 +1206,16 @@ impl SqliteStorage {
                 violations_before = violations(&connection).map_err(storage)?;
                 for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= upgrade_from) {
                     if *from == 49 {
-                        super::image_upgrade::upgrade(&connection, &path)?;
+                        let stage = progress.as_deref();
+                        #[cfg(feature = "testing")]
+                        {
+                            converted =
+                                Some(super::image_upgrade::upgrade(&connection, &path, stage)?);
+                        }
+                        #[cfg(not(feature = "testing"))]
+                        {
+                            super::image_upgrade::upgrade(&connection, &path, stage)?;
+                        }
                     }
                     if *from == 26 {
                         connection.execute_batch(V27_COLUMNS).map_err(storage)?;
@@ -1280,6 +1341,9 @@ impl SqliteStorage {
                         progress.report(true);
                     }
                 }
+                if let Some(progress) = &progress {
+                    progress.enter(UpgradeStage::Verify);
+                }
                 connection
                     .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
@@ -1372,6 +1436,8 @@ impl SqliteStorage {
             idle: tokio::sync::Notify::new(),
             path,
             upgraded_from,
+            #[cfg(feature = "testing")]
+            converted,
         }))
     }
     /// Opens an existing database for one read pass of the Timeline export
@@ -1419,6 +1485,8 @@ impl SqliteStorage {
                 idle: tokio::sync::Notify::new(),
                 path,
                 upgraded_from: None,
+                #[cfg(feature = "testing")]
+                converted: None,
             }),
             format,
         ))
@@ -1427,6 +1495,13 @@ impl SqliteStorage {
     /// committed; `None` when the store was created or already current.
     pub fn upgraded_from(&self) -> Option<u32> {
         self.upgraded_from
+    }
+    /// How many rows the image conversion derived text candidates for while
+    /// this store opened, `None` when this open ran no conversion; feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn converted_indexed(&self) -> Option<usize> {
+        self.converted.as_ref().map(|converted| converted.indexed)
     }
     /// Runs `operation` on the writer's connection. Only writes, checkpoints
     /// and reads that must follow them run here; business reads use

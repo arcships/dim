@@ -161,6 +161,64 @@ fn the_upgrade_line_follows_the_saved_locale() {
     assert!(!stderr.contains(UPGRADING), "{stderr}");
 }
 
+/// A daemon that names the stage it is in keeps the upgrade visible after the
+/// line that names it: each later report shows the elapsed time and what the
+/// upgrade is doing. A test's stderr is a pipe, so each report is a line of its
+/// own rather than one line rewritten in place, which is what the same reporter
+/// does on a terminal.
+#[test]
+fn a_stage_report_shows_the_elapsed_time_and_the_stage() {
+    let home = Home::new();
+    let note = note_path(&home);
+    let mut body = String::new();
+    // The first report names the upgrade; the second is the first one that can
+    // redraw it, so `images` needs two reports to show at all.
+    for (counter, stage) in [(1, "images"), (2, "images"), (3, "index"), (4, "verify")] {
+        body.push_str(&format!(
+            "printf 'dimcode-startup-progress v1 pid=%s\\nstore-upgrade from=33 to=34 progress={counter} stage={stage}\\n' \"$$\" > '{note}.tmp.$$'\n",
+            note = note.display()
+        ));
+        body.push_str(&format!("chmod 0600 '{}.tmp.$$'\n", note.display()));
+        body.push_str(&format!(
+            "mv '{}.tmp.$$' '{note}'\nsleep 0.4\n",
+            note.display(),
+            note = note.display()
+        ));
+    }
+    body.push_str(&format!(
+        "exec '{}' app-server \"$@\"",
+        env!("CARGO_BIN_EXE_dimcode")
+    ));
+    let server = script(&home, "staged-server", &body);
+    let output = home
+        .command()
+        .env("DIM_TEST_DAEMON_START_TIMEOUT_MS", "10000")
+        .args(["--server", server.to_str().unwrap(), "models", "fixture"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr.matches(UPGRADING).count(),
+        1,
+        "the first report names the upgrade once: {stderr}"
+    );
+    for stage in [
+        "moving retained images into Session files",
+        "updating the text index of the rows that changed",
+        "checking and committing the upgraded store",
+    ] {
+        assert!(
+            stderr.contains(stage),
+            "the client never said it was {stage}: {stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("Upgrading the local store · "),
+        "a later report is the redrawn progress line: {stderr}"
+    );
+}
+
 /// A child that reports nothing and never serves fails at the bound, with the
 /// log location.
 #[test]

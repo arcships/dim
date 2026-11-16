@@ -64,6 +64,9 @@ impl ManagedProvider for SearchProvider {
             if !signed_in {
                 return Err(ManagedError::TokenMissing);
             }
+            if req.query == "fail" {
+                return Err(ManagedError::Transient);
+            }
             Ok(WebSearchResponse {
                 results: vec![
                     WebSearchHit {
@@ -1262,6 +1265,77 @@ async fn web_fetch_times_out_when_the_response_never_finishes() {
     stop.cancel();
     held.await.unwrap();
     drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_managed_search_matches_native_results_and_errors() {
+    use dim_app_server::managed_provider::ManagedSearch;
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dms-{}", uuid::Uuid::new_v4()));
+    let signed_in = Arc::new(AtomicBool::new(true));
+    let signed_in_row = signed_in.clone();
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"managed-search",
+        "name":parts.anchor.parent().unwrap().join("fixtures/managed-search.ts"),
+        "provides":{}, "config":{}
+    })];
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        session_typescript: Some(parts),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let flag = signed_in_row.clone();
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin(flag.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, _, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let search = server.service::<ManagedSearch>().unwrap();
+    for (query, logged_in) in [("dim", true), ("fail", true), ("dim", false)] {
+        signed_in.store(logged_in, Ordering::SeqCst);
+        let request = WebSearchRequest {
+            query: query.into(),
+            count: 2,
+        };
+        let wire = super::process_typescript::files_available(
+            &mut client,
+            "searchprobe.search",
+            json!(request),
+        )
+        .await;
+        match search.search(request, &CancellationToken::new()).await {
+            Ok(reply) => assert_eq!(wire, json!({"reply":reply})),
+            Err(error) => {
+                let code = match error {
+                    dim_app_server::managed_provider::ManagedSearchError::Unavailable => {
+                        "unavailable"
+                    }
+                    dim_app_server::managed_provider::ManagedSearchError::SearchFailed => {
+                        "search_failed"
+                    }
+                };
+                assert_eq!(wire["error"]["code"], code);
+                assert!(
+                    wire["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&error.to_string())
+                );
+            }
+        }
+    }
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

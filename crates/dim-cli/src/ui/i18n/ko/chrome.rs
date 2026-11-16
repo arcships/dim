@@ -603,6 +603,16 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "로컬 저장소를 포맷 v{from}에서 v{to}(으)로 업그레이드하는 중입니다. 큰 저장소에서는 시간이 걸릴 수 있습니다."
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "로컬 저장소 업그레이드 중 · {seconds}초 경과 · {stage}"
+        }
+        "moving retained images into Session files" => "보관된 이미지를 세션 파일로 옮기는 중",
+        "updating the text index of the rows that changed" => {
+            "변경된 행의 텍스트 인덱스를 갱신하는 중"
+        }
+        "checking and committing the upgraded store" => {
+            "업그레이드된 저장소를 검사하고 커밋하는 중"
+        }
         _ => return None,
     })
 }

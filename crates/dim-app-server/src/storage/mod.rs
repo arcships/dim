@@ -33,6 +33,13 @@ pub use sqlite::{
     FORMAT as STORE_FORMAT, SqliteStorage, SqliteStoragePlugin, Vacuumed, vacuum_store,
 };
 pub use text::initialize_session_text_index;
+/// Derives every text candidate from the stored rows, in order: what an upgrade
+/// from a format before the index ran. A flow test compares a per-row rebuild
+/// against it. Feature `testing` only.
+#[cfg(feature = "testing")]
+pub fn rebuild_text_index(connection: &rusqlite::Connection) -> dim_agent_runtime::Result<()> {
+    text::backfill(connection)
+}
 pub use timeline::{
     PreparedWorktree, SessionStore, SessionStorePlugin, SqliteTimelineStore, TurnWindow,
     WorktreeDirectoryRecord, WorktreeUsage,

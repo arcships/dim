@@ -400,6 +400,7 @@ mod tests {
         const TOO_OLD: &str = crate::DAEMON_TOO_OLD;
         const TOO_OLD_COUNTS: &str = crate::DAEMON_TOO_OLD_COUNTS;
         const UPGRADING: &str = crate::DAEMON_UPGRADING;
+        const UPGRADING_PROGRESS: &str = crate::DAEMON_UPGRADING_PROGRESS;
         let previous = active();
         for (locale, code, _) in LOCALES {
             if locale == Locale::En {
@@ -411,6 +412,10 @@ mod tests {
                 TOO_OLD,
                 TOO_OLD_COUNTS,
                 UPGRADING,
+                UPGRADING_PROGRESS,
+                crate::UPGRADE_STAGE_LINES[0],
+                crate::UPGRADE_STAGE_LINES[1],
+                crate::UPGRADE_STAGE_LINES[2],
                 crate::ui::sessions_panel::HINT,
                 "Delete \"{name}\"?",
                 "Deleted {name}.",
@@ -458,6 +463,10 @@ mod tests {
                     ],
                 ),
                 (UPGRADING, vec![("from", "33"), ("to", "34")]),
+                (
+                    UPGRADING_PROGRESS,
+                    vec![("seconds", "12"), ("stage", "fixture-stage")],
+                ),
                 ("Delete \"{name}\"?", vec![("name", "fixture-name")]),
                 ("Deleted {name}.", vec![("name", "fixture-name")]),
                 (

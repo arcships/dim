@@ -5,13 +5,38 @@ use dim_agent_types::*;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-pub(super) fn upgrade(connection: &Connection, database: &Path) -> Result<()> {
+/// What the conversion rewrote, by the identity its derived rows are keyed
+/// by.
+#[derive(Default)]
+struct Changed {
+    /// Sessions holding a rewritten row: the conversion invalidated their
+    /// derived recovery snapshots. Sorted, so the rewrites are stable.
+    sessions: BTreeSet<String>,
+    /// The rewritten rows whose text candidates must be derived again, by
+    /// Session, branch and sequence, each with its kind.
+    rows: BTreeMap<(String, String, u64), String>,
+}
+
+/// What one image conversion did beyond rewriting the fact rows: how many
+/// indexed rows it derived text candidates for. A flow test bounds that by the
+/// rows it converts, never by the size of the store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Converted {
+    /// Indexed rows whose candidates the conversion derived again.
+    pub(super) indexed: usize,
+}
+
+pub(super) fn upgrade(
+    connection: &Connection,
+    database: &Path,
+    progress: Option<&super::sqlite::UpgradeProgress>,
+) -> Result<Converted> {
     let mut directory = database.as_os_str().to_os_string();
     directory.push(".session-files");
     let mut importer = Importer {
@@ -20,14 +45,15 @@ pub(super) fn upgrade(connection: &Connection, database: &Path) -> Result<()> {
         files: HashMap::new(),
         changes: 0,
     };
+    let mut changed = Changed::default();
     let mut cursor = 0i64;
     let mut reader = codec::Reader::default();
     loop {
         let row = connection.query_row(
-            "SELECT e.rowid, e.session_id, e.body FROM timeline_events e JOIN agent_sessions s ON s.session_id=e.session_id WHERE e.rowid > ?1 ORDER BY e.rowid LIMIT 1",
-            [cursor], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            "SELECT e.rowid, e.session_id, e.branch_id, e.sequence, e.kind, e.body FROM timeline_events e JOIN agent_sessions s ON s.session_id=e.session_id WHERE e.rowid > ?1 ORDER BY e.rowid LIMIT 1",
+            [cursor], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, super::timeline::read_sequence(row, 3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)),
         );
-        let (id, session, body) = match row {
+        let (id, session, branch, sequence, kind, body) = match row {
             Ok(row) => row,
             Err(rusqlite::Error::QueryReturnedNoRows) => break,
             Err(failure) => return Err(error(failure)),
@@ -89,14 +115,47 @@ pub(super) fn upgrade(connection: &Connection, database: &Path) -> Result<()> {
                 params![body, id],
             )
             .map_err(error)?;
+        changed.sessions.insert(session.clone());
+        changed.rows.insert((session, branch, sequence), kind);
     }
-    if importer.changes > 0 {
+    if changed.sessions.is_empty() {
+        return Ok(Converted::default());
+    }
+    // A snapshot's state may hold the inline image bytes its facts no longer
+    // do, so it cannot outlive the conversion. A Session the conversion did
+    // not touch keeps the fast path its snapshot grants.
+    for session in &changed.sessions {
         connection
-            .execute("DELETE FROM timeline_snapshots", [])
+            .execute(
+                "DELETE FROM timeline_snapshots WHERE session_id=?1",
+                [session],
+            )
             .map_err(error)?;
-        super::text::backfill(connection)?;
     }
-    Ok(())
+    // An output row's candidates carry the tail of the deltas before it, and
+    // the tails table holds the newest tail only, so re-deriving deltas out of
+    // order would read a tail this upgrade never rebuilt. The conversion
+    // rewrites no delta — an output row holds no image to convert — so this
+    // states what conversion may touch: a rewritten output row falls back to
+    // the rebuild that derives every row in order.
+    if changed
+        .rows
+        .values()
+        .any(|kind| super::timeline::output_row(kind))
+    {
+        super::text::backfill(connection)?;
+        return Ok(Converted::default());
+    }
+    if let Some(progress) = progress {
+        progress.enter(super::sqlite::UpgradeStage::Index);
+    }
+    let mut indexed = 0;
+    for (session, branch, sequence) in changed.rows.keys() {
+        indexed += usize::from(super::text::rewrite_event(
+            connection, session, branch, *sequence,
+        )?);
+    }
+    Ok(Converted { indexed })
 }
 
 fn requires_conversion(value: &serde_json::Value) -> bool {

@@ -2,7 +2,7 @@ mod content;
 mod network;
 
 use crate::{
-    managed_provider::{ManagedProviders, ManagedSearchError, WebSearchRequest},
+    managed_provider::{ManagedSearch, ManagedSearchError, WebSearchRequest},
     settings::{SettingsScope, SettingsService, SourceDeclaration},
 };
 use content::{convert, plain_text, redact};
@@ -178,7 +178,7 @@ fn now_ms() -> u64 {
 pub struct WebSessionPlugin {
     settings: Key<SettingsService>,
     tools: Key<ToolRegistry>,
-    managed: Key<ManagedProviders>,
+    managed: Key<ManagedSearch>,
 }
 
 impl WebSessionPlugin {
@@ -357,7 +357,7 @@ struct Hit {
 
 struct SessionState {
     settings: Arc<SettingsService>,
-    managed: Arc<ManagedProviders>,
+    managed: Arc<ManagedSearch>,
     cache: Mutex<PageCache>,
     closing: CancellationToken,
     inflight: TaskTracker,

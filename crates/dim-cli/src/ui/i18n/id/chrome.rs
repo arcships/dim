@@ -639,6 +639,18 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "Memutakhirkan penyimpanan lokal dari format v{from} ke v{to}; ini bisa memakan waktu pada penyimpanan besar."
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "Memutakhirkan penyimpanan lokal · {seconds} dtk · {stage}"
+        }
+        "moving retained images into Session files" => {
+            "memindahkan gambar yang disimpan ke berkas sesi"
+        }
+        "updating the text index of the rows that changed" => {
+            "memperbarui indeks teks baris yang berubah"
+        }
+        "checking and committing the upgraded store" => {
+            "memeriksa dan menyimpan penyimpanan yang dimutakhirkan"
+        }
         _ => return None,
     })
 }

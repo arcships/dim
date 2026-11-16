@@ -316,7 +316,11 @@ impl Client {
         }
     }
     async fn read(&mut self, expected: &str) -> Value {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        self.read_with_timeout(expected, Duration::from_secs(30))
+            .await
+    }
+    async fn read_with_timeout(&mut self, expected: &str, timeout: Duration) -> Value {
+        tokio::time::timeout(timeout, async {
             match &mut self.transport {
                 Transport::Unix(stream) => {
                     let mut line = String::new();
@@ -340,11 +344,17 @@ impl Client {
         .unwrap_or_else(|error| panic!("deadline waiting for {expected}: {error} (creating a product Session parses the bundled model catalog, about 10 s in an unoptimized build)"))
     }
     async fn response(&mut self, id: u64) -> Value {
+        self.response_with_timeout(id, Duration::from_secs(30))
+            .await
+    }
+    async fn response_with_timeout(&mut self, id: u64, timeout: Duration) -> Value {
         if let Some(index) = self.notices.iter().position(|v| v["id"] == id) {
             return self.notices.remove(index);
         }
         loop {
-            let value = self.read(&format!("response {id}")).await;
+            let value = self
+                .read_with_timeout(&format!("response {id}"), timeout)
+                .await;
             if value["id"] == id {
                 return value;
             }

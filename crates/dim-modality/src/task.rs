@@ -82,10 +82,9 @@ pub struct HostTarget {
     pub model_id: String,
 }
 
-/// Who runs the task (A.4). `adapter` names the executor adapter; until the
-/// per-task lookup (#861) lands there is one process service and it is
-/// recorded under its service name. A host task runs on the control node
-/// itself, and its record says which target it ran.
+/// Who runs the task (A.4). `adapter` is the provider id for a provider copy,
+/// or `modalityAdapter` for the family copy. A host task runs on the control
+/// node itself, and its record says which target it ran.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Executor {

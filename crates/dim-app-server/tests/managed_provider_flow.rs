@@ -1,16 +1,21 @@
 use dim_agent_capabilities::host::ModelProtocol;
-use dim_agent_runtime::Names;
 use dim_app_server::managed_provider::{
     AccountSnapshot, AccountView, CredentialLease, LeaseOwner, ManagedCatalog, ManagedError,
     ManagedFuture, ManagedProvider, ManagedProviderBinding, ManagedProviders,
-    ManagedProvidersPlugin, ProviderDescriptor, WebSearchRequest, WebSearchResponse,
+    ManagedProvidersPlugin, ManagedSearch, ManagedSearchError, ProviderDescriptor, WebSearchHit,
+    WebSearchRequest, WebSearchResponse,
     management::{
         BrowserLogin, BrowserLoginBegin, DeviceLogin, LoginBegin, LoginState,
         ManagedBrowserLoginComplete, ManagedLoginAttempt, Usage,
     },
+    owner_key,
 };
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, FiberState, TypeKey};
 use rutis::{Ctx, Plugin};
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Value as RpcValue, host_key, settle,
+};
+use serde_json::{Value as Json, json};
 use std::sync::{
     Arc, Mutex, OnceLock, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -41,6 +46,9 @@ struct Fixture {
     settled: AtomicUsize,
     /// The account recovery reports.
     recovered_generation: Mutex<u64>,
+    searches: Mutex<Vec<WebSearchRequest>>,
+    search_entered: Notify,
+    search_cancelled: Notify,
 }
 fn account(generation: u64) -> AccountSnapshot {
     AccountSnapshot {
@@ -145,10 +153,34 @@ impl ManagedProvider for Provider {
     }
     fn web_search(
         &self,
-        _: WebSearchRequest,
-        _: CancellationToken,
+        request: WebSearchRequest,
+        cancel: CancellationToken,
     ) -> ManagedFuture<WebSearchResponse> {
-        unused()
+        self.0.searches.lock().unwrap().push(request.clone());
+        let fixture = self.0.clone();
+        Box::pin(async move {
+            if request.query == "fail" {
+                return Err(ManagedError::Transient);
+            }
+            if request.query == "pending" {
+                let worker = fixture.clone();
+                let task = tokio::spawn(async move {
+                    cancel.cancelled().await;
+                    worker.search_cancelled.notify_one();
+                    Err(ManagedError::ServiceReloading)
+                });
+                fixture.search_entered.notify_one();
+                return task.await.unwrap();
+            }
+            Ok(WebSearchResponse {
+                results: vec![WebSearchHit {
+                    title: "Dim".into(),
+                    url: "https://example.com/dim".into(),
+                    snippet: "a coding agent".into(),
+                    published_at: Some("2026-01-02T03:04:05Z".into()),
+                }],
+            })
+        })
     }
     fn catalog(&self, _: &str) -> ManagedFuture<ManagedCatalog> {
         unused()
@@ -180,32 +212,18 @@ impl Plugin for FixturePlugin {
         Ok(())
     }
 }
-struct Capture {
-    captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    owner: Key<ManagedProviders>,
-}
-impl Capture {
-    fn new(
-        names: &Names<'_>,
-        captured: Arc<OnceLock<Arc<ManagedProviders>>>,
-    ) -> rutis::Result<Self> {
-        Ok(Self {
-            captured,
-            owner: names.key()?,
-        })
-    }
-}
+struct Capture(Arc<OnceLock<Arc<ManagedProviders>>>);
 impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "capture-managed"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.owner.erase()]
+        vec![owner_key().erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let owner = ctx.require_at(&self.owner)?;
-            let _ = self.captured.set(owner);
+            let owner = ctx.require_at(&owner_key())?;
+            let _ = self.0.set(owner);
             Ok(Effect::Done)
         })
     }
@@ -231,16 +249,14 @@ async fn setup() -> (
 ) {
     let root = Ctx::root().unwrap();
     let catalog = dim_app_server::catalog();
-    let build = rutis_loader::resolve::Build::default();
-    let names = Names::copy(&catalog, &build);
     root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
     let fixture = Arc::new(Fixture::default());
     *fixture.recovered_generation.lock().unwrap() = 1;
     let captured = Arc::new(OnceLock::new());
-    let owner_plugin = root.plugin(ManagedProvidersPlugin);
+    let owner_plugin = root.plugin(ManagedProvidersPlugin::new(None));
     let fixture_plugin = root.plugin(FixturePlugin(fixture.clone()));
-    let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
-    let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());
+    let binding = root.plugin(ManagedProviderBinding);
+    let capture = root.plugin(Capture(captured.clone()));
     for view in [&owner_plugin, &fixture_plugin, &binding, &capture] {
         active(view).await;
     }
@@ -343,13 +359,11 @@ async fn a_lease_of_a_replaced_provider_never_reaches_its_replacement() {
         let (first, second) = (fixture(), fixture());
         let captured = Arc::new(OnceLock::new());
         let catalog = dim_app_server::catalog();
-        let build = rutis_loader::resolve::Build::default();
-        let names = Names::copy(&catalog, &build);
         root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
-        let owner_plugin = root.plugin(ManagedProvidersPlugin);
+        let owner_plugin = root.plugin(ManagedProvidersPlugin::new(None));
         let first_plugin = root.plugin(FixturePlugin(first.clone()));
-        let binding = root.plugin(ManagedProviderBinding::new(&names).unwrap());
-        let capture = root.plugin(Capture::new(&names, captured.clone()).unwrap());
+        let binding = root.plugin(ManagedProviderBinding);
+        let capture = root.plugin(Capture(captured.clone()));
         for view in [&owner_plugin, &first_plugin, &binding, &capture] {
             active(view).await;
         }
@@ -426,4 +440,181 @@ async fn malformed_leases_are_refused_at_the_host_and_released() {
     assert_eq!(issued.len(), cases.len() + 2);
     assert_eq!(released, issued);
     root.shutdown().await.unwrap();
+}
+
+async fn face_call(
+    dispatch: &Arc<dyn HostDispatch>,
+    method: &str,
+    request: Json,
+) -> Result<Json, BridgeError> {
+    let reply = dispatch.invoke(method, RpcValue::List(vec![request.into()]))?;
+    settle(reply).await?.json()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_managed_search_face_answers_with_the_owner_hits() {
+    let (root, fixture, _owner, _binding) = setup().await;
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
+        .expect("the managedSearch data face is provided");
+
+    let reply = face_call(&face, "search", json!({"query": "dim agent", "count": 3}))
+        .await
+        .unwrap();
+    assert_eq!(
+        reply,
+        json!({"results": [{
+            "title": "Dim",
+            "url": "https://example.com/dim",
+            "snippet": "a coding agent",
+            "publishedAt": "2026-01-02T03:04:05Z",
+        }]})
+    );
+    assert_eq!(
+        fixture.searches.lock().unwrap().as_slice(),
+        [WebSearchRequest {
+            query: "dim agent".into(),
+            count: 3,
+        }]
+    );
+    use futures_util::FutureExt;
+    let native = root.get::<ManagedSearch>().unwrap();
+    let parent = CancellationToken::new();
+    let typed = native
+        .search(
+            WebSearchRequest {
+                query: "dim agent".into(),
+                count: 3,
+            },
+            &parent,
+        )
+        .now_or_never()
+        .expect("a ready native operation needs no bridge task")
+        .unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), reply);
+    assert!(!parent.is_cancelled());
+    assert_eq!(
+        native
+            .search(
+                WebSearchRequest {
+                    query: "fail".into(),
+                    count: 1
+                },
+                &parent
+            )
+            .await
+            .unwrap_err(),
+        ManagedSearchError::SearchFailed
+    );
+    let failure = face_call(&face, "search", json!({"query":"fail","count":1}))
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code(), Some("search_failed"));
+    assert_eq!(
+        native
+            .search(
+                WebSearchRequest {
+                    query: "x".into(),
+                    count: 1
+                },
+                &{
+                    let c = CancellationToken::new();
+                    c.cancel();
+                    c
+                }
+            )
+            .await
+            .unwrap_err(),
+        ManagedSearchError::Unavailable
+    );
+    for request in [
+        json!({"query":"x"}),
+        json!({"query":"x","count":1,"extra":true}),
+    ] {
+        assert!(face_call(&face, "search", request).await.is_err());
+    }
+    let unknown = face_call(&face, "providers", json!({})).await.unwrap_err();
+    assert!(
+        unknown.to_string().contains("unknown managedSearch method"),
+        "{unknown}"
+    );
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_managed_search_face_reports_an_unbound_provider() {
+    let root = Ctx::root().unwrap();
+    let view = root.plugin(ManagedProvidersPlugin::new(None));
+    active(&view).await;
+    let face = root
+        .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
+        .expect("the managedSearch data face is provided");
+    let error = face_call(&face, "search", json!({"query": "x", "count": 1}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), Some("unavailable"), "{error}");
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_or_abandoned_search_settles_provider_work() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (root, fixture, _, _) = setup().await;
+        let native = root.get::<ManagedSearch>().unwrap();
+        let face = root
+            .get_at::<dyn HostDispatch>(&host_key("managedSearch"))
+            .unwrap();
+        for mode in ["native_drop", "wire_drop", "native_cancel"] {
+            let parent = CancellationToken::new();
+            let task = {
+                let native = native.clone();
+                let face = face.clone();
+                let parent = parent.clone();
+                tokio::spawn(async move {
+                    if mode == "wire_drop" {
+                        let _ =
+                            face_call(&face, "search", json!({"query":"pending","count":1})).await;
+                    } else {
+                        let result = native
+                            .search(
+                                WebSearchRequest {
+                                    query: "pending".into(),
+                                    count: 1,
+                                },
+                                &parent,
+                            )
+                            .await;
+                        assert_eq!(result.unwrap_err(), ManagedSearchError::SearchFailed);
+                    }
+                })
+            };
+            fixture.search_entered.notified().await;
+            if mode == "native_cancel" {
+                parent.cancel();
+                task.await.unwrap();
+            } else {
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                assert!(!parent.is_cancelled());
+            }
+            fixture.search_cancelled.notified().await;
+        }
+        let parent = CancellationToken::new();
+        root.shutdown().await.unwrap();
+        assert_eq!(
+            native
+                .search(
+                    WebSearchRequest {
+                        query: "closed".into(),
+                        count: 1
+                    },
+                    &parent
+                )
+                .await
+                .unwrap_err(),
+            ManagedSearchError::Unavailable
+        );
+    })
+    .await
+    .unwrap();
 }

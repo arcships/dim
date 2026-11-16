@@ -11,8 +11,13 @@ const timeout=Number(process.env.DIM_TEST_TIMEOUT_MS??600_000);
 assert(Number.isSafeInteger(timeout)&&timeout>0,'DIM_TEST_TIMEOUT_MS must be a positive integer');
 const matches=readFileSync(artifacts,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line))
   .filter(record=>record.reason==='compiler-artifact'&&record.profile.test&&record.executable&&(workspace||record.target.name===target));
-if(workspace) assert(matches.length,'Expected compiled workspace test targets');
-else assert.equal(matches.length,1,`Expected one compiled test target named ${target}`);
+if(workspace){
+  assert(matches.length,'Expected compiled workspace test targets');
+  const longTargets=new Set(['transport_flow','cli_flow']);
+  matches.sort((a,b)=>Number(longTargets.has(b.target.name))-Number(longTargets.has(a.target.name)));
+}else{
+  assert.equal(matches.length,1,`Expected one compiled test target named ${target}`);
+}
 let status=0;
 let stopping=false;
 const active=new Set();

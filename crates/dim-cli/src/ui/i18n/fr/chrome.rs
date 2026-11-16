@@ -649,6 +649,18 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "Mise à niveau du magasin local du format v{from} vers v{to} ; cela peut prendre un certain temps sur un grand magasin."
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "Mise à niveau du magasin local · {seconds} s · {stage}"
+        }
+        "moving retained images into Session files" => {
+            "déplacement des images conservées vers des fichiers de session"
+        }
+        "updating the text index of the rows that changed" => {
+            "mise à jour de l'index de texte des lignes modifiées"
+        }
+        "checking and committing the upgraded store" => {
+            "vérification et validation du magasin mis à niveau"
+        }
         _ => return None,
     })
 }

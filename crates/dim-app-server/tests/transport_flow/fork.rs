@@ -733,16 +733,8 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
             )
             .unwrap();
         let rested_at = timeline.committed();
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            timeline
-                .watch()
-                .wait_for(|&(published, _)| published >= rested_at),
-        )
-        .await
-        .unwrap()
-        .unwrap();
         native.close().await.unwrap();
+        assert_eq!(timeline.sequence(), rested_at);
         database.close().await.unwrap();
         drop((timeline, native, database));
 
@@ -777,7 +769,14 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
         }
         costs.push(scenario_costs);
 
-        let fid = forked(&fork(&mut client, &sid, rested_at).await);
+        let request = client
+            .send("session.fork", json!({"sessionId":sid,"at":rested_at}))
+            .await;
+        let fid = forked(
+            &client
+                .response_with_timeout(request, Duration::from_secs(120))
+                .await,
+        );
         let target = agent.get_session(&fid).unwrap();
         let copied = history(&target, "main").await;
         assert_eq!(

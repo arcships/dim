@@ -4,6 +4,7 @@ import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
+import {pathToFileURL} from 'node:url';
 import {classify,groups} from './ci-changes.mjs';
 
 const only=(...names)=>Object.fromEntries(groups.map(group=>[group,names.includes(group)]));
@@ -12,6 +13,16 @@ const git=(cwd,...args)=>{
   const result=spawnSync('git',['-c','user.name=CI','-c','user.email=ci@example.com',...args],{cwd,encoding:'utf8'});
   assert.equal(result.status,0,result.stderr);
   return result.stdout;
+};
+const runSelector=(cwd,event,before='')=>{
+  const result=spawnSync(process.execPath,[path.join(import.meta.dirname,'ci-changes.mjs')],{
+    cwd,encoding:'utf8',env:{...process.env,GITHUB_EVENT_NAME:event,DIM_CI_PUSH_BEFORE:before,GITHUB_OUTPUT:''},
+  });
+  assert.equal(result.status,0,result.stderr);
+  return Object.fromEntries(result.stdout.trim().split('\n').slice(-groups.length).map(line=>{
+    const [group,value]=line.split('=');
+    return [group,value==='true'];
+  }));
 };
 
 test('documentation-only changes need no build group',()=>{
@@ -72,13 +83,40 @@ test('a renamed file keeps the checks of its old path',{skip:!hasGit},(t)=>{
   git(temporary,'commit','-q','-m','rename');
   git(temporary,'checkout','-q','main');
   git(temporary,'merge','-q','--no-ff','-m','merge','rename');
-  const result=spawnSync(process.execPath,[path.join(import.meta.dirname,'ci-changes.mjs')],{
-    cwd:temporary,encoding:'utf8',env:{...process.env,GITHUB_EVENT_NAME:'pull_request',GITHUB_OUTPUT:''},
-  });
-  assert.equal(result.status,0,result.stderr);
-  const output=Object.fromEntries(result.stdout.trim().split('\n').slice(-groups.length).map(line=>{
-    const [group,value]=line.split('=');
-    return [group,value==='true'];
-  }));
-  assert.deepEqual(output,only('rust','windows','node'),'a rename keeps the checks of both paths');
+  assert.deepEqual(runSelector(temporary,'pull_request'),only('rust','windows','node'),'a rename keeps the checks of both paths');
+});
+
+test('main push checks use the whole push range in a shallow checkout',{skip:!hasGit},(t)=>{
+  const temporary=mkdtempSync(path.join(os.tmpdir(),'dim-ci-push-'));
+  t.after(()=>rmSync(temporary,{recursive:true,force:true}));
+  const source=path.join(temporary,'source');
+  const checkout=path.join(temporary,'checkout');
+  git(temporary,'init','-q','-b','main',source);
+  writeFileSync(path.join(source,'README.md'),'# Dim\n');
+  writeFileSync(path.join(source,'Cargo.toml'),'[workspace]\n');
+  git(source,'add','-A');
+  git(source,'commit','-q','-m','base');
+  const initial=git(source,'rev-parse','HEAD').trim();
+  writeFileSync(path.join(source,'Cargo.toml'),'[workspace]\nmembers=[]\n');
+  git(source,'commit','-qam','code');
+  const docsBase=git(source,'rev-parse','HEAD').trim();
+  writeFileSync(path.join(source,'README.md'),'# Dim CLI\n');
+  git(source,'commit','-qam','first doc edit');
+  writeFileSync(path.join(source,'README.md'),'# Dim coding agent\n');
+  git(source,'commit','-qam','second doc edit');
+  git(temporary,'clone','-q','--depth=2',pathToFileURL(source).href,checkout);
+  assert.notEqual(spawnSync('git',['cat-file','-e',docsBase],{cwd:checkout}).status,0);
+
+  assert.deepEqual(runSelector(checkout,'push',docsBase),only(),'a docs-only range skips all build groups');
+  assert.deepEqual(runSelector(checkout,'push',initial),only(...groups),'an earlier code commit keeps the full run');
+  assert.deepEqual(runSelector(checkout,'push','f'.repeat(40)),only(...groups),'an unavailable base keeps the full run');
+  assert.deepEqual(runSelector(checkout,'workflow_dispatch',docsBase),only(...groups),'manual runs stay full');
+
+  const head=git(checkout,'rev-parse','HEAD').trim();
+  const generated=path.join(checkout,'docs/architecture/rust-agent/generated');
+  mkdirSync(generated,{recursive:true});
+  writeFileSync(path.join(generated,'catalog.md'),'# Catalog\n');
+  git(checkout,'add','-A');
+  git(checkout,'commit','-q','-m','generated architecture');
+  assert.deepEqual(runSelector(checkout,'push',head),only(...groups),'architecture documents keep the full main run');
 });

@@ -906,7 +906,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     let (root, _, _, codex) = codex(&home, &f.base).await;
     let grok_plugin =
         root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap());
-    let dim = root.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin);
+    let dim = root.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None));
     let sqlite = root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
         home.join("native.sqlite"),
     ));
@@ -1419,7 +1419,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     let (restarted, _, _, _) = self::codex(&home, &f.base).await;
     let plugins = [
         restarted.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap()),
-        restarted.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin),
+        restarted.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None)),
         restarted.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
             home.join("native.sqlite"),
         )),

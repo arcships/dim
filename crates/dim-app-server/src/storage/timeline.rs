@@ -1828,7 +1828,10 @@ impl Row {
         }
     }
 }
-fn output_row(kind: &str) -> bool {
+/// Whether a row of `kind` is written as an output row: several deltas of one
+/// request share one stored row, so their text candidates carry the tail of the
+/// deltas before them rather than only their own body.
+pub(super) fn output_row(kind: &str) -> bool {
     matches!(kind, "step/text" | "step/thinking")
 }
 fn head(connection: &Connection, key: &TimelineKey) -> Result<u64> {

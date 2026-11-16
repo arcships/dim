@@ -1,18 +1,19 @@
-import { defineConfig } from "vite"
+import { defineConfig, normalizePath } from "vite"
 import vue from "@vitejs/plugin-vue"
 import ui from "@nuxt/ui/vite"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 
 /** The `dimcode web` entry the dev server forwards /api and /ws to. */
 const target = process.env.DIM_WEB_TARGET ?? "http://127.0.0.1:43201"
-const unused = new URL("./src/vendor/unused-optional.ts", import.meta.url).pathname
+const unused = fileURLToPath(new URL("./src/vendor/unused-optional.ts", import.meta.url))
 
 export default defineConfig({
   base: "/",
   resolve: {
     alias: [
       // Curated shiki bundle on the JavaScript regex engine (see src/vendor/shiki-web.ts).
-      { find: /^shiki$/, replacement: new URL("./src/vendor/shiki-web.ts", import.meta.url).pathname },
+      { find: /^shiki$/, replacement: fileURLToPath(new URL("./src/vendor/shiki-web.ts", import.meta.url)) },
       { find: /^shiki\/wasm$/, replacement: unused },
       { find: /^@terrastruct\/d2$/, replacement: unused },
     ],
@@ -39,11 +40,11 @@ export default defineConfig({
     apply: "build",
     generateBundle() {
       const lock = JSON.parse(readFileSync(new URL("./package-lock.json", import.meta.url), "utf8"))
-      const webRoot = new URL("./", import.meta.url).pathname
+      const webRoot = normalizePath(fileURLToPath(new URL("./", import.meta.url)))
       const bundledDirs = new Set<string>()
       for (const rawId of this.getModuleIds()) {
         if (rawId === "virtual:nuxt-ui-icons") bundledDirs.add("node_modules/@iconify-json/lucide")
-        const id = rawId.split("?", 1)[0]!.replaceAll("\\", "/")
+        const id = normalizePath(rawId.split("?", 1)[0]!)
         const rel = id.startsWith(webRoot) ? id.slice(webRoot.length) : id
         if (!rel.startsWith("node_modules/")) continue
         const parts = rel.split("/")

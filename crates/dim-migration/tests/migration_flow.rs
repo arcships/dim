@@ -556,7 +556,6 @@ async fn migration_validates_dim_account_tokens_before_writing_the_account_file(
 async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
     use dim_agent_capabilities::file_storage::FileStoragePlugin;
     use dim_app_server::managed_provider::ManagedProvider;
-    use dim_app_server::managed_provider::ManagedProviders;
     use sha2::{Digest, Sha256};
 
     let directory = tempfile::tempdir().unwrap();
@@ -783,13 +782,21 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
         )
         .await
         .unwrap();
-        let account = server
-            .service::<ManagedProviders>()
-            .unwrap()
-            .status(
-                "dimcode-api-oauth",
-                &tokio_util::sync::CancellationToken::new(),
-            )
+        let mut client = Client::connect(&ConnectionConfig {
+            endpoint: server.unix_path.clone().unwrap(),
+            server: Server {
+                program: std::env::current_exe().unwrap(),
+                embedded: false,
+            },
+            profile: None,
+            client_kind: "cli",
+            client_name: "migration-test",
+            protocol_version: 4,
+        })
+        .await
+        .unwrap();
+        let account: dim_app_server::managed_provider::AccountSnapshot = client
+            .typed("account.status", json!({"providerId":"dimcode-api-oauth"}))
             .await
             .unwrap_or_else(|error| {
                 panic!("{case}: native account reader rejected the target: {error}")

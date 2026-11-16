@@ -192,7 +192,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 ### 3.6 入口、凭据与宿主资源
 
-按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedProviders` 的搜索操作见 §4.6。
+按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
@@ -216,7 +216,6 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `timelineFactory` | session | SessionScope | control |
 | `sessionSkills` | session | Skills | host-resource |
 | `skillsBranch` | branch | SkillsBranch | host-resource |
-| `managedProviders` | process | ManagedProviders | secret |
 
 ### 3.7 待迁移的数据内容
 原因 `legacy-no-consumer`：内容是数据，但还没有转成 data face。没有 leaf 消费者不是保留 internal 的理由；这些名字按批次迁移，`legacy-no-consumer` 只是迁移状态，不是永久分类。
@@ -283,7 +282,7 @@ managedSearch.search {query, count}
 
 - 取消是协议动作（调用方丢弃调用或发 bridge cancel），不是请求字段。
 - `ManagedProviders` 在 owner 内处理登录、凭据和租约。搜索调用迁到 `managedSearch` 后，批次按 §2.6 收敛旧登记（[#1398](https://github.com/arcships/dim/pull/1398)）。
-- Web 的搜索改调 `managedSearch`；Web 的 settings 仍走 `settings`。
+- Web 的搜索使用 `managedSearch`；进程内绑定直接调用同一类型化操作，wire 在边界解码与编码。绑定与 wire 共用取消行为，丢弃调用取消本次搜索，不取消调用方的父 token。Web 的 settings 仍走 `settings`。
 
 ### 4.7 `wakeups`
 

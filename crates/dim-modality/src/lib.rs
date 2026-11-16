@@ -124,6 +124,12 @@ pub(crate) fn host_target_for(
 /// unavailable operation, never a failed load.
 pub struct ModalityAdapterService(pub Arc<dyn ModalityAdapter>);
 
+/// The key of the adapter copy that serves one catalog provider (A.2). The
+/// family copy is at the type's own key.
+pub fn adapter_key(provider_id: &str) -> Key<ModalityAdapterService> {
+    Key::dynamic(provider_id.to_owned())
+}
+
 /// One catalog operation of Modality A.1: its id and the Settings key that
 /// holds its default, if it has one.
 pub(crate) struct OperationRow {
@@ -435,8 +441,9 @@ fn explicit_model<'de, D: Deserializer<'de>>(
     ))
 }
 
-/// One read of what Provider would serve, the collected adapter and the
-/// persisted defaults; snapshots before and after a write share it.
+/// One read of what Provider would serve, the process context the adapter
+/// copies are read from, and the persisted defaults; snapshots before and
+/// after a write share it.
 pub(crate) struct Evaluation {
     defaults: BTreeMap<String, ModelId>,
     selectable: Vec<ModelCapabilitySnapshot>,
@@ -444,7 +451,8 @@ pub(crate) struct Evaluation {
     /// the operations each declares (Modality §9.2).
     declared: Vec<ModalityModelSnapshot>,
     global: Option<ModelId>,
-    adapter: Option<Arc<ModalityAdapterService>>,
+    /// The process context adapter copies are read from per call (A.2).
+    ctx: Ctx,
     /// Whether this daemon holds a HostPlatform, which a host task runs on
     /// (A14).
     host_platform: bool,
@@ -609,36 +617,47 @@ impl Evaluation {
         options
     }
 
-    fn adapter_available(&self) -> bool {
-        self.adapter
-            .as_ref()
-            .is_some_and(|adapter| adapter.0.available())
-    }
-    /// Whether a process adapter is collected at all, whatever it serves: a
-    /// collected adapter that serves no candidate model is not "no adapter".
-    fn has_adapter(&self) -> bool {
-        self.adapter.is_some()
-    }
-    /// Whether the adapter serves this category for any model either read
-    /// names; its `operations` then decides the category's options.
-    fn adapter_serves(&self, category: &str) -> bool {
-        let Some(adapter) = &self.adapter else {
-            return false;
-        };
+    /// Every model either Provider read names, in each read's order.
+    fn candidates(&self) -> impl Iterator<Item = &ModelId> {
         self.selectable
             .iter()
             .map(|model| &model.target)
             .chain(self.declared.iter().map(|model| &model.target))
-            .any(|model| {
+    }
+    /// The adapter that serves one provider: its own copy, else the family
+    /// copy that serves providers nothing specific claims (A.2).
+    pub(crate) fn adapter(&self, provider_id: &str) -> Option<Arc<ModalityAdapterService>> {
+        self.ctx
+            .get_at(&adapter_key(provider_id))
+            .or_else(|| self.ctx.get_at(&Key::<ModalityAdapterService>::of()))
+    }
+    fn adapter_available(&self) -> bool {
+        self.candidates().any(|model| {
+            self.adapter(&model.provider_id)
+                .is_some_and(|adapter| adapter.0.available())
+        })
+    }
+    /// Whether an adapter serves any candidate provider at all, whatever it
+    /// claims: an adapter that serves no candidate model is not "no adapter".
+    fn has_adapter(&self) -> bool {
+        self.candidates()
+            .any(|model| self.adapter(&model.provider_id).is_some())
+    }
+    /// Whether the adapter of some candidate model serves this category; its
+    /// `operations` then decides the category's options.
+    fn adapter_serves(&self, category: &str) -> bool {
+        self.candidates().any(|model| {
+            self.adapter(&model.provider_id).is_some_and(|adapter| {
                 adapter
                     .0
                     .operations(model)
                     .iter()
                     .any(|served| served.category == category)
             })
+        })
     }
     fn serves(&self, model: &ModelId, category: &str, operation: &str) -> bool {
-        let Some(adapter) = &self.adapter else {
+        let Some(adapter) = self.adapter(&model.provider_id) else {
             return false;
         };
         adapter.0.available()
@@ -666,10 +685,6 @@ impl Evaluation {
                 .declared_for(&model.provider_id, &model.model_id)
                 .is_some()
     }
-    /// The collected adapter, when the process has one.
-    pub(crate) fn adapter(&self) -> Option<&Arc<ModalityAdapterService>> {
-        self.adapter.as_ref()
-    }
     /// The adapter's declaration of one operation for `model`: its parameter
     /// schema, read per submission (A.2, decision 3). `None` when no
     /// available adapter serves the operation for that model.
@@ -679,7 +694,7 @@ impl Evaluation {
         category: &str,
         operation: &str,
     ) -> Option<AdapterOperation> {
-        let adapter = self.adapter.as_ref()?;
+        let adapter = self.adapter(&model.provider_id)?;
         if !adapter.0.available() {
             return None;
         }
@@ -1069,7 +1084,7 @@ pub(crate) async fn evaluate(
             selectable: selectable_models,
             declared,
             global,
-            adapter: ctx.get::<ModalityAdapterService>(),
+            ctx: ctx.clone(),
             host_platform: ctx
                 .get::<dim_agent_capabilities::host_platform::HostPlatform>()
                 .is_some(),

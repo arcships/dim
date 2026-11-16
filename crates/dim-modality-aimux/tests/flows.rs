@@ -10,6 +10,7 @@ use dim_agent_runtime::{AgentBuilder, AgentConfig};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use futures_util::{SinkExt, StreamExt};
 use http::StatusCode;
+use rutis::host::CtxHost;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -209,6 +210,50 @@ async fn start_in(home: PathBuf) -> RunningServer {
     // The product's order: the adapter provides the service before Modality
     // reads it.
     dim_modality_aimux::install(&mut builder);
+    dim_modality::install(&mut builder);
+    serve(builder, config).await.unwrap()
+}
+
+/// A specialized adapter claiming one catalog provider beside the built-in one.
+struct Specialized(Arc<dyn dim_modality::ModalityAdapter>);
+
+impl rutis::Plugin for Specialized {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "ModalitySpecialized"
+    }
+    async fn apply(&self, ctx: &rutis::Ctx, (): ()) -> rutis::Result {
+        ctx.provide_at(
+            dim_modality::adapter_key("openai"),
+            Arc::new(dim_modality::ModalityAdapterService(self.0.clone())),
+        )?;
+        Ok(())
+    }
+}
+
+/// The built-in adapter keeps only the family copy, so a specialized adapter
+/// can claim a provider it serves; a second binding for one name would fail
+/// this assembly with `ServiceExists`.
+async fn start_with_specialized(home: PathBuf) -> RunningServer {
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        unix_path: Some(
+            std::path::PathBuf::from("/tmp")
+                .join(format!("dim-c5b-flow-{}/server.sock", uuid::Uuid::new_v4())),
+        ),
+        ..Default::default()
+    };
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    dim_agent_capabilities::defaults::install(&mut builder);
+    dim_agent_capabilities::defaults::mock_model_hosts(&mut builder);
+    dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));
+    dim_app_server::collaboration::install(&mut builder);
+    dim_modality_aimux::install(&mut builder);
+    let adapter: Arc<dyn dim_modality::ModalityAdapter> =
+        Arc::new(dim_modality_aimux::MediaAdapter::new());
+    builder.plugin(move |_| Ok(Box::new(Specialized(adapter.clone()))));
     dim_modality::install(&mut builder);
     serve(builder, config).await.unwrap()
 }
@@ -909,6 +954,25 @@ async fn capabilities_show_the_mapped_provider_and_refuse_a_created_one() {
         "the refusal names the adapter as the reason: {refused}"
     );
 
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_specialized_adapter_claims_one_provider_beside_the_builtin() {
+    let home = home("specialized");
+    let server = start_with_specialized(home.clone()).await;
+    let mut client = Client::new(&server).await;
+    let reply = client.rpc("modality.capabilities", json!({})).await;
+    assert!(
+        reply["result"]["categories"]
+            .as_array()
+            .is_some_and(|categories| categories
+                .iter()
+                .any(|category| category["category"] == "image")),
+        "the assembly with both adapters answers capabilities: {reply}"
+    );
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

@@ -359,7 +359,7 @@ Sources before #14: `MANAGEMENT_METHODS`, `MCP_METHODS` and `Call::is_management
 
 | Methods | Destination | Provider (namespace) |
 | --- | --- | --- |
-| `account.providers/status/recover/logout`, `account.login.*` | `managementMethods` | ManagedProviderMethods (`account`) |
+| `account.providers/status/recover/logout`, `account.login.*` | `managementMethods` | ManagedProviders (`account`) |
 | `account.codex.*`, `account.grok.*` | `managementMethods` | OpenAI Codex OAuth (`account.codex`), Grok OAuth (`account.grok`) |
 | `provider.*` | `managementMethods` | Provider (`provider`) |
 | `skills.catalog/set_enabled/refresh` | `managementMethods` | SkillsCatalog (`skills`) |

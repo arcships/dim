@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 
 const [receipt, mode, flag, ...extra] = process.argv.slice(2);
 assert(receipt && ['source', 'snapshot', 'promote', 'npm', 'mirror'].includes(mode)
@@ -19,11 +20,56 @@ const upstream = 'https://registry.npmjs.org';
 const registry = mode === 'mirror' ? 'https://registry.npmmirror.com' : 'https://registry.npmjs.org';
 const alpha = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-alpha\.(0|[1-9]\d*)$/;
 
+function milliseconds(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  assert(Number.isFinite(parsed) && parsed >= 0, `${name} must be a non-negative number of milliseconds: ${value}`);
+  return parsed;
+}
+
+/**
+ * How long a run keeps asking the registry, and how often. A publication is
+ * accepted before it is served: its version document, its tarball and its
+ * dist-tags become readable at different moments, and never at the instant a
+ * write returns. Every wait below is bounded by these two, and a caller may
+ * shorten them, which the flow tests do.
+ */
+const settleMilliseconds = milliseconds('DIM_REGISTRY_SETTLE_MS', 600_000);
+const pollMilliseconds = milliseconds('DIM_REGISTRY_POLL_MS', 15_000);
+
 async function json(url, allowMissing = false) {
   const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
   if (allowMissing && response.status === 404) return {};
   assert(response.ok, `${url}: HTTP ${response.status}`);
   return response.json();
+}
+
+/**
+ * A registry response whose body has already arrived, or null when the read
+ * failed. A dropped connection, a deadline that expires, 429 and 5xx say
+ * nothing about what the registry holds, so they are not an answer; every
+ * other status is returned for the caller to interpret.
+ *
+ * `fetch` resolves as soon as the headers arrive, so the transfer that can
+ * still fail is the body's: a connection reset mid-download, or a deadline
+ * expiring while a large tarball streams, rejects in `consume` and not in
+ * `fetch`. `consume` therefore runs inside this boundary, and it does
+ * transport only: a body that arrived is decoded by the caller, so a truncated
+ * or malformed payload stays the caller's error rather than being retried.
+ */
+async function read(url, timeout, consume = response => response.text()) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+    if (response.status === 429 || response.status >= 500) {
+      console.error(`${url}: HTTP ${response.status}`);
+      return null;
+    }
+    return { ok: response.ok, status: response.status, body: await consume(response) };
+  } catch (error) {
+    console.error(`${url}: ${error.message}`);
+    return null;
+  }
 }
 
 async function tags(name) {
@@ -55,21 +101,45 @@ function checkWrapper(metadata, version) {
   assert.deepEqual(metadata.optionalDependencies, Object.fromEntries(names.filter(name => name !== wrapper).map(name => [name, version])));
 }
 
+const READY = 'ready';
+const ABSENT = 'absent';
+const UNSERVED = 'unserved';
+const UNKNOWN = 'unknown';
+const FOREIGN = 'foreign';
+
+/**
+ * Whether this version is published from this source, and if not, why.
+ * `ABSENT` and `UNSERVED` are answers from a registry that has not caught up:
+ * the version document is missing, or it exists while the tarball it names is
+ * not served yet. `UNKNOWN` is a read that failed, which is no answer at all.
+ * `FOREIGN` is a publication this run did not make and cannot wait away.
+ * A value that contradicts what this run published about itself is an error.
+ */
 async function provenance(name, version, sourceCommit) {
-  const response = await fetch(`${upstream}/${name}/${version}`, { signal: AbortSignal.timeout(30_000) });
-  if (response.status === 404) return false;
-  assert(response.ok, `${name}@${version}: HTTP ${response.status}`);
-  const metadata = await response.json();
+  const document = await read(`${upstream}/${name}/${version}`, 30_000);
+  if (document === null) {
+    console.error(`Cannot read ${name}@${version}: the registry did not answer`);
+    return UNKNOWN;
+  }
+  if (document.status === 404) return ABSENT;
+  assert(document.ok, `${name}@${version}: HTTP ${document.status}`);
+  const metadata = JSON.parse(document.body);
   assert.equal(metadata.name, name);
   assert.equal(metadata.version, version);
   if (name === wrapper) {
     checkWrapper(metadata, version);
-    return true;
+    return READY;
   }
   assert(metadata.dist.tarball.startsWith(`${upstream}/${name}/-/`), `Unexpected tarball URL: ${name}`);
-  const archive = await fetch(metadata.dist.tarball, { signal: AbortSignal.timeout(120_000) });
+  const archive = await read(metadata.dist.tarball, 120_000,
+    response => response.arrayBuffer());
+  if (archive === null) {
+    console.error(`Cannot read ${metadata.dist.tarball}: the registry did not answer`);
+    return UNKNOWN;
+  }
+  if (archive.status === 404) return UNSERVED;
   assert(archive.ok, `${metadata.dist.tarball}: HTTP ${archive.status}`);
-  const bytes = Buffer.from(await archive.arrayBuffer());
+  const bytes = Buffer.from(archive.body);
   assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, metadata.dist.integrity, `Tarball integrity mismatch: ${name}`);
   const unpacked = spawnSync('tar', ['-xzO', 'package/release-manifest.json'], { input: bytes, maxBuffer: 16 * 1024 * 1024 });
   assert.ifError(unpacked.error);
@@ -79,17 +149,60 @@ async function provenance(name, version, sourceCommit) {
   assert.equal(manifest.platform, name.slice('dimcode-'.length));
   assert(/^[a-f0-9]{40}$/.test(manifest.sourceCommit), `Invalid source commit: ${name}`);
   if (name !== 'dimcode-web') assert.equal(manifest.account, true, `Missing Dim account build: ${name}`);
-  return manifest.sourceCommit === sourceCommit;
+  return manifest.sourceCommit === sourceCommit ? READY : FOREIGN;
 }
 
 async function complete(version, sourceCommit) {
   assert(alpha.test(version), `Expected X.Y.Z-alpha.N: ${version}`);
   assert(/^[a-f0-9]{40}$/.test(sourceCommit), 'Invalid source commit');
   for (const name of names) {
-    if (!await provenance(name, version, sourceCommit)) return false;
+    const outcome = await provenance(name, version, sourceCommit);
+    if (outcome !== READY) return outcome;
     console.log(`Verified provenance: ${name}@${version} from ${sourceCommit}`);
   }
-  return true;
+  return READY;
+}
+
+/**
+ * `complete` repeated while `retry` names the outcome, so a registry that has
+ * not caught up is waited out and a wrong publication is not. Returns the last
+ * outcome, which is a wait that ran out when it is still a `retry` one.
+ */
+async function settle(version, sourceCommit, retry) {
+  const deadline = Date.now() + settleMilliseconds;
+  for (;;) {
+    const outcome = await complete(version, sourceCommit);
+    if (!retry.includes(outcome) || Date.now() >= deadline) return outcome;
+    console.log(`${version} is ${outcome} on ${upstream}; reading again in ${pollMilliseconds} ms`);
+    await delay(Math.min(pollMilliseconds, deadline - Date.now()));
+  }
+}
+
+/**
+ * A package's dist-tags once they read `expected`. A registry may keep serving
+ * the value a tag had before this run wrote it, so `replaced` names those
+ * earlier values: reading one of them again is not news and is waited out.
+ * Any other difference belongs to another publisher, and waiting cannot take it
+ * back, so it fails at once.
+ */
+async function settledTags(name, expected, replaced = {}) {
+  const deadline = Date.now() + settleMilliseconds;
+  for (;;) {
+    const document = await read(`${upstream}/-/package/${name}/dist-tags`, 30_000);
+    if (document === null) {
+      console.error(`Cannot read ${name} dist-tags: the registry did not answer`);
+    } else {
+      assert(document.ok, `${name} dist-tags: HTTP ${document.status}`);
+      const actual = JSON.parse(document.body);
+      if (isDeepStrictEqual(actual, expected)) return actual;
+      assert(Object.entries(actual).every(([tag, value]) => value === expected[tag] || value === replaced[tag]),
+        `${name} dist-tags changed concurrently: expected ${JSON.stringify(expected)}, read ${JSON.stringify(actual)}`);
+      console.log(`${name} dist-tags still read ${JSON.stringify(actual)}; reading again in ${pollMilliseconds} ms`);
+    }
+    assert(Date.now() < deadline,
+      `${name} dist-tags did not reach ${JSON.stringify(expected)} within ${settleMilliseconds} ms`);
+    await delay(Math.min(pollMilliseconds, deadline - Date.now()));
+  }
 }
 
 function compare(left, right) {
@@ -114,36 +227,39 @@ if (mode === 'snapshot' || mode === 'source') {
     const candidates = [...new Set(['latest', 'alpha'].map(tag => state.wrapperTags[tag]).filter(Boolean))].sort(compare).reverse();
     state.version = null;
     for (const version of candidates) {
-      if (await complete(version, state.sourceCommit)) {
+      const outcome = await settle(version, state.sourceCommit, [UNSERVED, UNKNOWN]);
+      if (outcome === READY) {
         state.version = version;
         break;
       }
+      assert(outcome === ABSENT || outcome === FOREIGN,
+        `Cannot tell whether ${version} is reusable after ${settleMilliseconds} ms (${outcome}); dispatch again instead of rebuilding`);
     }
     console.log(state.version ? `Reuse ${state.version}; repair and acceptance are required before skipping the build.` : 'No complete nightly for this source; a new build is required.');
   }
   writeFileSync(receipt, `${JSON.stringify(state, null, 2)}\n`);
 } else if (mode === 'promote') {
-  const deadline = Date.now() + (flag === '--dry-run' ? 0 : 600_000);
-  while (!await complete(state.version, state.sourceCommit)) {
-    assert(Date.now() < deadline, 'Nightly is incomplete or its source does not match');
-    await delay(Math.min(15_000, deadline - Date.now()));
-  }
+  const outcome = flag === '--dry-run' ? await complete(state.version, state.sourceCommit)
+    : await settle(state.version, state.sourceCommit, [ABSENT, UNSERVED, UNKNOWN]);
+  assert.equal(outcome, READY, `${state.version} is ${outcome} on ${upstream}, expected a complete publication from ${state.sourceCommit}`);
   await checkProtectedTags();
   const expected = await tags(wrapper);
   for (const tag of ['latest', 'alpha']) {
     if (expected[tag] !== undefined) assert(compare(expected[tag], state.version) <= 0, `${tag} already points to newer ${expected[tag]}`);
     assert(expected[tag] === state.wrapperTags[tag] || expected[tag] === state.version, `Concurrent publication changed ${tag}`);
   }
+  const replaced = {};
   for (const tag of ['alpha', 'latest']) {
-    if (expected[tag] === state.version) continue;
-    assert.deepEqual(await tags(wrapper), expected, 'Concurrent publication changed wrapper tags');
-    if (flag === '--apply') {
-      command(['dist-tag', 'add', `${wrapper}@${state.version}`, tag, '--registry', upstream]);
-      expected[tag] = state.version;
-      assert.deepEqual(await tags(wrapper), expected, 'Concurrent publication changed wrapper tags');
-    } else {
+    const current = await settledTags(wrapper, expected, replaced);
+    if (current[tag] === state.version) continue;
+    if (flag !== '--apply') {
       console.log(`Would set ${wrapper}@${state.version} ${tag}; no registry write performed.`);
+      continue;
     }
+    command(['dist-tag', 'add', `${wrapper}@${state.version}`, tag, '--registry', upstream]);
+    replaced[tag] = current[tag];
+    expected[tag] = state.version;
+    await settledTags(wrapper, expected, replaced);
   }
   await checkProtectedTags();
 } else {
@@ -163,7 +279,7 @@ if (mode === 'snapshot' || mode === 'source') {
   const refs = names.flatMap(name => name === wrapper ? ['latest', 'alpha'].map(tag => [name, tag])
     : (mode === 'npm' ? [[name, version], [name, 'alpha']] : [[name, version]]));
   const pending = new Set(refs);
-  const deadline = Date.now() + (flag === '--dry-run' ? 0 : 600_000);
+  const deadline = Date.now() + (flag === '--dry-run' ? 0 : settleMilliseconds);
   while (pending.size) {
     await Promise.all([...pending].map(async ref => {
       const [name, tag] = ref;
@@ -186,7 +302,7 @@ if (mode === 'snapshot' || mode === 'source') {
     }));
     if (pending.size) {
       assert(Date.now() < deadline, `Visibility incomplete for ${version} on ${registry}: ${[...pending].map(ref => ref.join('@')).join(', ')}`);
-      await delay(Math.min(15_000, deadline - Date.now()));
+      await delay(Math.min(pollMilliseconds, deadline - Date.now()));
     }
   }
   await checkProtectedTags();
