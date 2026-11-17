@@ -62,7 +62,7 @@ flowchart LR
 
 DSH 包不是 Dim 插件：它不带 `dim-plugin.json`，其 `package.json` 是写给它自己的 harness 的。两个首期包唯一相关差别在于：数据库包以可选方式声明对 Cordis `~4.0.4` 的 peer 依赖，旁会话包完全不声明 Cordis 依赖；两者都声明了 `dsh` 成员，其 `bundle.patch` 指向 harness 自己的 bundle patch。标记一个包的是 `dsh` 成员，而那个 bundle patch 不被读取：本设计的受管入口取代它。
 
-识别这样的包并写出它的入口归 PluginManager（[§10.8](#108-pluginmanager识别-dsh-包并写受管入口)）。本设计固定入口的位置与内容：位于插件文件根下 `.dsh/<插件 id>/entry.mjs`，三行，从运行时的单一副本导入桥接，再导出 `dshPackageRow(<包的真实入口>)`。包目录全程只读，包括从本地路径安装的情况，所以升级 Dim 只换桥接，不动任何包。
+识别这样的包并写出它的入口归 PluginManager（[§10.8](#108-pluginmanager识别-dsh-包记录它写受管入口)）。本设计固定入口的位置与内容：位于插件文件根下 `.dsh/<插件 id>/entry.mjs`，三行，从运行时的单一副本导入桥接，再导出 `dshPackageRow(<包的真实入口>)`。包目录全程只读，包括从本地路径安装的情况，所以升级 Dim 只换桥接，不动任何包。
 
 运行时给行模块 URL 打上文件的修改时间与大小，所以重载变化的行导入的是文件而不是缓存中的模块。这条规则属于运行时包，不属于本仓库：它在 `rutis-runtime` 包中，版本见 [`runtime/package.json`](../../../../runtime/package.json)，而入口与其他任何行模块无异（[PluginManager §3.4](PluginManager.md#34-重新加载)：宿主不监听文件，重载调用才是信号）。入口属于 PluginManager 对该插件的记录，每次解析行时重写；它不持有状态，除运行时外无人读取。
 
@@ -108,9 +108,9 @@ agent/created             session.close / Session 删除          daemon 重启
   恢复：    槽位重绑                                              source: 'resume'
 ```
 
-桥接能发出这两类通知，只因为 Session 作用域告诉了它自己为何结束。无论业务关闭还是空闲卸载，Session 作用域都会结束（[插件契约 §2](../plugin-contract.md#2-实例树)；运行时对两者取消同一个 closing 令牌，`crates/dim-agent-runtime/src/agent.rs:804-808`，`finish(unloading)`）。而 `sessionLifecycle` 只提供 `activated`、`closing`、`hold` 与 `release`，没有任何一项能区分二者（[插件契约 §4](../plugin-contract.md#4-dim-的服务)，`crates/dim-agent-runtime/src/config.rs:403-408`）。在 `closing` 时发 `agent/disposed` 的副本，实现的正是本设计拒绝的空闲卸载通知。创建还是恢复这一半已经是数据：`sessionIdentity.get()` 给出 `{sessionId, restored}`（`crates/dim-agent-runtime/src/config.rs:234-249`），而 `restored` 恰为 `SessionInitialization::Restore`（`crates/dim-agent-runtime/src/assembly.rs:1749`，在 `crates/dim-agent-runtime/src/agent.rs:169-183` 选定）。业务删除则只在进程根上发 `agent/session-deleted`，那是宿主内部总线事件，不是行可读的服务面（[插件契约 §5.3](../plugin-contract.md#53-总线事件)）。
+桥接能发出这两类通知，只因为 Session 作用域告诉了它自己为何结束，并且删除会同时通知进程与 Session 自身的副本。无论业务关闭还是空闲卸载，Session 作用域都会结束（[插件契约 §2](../plugin-contract.md#2-实例树)；运行时对两者取消同一个 closing 令牌，`crates/dim-agent-runtime/src/agent.rs:804-808`，`finish(unloading)`）。而 `sessionLifecycle` 只提供 `activated`、`closing`、`hold` 与 `release`，没有任何一项能区分二者（[插件契约 §4](../plugin-contract.md#4-dim-的服务)，`crates/dim-agent-runtime/src/config.rs:403-408`）。在 `closing` 时发 `agent/disposed` 的副本，实现的正是本设计拒绝的空闲卸载通知。空闲卸载之后再删除，已经没有任何副本可以告知：删除会移除一个未装载 Session 的存储行（`crates/dim-app-server/src/agents.rs:1519-1534`，只对已装载的 Session 执行关闭），而包的每 Session 状态与门面活在行里，不在副本里。创建还是恢复这一半已经是数据：`sessionIdentity.get()` 给出 `{sessionId, restored}`（`crates/dim-agent-runtime/src/config.rs:234-249`），而 `restored` 恰为 `SessionInitialization::Restore`（`crates/dim-agent-runtime/src/assembly.rs:1749`，在 `crates/dim-agent-runtime/src/agent.rs:169-183` 选定）。业务删除则只在进程根上发 `agent/session-deleted`，那是宿主内部总线事件，不是行可读的服务面（[插件契约 §5.3](../plugin-contract.md#53-总线事件)）。
 
-因此这两类通知依赖 Session 所有者的一项需求（[§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始)）：副本能得知自己作用域结束的原因（业务关闭、删除还是空闲卸载），以及本次装载是创建还是恢复。有了它，`agent/disposed` 跟随业务关闭与删除，绝不跟随空闲卸载；`agent/created` 跟随本进程内的首次挂载，`source` 指明是否为恢复。
+因此这两类通知依赖 Session 所有者的一项需求（[§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始)）：副本能得知自己作用域结束的原因（业务关闭、删除还是空闲卸载），进程作用域中的部件能得知某个 Session 已经消失（无论是否装载），两者都能得知本次装载是创建还是恢复。有了它，`agent/disposed` 跟随业务关闭与删除，无论当时已装载还是此前已被空闲卸载，绝不跟随空闲卸载；`agent/created` 跟随本进程内的首次挂载，`source` 指明是否为恢复。空闲卸载之后被删除的 Session 也只发一次，随后桥接丢弃该 Session 的门面与包为其保留的状态，所以以 agent 为键的 `Map` 不会活得比 Session 久。
 
 门面身份永不变化，包以 agent 为键的 `WeakMap`、`WeakSet` 跨空闲卸载仍然正确，`session.close` 时的 `agent/disposed` 也命中了包当初登记状态的那个对象。槽位重绑前包通过旧句柄发起的调用会以服务不可用失败，不会打到另一个 Session 的副本。
 
@@ -296,7 +296,7 @@ flowchart TD
 | 空闲卸载 | 已存，不变 | 卸载，不写任何事件 | 卸载；其贡献消失；租约归还 | 存活；门面槽位置空；不发 `agent/disposed` | 无：卸载从不取消已受理的工作 |
 | 空闲卸载后恢复 | 已存，不变 | 重新装载，分支以 `branch/resume` 打开 | 重新挂载：包的贡献随副本的 `apply` 重新登记 | 存活；槽位重绑；不发 `agent/created` | 无 |
 | `session.close` | 已存，本进程内为 closed | 卸载 | 卸载 | 存活；为该 Session 发 `agent/disposed` | 无：关闭会等待自己受理的工作 |
-| Session 删除 | 记录删除 | 卸载 | 卸载 | 存活；为该 Session 发 `agent/disposed` | 无 |
+| Session 删除 | 记录删除 | 卸载 | 已装载的已卸载；已被空闲卸载的本来没有副本 | 存活；为该 Session 发 `agent/disposed`，无论当时已装载还是此前已被卸载；门面与该 Session 的保留状态被丢弃 | 无 |
 | 插件重载或禁用 | 已存 | 已装载 | 随行卸载；新代再挂载 | 全新模块：包内存在所有 Session 上清空 | 在途调用被截断为「可能已生效」 |
 | daemon 重启 | 已存 | 被 acquire 时装载 | 首次装载时挂载 | 全新进程：包内存清空；`agent/created` 一次，Session 为恢复时带 `source: 'resume'` | 旧进程的套接字随进程关闭；写入是否落地未知 |
 
@@ -370,18 +370,19 @@ flowchart TD
 | 名字 | 作用域 | 服务面 | 所有者契约 | 本设计 |
 | --- | --- | --- | --- | --- |
 | `partRegistry` | 进程 | data（`registerDefinition`） | [Dim 如何使用 rutis §2](../rutis-usage.md#2-插件是一行实例挂载它的部件)、[插件契约 §4](../plugin-contract.md#4-dim-的服务) | 每个包行登记一份 Session 副本定义 |
-| `managementMethods` | 进程 | data（`register`） | [Session 边界 §3.2](../contracts/session-boundary.md#32-管理方法) | 每个包的本地动作，命名空间 `dsh_typert.<包>` |
+| `managementMethods` | 进程 | data（`register`） | [Session 边界 §3.2](../contracts/session-boundary.md#32-管理方法) | 每个包的本地动作，命名空间 `dsh_typert.<包>`，包名中的 `-` 写作 `_`（所以 `dsh-mysql` 为 `dsh_typert.dsh_mysql`） |
 | `toolRegistry` | Session | data（`register`） | [插件契约 §4](../plugin-contract.md#4-dim-的服务)、[ToolRegistry](../../../architecture/rust-agent/plugins/ToolRegistry.md) | 每个副本登记该包的工具 |
-| `promptRegistry`、`promptHost`、`initialPromptConfiguration` | Session | 提示词数据面（[PromptSources](PromptSources.md)、[Prompt](Prompt.md)） | 同上 | 每个副本为包登记一个提示词来源，取值由分支采纳 |
+| `promptRegistry`、`promptHost`、`initialPromptConfiguration` | Session | 提示词数据面（[PromptSources](PromptSources.md)、[Prompt](Prompt.md)） | 同上 | 每个贡献是一个提示词来源；其他语言的来源经 [§10.1](#101-prompt-与-loop一步之前重读动态来源并等它们被准入) 提出的路由登记 |
 | `pluginCommands` | Session | data，在 [§10.3](#103-插件命令session-命令表与固定方法命名空间) 中向所有者提出 | `dim-agent-capabilities`，拥有命令表的 Session 部件；菜单归[命令菜单](../cli-commands.md#命令菜单) | 每个副本登记该包的命令 |
 | `session.command.list`、`session.command.run` | Session，位于 `sessionMethods` | data | [Session 边界 §3.1](../contracts/session-boundary.md#31-session-方法)、[cli-commands](../cli-commands.md#命令菜单) | 客户端读取并执行插件命令 |
 | `sessions` | 进程 | data（`launch`、`input`、`delete`、`stop`） | [Session access A.1](../contracts/session-access.md#a1-sessions-服务) | 子 Session 及其开场输入 |
 | `sessionIdentity`、`sessionConfig` | Session | data | [插件契约 §4](../plugin-contract.md#4-dim-的服务) | 副本读取自己 Session 的身份（含 `restored`）与配置 |
 | `sessionLifecycle` | Session | data | [插件契约 §4](../plugin-contract.md#4-dim-的服务) | 副本等 `activated`，在 `closing` 时停手；作用域结束的原因在 [§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始) 中向 Session 所有者提出 |
 | Session 的结束原因 | Session | data，在 [§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始) 中向 Session 所有者提出 | [插件契约 §4](../plugin-contract.md#4-dim-的服务) | 区分业务关闭、删除与空闲卸载，`agent/disposed` 依赖它 |
+| 任意 Session 的删除 | 进程 | data，在 [§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始) 中向 Session 所有者提出 | [插件契约 §4](../plugin-contract.md#4-dim-的服务) | 被删 Session 已无副本时仍能到达该行，即空闲卸载之后再删除的情形 |
 | `agent/session-deleted` | 进程，总线事件 | 宿主内部，不是本设计使用的服务面 | [插件契约 §5.3](../plugin-contract.md#53-总线事件) | 桥接不读它：删除的原因经 [§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始) 的 Session 面到达 |
 
-本设计拥有的名字：受管入口路径 `<插件文件根>/.dsh/<插件 id>/entry.mjs`、管理命名空间 `dsh_typert.<包>`，以及桥接自己的包名。后者不是 Dim 的服务名，不进目录。
+本设计拥有的名字：受管入口路径 `<插件文件根>/.dsh/<插件 id>/entry.mjs`、管理命名空间 `dsh_typert.<包>`（`-` 写作 `_`），以及桥接自己的包名。后者不是 Dim 的服务名，不进目录。
 
 桥接对包作者提供的宿主 API 是契约，写在生成的 TypeScript 声明里，与 Dim 服务声明并列，因此包作者可以像对着 `npm/plugin.d.ts` 那样对它做类型检查。
 
@@ -405,12 +406,12 @@ flowchart TD
 | §4 规则 4 核心不带业务含义 | Timeline、Dispatcher、InputQueue、Loop 都没有包特有的处理。步前重读与准入屏障用所有者自己的术语表述，服务任何提示词来源 |
 | §4 规则 5 原子批次、按序派发 | 配置与其投递输入同批；该步等到投递输入被准入，因此一个请求不会看到取值而没有对应输入 |
 | §4 规则 6 上下文只来自已交接事件 | 模型可见的每个字节都以工具结果或采纳形式到达；不向请求注入任何内容，桥接也无法追加文字 |
-| §4 规则 7 仅经公开事件与服务交互 | 包经 `partRegistry`、`toolRegistry`、提示词来源、`pluginCommands`、`managementMethods`、`sessions` 与 Session 生命周期面接触 Dim，本表已逐项注明所有者；它不读其他插件的状态，尤其不读宿主内部总线事件 |
-| §4 规则 8 基础设施默认不变 | 桥接不改 rutis 与 loader；它按现有行、定义与租约契约使用它们。它对其他所有者的需求均在 [§10](#10-向机制所有者提出的需求) 中以所有者自己的术语提出：Prompt 与 Loop（10.1）、登记所有者（10.2）、Session 命令表（10.3）、Agents（10.4）、ToolExecution（10.5）、客户端（10.6）、Session 生命周期（10.7）、PluginManager（10.8）与 RuntimeManager（10.9） |
+| §4 规则 7 仅经公开事件与服务交互 | 包经 `partRegistry`、`toolRegistry`、提示词来源、`pluginCommands`、`managementMethods`、`sessions` 与 Session 生命周期面接触 Dim，本表已逐项注明所有者，另加 [§10.7](#107-agents-与-session-生命周期作用域为何结束以及它如何开始) 的进程作用域删除面；它不读其他插件的状态，尤其不读宿主内部总线事件 |
+| §4 规则 8 基础设施默认不变 | 桥接不改 rutis 与 loader；它按现有行、定义与租约契约使用它们。它对其他所有者的需求均在 [§10](#10-向机制所有者提出的需求) 中以所有者自己的术语提出：Prompt 与 Loop（10.1）、登记所有者（10.2）、Session 命令表（10.3）、Agents（10.4）、ToolExecution（10.5）、客户端与会话目录（10.6）、Session 生命周期（10.7）、PluginManager（10.8）与 RuntimeManager（10.9） |
 | §4 规则 9 只有后续决策需要的事实进 Timeline | 不新增 Timeline 事件。账本、门面、副本定义都是进程与 Session 内存，没有一项是后续决策要读的事实 |
 | §1 Capability 与 App Server 边界 | 本设计没有部件是 Capability：没有部件折叠分支事实或写事实。桥接是行内的库，App Server 中不新增业务代码 |
 | ADR 002 D1 作用域随所有者 | 包行与它的伙伴服务是跨 Session 的进程状态；贡献属于 Session，因此登记它们的副本在 Session 作用域；没有分支部件 |
-| ADR 002 D2 不设接线模块 | 桥接不提供名字、不持有进程状态、不适配其他插件接口。它把包自己的贡献登记到所有者，这正是每个贡献部件都做的事 |
+| ADR 002 D2 不设接线模块 | 桥接不向进程提供名字、不适配其他插件接口：它不拥有独立服务。它把包自己的贡献登记到所有者，这正是每个贡献部件都做的事；它保留的状态是每行账本、门面与一份副本定义 |
 | ADR 002 D3 依赖随作用域 | 桥接依赖进程与 Session 所有者，并经 `sessions` 写其他 Session；核心不依赖它，某个包的失败只影响它自己的贡献 |
 | ADR 002 D4 结构与业务配置分离 | 行的启用与包的安装归 PluginManager；包的业务配置留在它自己的文件与动作里，不新增 Settings 来源 |
 | ADR 002 D5 契约语言中立 | 上表每个面都以操作、数据与错误码表述；桥接的 TypeScript API 是同一套操作的一种绑定 |
@@ -423,8 +424,9 @@ flowchart TD
 - **受阻功能与规则：** 包的上下文会静默变化。`initialPromptConfiguration` 只在分支打开时读取，来源取值也在那时采纳，因此之后变化的取值到不了任何请求（[PromptSources](PromptSources.md)、[Prompt §3.4](Prompt.md#34-在写入者装载时采用)）。发布器确认批次已发布，并不能告诉分支它写的输入已被 Loop 准入，只凭该确认发起请求，可能恰好漏掉刚采纳的取值。
 - **已排查的现有机制：** 指令来源使用的周期性分支检查会把变化延迟到一个检查间隔，而且按计划写事件，无法服务「下一步模型必须看到」的取值；把包的文本登记为 `System` 来源会把这个每步变化的值放进可缓存前缀；由包自己写输入则是在写别的所有者的状态（规则 1）。
 - **所需通用能力：** 用提示词所有者的术语：分支在一步之前可以判断自己的动态来源是否需要重读，在所有锁之外读取它们，用既有原子批次采纳变化，并把写出的投递 id 交给 Loop；Loop 在这些输入被准入之后才发起请求，等待期间收到中断则以取消结束回合。取值未变则不写、不等。
+- **另一语言来源所需的能力：** 一个外语行可以从自己的 `apply` 调用的登记路由。包的系统文字与动态上下文都是提示词来源，而登记表今天只收 Rust 的 `Arc<dyn LoadPrompt>` 与 Rust `Ctx`（`crates/dim-agent-capabilities/src/prompt_registry.rs:18-38`、`host.rs:177-183`；[插件契约 §4](../plugin-contract.md#4-dim-的服务) 约定在外语部件需要前提示词来源保持 Rust 专属）。路由为 `promptSources.register({name, delivery, order}, read)` 与 `promptSources.withdraw({name})`，绑定到调用行，因此项在该行卸载时结束，与它其他登记一致。`read` 每步回调进该行并回答当前取值，正是上一段需要的那次读取。它不能永久阻塞一步，也不能让一步静默失败：调用携带该步的取消，拒绝或抛错的读取记入副本诊断、该步不带该取值继续，下一 步再次读取，超出该步的读取在该步结束时被放弃，所以永不返回的包只拖慢它自己的步骤。撤回一个来源是一次登记撤回，不是重载行；行重载会连旧代的所有来源一起撤回，所以中间的一步看到的是旧值或新值，不会是混合。
 - **对序号、批次、中断、重载的影响：** 不新增事件类型，批次仍然原子；中断不等忽略取消的包即结束回合；批次与请求之间崩溃时，该回路由既有重建规则结算为失败，Append 输入留给下一回合。
-- **实现归属与验证：** `dim-agent-capabilities`（`prompt`、`prompt_registry`、`agent_loop`），由其自己的文档（[Prompt](Prompt.md)、[PromptSources](PromptSources.md) 与 Loop 架构页）写明改动。用流测试验证：两轮之间取值变化的来源在第二次请求中以一个 `<dim-state>` 块到达；取值未变不写任何事件；读取期间中断则以取消结束回合且不发起请求。
+- **实现归属与验证：** `dim-agent-capabilities`（`prompt`、`prompt_registry`、`agent_loop`）以及 `dim-agent-runtime`（把外语登记绑定到调用行），由其自己的文档（[Prompt](Prompt.md)、[PromptSources](PromptSources.md) 与 Loop 架构页）写明改动。用流测试验证：两轮之间取值变化的来源在第二次请求中以一个 `<dim-state>` 块到达；取值未变不写任何事件；读取期间中断则以取消结束回合且不发起请求；外语来源可登记并到达下一次请求；它的读取拒绝会被记录且该步继续；它的行卸载会撤回它登记的所有来源。
 
 ### 10.2 运行期登记：按所有者校验的单条撤回
 
@@ -438,17 +440,17 @@ flowchart TD
 
 - **受阻功能与规则：** 命令名含连字符（`/side-chat`），而 Session 方法与命名空间的每一段只能是 `[a-z][a-z0-9_]*`（`crates/dim-agent-capabilities/src/methods.rs:205-213`，[Session 边界 §3.1](../contracts/session-boundary.md#31-session-方法)）。按命令逐条建方法，对合法命令名根本不可行；一命令一方法也会让命令列表对未逐个订阅的客户端不可读。
 - **已排查的现有机制：** 把命令名清洗成方法名（客户端与包对操作者所敲的名字会不一致）；用工具代替命令（斜杠命令不是模型动作，不该消耗一次请求）；在 `sessionMethods` 用共享命名空间加名字参数（这正是下面的形态，但需要后面那张表）。
-- **所需通用能力：** 一个拥有命令表的 Session 部件 `pluginCommands`，其 `register`、`withdraw`、`list` 是数据操作，条目属于调用方副本；以及固定 Session 方法命名空间 `session.command`，含 `list` 与 `run {name, branchId?, args?}`。`run` 携带调用方取消信号，回复命令自己的文字与结果。命令名为 `[a-z][a-z0-9_-]*`，与内置斜杠命令同名的登记被拒。
+- **所需通用能力：** 一个拥有命令表的 Session 部件 `pluginCommands`，其 `register`、`withdraw`、`list` 是数据操作，条目属于调用方副本；以及固定 Session 方法命名空间 `session.command`，含 `list` 与 `run {name, branchId?, args?}`。一次 run 属于受理它的那个 Rpc 代次：它在那个代次或提供方卸载时结束；停止等待或断开的客户端不取消它，因为断开不会把取消传给提供方。`run` 按 handler 返回的口径回复 `{kind, text}`。命令名为 `[a-z][a-z0-9_-]*`。与内置斜杠命令同名的由菜单的客户端侧拒绝，因为内置命令列表就是那个客户端的契约；`pluginCommands` 只拒绝与同一 Session 内另一副本条目同名。
 - **对序号、批次、中断、重载的影响：** 不写 Timeline 事实；该表是 Session 内存，副本挂载时重建。包重载会中断已受理的 run，客户端看到的是中断。撤回后新调用返回 `unknown_command`，而不是 reloading 错误。
-- **实现归属与验证：** 部件归 `dim-agent-capabilities`，菜单槽位归[命令菜单](../cli-commands.md#命令菜单)所有者（[§10.6](#106-客户端stop-提示以及插件命令与动作所需的界面)）。用流测试验证：含连字符的命令可登记，`session.command.list` 能列出，`session.command.run` 带调用方取消执行它，运行中重载会中断，撤回后再次运行为 `unknown_command`。
+- **实现归属与验证：** 部件归 `dim-agent-capabilities`，菜单槽位归[命令菜单](../cli-commands.md#命令菜单)所有者（[§10.6](#106-客户端stop-提示以及插件命令与动作所需的界面)）。用流测试验证：含连字符的命令可登记，`session.command.list` 能列出，`session.command.run` 能执行；运行中提供方卸载会中断该 run 而断开不会；菜单里与内置命令同名的由客户端拒绝；撤回后再次运行为 `unknown_command`。
 
 ### 10.4 Agents：`sessions.launch` 接受父 Session
 
-- **受阻功能与规则：** 包的子 Session 必须是父的子会话。`sessions.launch` 创建 Session 时不传 leader（`crates/dim-app-server/src/agents/sessions.rs:461-468`），因此没有父被存下，子会话不会被按父列出，删除父也不会级联到它：删除路径只删 `led_members` 返回的 Session，而该读取只选已存配置标为协作成员的 Session（`crates/dim-app-server/src/agent_records.rs:159-178`，调用处 `crates/dim-app-server/src/agents.rs:1531-1533`）。本设计创建的子会话不是协作成员，因此该级联不会到达它。
-- **已排查的现有机制：** 包自己调 `session.create` 并在标题里写父（标题是文字不是关系，级联仍然漏掉它）；另开一个创建入口（重复了所有者那一个方法）。
-- **所需通用能力：** launch 请求上一个可选 `parentSessionId`，经既有列存为该子会话的 leader；删除路径的级联扩展到所有 leader 为被删 Session 的已存 Session，而不只是协作成员。Collaboration 自己的读取保留成员过滤：`led_members`（`crates/dim-app-server/src/agent_records.rs:159-178`）与 `members`（`:215-236`，使用于 `crates/dim-app-server/src/collaboration.rs:510`）仍排除非成员子会话，因此包的子会话是带父的 Session，而不是委派成员。同一请求另带可选 `interactive`，使需要操作者审批的子会话能够提问，并按发起 Session 的策略封顶，与现有策略封顶一致。
-- **对序号、批次、中断、重载的影响：** Timeline 不变；父的 Timeline 不受影响。首条输入之前被取消的 launch 由既有 `sessions.delete` 清理，不留半成品子会话。
-- **实现归属与验证：** Agents（`crates/dim-app-server`），由 sessions 服务文档写明该字段。用流测试验证：创建的子会话记录父、按子会话列出、首条消息被执行、随父删除；被取消的 launch 不留下 Session。
+- **受阻功能与规则：** 包的子 Session 必须是父的子会话，而且必须出现在包声称的位置。`sessions.launch` 创建 Session 时不传 leader（`crates/dim-app-server/src/agents/sessions.rs:456-475`），因此没有父被存下，子会话不会被按父列出，删除父也不会级联到它：删除路径只删 `led_members` 返回的 Session，而该读取只选已存配置标为协作成员的 Session（`crates/dim-app-server/src/agent_records.rs:159-178`，调用处 `crates/dim-app-server/src/agents.rs:1531-1533`）。本设计创建的子会话不是协作成员，因此该级联不会到达它。可见性也有同样的缺口：除非调用方声明 `automation`，launch 记录 `origin: internal`（`sessions.rs:100-115`、`:466`），而 internal Session 在客户端列表与 `/resume` 选择器中不会出现，除非客户端主动要求该类（`docs/design/appserver/session-catalog.md` §3.1 的 `withInternal`；`crates/dim-app-server/src/storage/catalog.rs:268`）；而 harness 的子会话是操作者可以打开的普通对话。`parentSessionId` 已随每行上报（`crates/dim-app-server/src/protocol.rs:1306-1308`、`crates/dim-app-server/src/storage/catalog.rs:305-308`），但会话目录没有按它过滤的参数。
+- **已排查的现有机制：** 包自己调 `session.create` 并在标题里写父（标题是文字不是关系，级联仍然漏掉它）；另开一个创建入口（重复了所有者那一个方法）；让选择器列出全部 internal Session 使子会话出现（也把无人要求的工作显示了）；在客户端对一页结果过滤子会话（页是一个窗口，过滤后的一页会漏掉窗口之外的子会话）。
+- **所需通用能力：** launch 请求上一个可选 `parentSessionId`，经既有列存为该子会话的 leader；删除路径的级联扩展到所有 leader 为被删 Session 的已存 Session，而不只是协作成员。Collaboration 自己的读取保留成员过滤：`led_members`（`crates/dim-app-server/src/agent_records.rs:159-178`）与 `members`（`:215-236`，使用于 `crates/dim-app-server/src/collaboration.rs:510`）仍排除非成员子会话，因此包的子会话是带父的 Session，而不是委派成员。请求另带一个记录 `client` 的 `origin`，即人启动的 Session 的来源（`crates/dim-app-server/src/connection.rs:1811`、`crates/dim-app-server/src/storage/timeline.rs:2584-2596` 处的 fork），因此子会话能被列出并被操作者到达；`LaunchOrigin` 在 `automation` 之外新增该值，仍是 App Server 拥有的封闭枚举。`starter` 封顶子会话策略，`parentSessionId` 只记录关系，所以桥接两者都传。以 `interactive: false` 创建的子会话对 `ask_user` 回答已声明的「无人可答」结果，它的审批仍在询问侧持有回合（`crates/dim-agent-questions/src/lib.rs:335-345`；`docs/design/appserver/sessions-service.md` D10），所以让子会话可用的不是该标志而是操作者能到达它，也就是上面的可见性。
+- **对序号、批次、中断、重载的影响：** Timeline 不变；父的 Timeline 不受影响。launch 在 spawn 出来的任务里创建 Session（`crates/dim-app-server/src/agents/sessions.rs:457-476`），所以丢下调用取消的是等待而不是创建。在拿到回复之前就不再等待的调用方，其 launch 会自己移除它创建的 Session：这项需求落在 `launch` 上，对所有调用方成立，不只是桥接，因此不论调用方怎么做都不留半成品子会话。
+- **实现归属与验证：** Agents（`crates/dim-app-server`），由 sessions 服务文档写明字段与清理。用流测试验证：创建的子会话记录父、以 client 来源列出、首条消息被执行、随父删除；在拿到回复前丢下 launch 的调用方不留下 Session，该情形直接经 `launch` 测试，而不是经桥接。
 
 ### 10.5 工具执行：崩溃恢复不得声称调用未执行
 
@@ -460,26 +462,44 @@ flowchart TD
 
 ### 10.6 客户端：stop 提示，以及插件命令与动作所需的界面
 
-- **受阻功能与规则：** 本设计需要四处不归它所有的客户端界面。stop 可能等在忽略取消的外语工具上，而操作者对此一无所知；`/` 菜单是固定策展顺序，没有给 Session 插件命令的位置（[cli-commands](../cli-commands.md#命令菜单)）；`/plugins` 面板是 PluginManager 方法之上的一个管理区，没有渲染或执行包自己的本地动作的途径（[management surfaces](../cli-commands.md#管理界面)）；Session 列表也没有按父筛选子会话的过滤，而每行已带 `parentSessionId`（[Session 目录](../appserver/session-catalog.md#31-sessioncatalog)、`crates/dim-app-server/src/protocol.rs:1306-1308`）。
-- **所需通用能力：** 运行中的回合在 stop 等待外语工具时显示一行，写明插件与出路（[§6](#6-终端-ui)），对所有外语工具生效而不只是这些包；`/` 菜单中内置命令之后、Skills 之前的动态组，行来自 `session.command.list`，执行走 `session.command.run`；`/plugins` 中一个对任何提供 `dsh_typert.<包>` 命名空间的插件通用的动作面板，列出其动作，编辑某个动作的 JSON 参数（动作涉及 Session 时填入当前 Session id），并显示结构化回复；以及 Session 列表上按父筛选子会话的过滤，读列表已有的 `parentSessionId`。
+- **受阻功能与规则：** 本设计需要四处不归它所有的客户端界面。stop 可能等在忽略取消的外语工具上，而操作者对此一无所知；`/` 菜单是固定策展顺序，没有给 Session 插件命令的位置（[cli-commands](../cli-commands.md#命令菜单)）；`/plugins` 面板是 PluginManager 方法之上的一个管理区，没有渲染或执行包自己的本地动作的途径（[management surfaces](../cli-commands.md#管理界面)）；Session 列表也无法选出某个 Session 的子会话：每行已上报 `parentSessionId`（`crates/dim-app-server/src/protocol.rs:1306-1308`），但 `session.catalog` 没有对应参数（`docs/design/appserver/session-catalog.md` §3.1），所以客户端侧过滤会漏掉页外子会话。
+- **所需通用能力：** 运行中的回合在 stop 等待外语工具时显示一行，写明插件与出路（[§6](#6-终端-ui)），对所有外语工具生效而不只是这些包；`/` 菜单中内置命令之后、Skills 之前的动态组，行来自 `session.command.list`，执行走 `session.command.run`；`/plugins` 中一个对任何提供 `dsh_typert.<包>` 命名空间的插件通用的动作面板，列出其动作，编辑某个动作的 JSON 参数（动作涉及 Session 时填入当前 Session id），并显示结构化回复；以及 Session 列表上的父过滤。过滤属于会话目录而不是客户端：`session.catalog` 增加可选 `parentSessionId`，在分页边界之前作用于查询，并像其他过滤一样进入游标的过滤集，因此一页子会话就是一页完整的子会话。它归 Agents 与 [Session 目录](../appserver/session-catalog.md#31-sessioncatalog)，由后者在 `withInternal` 旁边写明该参数。
 - **对序号、批次、中断、重载的影响：** Timeline 无影响；四项都是读取路径加相应的一次既有方法调用。面板不读包自己的设置：它只渲染命名空间声明的动作与包返回的回复。
-- **实现归属与验证：** 四项都归终端 UI 所有者，由命令菜单契约写明该组、由 management surfaces 契约写明面板的动作类。用 CLI 流测试验证：登记了命令的 Session 在菜单中列出并可执行；stop 等待插件工具时显示提示；包的命名空间在 `/plugins` 中渲染且能执行一个动作；子会话能经该过滤找到。
+- **实现归属与验证：** 四处界面归终端 UI 所有者，由命令菜单契约写明该组、由 management surfaces 契约写明面板的动作类；父过滤归 Agents 与会话目录。用 CLI 流测试验证：登记了命令的 Session 在菜单中列出并可执行；stop 等待插件工具时显示提示；包的命名空间在 `/plugins` 中渲染且能执行一个动作；子会话能经该过滤找到，且在一页之后的子会话不会被漏掉。
 
 ### 10.7 Agents 与 Session 生命周期：作用域为何结束，以及它如何开始
 
 - **受阻功能与规则：** 桥接在业务关闭与 Session 删除时发 `agent/disposed`，空闲卸载时绝不发；daemon 重启后首次装载某 Session 时发 `agent/created` 并带 `source: 'resume'`。Session 旁边没有任何服务面告诉它这些。无论业务关闭还是空闲卸载，Session 作用域都会结束（[插件契约 §2](../plugin-contract.md#2-实例树)），而运行时对两者取消同一个 closing 令牌（`crates/dim-agent-runtime/src/agent.rs:804-808`，`finish(unloading)`，由 `:754-764` 的 `unload_if_idle` 与 `:801-803` 的 `close` 进入），所以 `sessionLifecycle.closing` 无法区分二者（`crates/dim-agent-runtime/src/config.rs:403-408`；[插件契约 §4](../plugin-contract.md#4-dim-的服务) 中该行只列 `activated`、`closing`、`hold`、`release`）。删除只以 `agent/session-deleted` 宣告，那是宿主内部总线事件（[插件契约 §5.3](../plugin-contract.md#53-总线事件)）。创建还是恢复这一半已经是数据：`sessionIdentity.get()` 是 `{sessionId, restored}`（`crates/dim-agent-runtime/src/config.rs:234-249`），`restored` 即 `SessionInitialization::Restore`（`crates/dim-agent-runtime/src/assembly.rs:1749`，在 `crates/dim-agent-runtime/src/agent.rs:169-183` 选定）。
 - **已排查的现有机制：** 在桥接里直接监听 `agent/session-deleted`（宿主内部事件而非服务面，而且行分不清它与同一 Session 的空闲卸载）；在每个 `closing` 时都发 `agent/disposed`（这正是本设计拒绝的空闲卸载通知，会在包本应存活的卸载中丢弃它的每 Session 选择）；对包见过的每个 Session 各持一个 `hold`（让包碰过的每个 Session 都无法空闲卸载，这是本设计拒绝支付的代价）。
-- **所需通用能力：** 由 Session 所有者提供一个公开数据面，用该所有者自己的术语，让 Session 作用域的部件得知两件事：自己的作用域为何结束，按所有者已经知道的区分，即业务关闭、删除与空闲卸载；以及本次装载是创建还是恢复。该面在副本首次 `apply` 返回前就可读，使 `agent/created` 首次挂载就能带对的 `source`。所有者没有含义的原因不编造：该面报告所有者自己已经决定的东西。
+- **所需通用能力：** 由 Session 所有者提供一个公开数据面，用该所有者自己的术语，让 Session 作用域的部件得知两件事：自己的作用域为何结束或已经结束，按所有者已经知道的区分，即业务关闭、删除与空闲卸载；以及本次装载是创建还是恢复。该面在副本首次 `apply` 返回前就可读，使 `agent/created` 首次挂载就能带对的 `source`。所有者没有含义的原因不编造：该面报告所有者自己已经决定的东西。删除无论 Session 是否装载都可观测：删除会移除一个已被空闲卸载的 Session 的存储行，而包保留的进程行仍持有该 Session 的门面与状态，所以删除事实也必须到达进程作用域中的部件，不只是 Session 作用域的副本。`agent/session-deleted` 已经宣告每一次移除了行的删除，无论装载与否（`crates/dim-app-server/src/agents.rs:1588-1600`），所以该需求是给这个事实一个公开服务面，而不是造一个新事实。
 - **对序号、批次、中断、重载的影响：** 不新增 Timeline 事实，也不新增事件类型；结束原因是 Session 的运行期状态，空闲卸载对 Timeline 仍与今天一样不可见（`crates/dim-agent-runtime/src/agent.rs:754-764` 不写任何事件）。插件重载仍然什么都不发：副本随其行卸载，既不是关闭也不是删除。
-- **实现归属与验证：** Agents 与运行时的 Session 生命周期（`crates/dim-agent-runtime`、`crates/dim-app-server`），由 [插件契约 §4](../plugin-contract.md#4-dim-的服务) 与 §2 的 Session 行写明该面。用流测试验证：同一 Session 的空闲卸载与业务关闭以不同原因报告，删除报告为删除，daemon 重启后的装载报告 `restored: true` 而新 Session 为 `false`，且包的每 Session 选择跨卸载与恢复保留（[附录 D](#附录-d-验收) 第 7 项）。
+- **实现归属与验证：** Agents 与运行时的 Session 生命周期（`crates/dim-agent-runtime`、`crates/dim-app-server`），由 [插件契约 §4](../plugin-contract.md#4-dim-的服务) 与 §2 的 Session 行写明该面。用流测试验证：同一 Session 的空闲卸载与业务关闭以不同原因报告；删除对已装载与已空闲卸载的 Session 都报告为删除；daemon 重启后的装载报告 `restored: true` 而新 Session 为 `false`；且包的每 Session 选择跨卸载与恢复保留（[附录 D](#附录-d-验收) 第 7、8、11 项）。
 
-### 10.8 PluginManager：识别 DSH 包并写受管入口
+### 10.8 PluginManager：识别 DSH 包、记录它、写受管入口
 
 - **受阻功能与规则：** DSH 包不带 `dim-plugin.json`，PluginManager 找不到它的候选，其行从不创建。它的 `package.json` 是写给它自己的 harness 的，其 `dsh` 成员是该 harness 的 bundle 声明，不是 Dim 清单（[§2.1](#21-受管入口)）。
 - **已排查的现有机制：** 要求用户给每个包加一个 `dim-plugin.json`（包目录只读，需要改动的包也不再是原样）；在 PluginManager 之外另设安装流程（重复了所有者那一个的获取、记录与清理）。
-- **所需通用能力：** 一条识别规则与一个受管入口。规则是 `package.json` 的 `dsh` 成员，两个首期包都有，其中 `dsh.bundle.patch` 指向 harness 的 bundle patch，`dsh.client` 在有客户端半边时指向它。Cordis 依赖不是规则：旁会话包完全不声明，数据库包只声明可选的 `peerDependencies` `~4.0.4`。harness 的 bundle patch 不读不应用；受管入口取代它。入口写在插件文件根下 `.dsh/<插件 id>/entry.mjs`，属于该插件的记录，每次解析行时重写，随插件移除。安装、启用、记录与文件系统规则仍归 PluginManager，与其他插件一致。
-- **对序号、批次、中断、重载的影响：** Timeline 无影响。包自己的入口变化后，`plugin.reload` 导入的是变化后的文件，因为入口的模块 URL 携带包入口的修改时间与大小（[PluginManager §3.4](PluginManager.md#34-重新加载)）。
-- **实现归属与验证：** PluginManager（`crates/dim-app-server/src/plugin_manager`），由 [PluginManager](PluginManager.md) §2.1 与 §3.2 写明识别规则、入口路径与移除。用流测试验证：两个首期包从目录安装、获得入口、作为行装载，且其目录全部文件与修改时间不变；禁用并移除插件后不残留入口。
+- **所需通用能力：** 一条识别规则、一份不经清单得出的行记录，以及一个受管入口。
+
+识别规则是 `package.json` 的 `dsh` 成员，两个首期包都有，其中 `dsh.bundle.patch` 指向 harness 的 bundle patch，`dsh.client` 在有客户端半边时指向它。Cordis 依赖不是规则：旁会话包完全不声明，数据库包只声明可选的 `peerDependencies` `~4.0.4`。harness 的 bundle patch 不读不应用；受管入口取代它。
+
+行记录也由同一批文件得出，因为 `Manifest::read` 要求 `dim-plugin.json`，而 DSH 包没有（`crates/dim-app-server/src/plugin_manager/record.rs:14`、`:353`），这正是安装、启动对账、重载、列举、更新与移除今天全部止步的地方。每个字段只有一个来源：
+
+| 字段 | DSH 包的来源 |
+| --- | --- |
+| `id` | `package.json` 的 `name`，去掉 npm scope 前缀、转小写并保留 `-`，经现有 id 规则 `[a-z0-9_-]{1,64}` 校验；不符合或已安装的名字按普通插件的方式拒绝 |
+| `name` | `package.json` 的 `name` 原文，即 `plugin.list` 显示、`names` 条目可选的名字 |
+| `version` | `package.json` 的 `version` |
+| `code.entry` | `package.json` 的 `exports["."]`（字符串或其 `default`），按现有 `code.entry` 规则在包目录内解析，指向包的真实入口，使受管入口是 Dim 唯一写的模块 |
+| `code.inject` | 空。两个包的 `package.json` 都没有 `inject`，它们各自从模块导出 `inject`（`dsh-side-session` `src/index.ts:31`），行在装载时应用该导出，与其他任何 Cordis 插件一样，这也是 Dim 的 loader 对 Node 行已有的做法 |
+| `code.provides` | 空：DSH 包向它自己的 Node 上下文提供服务，不向 Dim 提供（§2.2） |
+| `code.instanceNames` | 空：DSH 包通过副本向一个 Session 贡献，没有任何字段指明组 |
+| `code.config` | 空，宿主的同名补丁按普通插件那样深合并上去 |
+| `kinds` | 只有 `code`。`dsh.client` 声明的是 harness 渲染的浏览器半边，它不是本 PluginManager 的 `ui` 类（后者是带自己清单的 Dim UI 扩展包），所以不记录它的任何内容 |
+
+安装与其他插件完全一样地获取并重命名目录，并在记录之后写入口（§2.1）。启动对账用每个已装载插件的 `package.json` 代替清单，并对每个在用的插件再写一次入口；无法读取 `package.json` 或没有 `dsh` 成员的包记日志并跳过，保留其记录而不删除。重载重新读取记录并再写一次入口，这就是升级后的 `dsh-mysql` 被拾取的途径。`plugin.list` 与其他插件一样报告记录的 `name`、`version` 与 `kinds`；`update` 对路径或 Git 源与其他插件一样可用，并在获取后重新读取 `package.json`；`remove` 删除记录与入口，从不碰包目录。这里不读 harness 的 bundle patch，也不读 `dsh.profile`。
+- **对序号、批次、中断、重载的影响：** Timeline 无影响。包自己的入口变化后，`plugin.reload` 导入的是变化后的文件，因为运行时给行模块 URL 打上文件的修改时间与大小（[§2.1](#21-受管入口)）。
+- **实现归属与验证：** PluginManager（`crates/dim-app-server/src/plugin_manager`），由 [PluginManager](PluginManager.md) §2.1、§2.2 与 §3.2 写明识别规则、导出的记录、入口路径与移除。用流测试验证：两个首期包从目录安装、获得带导出字段的记录与入口、作为行装载，且其目录全部文件与修改时间不变；重启后 `plugin.list` 能列出它们，重载能拾取变化的 `lib/index.js`，禁用并移除插件后不残留入口或记录。
 
 ### 10.9 RuntimeManager：Node 启动携带桥接的解析钩子
 
@@ -500,7 +520,7 @@ flowchart TD
 - **在其他运行时中运行包。** 只有 Node 运行时携带桥接；为其他语言运行时编写的包不在范围内。
 - **按包划分 Session 或第二套 Session 存储。** 子 Session 就是带父的普通 Session。
 - **为包自己的视图提供客户端 UI。** 为 harness 客户端提供网页 UI 代码的包，在本设计中不渲染任何东西；它支持的界面是命令、工具与动作。
-- **包市场、安装流程或更新策略。** PluginManager 的安装流程已覆盖包目录；本设计只新增对包的识别与它运行的受管入口（[§10.8](#108-pluginmanager识别-dsh-包并写受管入口)）。
+- **包市场、安装流程或更新策略。** PluginManager 的安装流程已覆盖包目录；本设计只新增对包的识别与它运行的受管入口（[§10.8](#108-pluginmanager识别-dsh-包记录它写受管入口)）。
 
 ## 附录 A. 桥接的宿主 API
 
