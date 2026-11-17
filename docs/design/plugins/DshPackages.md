@@ -50,7 +50,7 @@ flowchart LR
 | The Session copy | Session, one per open Session | The copy's own Cordis fiber and the service leases it calls the owners through |
 | The managed entry | Process, one file per package | Nothing at runtime: it names the package's real entry and hands it to the bridge |
 
-**No wiring module.** The bridge is a library the package's own row imports; it provides no name to the process and adapts no other plugin's interface. It registers the package's contributions with the owners those contributions belong to, which is what [ADR 002 D2](../../adr/002-plugin-scope.md#d2-no-wiring-modules) asks of any part, and it declares no process state of its own.
+**No wiring module.** The bridge is a library the package's own row imports; it provides no name to the process and adapts no other plugin's interface. It registers the package's contributions with the owners those contributions belong to, which is what [ADR 002 D2](../../adr/002-plugin-scope.md#d2-no-wiring-modules) asks of any part. It owns no separate service: what it holds is the per-row ledger, the facades and one copy definition ([§2.6](#26-what-the-bridge-does-not-keep)), none of which is a catalog name or a second owner of another part's state.
 
 **The Agent is not a Dim Session.** Dim's Session, its memory instance and its branches are Rust core state. What a package calls an agent is the object the bridge hands it in `agent/created` ([§2.4](#24-the-agent-facade)), one per Session the package is mounted in. Nothing of the package's model is branched: a package contributes nothing branch-scoped, and creating ten branches on a Session mounts no extra copies.
 
@@ -62,7 +62,7 @@ flowchart LR
 
 A DSH package is not a Dim plugin: it carries no `dim-plugin.json`, and its `package.json` describes it to its own harness. The two phase 1 packages differ in the one way that matters here: the database package declares a peer dependency on Cordis `~4.0.4`, optionally, and the side-session package declares no Cordis dependency at all, while both declare a `dsh` member whose `bundle.patch` names the harness's own bundle patch. The `dsh` member is what marks a package, and that bundle patch is not read: this design's managed entry replaces it.
 
-Recognising such a package and writing its entry belong to PluginManager ([§10.8](#108-pluginmanager-recognising-a-dsh-package-recording-it-and-writing-its-managed-entry)). The design fixes the entry's path under the plugin files root, `.dsh/<plugin id>/entry.mjs`, and its content: three lines that import the bridge from the runtime's single copy and re-export `dshPackageRow(<the package's real entry>)`. The package's directory is read-only throughout, including when it is installed from a path rather than a registry, so an upgrade of Dim changes the bridge and leaves every package untouched.
+Recognising such a package, recording it and writing its entry belong to PluginManager ([§10.8](#108-pluginmanager-recognising-a-dsh-package-recording-it-and-writing-its-managed-entry)). The design fixes the entry's path under the plugin files root, `.dsh/<plugin id>/entry.mjs`, and its content: three lines that import the bridge from the runtime's single copy and re-export `dshPackageRow(<the package's real entry>)`. The package's directory is read-only throughout, including when it is installed from a path rather than a registry, so an upgrade of Dim changes the bridge and leaves every package untouched.
 
 The runtime stamps a row's module URL with the file's modification time and size, so a reload of a changed row imports the file rather than the module it cached. That rule is the runtime package's, not this repository's: it lives in the `rutis-runtime` package, the version [`runtime/package.json`](../../../runtime/package.json) pins, and the entry is a row's module like any other ([PluginManager §3.4](PluginManager.md#34-reload): the host watches no files, the reload call is the signal). The entry belongs to PluginManager's record of the plugin and is written again whenever the row is resolved; it holds no state and nothing reads it but the runtime.
 
@@ -125,7 +125,7 @@ One contribution of one package, from the package's call to its effect in Dim. T
 | Registered | the entry is in the table | nothing yet for tools; a prompt value at the branch's next adoption | withdrawal, or the copy's unload |
 | Adopted | unchanged | tools in the next request's snapshot; a prompt value as an Append block | the next change, or a withdrawal |
 | Withdrawing | the entry is being removed | the current request keeps what it already bound | the owner confirms |
-| Withdrawn | the entry is gone | nothing; a prompt block is retired with a Revoke | nothing: a second withdrawal is a no-op, because the id no longer matches |
+| Withdrawn | the entry is gone | nothing new; the block the value was adopted with stays in the history, and a Revoke adds a `<dim-state cleared="true">` block that ends it | nothing: a second withdrawal is a no-op, because the id no longer matches |
 
 A registration that changes a name already in the table is a withdrawal followed by a registration, in that order, so the second never races the first into a duplicate-name refusal. Two generations of one name are separate entries with separate ids: withdrawing the old id cannot remove the new one.
 
@@ -176,7 +176,7 @@ A tool reaches a request through the Session's tool source set, which the reques
 
 ### 3.3 Withdrawing one contribution
 
-A disposer runs in the package's own call stack. It removes the ledger entry and wakes the coordinator, which withdraws by the id the owner assigned, and only for the Session copies that registered it. A withdrawal is invisible to a request already bound: that request keeps its snapshot and says nothing about what left. A withdrawal of a prompt value is a Revoke, so the retired block leaves the model's context at the next adoption instead of lingering.
+A disposer runs in the package's own call stack. It removes the ledger entry and wakes the coordinator, which withdraws by the id the owner assigned, and only for the Session copies that registered it. A withdrawal is invisible to a request already bound: that request keeps its snapshot and says nothing about what left. A withdrawal of a prompt state value is a Revoke, which writes a `<dim-state source="…" cleared="true"></dim-state>` block: the earlier block stays in the history, and this one ends it for what follows (`crates/dim-agent-capabilities/src/prompt.rs:1163-1197`). A Revoke does not rewrite history that already happened, and it is not a silence about what the model read before it.
 
 Nothing withdraws a contribution except its disposer, its Session copy unloading, or its package row unloading. A Session close withdraws a copy's contributions by unloading the copy, without one call per contribution.
 
@@ -186,14 +186,14 @@ Nothing withdraws a contribution except its disposer, its Session copy unloading
 | --- | --- | --- |
 | A package injects a name this design does not serve | Bridge, before the row is Active | Row Failed, the missing name in the message |
 | A package registers a hook the harness has and Dim does not serve | Bridge, in that registration's call | Row Failed: a partially loaded package would run without the guard its author expected |
-| A package imports its own Cordis copy | Runtime, at module resolution | Row Failed, naming the entry and the copy |
+| A package imports its own Cordis copy | Runtime, at module resolution: its existing refusal | Row Failed, naming the entry and the copy |
 | A package's Cordis peer range excludes the runtime's 4.0.4 | Bridge, before the row is Active | Row Failed with `cordis_range`, naming the range |
 | The package module throws while loading | Runtime | Row Failed with the module error |
 | One Session copy fails to build | Part registry, for that Session | Only that copy is marked Failed; the row and the other Sessions stay healthy |
-| One contribution collides with a host tool or another plugin's name | Owner, in the registration's reply | The contribution is refused; the copy records it and keeps its other contributions |
+| One contribution collides with a host tool or another plugin's name | Owner, in the registration's reply | The contribution is refused and that Session's copy records the refusal. The ledger's desired entry stays, because another Session's copy publishes it there |
 | The package's `dispose` throws | Runtime, during unload | Recorded as the row's cleanup error; the other rows are unaffected |
 
-A refused contribution is never retried silently: the package sees the refusal in the call that made it, or in the Session copy's diagnostics when the call had already returned.
+A refused contribution is never retried silently: the package sees the refusal in the call that made it, or in the Session copy's diagnostics when the call had already returned. A refusal is per Session, not per row: the ledger keeps the desired entry, so a name one Session's table already holds is refused only in that Session, and every other Session's copy still publishes it. The copy records its own refusal in its diagnostics, so the operator sees which Session lost which contribution.
 
 ### 3.5 The request admission order
 
@@ -234,6 +234,8 @@ sequenceDiagram
 | 7 | Loop starts the request | every delivery of this step admitted | a request already started is replaced as any steered request is |
 
 The chain has three properties this design depends on. The read is outside the commit lock, so a package that blocks in its own code delays its own step and no other Session's. An Append input does not start a turn: an adopted value on an idle Session waits for the operator's next message instead of opening one. And a value that did not change writes nothing, so a package that is queried every step costs one boundary call and no Timeline write.
+
+A package that blocks in its own code blocks every row in the Node runtime, because the package shares that runtime's event loop (the `rutis-runtime` package runs one Node process per runtime and loads each row into it). What the design can bound is the effect on Dim: the read is outside the commit lock, so one blocked package delays the steps of the Sessions it is mounted in and no Session it is not, and no lock, batch or other plugin's call waits on it ([Appendix C](#appendix-c-static-cost)). The operator's way out is the same one the stop hint names: reload or disable the plugin.
 
 If the process stops between steps 4 and 7, the turn has a start and an adopted configuration but no model request in it. The existing rebuild settles such a turn as failed and leaves the Append input in the queue for the next turn, so a package's context is neither replayed nor lost.
 
@@ -284,7 +286,9 @@ flowchart TD
   J --> K["child runs its own turns; the operator attaches to it"]
 ```
 
-The command returns when the child's first message is queued, not when the child answers, which is what the harness's continuable subagent contract promises its handler. The child is an ordinary Session: it persists, it is listed with its parent, it unloads when idle like any other, and deleting the parent deletes it through the stored parent relation. The parent's Timeline is untouched: the command writes no input and no fact there.
+The command returns when the child's first message is queued, not when the child answers, which is what the harness's continuable subagent contract promises its handler. The child is an ordinary Session: it persists, it is listed as a Session a person started, with its parent, it unloads when idle like any other, and deleting the parent deletes it through the stored parent relation ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)). The parent's Timeline is untouched: the command writes no input and no fact there.
+
+The opening input is built the way any caller builds one (`crates/dim-app-server/src/agents/sessions.rs:126-136`): submission id `dsh-side-session:<commandId>`, so a retried run of the same command is one input and the branch accepts it once; `mode: queue`, since the child has no turn to steer; `rawBlocks` holding the package's `prompt` blocks in order, the first of which is the caller's marker; and empty `content`, so the input carries only what the package wrote. A `prompt` the child's branch refuses, an empty one among them, fails the command with the package's own error text and no Session is left behind: the launch's child is removed by the launch's own cleanup before the reply ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)).
 
 ## 4. Lifetimes
 
@@ -311,7 +315,7 @@ A Session that is touched and not closed keeps its entry in the package's per-Se
 | Any branch of the Session | The package's tools, with the descriptions and schemas it declared | Tool declarations in the request's snapshot | While the contributing copy is mounted |
 | Any branch of the Session | The package's tool results, rendered by the package and carried as text | `ToolResult.content`; the package's structured value stays out of the model's view | As any tool result |
 | Any branch of the Session | The package's system section, when it declares one | Part of the adopted system prompt | Republished when the value changes |
-| Any branch of the Session | The package's dynamic context | One `<dim-state>` block, adopted like any captured state source | Retired by a Revoke when the value is withdrawn |
+| Any branch of the Session | The package's dynamic context | One `<dim-state>` block, adopted like any captured state source, and superseded by the next value | A later value is a new block; a withdrawal adds a `<dim-state cleared="true">` block that ends it ([§3.3](#33-withdrawing-one-contribution)) |
 | Child Session | Its own turns, starting from the opening message | Ordinary Session context | Its own |
 | Parent Session | Nothing the command wrote; only the command's own reply text for the operator | Not model context | not applicable |
 
@@ -333,11 +337,11 @@ Four surfaces, all client-side. The keys and the layout of each belong to the te
   Enter runs session.command.run("side-chat") · Tab fills · Esc closes
 ```
 
-**The child Session.** A child Session is listed as any other Session, with its parent and its origin, and the operator attaches to it rather than driving it through the parent. The listing's parent field is `SessionInfo.parentSessionId`, which a stored Session already reports, so the only change the row needs is the parent that [§10.4](#104-agents-sessionslaunch-takes-a-parent-session) makes the launch store. The `/resume` picker is that listing ([cli-commands](../cli-commands.md#the-resume-picker)); a filter for one Session's children is raised in [§10.6](#106-client-the-stop-hint-and-the-surfaces-plugin-commands-and-actions-need).
+**The child Session.** A child Session is listed as any other Session, with its parent and its origin, and the operator attaches to it rather than driving it through the parent. `launch` records the origin `client`, the same one a Session a person started has, so the listing shows it without a class filter and the `/resume` picker lists it like any other conversation ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)). The listing's parent field is `SessionInfo.parentSessionId`, which a stored Session already reports. The `/resume` picker is that listing ([cli-commands](../cli-commands.md#the-resume-picker)); selecting one Session's children is a catalog parameter raised in [§10.6](#106-client-the-stop-hint-and-the-surfaces-plugin-commands-and-actions-need).
 
 ```text
 +--------------------- /sessions  (Tab: all | children of this [1]) --------------------+
-| > side chat 14:32   [internal · parent 8f3a..c1]   "ready, ask your first question"   |
+| > side chat 14:32   [client · parent 8f3a..c1]     "ready, ask your first question"   |
 |   this session      [client   · 8f3a..c1]          "check the slow order query"  2m   |
 +--------------------------------------------------------------------------------------+
   Enter attaches to the child · d deletes · Esc closes
@@ -388,7 +392,7 @@ The bridge's own host API is a contract with package authors and lives in the ge
 
 ## 8. Security
 
-- **The package is trusted host code.** A loaded row runs in the runtime's process with the user's own privileges, as every Node row does; [ADR 006 rule 11](../../adr/006-plugin-contract.md) applies and nothing here sandboxes it. A package's tool calls are still admitted by Approval and Permission under the Session's policy, exactly like a tool Dim ships.
+- **The package is trusted host code.** A loaded row runs in the runtime's process with the user's own privileges, as every Node row does; a trusted in-process part is not isolated by its declarations ([AGENTS.md](../../../AGENTS.md) rule 11, [ADR 003](../../adr/003-approval-scope.md)), so nothing here sandboxes it. A package's tool calls are still admitted by Approval and Permission under the Session's policy, exactly like a tool Dim ships.
 - **The bridge declares every DSH tool's risk, and it is the narrow one.** Dim refuses a foreign tool whose declaration carries no risk (`crates/dim-agent-capabilities/src/tool_registry.rs:685-698`), and the harness has no risk category for a package to declare, so the bridge supplies `network` for every DSH tool: such a tool reaches systems outside Dim's own file tree by its own means, and Dim cannot classify it more narrowly. The presets then treat it as they treat any network tool ([Permission](../../architecture/rust-agent/plugins/Permission.md); `crates/dim-agent-capabilities/src/permission.rs:678-750`): allowed under full access, asked under workspace-write, refused under read-only. An operator who trusts a named tool adds it to `allowedTools`. The bridge never picks a broader category to make a package load.
 - **A hard dependency on an unsupported name is a refusal, not a degraded load.** A package that needs an HTTP route or a step-before hook fails at load, so the model never runs under a package that believes a guard is in place and is not.
 - **Secrets stay with the package.** Dim has no secret store ([settings service §1.2](../appserver/settings-service.md)), and this design adds none: a package that persists a credential does so in its own files, and its action replies are its own. What reaches a client is what the package returns; a package that returns a password is the package's defect, and the panel shows the document it returns.
@@ -581,7 +585,7 @@ No measurement is stated here; every line is a property of the code paths.
 | A Session opening with the package not loaded | Nothing: the registry has no entry |
 | A request on a Session with a package mounted, value unchanged | One boundary call to the Session's prompt source, whose reply is compared byte for byte; no Timeline write, no input, no extra task |
 | A request whose value changed | The same call, one atomic batch with the configuration and its Append input, one InputQueue batch, and one wait for the input to be admitted. The commit lock never spans a package call |
-| A tool call | One call across the process boundary, awaited; the arguments and the rendered result are serialized once each way. A concurrent call overlaps only in its external wait: a package's own synchronous work blocks its runtime's event loop |
+| A tool call | One call across the process boundary, awaited; the arguments and the rendered result are serialized once each way. A concurrent call overlaps only in its external wait: every row of one runtime shares its Node event loop, so a package's own synchronous work blocks that runtime's other rows while it runs |
 | A command run | One boundary call, one Session creation or none, and one input |
 | An idle unload | Unmounting the copy: one row unload, one lease release per injected service, and one ledger dropped |
 | Memory per touched Session | One facade object, one per-Session entry in each package `Map`, and nothing else once the Session is unloaded. A copy's fiber and leases live only while the Session is loaded |
