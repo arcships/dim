@@ -39,11 +39,12 @@
 | [Skills](../../../design/plugins/Skills.md)（安装） | 既有 SkillsCatalog：预览本地目录或 Git 来源、按选择安装到用户根、更新与确认后移除松散的技能 | —（发现、启用和 `skill` 工具已归 Skills 能力） | — | #740 |
 | [PluginManager](PluginManager.md) | 插件配置（`plugins.json`）、安装、插件代码的 loader 行、内容登记 | `PluginTools`（`plugin` 工具） | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | 插件代码的 Node 与 Python 运行时：固定版本下载、校验、启动；`runtime.*` | — | — | M1（#476） |
+| [DshPackages](DshPackages.md) | 每包一个进程行：另一个 harness 的宿主插件包，各自从受管入口运行，自身文件不动 | 包的工具、提示词来源与命令，由每个打开的 Session 一份副本登记；该副本对 Session 各所有者的租约 | — | [#1753](https://github.com/arcships/dim/issues/1753) |
 
 ## 按作用域
 
 | 作用域 | 部分 |
 | --- | --- |
-| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、`CodeMode`（安装时）、light-ocr、EventHub；接入方宿主进程内的 AcpGateway |
-| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表）、Code Mode(启用时) |
+| 进程部件 | daemon 内的 Provider（管理补充提案）、Scheduler、Workflow、ExternalAgent、Modality、PluginManager、RuntimeManager、DshPackages、RemoteGateway、Skills（安装）、PromptSuggestion（Settings 来源）、`CodeMode`（安装时）、light-ocr、EventHub；接入方宿主进程内的 AcpGateway |
+| Session 部件 | Questions、ShellInput、Attachments、SessionTitle、PromptSuggestion、Goal、Web、Recall、EventHub、DshPackages（每包一份副本）、Hooks、Scheduler、Workflow、PromptSources、Prompt（条目表）、Code Mode(启用时) |
 | 分支部件 | Goal（含 Pursuit）、ModelRecovery（拟议）、Hooks、Prompt、Code Mode(启用时) |
