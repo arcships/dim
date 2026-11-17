@@ -278,17 +278,18 @@ flowchart TD
   B --> C["pluginCommands 调用包的处理函数"]
   C --> D["包调用 subagents.startContinuable"]
   D --> E["sessions.launch，带 parentSessionId、标题与受父封顶的策略"]
-  E --> F{"已取消或被拒？"}
-  F -->|是| G["sessions.delete 子 Session，命令失败"]
-  F -->|否| H["sessions.input 投递开场消息"]
-  H --> I["输入回执"]
-  I --> J["命令立即返回子 Session 的 id"]
+  E --> F{"launch 是否回复了子 Session？"}
+  F -->|否| G["命令失败；launch 的清理不留下子 Session"]
+  F -->|是| H["sessions.input 投递开场消息"]
+  H --> I{"已准入？"}
+  I -->|否| M["sessions.delete 已知道的子 Session，命令失败"]
+  I -->|是| J["输入回执，命令立即返回子 Session 的 id"]
   J --> K["子 Session 自己跑回合；操作者可接手"]
 ```
 
 命令在子 Session 的首条消息入队时返回，而不是等它回答，这正是 harness 的可继续子 agent 契约对处理函数的承诺。子 Session 是普通 Session：持久保存、以操作者启动的 Session 的身份列出并带父、空闲时与其他 Session 一样卸载，删除父时经已存的父子关系级联删除（[§10.4](#104-agentssessionslaunch-接受父-session)）。父的 Timeline 不受影响：命令不向父写输入、也不写事实。
 
-开场输入按任何调用者构造输入的方式构造（`crates/dim-app-server/src/agents/sessions.rs:126-136`）：submission id 为 `dsh-side-session:<commandId>`，所以同一条命令重试只是一条输入，分支只接受一次；`mode` 为 `queue`，因为子 Session 还没有可 steer 的回合；`rawBlocks` 按顺序持有包的 `prompt` 块，第一块是调用方的标记；`content` 为空，所以输入只携带包自己写的内容。子 Session 的分支拒绝的 `prompt`（包括其中的空块）会让命令带包自己的错误文本失败，且不会留下 Session：launch 在回复前已由它自己的清理移除该子 Session（[§10.4](#104-agentssessionslaunch-接受父-session)）。
+开场输入按任何调用者构造输入的方式构造（`crates/dim-app-server/src/agents/sessions.rs:126-136`）：submission id 为 `dsh-side-session:<commandId>`，所以同一条命令重试只是一条输入，分支只接受一次；`mode` 为 `queue`，因为子 Session 还没有可 steer 的回合；`rawBlocks` 按顺序持有包的 `prompt` 块，第一块是调用方的标记；`content` 为空，所以输入只携带包自己写的内容。子 Session 的分支拒绝的 `prompt`（包括其中的空块）会让命令带包自己的错误文本失败，且不会留下 Session：launch 已经回复，所以由桥接在命令返回错误之前按 id 删除它持有的子 Session（[附录 B](#附录-b-错误与恢复)）。取消是另一种情形，归 launch：在拿到回复前就不再等待的调用方，其 launch 会自己移除它创建的 Session（[§10.4](#104-agentssessionslaunch-接受父-session)）。
 
 ## 4. 寿命
 

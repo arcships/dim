@@ -278,17 +278,18 @@ flowchart TD
   B --> C["pluginCommands calls the package's handler"]
   C --> D["package calls subagents.startContinuable"]
   D --> E["sessions.launch with parentSessionId, title and policy capped by the parent"]
-  E --> F{"cancelled or refused?"}
-  F -->|yes| G["sessions.delete of the child, then the command fails"]
-  F -->|no| H["sessions.input of the opening message"]
-  H --> I["input receipt"]
-  I --> J["command returns at once with the child's id"]
+  E --> F{"does the launch reply with a child?"}
+  F -->|no| G["the command fails; the launch's cleanup leaves no child behind"]
+  F -->|yes| H["sessions.input of the opening message"]
+  H --> I{"admitted?"}
+  I -->|no| M["sessions.delete of the known child, then the command fails"]
+  I -->|yes| J["input receipt, then the command returns at once with the child's id"]
   J --> K["child runs its own turns; the operator attaches to it"]
 ```
 
 The command returns when the child's first message is queued, not when the child answers, which is what the harness's continuable subagent contract promises its handler. The child is an ordinary Session: it persists, it is listed as a Session a person started, with its parent, it unloads when idle like any other, and deleting the parent deletes it through the stored parent relation ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)). The parent's Timeline is untouched: the command writes no input and no fact there.
 
-The opening input is built the way any caller builds one (`crates/dim-app-server/src/agents/sessions.rs:126-136`): submission id `dsh-side-session:<commandId>`, so a retried run of the same command is one input and the branch accepts it once; `mode: queue`, since the child has no turn to steer; `rawBlocks` holding the package's `prompt` blocks in order, the first of which is the caller's marker; and empty `content`, so the input carries only what the package wrote. A `prompt` the child's branch refuses, an empty one among them, fails the command with the package's own error text and no Session is left behind: the launch's child is removed by the launch's own cleanup before the reply ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)).
+The opening input is built the way any caller builds one (`crates/dim-app-server/src/agents/sessions.rs:126-136`): submission id `dsh-side-session:<commandId>`, so a retried run of the same command is one input and the branch accepts it once; `mode: queue`, since the child has no turn to steer; `rawBlocks` holding the package's `prompt` blocks in order, the first of which is the caller's marker; and empty `content`, so the input carries only what the package wrote. A `prompt` the child's branch refuses, an empty one among them, fails the command with the package's own error text and no Session is left behind: the launch has already answered, so the bridge deletes the child it holds by id before the command returns its error ([Appendix B](#appendix-b-errors-and-recovery)). Cancellation is the other case and belongs to the launch: a caller that stops waiting before the reply removes the Session the launch created itself ([§10.4](#104-agents-sessionslaunch-takes-a-parent-session)).
 
 ## 4. Lifetimes
 
